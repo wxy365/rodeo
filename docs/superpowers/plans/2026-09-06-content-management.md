@@ -484,7 +484,7 @@ impl Services {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{AuditAction, WorkspaceService};
+    use crate::domain::AuditAction;
 
     fn temp_dir(name: &str) -> String {
         let mut p = std::env::temp_dir();
@@ -518,7 +518,6 @@ mod tests {
 }
 ```
 
-（`WorkspaceService` 未用，删掉该 `use`。）
 
 - [ ] **Step 4: 跑测试**
 
@@ -991,7 +990,7 @@ impl EntryService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{WorkspaceService, WorkspaceRole};
+    use crate::service::WorkspaceService;
 
     fn temp_dir(name: &str) -> String {
         let mut p = std::env::temp_dir();
