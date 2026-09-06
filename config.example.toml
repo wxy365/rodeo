@@ -1,0 +1,17 @@
+[server]
+host = "0.0.0.0"
+port = 3000
+base_url = "http://localhost:3000"
+
+[auth]
+jwt_secret = "change-me-to-a-random-secret"
+session_ttl_hours = 72
+
+[auth.builtin]
+enabled = true
+allow_registration = true
+admin_email = "admin@local"
+admin_password = "Admin12345"
+
+[storage]
+data_dir = "./data"
