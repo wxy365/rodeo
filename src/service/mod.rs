@@ -1,3 +1,4 @@
+pub mod audit;
 pub mod auth;
 pub mod entry;
 pub mod workspace;
@@ -7,6 +8,7 @@ use std::sync::Arc;
 use crate::config::Config;
 use crate::storage::DocStore;
 
+pub use audit::AuditService;
 pub use auth::{AuthContext, AuthService};
 pub use entry::EntryService;
 pub use workspace::WorkspaceService;
@@ -18,6 +20,7 @@ pub struct Services {
     pub auth: AuthService,
     pub workspace: WorkspaceService,
     pub entry: EntryService,
+    pub audit: AuditService,
 }
 
 impl Services {
@@ -25,12 +28,14 @@ impl Services {
         let auth = AuthService::new(store.clone(), config.clone());
         let workspace = WorkspaceService::new(store.clone());
         let entry = EntryService::new(store.clone());
+        let audit = AuditService::new(store.clone());
         Self {
             store,
             config,
             auth,
             workspace,
             entry,
+            audit,
         }
     }
 }
