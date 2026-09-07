@@ -8,6 +8,7 @@ pub struct Entry {
     pub workspace_id: Ulid,
     pub title: String,
     pub detail: String,
+    pub deleted_at: Option<DateTime<Utc>>,
     pub created_by: Ulid,
     pub updated_by: Ulid,
     pub created_at: DateTime<Utc>,
@@ -22,11 +23,16 @@ impl Entry {
             workspace_id,
             title,
             detail: String::new(),
+            deleted_at: None,
             created_by: actor,
             updated_by: actor,
             created_at: now,
             updated_at: now,
         }
+    }
+
+    pub fn is_deleted(&self) -> bool {
+        self.deleted_at.is_some()
     }
 }
 
@@ -84,5 +90,20 @@ mod tests {
         for _ in 0..10_000 {
             assert!(set.insert(generate_entry_code()), "duplicate code generated");
         }
+    }
+
+    #[test]
+    fn new_entry_defaults_deleted_at_to_none() {
+        let e = Entry::new(Ulid::new(), "test".to_string(), Ulid::new());
+        assert_eq!(e.deleted_at, None, "new entry must not be soft-deleted");
+        assert!(!e.is_deleted());
+    }
+
+    #[test]
+    fn is_deleted_reflects_deleted_at() {
+        let mut e = Entry::new(Ulid::new(), "test".to_string(), Ulid::new());
+        assert!(!e.is_deleted());
+        e.deleted_at = Some(Utc::now());
+        assert!(e.is_deleted(), "is_deleted must be true once deleted_at is set");
     }
 }

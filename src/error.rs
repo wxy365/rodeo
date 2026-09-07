@@ -17,6 +17,8 @@ pub enum AppError {
     WeakPassword,
     #[error("标签值不合法")]
     InvalidLabelValue,
+    #[error("内容已被他人修改，请刷新后重试")]
+    ConflictDetected,
     #[error("存储错误: {0}")]
     Storage(String),
     #[error("内部错误: {0}")]
@@ -33,6 +35,7 @@ impl AppError {
             AppError::EmailExists => "EMAIL_EXISTS",
             AppError::WeakPassword => "WEAK_PASSWORD",
             AppError::InvalidLabelValue => "INVALID_LABEL_VALUE",
+            AppError::ConflictDetected => "CONFLICT",
             AppError::Storage(_) => "STORAGE",
             AppError::Internal(_) => "INTERNAL",
         }
@@ -60,5 +63,21 @@ impl From<argon2::password_hash::Error> for AppError {
 impl From<jsonwebtoken::errors::Error> for AppError {
     fn from(e: jsonwebtoken::errors::Error) -> Self {
         AppError::Internal(format!("JWT 错误: {e}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn conflict_detected_maps_to_conflict_code_and_user_message() {
+        assert_eq!(AppError::ConflictDetected.code(), "CONFLICT");
+        assert!(
+            AppError::ConflictDetected
+                .to_string()
+                .contains("已被他人修改"),
+            "user-facing message should hint at a concurrent edit"
+        );
     }
 }
