@@ -1,4 +1,4 @@
-use rocksdb::{DBCompactionStyle, Direction, IteratorMode, Options, DB};
+use rocksdb::{DBCompactionStyle, Direction, IteratorMode, Options, WriteBatch, DB};
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::error::AppError;
@@ -14,6 +14,9 @@ pub mod cf {
     pub const ENTRIES_BY_WORKSPACE: &str = "entries_by_workspace";
     pub const LABEL_SCHEMAS: &str = "label_schemas";
     pub const LABELINGS: &str = "labelings";
+    pub const AUDIT_LOGS: &str = "audit_logs";
+    pub const AUDIT_LOGS_BY_RESOURCE: &str = "audit_logs_by_resource";
+    pub const AUDIT_LOGS_BY_WORKSPACE: &str = "audit_logs_by_workspace";
 }
 
 const ALL_CFS: &[&str] = &[
@@ -27,7 +30,34 @@ const ALL_CFS: &[&str] = &[
     cf::ENTRIES_BY_WORKSPACE,
     cf::LABEL_SCHEMAS,
     cf::LABELINGS,
+    cf::AUDIT_LOGS,
+    cf::AUDIT_LOGS_BY_RESOURCE,
+    cf::AUDIT_LOGS_BY_WORKSPACE,
 ];
+
+/// 单个批量写操作：文档/索引/审计统一原子写入。
+pub enum BatchOp {
+    Put { cf: &'static str, key: Vec<u8>, value: Vec<u8> },
+    Delete { cf: &'static str, key: Vec<u8> },
+}
+
+impl BatchOp {
+    pub fn put<T: Serialize>(cf: &'static str, key: Vec<u8>, value: &T) -> Result<Self, AppError> {
+        Ok(BatchOp::Put {
+            cf,
+            key,
+            value: bincode::serialize(value)?,
+        })
+    }
+
+    pub fn put_raw(cf: &'static str, key: Vec<u8>, value: Vec<u8>) -> Self {
+        BatchOp::Put { cf, key, value }
+    }
+
+    pub fn delete(cf: &'static str, key: Vec<u8>) -> Self {
+        BatchOp::Delete { cf, key }
+    }
+}
 
 /// RocksDB 文档存储：每个 CF 存一类文档（bincode 序列化）或二级索引（裸字节）。
 pub struct DocStore {
@@ -100,11 +130,31 @@ impl DocStore {
     pub fn exists(&self, cf: &str, key: &[u8]) -> Result<bool, AppError> {
         Ok(self.get_raw(cf, key)?.is_some())
     }
+
+    /// 原子写入跨多个 CF 的批量操作（文档变更 + 二级索引 + 审计日志一次落盘）。
+    pub fn write_batch(&self, ops: Vec<BatchOp>) -> Result<(), AppError> {
+        let mut batch = WriteBatch::default();
+        for op in &ops {
+            match op {
+                BatchOp::Put { cf, key, value } => {
+                    let h = self.handle(cf)?;
+                    batch.put_cf(h, key.as_slice(), value.as_slice());
+                }
+                BatchOp::Delete { cf, key } => {
+                    let h = self.handle(cf)?;
+                    batch.delete_cf(h, key.as_slice());
+                }
+            }
+        }
+        self.db.write(batch).map_err(Into::into)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::keys;
+    use chrono::{TimeZone, Utc};
 
     fn temp_dir(name: &str) -> String {
         let mut p = std::env::temp_dir();
@@ -151,5 +201,83 @@ mod tests {
         assert_eq!(store.get_raw(cf::LABELINGS, b"c/Task").unwrap(), Some(b"x".to_vec()));
         drop(store);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn write_batch_atomic_put_and_delete() {
+        let dir = temp_dir("batch");
+        let store = DocStore::open(&dir).unwrap();
+        store.put_raw(cf::AUDIT_LOGS, b"gone", b"g0").unwrap();
+        let ops = vec![
+            BatchOp::put_raw(cf::AUDIT_LOGS, b"k1".to_vec(), b"v1".to_vec()),
+            BatchOp::put_raw(cf::AUDIT_LOGS, b"k2".to_vec(), b"v2".to_vec()),
+            BatchOp::delete(cf::AUDIT_LOGS, b"gone".to_vec()),
+        ];
+        store.write_batch(ops).unwrap();
+        assert_eq!(store.get_raw(cf::AUDIT_LOGS, b"k1").unwrap(), Some(b"v1".to_vec()));
+        assert_eq!(store.get_raw(cf::AUDIT_LOGS, b"k2").unwrap(), Some(b"v2".to_vec()));
+        assert_eq!(
+            store.get_raw(cf::AUDIT_LOGS, b"gone").unwrap(),
+            None,
+            "delete inside the batch must remove the pre-existing key"
+        );
+        drop(store);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn write_batch_atomic_across_column_families() {
+        let dir = temp_dir("batch_multi_cf");
+        let store = DocStore::open(&dir).unwrap();
+        let ops = vec![
+            BatchOp::put_raw(cf::ENTRIES, b"entry/TESTCODE0001".to_vec(), b"{entry}".to_vec()),
+            BatchOp::put_raw(cf::AUDIT_LOGS, b"audit/1".to_vec(), b"{audit}".to_vec()),
+            BatchOp::put_raw(cf::AUDIT_LOGS_BY_RESOURCE, b"idx/1".to_vec(), b"audit/1".to_vec()),
+        ];
+        store.write_batch(ops).unwrap();
+        assert_eq!(
+            store.get_raw(cf::ENTRIES, b"entry/TESTCODE0001").unwrap(),
+            Some(b"{entry}".to_vec())
+        );
+        assert_eq!(store.get_raw(cf::AUDIT_LOGS, b"audit/1").unwrap(), Some(b"{audit}".to_vec()));
+        assert_eq!(
+            store.get_raw(cf::AUDIT_LOGS_BY_RESOURCE, b"idx/1").unwrap(),
+            Some(b"audit/1".to_vec())
+        );
+        drop(store);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn audit_log_key_orders_newest_first() {
+        let t1 = Utc.timestamp_millis_opt(1_000).unwrap();
+        let t2 = Utc.timestamp_millis_opt(2_000).unwrap();
+        let k1 = keys::audit_log_key(t1, ulid::Ulid::new());
+        let k2 = keys::audit_log_key(t2, ulid::Ulid::new());
+        assert!(k2 < k1, "较新的时间应产生更小的键，前缀扫描时排在前");
+    }
+
+    #[test]
+    fn audit_by_workspace_key_orders_newest_first() {
+        let ws = ulid::Ulid::new();
+        let t_old = Utc.timestamp_millis_opt(1_000).unwrap();
+        let t_new = Utc.timestamp_millis_opt(2_000).unwrap();
+        let old = keys::audit_by_workspace_key(ws, t_old, ulid::Ulid::new());
+        let new = keys::audit_by_workspace_key(ws, t_new, ulid::Ulid::new());
+        assert!(new < old, "较新的时间应排在前面");
+        assert!(old.starts_with(&ws.to_bytes()), "键必须以 workspace_id 开头以便前缀扫描");
+        assert!(new.starts_with(&ws.to_bytes()));
+    }
+
+    #[test]
+    fn audit_by_resource_key_orders_newest_first() {
+        let t_old = Utc.timestamp_millis_opt(1_000).unwrap();
+        let t_new = Utc.timestamp_millis_opt(2_000).unwrap();
+        let prefix: &[u8] = b"entry\0TESTCODE0001\0";
+        let old = keys::audit_by_resource_key("entry", "TESTCODE0001", t_old, ulid::Ulid::new());
+        let new = keys::audit_by_resource_key("entry", "TESTCODE0001", t_new, ulid::Ulid::new());
+        assert!(new < old, "较新的时间应排在前面");
+        assert!(old.starts_with(prefix), "键必须以 resource_type\\0resource_id\\0 开头");
+        assert!(new.starts_with(prefix));
     }
 }

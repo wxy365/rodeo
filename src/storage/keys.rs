@@ -1,5 +1,6 @@
 //! 二级索引键编码：固定长度的 Ulid 字节用于前缀扫描，字符串键用于唯一索引。
 
+use chrono::{DateTime, Utc};
 use ulid::Ulid;
 
 pub fn ulid_bytes(id: Ulid) -> [u8; 16] {
@@ -43,5 +44,37 @@ pub fn labeling_key(code: &str, name: &str) -> Vec<u8> {
     let mut key = Vec::with_capacity(code.len() + name.len());
     key.extend_from_slice(code.as_bytes());
     key.extend_from_slice(name.as_bytes());
+    key
+}
+
+/// 审计主键：(时间倒序, id)。i64::MAX - millis 实现降序，前缀扫描最新在前。
+pub fn audit_log_key(at: DateTime<Utc>, id: Ulid) -> Vec<u8> {
+    let mut key = Vec::with_capacity(24);
+    let desc = i64::MAX - at.timestamp_millis();
+    key.extend_from_slice(&desc.to_be_bytes());
+    key.extend_from_slice(&id.to_bytes());
+    key
+}
+
+/// (workspace_id, 时间倒序, id)：按 workspace 前缀扫描，最新在前。
+pub fn audit_by_workspace_key(workspace_id: Ulid, at: DateTime<Utc>, id: Ulid) -> Vec<u8> {
+    let mut key = Vec::with_capacity(40);
+    key.extend_from_slice(&workspace_id.to_bytes());
+    let desc = i64::MAX - at.timestamp_millis();
+    key.extend_from_slice(&desc.to_be_bytes());
+    key.extend_from_slice(&id.to_bytes());
+    key
+}
+
+/// (resource_type \0 resource_id \0 时间倒序, id)：按资源前缀扫描。
+pub fn audit_by_resource_key(resource_type: &str, resource_id: &str, at: DateTime<Utc>, id: Ulid) -> Vec<u8> {
+    let mut key = Vec::new();
+    key.extend_from_slice(resource_type.as_bytes());
+    key.push(0);
+    key.extend_from_slice(resource_id.as_bytes());
+    key.push(0);
+    let desc = i64::MAX - at.timestamp_millis();
+    key.extend_from_slice(&desc.to_be_bytes());
+    key.extend_from_slice(&id.to_bytes());
     key
 }
