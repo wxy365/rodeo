@@ -9,7 +9,9 @@ use axum::http::header::{AUTHORIZATION, COOKIE};
 use axum::http::HeaderMap;
 use ulid::Ulid;
 
-use crate::domain::{Account, Entry, LabelSchema, Labeling, Workspace, WorkspaceRole};
+use crate::domain::{
+    Account, AuditLog, Entry, LabelSchema, LabelValueType, Labeling, Workspace, WorkspaceRole,
+};
 use crate::error::AppError;
 use crate::service::{AuthContext, Services};
 
@@ -134,6 +136,38 @@ pub struct GqlAuthResult {
     account: GqlAccount,
 }
 
+#[derive(SimpleObject, Clone)]
+pub struct GqlAuditLog {
+    id: ID,
+    action: String,
+    actor_id: ID,
+    resource_type: String,
+    resource_id: String,
+    workspace_id: Option<ID>,
+    before: Option<String>,
+    after: Option<String>,
+    at: String,
+}
+
+impl From<AuditLog> for GqlAuditLog {
+    fn from(l: AuditLog) -> Self {
+        Self {
+            id: l.id.to_string().into(),
+            action: serde_json::to_value(&l.action)
+                .ok()
+                .and_then(|v| v.as_str().map(|s| s.to_string()))
+                .unwrap_or_default(),
+            actor_id: l.actor_id.to_string().into(),
+            resource_type: l.resource_type,
+            resource_id: l.resource_id,
+            workspace_id: l.workspace_id.map(|w| w.to_string().into()),
+            before: l.before,
+            after: l.after,
+            at: l.at.to_rfc3339(),
+        }
+    }
+}
+
 // ---------- Context ----------
 
 #[derive(Clone)]
@@ -222,11 +256,45 @@ impl Query {
         gql.require_member(ws_id)?;
         Ok(gql
             .services
-            .workspace
-            .label_schemas(ws_id)?
+            .label
+            .list_schemas(ws_id)?
             .into_iter()
             .map(Into::into)
             .collect())
+    }
+
+    async fn entry(&self, ctx: &Context<'_>, code: String) -> GqlResult<Option<GqlEntry>> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        gql.require_auth()?;
+        let Some(entry) = gql.services.entry.get(&code)? else {
+            return Ok(None);
+        };
+        gql.require_member(entry.workspace_id)?;
+        let labels = gql.services.entry.labelings(&code)?;
+        Ok(Some(GqlEntry::new(entry, labels)))
+    }
+
+    async fn audit_logs(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: ID,
+        limit: Option<usize>,
+    ) -> GqlResult<Vec<GqlAuditLog>> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let ws_id = parse_ulid(workspace_id.as_str())?;
+        gql.require_member(ws_id)?;
+        let list = gql.services.audit.list(ws_id, limit.unwrap_or(100))?;
+        Ok(list.into_iter().map(Into::into).collect())
+    }
+
+    async fn my_role(&self, ctx: &Context<'_>, workspace_id: ID) -> GqlResult<String> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let ws_id = parse_ulid(workspace_id.as_str())?;
+        let auth = gql.require_auth()?;
+        match gql.services.workspace.get_member(ws_id, auth.account_id)? {
+            Some(m) => Ok(m.role.as_str().to_string()),
+            None => Ok("none".to_string()),
+        }
     }
 }
 
@@ -313,6 +381,98 @@ impl Mutation {
             .entry
             .set_labeling(auth.account_id, &entry_code, &label_name, &value.0)?;
         Ok(labeling.into())
+    }
+
+    async fn update_entry(
+        &self,
+        ctx: &Context<'_>,
+        code: String,
+        expected_updated_at: String,
+        title: String,
+        detail: String,
+    ) -> GqlResult<GqlEntry> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let entry = gql.services.entry.get(&code)?.ok_or(AppError::NotFound)?;
+        gql.require_role(entry.workspace_id, WorkspaceRole::Worker)?;
+        // 乐观并发：expectedUpdatedAt 与最新 updated_at 不一致时，服务层返回
+        // ConflictDetected，其 GraphQL message 为「内容已被他人修改，请刷新后重试」。
+        let updated = gql
+            .services
+            .entry
+            .update(auth.account_id, &code, &expected_updated_at, &title, &detail)?;
+        let labels = gql.services.entry.labelings(&code)?;
+        Ok(GqlEntry::new(updated, labels))
+    }
+
+    async fn delete_entry(&self, ctx: &Context<'_>, code: String) -> GqlResult<bool> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let entry = gql.services.entry.get(&code)?.ok_or(AppError::NotFound)?;
+        gql.require_role(entry.workspace_id, WorkspaceRole::Worker)?;
+        gql.services.entry.soft_delete(auth.account_id, &code)?;
+        Ok(true)
+    }
+
+    async fn create_label_schema(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: ID,
+        name: String,
+        title: String,
+        value_type: String,
+        enum_values: Vec<String>,
+    ) -> GqlResult<GqlLabelSchema> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let ws_id = parse_ulid(workspace_id.as_str())?;
+        gql.require_role(ws_id, WorkspaceRole::Maintainer)?;
+        let vt = LabelValueType::from_str(&value_type)
+            .ok_or_else(|| AppError::Internal("无效的标签值类型".to_string()))?;
+        let schema = gql
+            .services
+            .label
+            .create_schema(auth.account_id, ws_id, &name, &title, vt, enum_values)?;
+        Ok(schema.into())
+    }
+
+    async fn update_label_schema(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: ID,
+        name: String,
+        title: String,
+        enum_values: Vec<String>,
+    ) -> GqlResult<GqlLabelSchema> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let ws_id = parse_ulid(workspace_id.as_str())?;
+        gql.require_role(ws_id, WorkspaceRole::Maintainer)?;
+        let schema = gql
+            .services
+            .label
+            .update_schema(auth.account_id, ws_id, &name, &title, enum_values)?;
+        Ok(schema.into())
+    }
+
+    async fn remove_labeling(
+        &self,
+        ctx: &Context<'_>,
+        entry_code: String,
+        label_name: String,
+    ) -> GqlResult<bool> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let entry = gql
+            .services
+            .entry
+            .get(&entry_code)?
+            .ok_or(AppError::NotFound)?;
+        gql.require_role(entry.workspace_id, WorkspaceRole::Worker)?;
+        gql.services
+            .entry
+            .remove_labeling(auth.account_id, &entry_code, &label_name)?;
+        Ok(true)
     }
 }
 

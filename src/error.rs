@@ -19,6 +19,8 @@ pub enum AppError {
     InvalidLabelValue,
     #[error("内容已被他人修改，请刷新后重试")]
     ConflictDetected,
+    #[error("标签名称已存在")]
+    LabelNameExists,
     #[error("存储错误: {0}")]
     Storage(String),
     #[error("内部错误: {0}")]
@@ -36,6 +38,7 @@ impl AppError {
             AppError::WeakPassword => "WEAK_PASSWORD",
             AppError::InvalidLabelValue => "INVALID_LABEL_VALUE",
             AppError::ConflictDetected => "CONFLICT",
+            AppError::LabelNameExists => "LABEL_NAME_EXISTS",
             AppError::Storage(_) => "STORAGE",
             AppError::Internal(_) => "INTERNAL",
         }
@@ -78,6 +81,16 @@ mod tests {
                 .to_string()
                 .contains("已被他人修改"),
             "user-facing message should hint at a concurrent edit"
+        );
+    }
+
+    #[test]
+    fn label_name_exists_is_distinct_from_internal_and_keeps_clean_message() {
+        assert_eq!(AppError::LabelNameExists.code(), "LABEL_NAME_EXISTS");
+        assert_eq!(
+            AppError::LabelNameExists.to_string(),
+            "标签名称已存在",
+            "client-fixable duplicate must not carry the misleading 内部错误: prefix"
         );
     }
 }

@@ -50,7 +50,7 @@ impl LabelService {
             return Err(AppError::Internal("标签名称不能为空".to_string()));
         }
         if self.get_schema(ws_id, name)?.is_some() {
-            return Err(AppError::Internal("标签名称已存在".to_string()));
+            return Err(AppError::LabelNameExists);
         }
         let schema = LabelSchema::new(
             ws_id,
@@ -143,10 +143,11 @@ mod tests {
         assert_eq!(s.name, "Priority");
         assert_eq!(s.workspace_id, ws_id);
 
-        // 重复名称报错
-        assert!(svc
+        // 重复名称报错：客户端可修复，需有专用变体而非笼统的 Internal。
+        let err = svc
             .create_schema(actor, ws_id, "Priority", "x", LabelValueType::String, vec![])
-            .is_err());
+            .unwrap_err();
+        assert!(matches!(err, AppError::LabelNameExists));
 
         // 列表包含
         let all = svc.list_schemas(ws_id).unwrap();

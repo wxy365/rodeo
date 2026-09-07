@@ -116,17 +116,6 @@ impl WorkspaceService {
             .get(cf::WORKSPACE_MEMBERS, &keys::member_key(ws_id, account_id))
     }
 
-    pub fn label_schemas(&self, ws_id: Ulid) -> Result<Vec<LabelSchema>, AppError> {
-        let prefix = ws_id.to_bytes();
-        let rows = self.store.scan_prefix(cf::LABEL_SCHEMAS, &prefix)?;
-        let mut out = Vec::new();
-        for (_, v) in rows {
-            out.push(bincode::deserialize(&v)?);
-        }
-        out.sort_by(|a: &LabelSchema, b: &LabelSchema| a.name.cmp(&b.name));
-        Ok(out)
-    }
-
     fn ensure_unique_slug(&self, requested: &str, name: &str) -> Result<String, AppError> {
         let base = slugify(if requested.trim().is_empty() {
             name
