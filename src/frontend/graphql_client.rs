@@ -116,6 +116,16 @@ pub struct LabelSchema {
     pub enum_values: Vec<String>,
 }
 
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditLog {
+    pub id: String,
+    pub action: String,
+    pub resource_type: String,
+    pub resource_id: String,
+    pub at: String,
+}
+
 // ---------- 类型化查询/变更 ----------
 
 pub async fn me() -> Result<Option<User>, String> {
@@ -212,4 +222,109 @@ pub async fn set_labeling(entry_code: &str, label_name: &str, value: &Value) -> 
     )
     .await?;
     Ok(data.get("setLabeling").cloned().unwrap_or(Value::Null))
+}
+
+pub async fn entry(code: &str) -> Result<Option<Entry>, String> {
+    let data = graphql(
+        "query($c: String!) { entry(code: $c) { code title detail updatedAt labels { labelName value } } }",
+        json!({ "c": code }),
+    )
+    .await?;
+    Ok(data
+        .get("entry")
+        .cloned()
+        .and_then(|v| serde_json::from_value(v).ok()))
+}
+
+pub async fn update_entry(
+    code: &str,
+    expected_updated_at: &str,
+    title: &str,
+    detail: &str,
+) -> Result<Entry, String> {
+    let data = graphql(
+        "mutation($c: String!, $e: String!, $t: String!, $d: String!) { updateEntry(code: $c, expectedUpdatedAt: $e, title: $t, detail: $d) { code title detail updatedAt labels { labelName value } } }",
+        json!({ "c": code, "e": expected_updated_at, "t": title, "d": detail }),
+    )
+    .await?;
+    serde_json::from_value(data.get("updateEntry").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+pub async fn delete_entry(code: &str) -> Result<bool, String> {
+    let data = graphql(
+        "mutation($c: String!) { deleteEntry(code: $c) }",
+        json!({ "c": code }),
+    )
+    .await?;
+    Ok(data
+        .get("deleteEntry")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false))
+}
+
+pub async fn remove_labeling(entry_code: &str, label_name: &str) -> Result<bool, String> {
+    let data = graphql(
+        "mutation($c: String!, $n: String!) { removeLabeling(entryCode: $c, labelName: $n) }",
+        json!({ "c": entry_code, "n": label_name }),
+    )
+    .await?;
+    Ok(data
+        .get("removeLabeling")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false))
+}
+
+pub async fn create_label_schema(
+    workspace_id: &str,
+    name: &str,
+    title: &str,
+    value_type: &str,
+    enum_values: &[String],
+) -> Result<LabelSchema, String> {
+    let data = graphql(
+        "mutation($id: ID!, $n: String!, $t: String!, $vt: String!, $ev: [String!]!) { createLabelSchema(workspaceId: $id, name: $n, title: $t, valueType: $vt, enumValues: $ev) { name title valueType enumValues } }",
+        json!({ "id": workspace_id, "n": name, "t": title, "vt": value_type, "ev": enum_values }),
+    )
+    .await?;
+    serde_json::from_value(data.get("createLabelSchema").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+pub async fn update_label_schema(
+    workspace_id: &str,
+    name: &str,
+    title: &str,
+    enum_values: &[String],
+) -> Result<LabelSchema, String> {
+    let data = graphql(
+        "mutation($id: ID!, $n: String!, $t: String!, $ev: [String!]!) { updateLabelSchema(workspaceId: $id, name: $n, title: $t, enumValues: $ev) { name title valueType enumValues } }",
+        json!({ "id": workspace_id, "n": name, "t": title, "ev": enum_values }),
+    )
+    .await?;
+    serde_json::from_value(data.get("updateLabelSchema").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+pub async fn audit_logs(workspace_id: &str) -> Result<Vec<AuditLog>, String> {
+    let data = graphql(
+        "query($id: ID!) { auditLogs(workspaceId: $id) { id action resourceType resourceId at } }",
+        json!({ "id": workspace_id }),
+    )
+    .await?;
+    serde_json::from_value(data.get("auditLogs").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+pub async fn my_role(workspace_id: &str) -> Result<String, String> {
+    let data = graphql(
+        "query($id: ID!) { myRole(workspaceId: $id) }",
+        json!({ "id": workspace_id }),
+    )
+    .await?;
+    Ok(data
+        .get("myRole")
+        .and_then(|v| v.as_str())
+        .unwrap_or("none")
+        .to_string())
 }
