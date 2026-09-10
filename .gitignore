@@ -3,3 +3,4 @@
 /public/pkg
 node_modules
 /config.toml
+.DS_Store

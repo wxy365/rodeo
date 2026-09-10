@@ -43,6 +43,7 @@ tower-http = { version = "0.6", features = ["fs"], optional = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 gloo-net = { version = "0.6", features = ["http"] }
 gloo-storage = "0.3"
+js-sys = "0.3"
 
 [features]
 default = ["ssr"]

@@ -1,5 +1,9 @@
+pub mod components;
 pub mod graphql_client;
+pub mod icons;
+pub mod label_editor;
 pub mod pages;
+pub mod tiny_editor;
 
 use leptos::prelude::*;
 

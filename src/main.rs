@@ -1,3 +1,5 @@
+#![recursion_limit = "1024"]
+
 #[cfg(feature = "ssr")]
 #[tokio::main(flavor = "current_thread")]
 async fn main() {

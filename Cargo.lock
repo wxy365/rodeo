@@ -2394,6 +2394,7 @@ dependencies = [
  "gloo-net",
  "gloo-storage",
  "http",
+ "js-sys",
  "jsonwebtoken",
  "leptos",
  "leptos_axum",

@@ -153,6 +153,23 @@ pub async fn login(email: &str, password: &str) -> Result<(String, User), String
     Ok((token, account))
 }
 
+pub async fn register(email: &str, name: &str, password: &str) -> Result<(String, User), String> {
+    let data = graphql(
+        "mutation($e: String!, $n: String!, $p: String!) { register(email: $e, name: $n, password: $p) { token account { id email name } } }",
+        json!({ "e": email, "n": name, "p": password }),
+    )
+    .await?;
+    let r = data.get("register").ok_or("注册响应缺失")?;
+    let token = r
+        .get("token")
+        .and_then(|v| v.as_str())
+        .ok_or("token 缺失")?
+        .to_string();
+    let account: User = serde_json::from_value(r.get("account").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())?;
+    Ok((token, account))
+}
+
 pub async fn workspaces() -> Result<Vec<WorkspaceItem>, String> {
     let data = graphql(
         "query { workspaces { workspace { id name slug description } role } }",

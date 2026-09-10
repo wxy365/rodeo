@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rodeo 原型 v1.0</title>
+<style>
+:root{
+  --ink:var(--kimi-color-text-primary,#1f2329);--ink2:var(--kimi-color-text-secondary,#646a73);
+  --ink3:var(--kimi-color-text-tertiary,#8f959e);--ink4:var(--kimi-color-text-quaternary,#bbbfc4);
+  --line:var(--kimi-color-border,#dee0e3);
+  --bg:var(--kimi-color-surface,#fff);--bg2:var(--kimi-color-surface-muted,#f5f6f7);--bg3:#eceded;
+  --pos:var(--kimi-color-positive,#1a7f37);--warn:var(--kimi-color-warning,#b35900);--dgr:var(--kimi-color-danger,#cf222e);
+  --blue:var(--kimi-chart-1,#0969da);
+  --r-s:6px;--r-m:10px;--r-l:12px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font:14px/1.5 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;color:var(--ink);background:var(--bg2)}
+button,input,select{font:inherit;color:inherit}
+svg.ic{width:16px;height:16px;fill:currentColor;flex:none}
+/* ===== 原型外壳 ===== */
+.tabbar{display:flex;gap:4px;padding:8px 12px;background:var(--bg);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:9;flex-wrap:wrap}
+.tabbar button{border:0;background:none;padding:6px 12px;border-radius:var(--r-s);cursor:pointer;color:var(--ink2);font-size:14px}
+.tabbar button.on{background:var(--ink);color:var(--bg)}
+.route{font:12px ui-monospace,monospace;color:var(--ink3);padding:10px 16px 0}
+.scr{display:none;padding:16px;max-width:1280px;margin:0 auto}
+.scr.on{display:block}
+/* ===== 通用组件 ===== */
+.btn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--bg);border-radius:var(--r-s);padding:6px 12px;cursor:pointer;font-size:14px}
+.btn.pri{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.btn.ghost{border-style:dashed;color:var(--ink2)}
+.ibtn{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:8px;border:0;background:none;color:var(--ink2);cursor:pointer}
+.ibtn:hover{background:var(--bg2)}
+.inp{border:1px solid var(--line);border-radius:var(--r-m);padding:7px 12px;font-size:14px;background:var(--bg)}
+.chip{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:var(--r-s);font-size:12px;white-space:nowrap}
+.chip.sel{background:var(--ink);color:var(--bg)}
+.chip.dim{background:var(--bg2);color:var(--ink2)}
+.c-open{background:color-mix(in srgb,var(--ink) 8%,transparent);color:var(--ink2)}
+.c-doing{background:color-mix(in srgb,var(--warn) 14%,transparent);color:var(--warn)}
+.c-done{background:color-mix(in srgb,var(--pos) 12%,transparent);color:var(--pos)}
+.c-wont{background:var(--bg2);color:var(--ink3)}
+.c-p0,.c-p1{background:color-mix(in srgb,var(--dgr) 12%,transparent);color:var(--dgr)}
+.c-p2{background:color-mix(in srgb,var(--warn) 14%,transparent);color:var(--warn)}
+.c-p3{background:var(--bg2);color:var(--ink2)}
+.av{width:24px;height:24px;border-radius:50%;background:var(--bg3);color:var(--ink2);display:inline-flex;align-items:center;justify-content:center;font-size:11px;flex:none}
+.av.lg{width:32px;height:32px;font-size:13px}
+.panel{background:var(--bg);border:1px solid var(--line);border-radius:var(--r-l)}
+.tbl{width:100%;border-collapse:collapse}
+.tbl th{font-size:12px;color:var(--ink3);font-weight:400;text-align:left;padding:8px 12px;border-bottom:1px solid var(--line);background:var(--bg2)}
+.tbl td{padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:middle}
+.tbl tr:last-child td{border-bottom:0}
+.tbl tbody tr{cursor:pointer}
+.tbl tbody tr:hover{background:var(--bg2)}
+.tbl tbody tr.sel{background:color-mix(in srgb,var(--blue) 6%,transparent)}
+.code{font:12px ui-monospace,monospace;color:var(--ink3)}
+.mut{color:var(--ink3);font-size:12px}
+.hide{display:none!important}
+/* ===== 1 登录 ===== */
+.login-wrap{display:flex;justify-content:center;padding:48px 0}
+.login-card{width:360px;padding:32px;display:flex;flex-direction:column;gap:16px}
+.logo{font-size:24px;font-weight:500;display:flex;align-items:center;gap:8px}
+.divider{display:flex;align-items:center;gap:12px;color:var(--ink3);font-size:12px}
+.divider::before,.divider::after{content:"";flex:1;height:1px;background:var(--line)}
+/* ===== 2 工作空间列表 ===== */
+.appbar{display:flex;align-items:center;gap:16px;padding:10px 16px;background:var(--bg);border:1px solid var(--line);border-radius:var(--r-l);margin-bottom:16px}
+.appbar .inp{width:280px;display:flex;align-items:center;gap:6px;padding:0 12px}
+.appbar .inp input{border:0;outline:0;flex:1;padding:7px 0;background:none}
+.ws-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:16px}
+.ws-card{padding:16px;display:flex;flex-direction:column;gap:8px}
+.ws-card h3{font-size:16px;font-weight:500;display:flex;align-items:center;gap:8px}
+.ws-card .ghostcard{border-style:dashed;align-items:center;justify-content:center;min-height:132px;color:var(--ink3);cursor:pointer}
+/* ===== 3 视图主页 ===== */
+.ws-layout{display:grid;grid-template-columns:220px 1fr;gap:16px;align-items:start}
+.wside{padding:12px 8px;position:sticky;top:52px}
+.wside .grp{font-size:12px;color:var(--ink3);padding:8px 12px 4px}
+.wside .it{display:flex;align-items:center;gap:8px;padding:6px 12px;border-radius:var(--r-s);color:var(--ink2);cursor:pointer;font-size:14px}
+.wside .it.on{background:var(--bg2);color:var(--ink)}
+.wside .it .n{margin-left:auto;font-size:12px;color:var(--ink3)}
+.wmain{display:grid;grid-template-columns:1fr;gap:12px}
+.vhead{display:flex;align-items:center;gap:12px;padding:12px 16px;flex-wrap:wrap}
+.vhead h2{font-size:17px;font-weight:500;margin-right:auto}
+.online{display:flex;align-items:center}
+.online .av{margin-left:-6px;border:2px solid var(--bg)}
+.online .av:first-child{margin-left:0}
+.filters{display:flex;align-items:center;gap:8px;padding:10px 16px;border-top:1px solid var(--line);flex-wrap:wrap}
+.view-body{display:grid;grid-template-columns:1fr 400px;gap:0;align-items:start}
+.view-body.full{grid-template-columns:1fr}
+/* 右侧详情面板 */
+.detail{border-left:1px solid var(--line);border-radius:0 var(--r-l) var(--r-l) 0;padding:16px;display:flex;flex-direction:column;gap:12px;min-height:480px}
+.dhead{display:flex;align-items:flex-start;gap:8px}
+.dhead h3{font-size:16px;font-weight:500;flex:1}
+.hint{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--warn);background:color-mix(in srgb,var(--warn) 10%,transparent);padding:8px 12px;border-radius:var(--r-m)}
+.editing{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--ink2)}
+.editing .dot{width:7px;height:7px;border-radius:50%;background:var(--pos);display:inline-block}
+.dtabs{display:flex;gap:4px;border-bottom:1px solid var(--line)}
+.dtabs button{border:0;background:none;padding:6px 10px;cursor:pointer;color:var(--ink3);border-bottom:2px solid transparent;font-size:14px}
+.dtabs button.on{color:var(--ink);border-bottom-color:var(--ink)}
+.editor{border:1px solid var(--line);border-radius:var(--r-m);overflow:hidden}
+.etoolbar{display:flex;gap:2px;padding:6px 8px;border-bottom:1px solid var(--line);background:var(--bg2)}
+.ebody{padding:12px;min-height:120px;color:var(--ink2);font-size:14px}
+.ebody p{margin-bottom:8px}
+.lblrow{display:grid;grid-template-columns:88px 1fr;gap:12px;align-items:center;padding:6px 0}
+.lblrow .k{font-size:13px;color:var(--ink2);display:flex;align-items:center;gap:4px}
+.lblrow select,.lblrow .inp{width:100%;padding:5px 8px;font-size:13px;border-radius:8px}
+.pager{display:flex;justify-content:flex-end;gap:4px;padding:10px 16px;border-top:1px solid var(--line);align-items:center}
+.pager button{min-width:28px;height:28px;border:0;background:none;border-radius:8px;cursor:pointer;color:var(--ink2)}
+.pager button.on{background:var(--ink);color:var(--bg)}
+/* ===== 4 Entry 全屏 ===== */
+.entry-top{display:flex;align-items:center;gap:12px;padding:10px 16px;margin-bottom:12px;flex-wrap:wrap}
+.entry-top .inp{font-size:16px;font-weight:500;flex:1;min-width:240px}
+.entry-layout{display:grid;grid-template-columns:1fr 300px;gap:16px;align-items:start}
+.entry-side{padding:16px;display:flex;flex-direction:column;gap:16px;position:sticky;top:52px}
+.grp-h{font-size:13px;font-weight:500;display:flex;align-items:center;gap:6px;margin-bottom:8px}
+.att{display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);font-size:13px}
+.att .ic{color:var(--ink3)}
+.att .sz{margin-left:auto;color:var(--ink3);font-size:12px}
+.att .ibtn{opacity:0}
+.att:hover .ibtn{opacity:1}
+.tl{font-size:13px;display:flex;gap:8px;padding:6px 0}
+.tl .t{color:var(--ink3);white-space:nowrap;font-size:12px;padding-top:2px}
+/* ===== 5 设置 ===== */
+.set-layout{display:grid;grid-template-columns:200px 1fr;gap:16px;align-items:start}
+.set-nav{padding:8px}
+.set-nav .it{display:flex;gap:8px;align-items:center;padding:8px 12px;border-radius:var(--r-s);color:var(--ink2);cursor:pointer}
+.set-nav .it.on{background:var(--bg2);color:var(--ink)}
+.set-nav .it.dgr{color:var(--dgr)}
+.set-body{padding:20px;display:flex;flex-direction:column;gap:16px}
+.set-body h2{font-size:17px;font-weight:500}
+.invite{display:flex;gap:8px}
+.invite .inp{flex:1}
+.rowact{opacity:0}
+tr:hover .rowact{opacity:1}
+/* ===== 6 系统管理 ===== */
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:16px}
+.stat{padding:16px}
+.stat .v{font-size:28px;font-weight:500}
+.stat .l{color:var(--ink2);font-size:13px}
+.cfg{display:flex;align-items:center;justify-content:space-between;padding:12px 0;border-bottom:1px solid var(--line)}
+.cfg:last-child{border-bottom:0}
+.cfg .inp{width:110px;text-align:right}
+.switch{width:38px;height:22px;border-radius:11px;background:var(--ink);border:0;position:relative;cursor:pointer}
+.switch::after{content:"";position:absolute;width:16px;height:16px;border-radius:50%;background:var(--bg);top:3px;right:3px}
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute"><defs>
+<symbol id="i-search" viewBox="0 0 24 24"><path d="M11.5 3C16.1944 3 20 6.80558 20 11.5C20 13.523 19.2933 15.381 18.1132 16.8404L21.1364 19.8636C21.4879 20.2151 21.4879 20.7849 21.1364 21.1364C20.7849 21.4879 20.2151 21.4879 19.8636 21.1364L16.8404 18.1132C15.381 19.2933 13.523 20 11.5 20C6.80558 20 3 16.1944 3 11.5C3 6.80558 6.80558 3 11.5 3ZM11.5 18.2C15.2003 18.2 18.2 15.2003 18.2 11.5C18.2 7.79969 15.2003 4.8 11.5 4.8C7.79969 4.8 4.8 7.79969 4.8 11.5C4.8 15.2003 7.79969 18.2 11.5 18.2Z"/></symbol>
+<symbol id="i-add" viewBox="0 0 24 24"><path d="M12.0684 2.03418C12.5654 2.03421 12.9687 2.43755 12.9688 2.93457V11.0996H21.0654C21.5625 11.0996 21.9658 11.503 21.9658 12C21.9658 12.497 21.5625 12.9004 21.0654 12.9004H12.9688V21.0654C12.9687 21.5624 12.5654 21.9658 12.0684 21.9658C11.5713 21.9658 11.168 21.5625 11.168 21.0654V12.9004H2.93457C2.43751 12.9004 2.03418 12.4971 2.03418 12C2.03418 11.5029 2.43751 11.0996 2.93457 11.0996H11.168V2.93457C11.168 2.43753 11.5713 2.03418 12.0684 2.03418Z"/></symbol>
+<symbol id="i-setting" viewBox="0 0 24 24"><path d="M16.0404 12C16.0404 9.76874 14.2313 7.9596 12.0001 7.9596C9.76883 7.9596 7.95972 9.76874 7.95972 12C7.95972 14.2313 9.76883 16.0404 12.0001 16.0404C14.2313 16.0404 16.0404 14.2313 16.0404 12ZM14.2222 12C14.2222 13.2271 13.2271 14.2222 12 14.2222C10.7729 14.2222 9.77783 13.2271 9.77783 12C9.77783 10.7729 10.7729 9.77778 12 9.77778C13.2271 9.77778 14.2222 10.7729 14.2222 12Z"/><path d="M9.91145 21.8009C9.29001 21.6797 8.76914 21.2612 8.50632 20.6922L8.07372 19.7556C7.88838 19.3544 7.43553 19.1048 6.95371 19.1549L5.89572 19.2647C5.2733 19.3293 4.64823 19.114 4.22298 18.6611C3.74343 18.1504 3.32454 17.6037 2.97033 17.0181C2.61571 16.4318 2.32839 15.8106 2.10407 15.1566C1.89769 14.5549 2.02148 13.8954 2.4089 13.3902L3.0376 12.5704C3.30043 12.2277 3.30042 11.7722 3.03758 11.4295L2.40413 10.6035C2.01474 10.0958 1.891 9.43198 2.10208 8.82826C2.55037 7.54612 3.27017 6.35997 4.22 5.34259C4.64518 4.8872 5.27275 4.67067 5.89701 4.73544L6.95383 4.84514C7.43561 4.89515 7.88844 4.6456 8.07377 4.24441L8.50266 3.31593C8.76494 2.74818 9.28448 2.33019 9.90423 2.20761C11.2916 1.9332 12.7148 1.93127 14.0885 2.19913C14.7099 2.32029 15.2308 2.73881 15.4937 3.3078L15.9263 4.24441C16.1116 4.6456 16.5644 4.89514 17.0462 4.84514L18.1043 4.73532C18.7267 4.67072 19.3518 4.88603 19.777 5.33886C20.2566 5.84953 20.6755 6.3963 21.0297 6.98193C21.3843 7.56823 21.6716 8.18942 21.8959 8.84339C22.1023 9.44509 21.9785 10.1046 21.5911 10.6098L20.9624 11.4295C20.6996 11.7722 20.6996 12.2278 20.9624 12.5705L21.5959 13.3964C21.9853 13.9042 22.109 14.568 21.8979 15.1717C21.4497 16.4538 20.7299 17.6399 19.7801 18.6573C19.3549 19.1128 18.7273 19.3294 18.103 19.2646L17.0462 19.1549C16.5645 19.1049 16.1116 19.3544 15.9263 19.7556L15.4974 20.6841C15.2351 21.2518 14.7156 21.6698 14.0958 21.7924C12.7083 22.0668 11.2852 22.0687 9.91145 21.8009ZM13.7432 20.0088C13.7844 20.0006 13.8259 19.9673 13.847 19.9216L14.2758 18.9931C14.7915 17.8768 15.9886 17.2171 17.2341 17.3464L18.2909 17.4561C18.3649 17.4638 18.4272 17.4423 18.4512 17.4166C19.2296 16.5828 19.8171 15.6146 20.1817 14.5716C20.1845 14.5636 20.1796 14.5373 20.1532 14.5029L19.5198 13.677C18.7564 12.6815 18.7564 11.3185 19.5198 10.323L20.1485 9.5033C20.1746 9.46927 20.1795 9.4429 20.1762 9.43327C19.9932 8.89965 19.7603 8.39623 19.4741 7.92293C19.1873 7.4489 18.846 7.00333 18.4517 6.58351C18.4272 6.55739 18.3656 6.53616 18.2921 6.54378L17.234 6.65361C15.9886 6.78287 14.7915 6.12317 14.2758 5.00689L13.8432 4.07027C13.822 4.02448 13.7811 3.9916 13.7406 3.98371C12.5983 3.76097 11.4132 3.76258 10.2571 3.99124C10.2158 3.99941 10.1744 4.03271 10.1533 4.07842L9.72441 5.00689C9.20875 6.12317 8.01164 6.7829 6.76619 6.6536L5.70942 6.54391C5.63535 6.53623 5.573 6.55774 5.54905 6.5834C4.77067 7.41713 4.18312 8.38534 3.81845 9.42835C3.81564 9.43637 3.82054 9.46265 3.84693 9.49706L4.48038 10.323C5.24381 11.3185 5.24383 12.6815 4.48041 13.6769L3.85171 14.4967C3.82561 14.5307 3.82066 14.5571 3.82396 14.5667C4.00701 15.1004 4.23986 15.6038 4.52613 16.0771C4.81284 16.5511 5.15421 16.9967 5.54845 17.4165C5.57298 17.4426 5.63461 17.4638 5.70811 17.4562L6.76608 17.3464C8.01157 17.2171 9.20871 17.8768 9.72438 18.9932L10.157 19.9297C10.1781 19.9755 10.2191 20.0084 10.2595 20.0163C11.4018 20.239 12.587 20.2374 13.7432 20.0088Z"/></symbol>
+<symbol id="i-full" viewBox="0 0 24 24"><path d="M6 4.9a1.1 1.1 0 0 0-1.1 1.1v2a.9.9 0 1 1-1.8 0V6a2.9 2.9 0 0 1 2.9-2.9h2a.9.9 0 1 1 0 1.8H6ZM15.1 4a.9.9 0 0 1 .9-.9h2A2.9 2.9 0 0 1 20.9 6v2a.9.9 0 1 1-1.8 0V6a1.1 1.1 0 0 0-1.1-1.1H16a.9.9 0 0 1-.9-.9ZM20 15.1a.9.9 0 0 1 .9.9v2a2.9 2.9 0 0 1-2.9 2.9h-2a.9.9 0 1 1 0-1.8H18a1.1 1.1 0 0 0 1.1-1.1V16a.9.9 0 0 1 .9-.9ZM4 15.1a.9.9 0 0 1 .9.9v2A1.1 1.1 0 0 0 6 19.1h2a.9.9 0 1 1 0 1.8H6A2.9 2.9 0 0 1 3.1 18v-2a.9.9 0 0 1 .9-.9Z"/></symbol>
+<symbol id="i-close" viewBox="0 0 24 24"><path d="M17.9542 4.77253C18.3056 4.42106 18.8761 4.42106 19.2276 4.77253C19.579 5.12401 19.579 5.69452 19.2276 6.04597L13.2735 12.0001L19.2276 17.9542C19.5791 18.3056 19.5791 18.8761 19.2276 19.2276C18.8761 19.5791 18.3056 19.5791 17.9542 19.2276L12.0001 13.2735L6.04595 19.2276C5.69451 19.5791 5.12399 19.579 4.77252 19.2276C4.42104 18.8761 4.42104 18.3056 4.77252 17.9542L10.7266 12.0001L4.77252 6.04597C4.42104 5.6945 4.42104 5.124 4.77252 4.77253C5.12399 4.42107 5.69448 4.42106 6.04595 4.77253L12.0001 10.7266L17.9542 4.77253Z"/></symbol>
+<symbol id="i-upload" viewBox="0 0 24 24"><path d="M11.3636 3.36358C11.7151 3.01211 12.2849 3.01211 12.6364 3.36358L17.0808 7.80802C17.4323 8.1595 17.4323 8.72934 17.0808 9.08082C16.7293 9.43229 16.1595 9.43229 15.808 9.08082L12.9 6.17277V14.6666C12.9 15.1637 12.497 15.5666 12 15.5666C11.5029 15.5666 11.1 15.1637 11.1 14.6666V6.17277L8.19193 9.08082C7.84046 9.43229 7.27061 9.43229 6.91914 9.08082C6.56766 8.72934 6.56766 8.1595 6.91914 7.80802L11.3636 3.36358ZM3.99998 13.7666C4.49703 13.7666 4.89998 14.1696 4.89998 14.6666V18.2222C4.89998 18.455 4.99246 18.6783 5.15707 18.8429C5.32169 19.0075 5.54495 19.1 5.77775 19.1H18.2222C18.455 19.1 18.6783 19.0075 18.8429 18.8429C19.0075 18.6783 19.1 18.455 19.1 18.2222V14.6666C19.1 14.1696 19.5029 13.7666 20 13.7666C20.497 13.7666 20.9 14.1696 20.9 14.6666V18.2222C20.9 18.9324 20.6179 19.6135 20.1157 20.1157C19.6135 20.6179 18.9324 20.9 18.2222 20.9H5.77775C5.06756 20.9 4.38646 20.6179 3.88428 20.1157C3.3821 19.6135 3.09998 18.9324 3.09998 18.2222V14.6666C3.09998 14.1696 3.50292 13.7666 3.99998 13.7666Z"/></symbol>
+<symbol id="i-profile" viewBox="0 0 24 24"><path d="M11.9997 12.8779C16.0197 12.878 19.4393 15.3848 20.7048 18.8828C21.0812 19.9234 20.2782 20.8962 19.2038 21.0137L18.9861 21.0264H5.0134L4.79562 21.0137C3.7213 20.8961 2.91743 19.9233 3.29367 18.8828C4.55905 15.3847 7.9797 12.8781 11.9997 12.8779ZM11.9997 14.6777C8.84467 14.6779 6.17462 16.5794 5.09152 19.2256H18.9079C17.8248 16.5793 15.1549 14.6778 11.9997 14.6777ZM12.2312 3.00586C14.6088 3.1264 16.4997 5.09239 16.4997 7.5L16.4939 7.73145C16.3734 10.1091 14.4073 11.9999 11.9997 12C9.59225 11.9998 7.62604 10.109 7.50558 7.73145L7.49973 7.5C7.49973 5.01485 9.51462 3.00021 11.9997 3L12.2312 3.00586ZM11.9997 4.7998C10.5087 4.80001 9.29953 6.00896 9.29953 7.5C9.29953 8.99104 10.5087 10.2 11.9997 10.2002C13.4908 10.2001 14.6999 8.99112 14.6999 7.5C14.6999 6.00888 13.4908 4.79989 11.9997 4.7998Z"/></symbol>
+<symbol id="i-tag" viewBox="0 0 24 24"><path d="M17.711 2.52188C17.2215 2.43557 16.7547 2.76242 16.6684 3.25192L15.9899 7.1L9.97778 7.1L10.6011 3.56521C10.6874 3.07571 10.3605 2.60892 9.87102 2.5226C9.38151 2.43629 8.91472 2.76314 8.82841 3.25265L8.15002 7.1H4.00001C3.50295 7.1 3.10001 7.50294 3.10001 8C3.10001 8.49705 3.50295 8.9 4.00001 8.9H7.83263L6.7394 15.1H3.00001C2.50295 15.1 2.10001 15.5029 2.10001 16C2.10001 16.4971 2.50295 16.9 3.00001 16.9H6.42201L5.78982 20.4853C5.70351 20.9748 6.03036 21.4416 6.51987 21.5279C7.00937 21.6142 7.47617 21.2874 7.56248 20.7979L8.24978 16.9H14.2619L13.6297 20.4853C13.5434 20.9748 13.8702 21.4416 14.3597 21.5279C14.8492 21.6142 15.316 21.2874 15.4023 20.7979L16.0896 16.9H20C20.4971 16.9 20.9 16.4971 20.9 16C20.9 15.5029 20.4971 15.1 20 15.1H16.407L17.5002 8.9H21C21.4971 8.9 21.9 8.49705 21.9 8C21.9 7.50294 21.4971 7.1 21 7.1H17.8176L18.441 3.56449C18.5273 3.07499 18.2005 2.60819 17.711 2.52188ZM15.6725 8.9L14.5792 15.1L8.56717 15.1L9.6604 8.9L15.6725 8.9Z"/></symbol>
+<symbol id="i-back" viewBox="0 0 24 24"><path d="M10.8 5.7a1 1 0 0 1 0 1.4L7.9 10h9.6a1 1 0 1 1 0 2H7.9l2.9 2.9a1 1 0 1 1-1.4 1.4l-4.6-4.6a1 1 0 0 1 0-1.4l4.6-4.6a1 1 0 0 1 1.4 0Z"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="M19.3027 5.9053C19.6542 5.55397 20.2247 5.55388 20.5761 5.9053C20.9273 6.25675 20.9273 6.82734 20.5761 7.17874L9.65911 18.0948C9.30773 18.4461 8.73814 18.446 8.38665 18.0948L3.42376 13.1328C3.0726 12.7814 3.07263 12.2118 3.42376 11.8604C3.77524 11.509 4.34575 11.5089 4.6972 11.8604L9.02239 16.1856L19.3027 5.9053Z"/></symbol>
+<symbol id="i-history" viewBox="0 0 24 24"><path d="M11.8999 6.79965C12.397 6.79965 12.7997 7.20235 12.7997 7.69941V11.7266L14.7359 13.6629C15.0873 14.0143 15.0879 14.584 14.7366 14.9355C14.3852 15.287 13.8148 15.287 13.4633 14.9355L11.2632 12.7355C11.0947 12.5668 11.0002 12.338 11.0001 12.0995V7.69941C11.0001 7.20238 11.4029 6.7997 11.8999 6.79965Z"/><path fill-rule="evenodd" d="M12 1.89893C17.4677 1.89893 21.9001 6.33147 21.9002 11.7991C21.9002 17.2669 17.4678 21.6993 12 21.6993C6.53228 21.6993 2.09985 17.2669 2.09985 11.7991C2.09998 6.33147 6.53236 1.89893 12 1.89893ZM20.1 11.7998C20.1 7.32616 16.4737 3.69984 12 3.69984C7.5264 3.69984 3.90008 7.32616 3.90008 11.7998C3.90032 16.2732 7.52655 19.8998 12 19.8998C16.4735 19.8998 20.0998 16.2732 20.1 11.7998Z"/></symbol>
+<symbol id="i-download" viewBox="0 0 24 24"><path d="M12 2.90002C12.4971 2.90002 12.9 3.30297 12.9 3.80002V12.2939L15.8081 9.38585C16.1595 9.03438 16.7294 9.03438 17.0808 9.38585C17.4323 9.73732 17.4323 10.3072 17.0808 10.6586L12.6364 15.1031C12.4676 15.2719 12.2387 15.3667 12 15.3667C11.7613 15.3667 11.5324 15.2719 11.3636 15.1031L6.91917 10.6586C6.5677 10.3072 6.5677 9.73732 6.91917 9.38585C7.27064 9.03438 7.84049 9.03438 8.19196 9.38585L11.1 12.2939V3.80002C11.1 3.30297 11.503 2.90002 12 2.90002ZM4.00001 13.5874C4.49706 13.5874 4.90001 13.9903 4.90001 14.4874V18.043C4.90001 18.2758 4.99249 18.499 5.1571 18.6636C5.32172 18.8282 5.54498 18.9207 5.77778 18.9207H18.2222C18.455 18.9207 18.6783 18.8283 18.8429 18.6636C19.0075 18.499 19.1 18.2758 19.1 18.043V14.4874C19.1 13.9903 19.5029 13.5874 20 13.5874C20.4971 13.5874 20.9 13.9903 20.9 14.4874V18.043C20.9 18.7531 20.6179 19.4342 20.1157 19.9364C19.6135 20.4386 18.9324 20.7207 18.2222 20.7207H5.77778C5.06759 20.7207 4.38649 20.4386 3.88431 19.9364C3.38213 19.4342 3.10001 18.7531 3.10001 18.043V14.4874C3.10001 13.9903 3.50295 13.5874 4.00001 13.5874Z"/></symbol>
+<symbol id="i-share" viewBox="0 0 24 24"><path d="M9.05176 5.80851C9.05182 3.40834 11.8738 2.12034 13.6865 3.69328L20.8223 9.88761C22.096 10.9932 22.1109 12.9657 20.8535 14.0898L13.7178 20.4687C11.9138 22.0813 9.05176 20.8005 9.05176 18.3808V16.2909C8.2781 16.3437 7.66169 16.4514 7.10254 16.6503C6.38481 16.9056 5.65113 17.3526 4.79102 18.2382C4.28046 18.7639 3.50231 18.9277 2.82324 18.6523C2.14426 18.3767 1.7002 17.7171 1.7002 16.9843C1.70023 14.6724 2.26648 12.5077 3.66309 10.8456C4.95815 9.30449 6.8038 8.39034 9.05176 8.0839V5.80851ZM12.5068 5.05265C11.8594 4.49104 10.8516 4.95139 10.8516 5.80851V8.76652L10.8457 8.86808C10.7944 9.37188 10.3675 9.76305 9.85156 9.80558L9.44922 9.8466C5.37063 10.3374 3.50006 13.0427 3.5 16.9843C5.53883 14.885 7.34201 14.5134 9.85059 14.456C10.4027 14.4433 10.8515 14.894 10.8516 15.4462V18.3808C10.8516 19.1908 11.7494 19.6434 12.3926 19.2226L12.5176 19.1269L19.6533 12.747C20.0743 12.3706 20.0964 11.7283 19.7227 11.3241L19.6426 11.247L12.5068 5.05265Z"/></symbol>
+<symbol id="i-comment" viewBox="0 0 24 24"><path d="M11.9004 2.19995C17.3678 2.20016 21.7998 6.63285 21.7998 12.1003C21.7996 17.5677 17.3677 21.9995 11.9004 21.9998H3.80078C2.72946 21.9996 2.00334 20.9089 2.41699 19.9207L3.49805 17.3386C2.54871 15.8189 2.00007 14.0226 2 12.1003C2 6.63272 6.43277 2.19995 11.9004 2.19995ZM11.9004 3.99976C7.42688 3.99976 3.7998 7.62684 3.7998 12.1003C3.79989 13.8228 4.33669 15.4175 5.25195 16.7292L5.53516 17.1345L4.25195 20.2H11.8994C16.3727 20.1999 19.9998 16.5736 20 12.1003C20 7.62697 16.3737 3.99997 11.9004 3.99976ZM8.9541 10.8005C9.75473 10.8006 10.4041 11.4491 10.4043 12.2498C10.4043 13.0505 9.75482 13.6998 8.9541 13.7C8.15329 13.7 7.50391 13.0506 7.50391 12.2498C7.50406 11.4491 8.15339 10.8005 8.9541 10.8005ZM15.1533 10.8005C15.9539 10.8006 16.6034 11.4491 16.6035 12.2498C16.6035 13.0505 15.954 13.6998 15.1533 13.7C14.3525 13.7 13.7031 13.0506 13.7031 12.2498C13.7033 11.4491 14.3526 10.8005 15.1533 10.8005Z"/></symbol>
+<symbol id="i-folder" viewBox="0 0 24 24"><path d="M9.2373 3.7002C10.4169 3.7002 11.5297 4.24779 12.249 5.18262L12.4424 5.43359H18C20.0987 5.43359 21.7998 7.13472 21.7998 9.2334V16.5C21.7998 18.5987 20.0987 20.2998 18 20.2998H6C3.90132 20.2998 2.2002 18.5987 2.2002 16.5V7.5C2.2002 5.40132 3.90132 3.7002 6 3.7002H9.2373ZM6 5.5C4.89543 5.5 4 6.39543 4 7.5V16.5C4 17.6046 4.89543 18.5 6 18.5H18C19.0357 18.5 19.887 17.7128 19.9893 16.7041L20 16.5V9.2334C20 8.19775 19.2128 7.34641 18.2041 7.24414L18 7.2334H12.0479L11.9326 7.22656C11.666 7.19561 11.4205 7.05812 11.2549 6.84277L10.8223 6.28027C10.4437 5.78834 9.85808 5.5 9.2373 5.5H6ZM16 9.59961C16.4971 9.59961 16.9004 10.0029 16.9004 10.5C16.9004 10.9971 16.4971 11.4004 16 11.4004H8C7.50294 11.4004 7.09961 10.9971 7.09961 10.5C7.09961 10.0029 7.50294 9.59961 8 9.59961H16Z"/></symbol>
+<symbol id="i-more" viewBox="0 0 24 24"><path d="M6 12C6 12.8283 5.32834 13.5 4.5 13.5C3.67166 13.5 3 12.8283 3 12C3 11.1717 3.67166 10.5 4.5 10.5C5.32834 10.5 6 11.1717 6 12Z"/><path d="M13.5 12C13.5 12.8283 12.8283 13.5 12 13.5C11.1717 13.5 10.5 12.8283 10.5 12C10.5 11.1717 11.1717 10.5 12 10.5C12.8283 10.5 13.5 11.1717 13.5 12Z"/><path d="M19.5002 13.5C20.3287 13.5 21 12.8287 21 12.0002C21 11.1718 20.3287 10.5 19.5002 10.5C18.6718 10.5 18 11.1718 18 12.0002C18 12.8287 18.6718 13.5 19.5002 13.5Z"/></symbol>
+</defs></svg>
+
+<nav class="tabbar">
+  <strong style="padding:6px 12px 6px 4px">Rodeo 原型 v1.0</strong>
+  <button class="on" data-s="s1">登录</button>
+  <button data-s="s2">工作空间</button>
+  <button data-s="s3">视图主页</button>
+  <button data-s="s4">Entry 全屏</button>
+  <button data-s="s5">工作空间设置</button>
+  <button data-s="s6">系统管理</button>
+</nav>
+
+<!-- 1 登录 -->
+<section class="scr on" id="s1">
+<div class="route">/login · 未登录可访问</div>
+<div class="login-wrap"><div class="panel login-card">
+  <div class="logo"><b>Rodeo</b><span class="chip dim">任务 / 问题跟踪</span></div>
+  <input class="inp" placeholder="邮箱" value="chen@acme.dev">
+  <input class="inp" type="password" placeholder="密码（至少 8 位，含大小写和数字）">
+  <button class="btn pri" style="justify-content:center;padding:9px">登录</button>
+  <div style="display:flex;justify-content:space-between" class="mut"><span>开放注册已开启，可自助注册</span><u>忘记密码</u></div>
+  <div class="divider">或使用以下方式继续</div>
+  <button class="btn" style="justify-content:center"><b>GitHub</b>&nbsp;OAuth 登录</button>
+  <button class="btn" style="justify-content:center"><b>企业 OIDC</b>&nbsp;单点登录</button>
+  <div class="mut" style="text-align:center">私有部署 · 数据不出内网 · 会话经 HttpOnly Cookie</div>
+</div></div>
+</section>
+
+<!-- 2 工作空间 -->
+<section class="scr" id="s2">
+<div class="route">/workspaces · 需登录</div>
+<div class="appbar">
+  <b style="font-size:17px">Rodeo</b>
+  <label class="inp"><svg class="ic"><use href="#i-search"/></svg><input placeholder="全文检索：标题 / 详情 / 标签值，跨工作空间"></label>
+  <span style="margin-left:auto" class="online"><span class="av">陈</span></span>
+</div>
+<div style="display:flex;align-items:center;margin-bottom:16px">
+  <h2 style="font-size:20px;font-weight:500">我的工作空间</h2>
+  <button class="btn pri" style="margin-left:auto"><svg class="ic"><use href="#i-add"/></svg>新建工作空间</button>
+</div>
+<div class="ws-grid">
+  <div class="panel ws-card"><h3><svg class="ic"><use href="#i-folder"/></svg>Acme 研发部</h3><span class="code">acme-corp</span><div class="mut">任务跟踪与缺陷管理 · 成员 24 · Entry 1,283</div><div><span class="chip c-done">Owner</span></div></div>
+  <div class="panel ws-card"><h3><svg class="ic"><use href="#i-folder"/></svg>平台基础设施</h3><span class="code">infra</span><div class="mut">内部工具与平台需求 · 成员 9 · Entry 402</div><div><span class="chip c-doing">Maintainer</span></div></div>
+  <div class="panel ws-card"><h3><svg class="ic"><use href="#i-folder"/></svg>增长团队</h3><span class="code">growth</span><div class="mut">增长实验记录 · 成员 12 · Entry 866</div><div><span class="chip c-open">Worker</span></div></div>
+  <div class="panel ws-card"><h3><svg class="ic"><use href="#i-folder"/></svg>客户支持工单</h3><span class="code">support</span><div class="mut">只读镜像视图 · 成员 6 · Entry 3,240</div><div><span class="chip dim">Reader</span></div></div>
+  <div="panel ws-card ghostcard" style="display:flex;gap:8px"><svg class="ic"><use href="#i-add"/></svg>新建工作空间（自动成为 Owner）</div>
+</div>
+</section>
+
+<!-- 3 视图主页 -->
+<section class="scr" id="s3">
+<div class="route">/acme-corp · 默认视图「全部任务」</div>
+<div class="ws-layout">
+  <aside class="panel wside">
+    <div style="padding:8px 12px;display:flex;gap:8px;align-items:center"><b>Acme 研发部</b></div>
+    <div class="grp">我的视图</div>
+    <div class="it on"><svg class="ic"><use href="#i-folder"/></svg>全部任务<span class="n">248</span></div>
+    <div class="it"><svg class="ic"><use href="#i-folder"/></svg>我指派的<span class="n">12</span></div>
+    <div class="it"><svg class="ic"><use href="#i-folder"/></svg>待修复 Bug<span class="n">37</span></div>
+    <div class="it"><svg class="ic"><use href="#i-folder"/></svg>本周归档<span class="n">9</span></div>
+    <div class="grp">共享视图</div>
+    <div class="it"><svg class="ic"><use href="#i-share"/></svg>P0 缺陷看板</div>
+    <div class="it"><svg class="ic"><use href="#i-share"/></svg>迭代 24 计划</div>
+    <div class="it" style="color:var(--ink3)"><svg class="ic"><use href="#i-add"/></svg>新建视图</div>
+    <div style="border-top:1px solid var(--line);margin-top:8px;padding-top:8px">
+      <div class="it"><svg class="ic"><use href="#i-setting"/></svg>工作空间设置</div>
+      <div class="it"><svg class="ic"><use href="#i-back"/></svg>工作空间列表</div>
+    </div>
+  </aside>
+  <div class="panel wmain">
+    <div class="vhead">
+      <h2>全部任务</h2>
+      <label class="inp" style="display:flex;align-items:center;gap:6px;width:240px;padding:0 12px"><svg class="ic"><use href="#i-search"/></svg><input style="border:0;outline:0;flex:1;padding:7px 0;background:none" placeholder="搜索本视图，可与过滤组合"></label>
+      <span class="online"><span class="av">陈</span><span class="av">李</span><span class="av">王</span><span class="av">赵</span><span class="av">周</span></span><span class="mut">5 人在线</span>
+      <button class="btn"><svg class="ic"><use href="#i-setting"/></svg>视图配置</button>
+      <button class="btn pri"><svg class="ic"><use href="#i-add"/></svg>新建 Entry</button>
+    </div>
+    <div class="filters">
+      <span class="chip sel">Task = Open ⌄</span><span class="chip dim">Bug：任意 ⌄</span><span class="chip dim">指派人 = 陈晨 ⌄</span><span class="chip dim">更新时间：本周 ⌄</span><span class="chip dim">全文：「检索」</span>
+      <span style="margin-left:auto" class="mut">排序：更新时间 ↓</span><span class="mut">列配置 ⌄</span>
+    </div>
+    <div class="view-body">
+      <div>
+        <table class="tbl">
+          <thead><tr><th>Code</th><th>标题</th><th>Task</th><th>Bug</th><th>优先级</th><th>指派人</th><th>更新时间</th></tr></thead>
+          <tbody>
+            <tr><td class="code">RD-8f3K2mQp</td><td>OIDC 回跳失败时登录页无错误提示</td><td><span class="chip c-open">Open</span></td><td class="mut">—</td><td><span class="chip c-p1">P1</span></td><td>陈晨</td><td class="mut">10 分钟前</td></tr>
+            <tr><td class="code">RD-aP9xL2nT</td><td>富文本粘贴图片丢失宽高样式</td><td><span class="chip c-doing">In progress</span></td><td class="mut">—</td><td><span class="chip c-p1">P1</span></td><td>李婷</td><td class="mut">1 小时前</td></tr>
+            <tr class="sel"><td class="code">RD-kM3vB7dR</td><td>标签值为中文时全文检索无结果</td><td><span class="chip c-open">Open</span></td><td><span class="chip c-open">Open</span></td><td><span class="chip c-p2">P2</span></td><td class="mut">未指派</td><td class="mut">3 小时前</td></tr>
+            <tr><td class="code">RD-xQ2wE8yU</td><td>附件超过 50MB 报错信息不友好</td><td><span class="chip c-done">Done</span></td><td><span class="chip c-done">Fixed</span></td><td><span class="chip c-p3">P3</span></td><td>王浩</td><td class="mut">昨天</td></tr>
+            <tr><td class="code">RD-zT7nP4cA</td><td>共享视图下 Reader 仍可编辑列配置</td><td><span class="chip c-open">Open</span></td><td><span class="chip c-open">Open</span></td><td><span class="chip c-p0">P0</span></td><td>陈晨</td><td class="mut">昨天</td></tr>
+            <tr><td class="code">RD-mN5rF6hJ</td><td>归档入口在窄屏下不可见</td><td><span class="chip c-done">Done</span></td><td><span class="chip c-wont">Wont fix</span></td><td><span class="chip c-p3">P3</span></td><td>李婷</td><td class="mut">3 天前</td></tr>
+          </tbody>
+        </table>
+        <div class="pager"><button>‹</button><button class="on">1</button><button>2</button><button>3</button><span class="mut">…</span><button>12</button><button>›</button></div>
+      </div>
+      <aside class="detail">
+        <div class="hint">⚠ 此 Entry 刚被陈晨修改，<u>刷新查看最新内容</u></div>
+        <div class="dhead"><div class="code">RD-kM3vB7dR</div><button class="ibtn" title="复制编码"><svg class="ic"><use href="#i-share"/></svg></button><h3>标签值为中文时全文检索无结果</h3><button class="ibtn" title="关闭面板"><svg class="ic"><use href="#i-close"/></svg></button></div>
+        <div class="editing"><span class="dot"></span>李婷 正在编辑…（不锁定，乐观并发）</div>
+        <div class="dtabs"><button class="on">详情</button><button>附件 (2)</button><button>历史</button></div>
+        <div class="editor">
+          <div class="etoolbar"><b style="font-size:12px">B</b><i style="font-size:12px">I</i><code style="font-size:12px">&lt;/&gt;</code><span style="font-size:12px">• 列表</span><span style="font-size:12px" class="mut">代码块 · 链接 · 图片</span></div>
+          <div class="ebody"><p>复现步骤：</p><p>1. 给 Entry 打上值为「后端」的标签</p><p>2. 在搜索框输入「后端」，无结果</p><p>3. 英文标签值可正常命中</p></div>
+        </div>
+        <div>
+          <div class="lblrow"><span class="k"><svg class="ic"><use href="#i-tag"/></svg>Task</span><select><option>Open</option><option>In progress</option><option>Done</option><option>Archived</option></select></div>
+          <div class="lblrow"><span class="k"><svg class="ic"><use href="#i-tag"/></svg>Bug</span><select><option>Open</option><option>Fixed</option><option>Wont fix</option></select></div>
+          <div class="lblrow"><span class="k">优先级</span><select><option>P0</option><option selected>P1</option><option>P2</option><option>P3</option></select></div>
+          <div class="lblrow"><span class="k">指派人</span><div style="display:flex;gap:6px"><input class="inp" value="陈晨" style="flex:1"><button class="btn">＋多人</button></div></div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:auto"><button class="btn" style="flex:1;justify-content:center"><svg class="ic"><use href="#i-full"/></svg>全屏打开</button><button class="btn pri" style="flex:1;justify-content:center">保存</button></div>
+      </aside>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- 4 Entry 全屏 -->
+<section class="scr" id="s4">
+<div class="route">/acme-corp/entry/RD-kM3vB7dR · 详情面板全屏展开态</div>
+<div class="panel entry-top">
+  <button class="btn"><svg class="ic"><use href="#i-back"/></svg>返回视图</button>
+  <span class="code">RD-kM3vB7dR</span>
+  <input class="inp" value="标签值为中文时全文检索无结果">
+  <span class="chip c-done"><svg class="ic" style="width:13px;height:13px"><use href="#i-check"/></svg>已保存 · 2 分钟前</span>
+  <span class="editing"><span class="dot"></span>李婷 正在编辑</span>
+  <button class="btn"><svg class="ic"><use href="#i-share"/></svg>分享视图链接</button>
+</div>
+<div class="entry-layout">
+  <div class="panel" style="padding:0;overflow:hidden">
+    <div class="etoolbar" style="padding:8px 12px"><b>B</b><i>I</i><s>S</s><code>&lt;/&gt;</code><span>• 列表</span><span>1. 有序</span><span class="mut">引用 · 代码块 · 链接 · 图片</span></div>
+    <div class="ebody" style="min-height:340px;padding:16px">
+      <p style="font-weight:500;color:var(--ink)">复现步骤</p>
+      <p>1. 新建 Entry，添加标签 schema「模块」（String），值为「后端」</p>
+      <p>2. 在顶栏搜索框输入「后端」，期望命中该 Entry</p>
+      <p>3. 实际无结果；改为英文值 backend 后命中正常</p>
+      <p style="font-weight:500;color:var(--ink);margin-top:16px">初步分析</p>
+      <p>怀疑分词器未对 label value 字段建 CJK 分词索引，需要检查索引 mapping。</p>
+      <p style="color:var(--ink4)">// 附件：检索-mapping.json、复现录屏.mp4</p>
+    </div>
+  </div>
+  <aside class="panel entry-side">
+    <div><div class="grp-h"><svg class="ic"><use href="#i-tag"/></svg>标签（upsert 即保存并广播）</div>
+      <div class="lblrow"><span class="k">Task</span><select><option selected>Open</option><option>In progress</option><option>Done</option><option>Archived</option></select></div>
+      <div class="lblrow"><span class="k">Bug</span><select><option selected>Open</option><option>Fixed</option><option>Wont fix</option></select></div>
+      <div class="lblrow"><span class="k">优先级</span><select><option>P0</option><option>P1</option><option selected>P2</option><option>P3</option></select></div>
+      <div class="lblrow"><span class="k">指派人</span><input class="inp" value="陈晨"></div>
+      <div class="lblrow"><span class="k">迭代</span><input class="inp" value="S24"></div>
+      <div class="lblrow"><span class="k">估时 (h)</span><input class="inp" type="number" value="4"></div>
+    </div>
+    <div><div class="grp-h"><svg class="ic"><use href="#i-upload"/></svg>附件（≤ 50MB）<button class="ibtn" style="margin-left:auto"><svg class="ic"><use href="#i-add"/></svg></button></div>
+      <div class="att"><svg class="ic"><use href="#i-folder"/></svg>检索-mapping.json<span class="sz">3 KB</span><button class="ibtn"><svg class="ic"><use href="#i-download"/></svg></button></div>
+      <div class="att" style="border-bottom:0"><svg class="ic"><use href="#i-folder"/></svg>复现录屏.mp4<span class="sz">18.6 MB</span><button class="ibtn"><svg class="ic"><use href="#i-download"/></svg></button></div>
+    </div>
+    <div><div class="grp-h"><svg class="ic"><use href="#i-history"/></svg>审计历史</div>
+      <div class="tl"><span class="t">10:24</span><span>陈晨 将 优先级 P2 → P1</span></div>
+      <div class="tl"><span class="t">09:51</span><span>李婷 更新了详情（版本 7）</span></div>
+      <div class="tl"><span class="t">昨天</span><span>王浩 创建并指派给陈晨</span></div>
+    </div>
+  </aside>
+</div>
+</section>
+
+<!-- 5 设置 -->
+<section class="scr" id="s5">
+<div class="route">/acme-corp/settings · Maintainer 及以上</div>
+<div class="set-layout">
+  <aside class="panel set-nav">
+    <div class="grp" style="padding:8px 12px 4px;font-size:12px;color:var(--ink3)">Acme 研发部 · 设置</div>
+    <div class="it on" data-t="members"><svg class="ic"><use href="#i-profile"/></svg>成员</div>
+    <div class="it" data-t="labels"><svg class="ic"><use href="#i-tag"/></svg>标签定义</div>
+    <div class="it"><svg class="ic"><use href="#i-share"/></svg>视图共享</div>
+    <div class="it"><svg class="ic"><use href="#i-history"/></svg>审计日志</div>
+    <div class="it dgr">危险操作（删除 / 转让）</div>
+  </aside>
+  <div class="panel set-body">
+    <div id="st-members">
+      <h2>成员管理</h2>
+      <div class="invite"><input class="inp" placeholder="输入邮箱邀请，如 zhang@acme.dev"><select class="inp" style="width:130px"><option>Worker</option><option>Reader</option><option>Maintainer</option></select><button class="btn pri">发送邀请</button></div>
+      <table class="tbl"><thead><tr><th>成员</th><th>邮箱</th><th>角色</th><th style="width:60px"></th></tr></thead><tbody>
+        <tr><td><span class="av lg">陈</span> 陈晨</td><td class="mut">chen@acme.dev</td><td><span class="chip c-done">Owner</span></td><td></td></tr>
+        <tr><td><span class="av lg">李</span> 李婷</td><td class="mut">li@acme.dev</td><td><select class="inp" style="padding:3px 8px"><option selected>Maintainer</option><option>Worker</option><option>Reader</option></select></td><td><button class="ibtn rowact"><svg class="ic"><use href="#i-close"/></svg></button></td></tr>
+        <tr><td><span class="av lg">王</span> 王浩</td><td class="mut">wang@acme.dev</td><td><select class="inp" style="padding:3px 8px"><option>Maintainer</option><option selected>Worker</option><option>Reader</option></select></td><td><button class="ibtn rowact"><svg class="ic"><use href="#i-close"/></svg></button></td></tr>
+        <tr><td><span class="av lg">周</span> 周涛</td><td class="mut">zhou@acme.dev</td><td><select class="inp" style="padding:3px 8px"><option>Maintainer</option><option>Worker</option><option selected>Reader</option></select></td><td><button class="ibtn rowact"><svg class="ic"><use href="#i-close"/></svg></button></td></tr>
+      </tbody></table>
+      <div class="mut">Owner 可将所有权转让给 Maintainer，自身降级为 Maintainer。移除操作留待审计日志追踪。</div>
+    </div>
+    <div id="st-labels" class="hide">
+      <div style="display:flex;align-items:center"><h2 style="margin-right:auto">标签定义（LabelSchema）</h2><button class="btn pri"><svg class="ic"><use href="#i-add"/></svg>新建标签</button></div>
+      <table class="tbl"><thead><tr><th>name（不可改）</th><th>title</th><th>值类型</th><th>可选值 / 说明</th><th>来源</th><th style="width:60px"></th></tr></thead><tbody>
+        <tr><td class="code">task</td><td>Task</td><td>Enum</td><td class="mut">Open · In progress · Done · Archived</td><td><span class="chip dim">内置</span></td><td></td></tr>
+        <tr><td class="code">bug</td><td>Bug</td><td>Enum</td><td class="mut">Open · Fixed · Wont fix · Archived</td><td><span class="chip dim">内置</span></td><td></td></tr>
+        <tr><td class="code">priority</td><td>优先级</td><td>Enum</td><td class="mut">P0 · P1 · P2 · P3</td><td><span class="chip c-open">自定义</span></td><td><button class="ibtn rowact"><svg class="ic"><use href="#i-more"/></svg></button></td></tr>
+        <tr><td class="code">assignee</td><td>指派人</td><td>String</td><td class="mut">JSON 数组，支持多人指派</td><td><span class="chip c-open">自定义</span></td><td><button class="ibtn rowact"><svg class="ic"><use href="#i-more"/></svg></button></td></tr>
+        <tr><td class="code">estimate</td><td>估时 (h)</td><td>Integer</td><td class="mut">—</td><td><span class="chip c-open">自定义</span></td><td><button class="ibtn rowact"><svg class="ic"><use href="#i-more"/></svg></button></td></tr>
+      </tbody></table>
+      <div class="mut">同一 Entry 对同一 Schema 仅一条 Labeling，更新即 upsert；变更自动记录操作人与时间。</div>
+    </div>
+  </div>
+</div>
+</section>
+
+<!-- 6 系统管理 -->
+<section class="scr" id="s6">
+<div class="route">/admin · 仅系统管理员</div>
+<div class="stats">
+  <div class="panel stat"><div class="v">128</div><div class="l">账号总数</div></div>
+  <div class="panel stat"><div class="v">12</div><div class="l">工作空间（1 个回收站中）</div></div>
+  <div class="panel stat"><div class="v">4.2 GB</div><div class="l">附件存储占用</div></div>
+</div>
+<div class="panel set-body">
+  <h2>账号管理</h2>
+  <div class="invite"><input class="inp" placeholder="搜索邮箱 / 姓名"><button class="btn">停用选中</button><button class="btn pri"><svg class="ic"><use href="#i-add"/></svg>创建账号</button></div>
+  <table class="tbl"><thead><tr><th>账号</th><th>OAuth 绑定</th><th>状态</th><th>最近登录</th></tr></thead><tbody>
+    <tr><td><span class="av">陈</span> 陈晨 <span class="mut">chen@acme.dev</span></td><td class="mut">GitHub · OIDC</td><td><span class="chip c-done">启用</span></td><td class="mut">10 分钟前</td></tr>
+    <tr><td><span class="av">李</span> 李婷 <span class="mut">li@acme.dev</span></td><td class="mut">GitHub</td><td><span class="chip c-done">启用</span></td><td class="mut">1 小时前</td></tr>
+    <tr><td><span class="av">王</span> 王浩 <span class="mut">wang@acme.dev</span></td><td class="mut">—</td><td><span class="chip c-wont">已停用</span></td><td class="mut">30 天前</td></tr>
+  </tbody></table>
+  <h2 style="margin-top:8px">系统配置</h2>
+  <div class="cfg"><div><b>开放注册</b><div class="mut">关闭后仅系统管理员可创建账号</div></div><button class="switch"></button></div>
+  <div class="cfg"><div><b>附件大小限制</b><div class="mut">Entry 附件单文件上限，默认 50MB</div></div><input class="inp" value="50 MB"></div>
+  <div class="cfg"><div><b>会话过期时间</b><div class="mut">JWT 过期后需重新认证</div></div><input class="inp" value="7 天"></div>
+  <div class="cfg"><div><b>Workspace 回收站保留期</b><div class="mut">软删除后可恢复窗口</div></div><input class="inp" value="30 天"></div>
+  <div class="mut">审计日志保留 180 天 · 全局操作流水见「审计日志」标签页</div>
+</div>
+</section>
+
+<script>
+document.querySelectorAll('.tabbar button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('.tabbar button').forEach(x=>x.classList.remove('on'));
+  document.querySelectorAll('.scr').forEach(x=>x.classList.remove('on'));
+  b.classList.add('on');document.getElementById(b.dataset.s).classList.add('on');
+});
+document.querySelectorAll('.set-nav .it[data-t]').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('.set-nav .it').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+  document.getElementById('st-members').classList.toggle('hide',b.dataset.t!=='members');
+  document.getElementById('st-labels').classList.toggle('hide',b.dataset.t!=='labels');
+});
+</script>
+</body>
+</html>
