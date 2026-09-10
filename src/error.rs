@@ -88,6 +88,13 @@ mod tests {
     }
 
     #[test]
+    fn invalid_query_keeps_clean_message() {
+        let e = AppError::InvalidQuery("标签不存在: Nope".to_string());
+        assert_eq!(e.code(), "INVALID_QUERY");
+        assert_eq!(e.to_string(), "标签不存在: Nope");
+    }
+
+    #[test]
     fn label_name_exists_is_distinct_from_internal_and_keeps_clean_message() {
         assert_eq!(AppError::LabelNameExists.code(), "LABEL_NAME_EXISTS");
         assert_eq!(
