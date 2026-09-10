@@ -164,8 +164,14 @@ fn as_f64(v: &serde_json::Value) -> Option<f64> {
 fn cmp_value(got: &serde_json::Value, op: Op, want: Option<&serde_json::Value>) -> bool {
     let Some(want) = want else { return false };
     match op {
-        Op::Eq => got == want,
-        Op::Ne => got != want,
+        Op::Eq => match (as_f64(got), as_f64(want)) {
+            (Some(a), Some(b)) => a == b,
+            _ => got == want,
+        },
+        Op::Ne => match (as_f64(got), as_f64(want)) {
+            (Some(a), Some(b)) => a != b,
+            _ => got != want,
+        },
         Op::Gt | Op::Ge | Op::Lt | Op::Le => match (as_f64(got), as_f64(want)) {
             (Some(a), Some(b)) => match op {
                 Op::Gt => a > b,
@@ -273,6 +279,14 @@ fn lex(input: &str) -> Result<Vec<Tok>, AppError> {
                 let mut s = String::new();
                 i += 1;
                 while i < chars.len() && chars[i] != quote {
+                    if chars[i] == '\\' && i + 1 < chars.len() {
+                        let next = chars[i + 1];
+                        if next == quote || next == '\\' {
+                            s.push(next);
+                            i += 2;
+                            continue;
+                        }
+                    }
                     s.push(chars[i]);
                     i += 1;
                 }
@@ -615,6 +629,7 @@ mod tests {
             "text ~ \"检索\"",
             "Task = \"Open\" AND NOT present(Priority)",
             "(Task = \"Open\" OR Bug = \"Fixed\") AND updated >= \"2026-09-01\"",
+            r#"Title = "他说 \"你好\"""#,
         ];
         for src in cases {
             let q = Query::parse(src).unwrap_or_else(|e| panic!("parse {src} 失败: {e}"));
@@ -622,6 +637,30 @@ mod tests {
             let again = Query::parse(&expr).unwrap_or_else(|e| panic!("re-parse {expr} 失败: {e}"));
             assert_eq!(q, again, "round-trip 不稳定: {src} -> {expr}");
         }
+    }
+
+    #[test]
+    fn parse_integer_eq_matches_integer_label() {
+        let e = entry();
+        let labels = vec![labeling("Score", serde_json::json!(7))];
+        let never = |_: &str| false;
+        assert!(Query::parse("Score = 7").unwrap().evaluate(&e, &labels, &never));
+        assert!(!Query::parse("Score != 7").unwrap().evaluate(&e, &labels, &never));
+    }
+
+    #[test]
+    fn string_escape_roundtrip() {
+        // value contains both a backslash and escaped double-quotes
+        let src = r#"Title = "a\b \"c\"""#;
+        let q = Query::parse(src).unwrap();
+        let val = match &q {
+            Query::Cond(c) => c.value.as_ref().unwrap().as_str().unwrap().to_string(),
+            _ => panic!("expected a single Cond"),
+        };
+        assert_eq!(val, r#"a\b "c""#);
+        let expr = q.to_expr();
+        let again = Query::parse(&expr).unwrap_or_else(|e| panic!("re-parse {expr} 失败: {e}"));
+        assert_eq!(q, again, "escape round-trip 不稳定: {src} -> {expr}");
     }
 
     #[test]
