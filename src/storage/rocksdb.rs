@@ -17,6 +17,9 @@ pub mod cf {
     pub const AUDIT_LOGS: &str = "audit_logs";
     pub const AUDIT_LOGS_BY_RESOURCE: &str = "audit_logs_by_resource";
     pub const AUDIT_LOGS_BY_WORKSPACE: &str = "audit_logs_by_workspace";
+    pub const VIEWS: &str = "views";
+    pub const VIEWS_BY_WORKSPACE: &str = "views_by_workspace";
+    pub const LABELINGS_BY_WORKSPACE: &str = "labelings_by_workspace";
 }
 
 const ALL_CFS: &[&str] = &[
@@ -33,6 +36,9 @@ const ALL_CFS: &[&str] = &[
     cf::AUDIT_LOGS,
     cf::AUDIT_LOGS_BY_RESOURCE,
     cf::AUDIT_LOGS_BY_WORKSPACE,
+    cf::VIEWS,
+    cf::VIEWS_BY_WORKSPACE,
+    cf::LABELINGS_BY_WORKSPACE,
 ];
 
 /// 单个批量写操作：文档/索引/审计统一原子写入。

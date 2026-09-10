@@ -78,3 +78,44 @@ pub fn audit_by_resource_key(resource_type: &str, resource_id: &str, at: DateTim
     key.extend_from_slice(&id.to_bytes());
     key
 }
+
+/// 视图主键：16 字节 ulid。
+pub fn view_key(id: Ulid) -> [u8; 16] {
+    id.to_bytes()
+}
+
+/// (workspace_id, view_id) 复合键，32 字节。
+pub fn view_by_workspace_key(workspace_id: Ulid, id: Ulid) -> [u8; 32] {
+    let mut key = [0u8; 32];
+    key[..16].copy_from_slice(&workspace_id.to_bytes());
+    key[16..].copy_from_slice(&id.to_bytes());
+    key
+}
+
+/// (workspace_id, entry_code, label_name) 复合键，前缀扫描取整个 workspace 的打标。
+pub fn labeling_by_workspace_key(workspace_id: Ulid, code: &str, name: &str) -> Vec<u8> {
+    let mut key = Vec::with_capacity(16 + code.len() + name.len());
+    key.extend_from_slice(&workspace_id.to_bytes());
+    key.extend_from_slice(code.as_bytes());
+    key.extend_from_slice(name.as_bytes());
+    key
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn view_keys_encode_prefixes() {
+        let ws = ulid::Ulid::new();
+        let id = ulid::Ulid::new();
+        assert_eq!(view_key(id).len(), 16);
+        let k = view_by_workspace_key(ws, id);
+        assert_eq!(k.len(), 32);
+        assert!(k.starts_with(&ws.to_bytes()));
+
+        let lk = labeling_by_workspace_key(ws, "CODE0001", "Task");
+        assert!(lk.starts_with(&ws.to_bytes()));
+        assert_eq!(&lk[16..], b"CODE0001Task");
+    }
+}

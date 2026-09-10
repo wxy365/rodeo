@@ -186,6 +186,11 @@ impl EntryService {
             keys::labeling_key(entry_code, label_name),
             &labeling,
         )?);
+        ops.push(BatchOp::put(
+            cf::LABELINGS_BY_WORKSPACE,
+            keys::labeling_by_workspace_key(entry.workspace_id, entry_code, label_name),
+            &labeling,
+        )?);
         self.store.write_batch(ops)?;
         Ok(labeling)
     }
@@ -213,6 +218,10 @@ impl EntryService {
         );
         let mut ops = audit_ops(&audit)?;
         ops.push(BatchOp::delete(cf::LABELINGS, key));
+        ops.push(BatchOp::delete(
+            cf::LABELINGS_BY_WORKSPACE,
+            keys::labeling_by_workspace_key(entry.workspace_id, entry_code, label_name),
+        ));
         self.store.write_batch(ops)?;
         Ok(())
     }
@@ -225,6 +234,22 @@ impl EntryService {
             out.push(bincode::deserialize(&v)?);
         }
         Ok(out)
+    }
+
+    /// 一次前缀扫描取回 workspace 内全部打标，按 entry_code 分组。
+    pub fn labelings_by_workspace(
+        &self,
+        workspace_id: Ulid,
+    ) -> Result<std::collections::HashMap<String, Vec<Labeling>>, AppError> {
+        let rows = self
+            .store
+            .scan_prefix(cf::LABELINGS_BY_WORKSPACE, &workspace_id.to_bytes())?;
+        let mut map: std::collections::HashMap<String, Vec<Labeling>> = std::collections::HashMap::new();
+        for (_, v) in rows {
+            let l: Labeling = bincode::deserialize(&v)?;
+            map.entry(l.entry_code.clone()).or_default().push(l);
+        }
+        Ok(map)
     }
 }
 
@@ -405,6 +430,21 @@ mod tests {
         assert_eq!(log.resource_id, e.code);
         assert!(log.after.is_some());
         drop(store);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn labeling_index_tracks_set_and_remove() {
+        let (dir, _store, svc, ws_id, actor) = setup();
+        let e = svc.create(actor, ws_id, "任务").unwrap();
+        svc.set_labeling(actor, &e.code, "Task", &serde_json::json!("Open")).unwrap();
+
+        let map = svc.labelings_by_workspace(ws_id).unwrap();
+        assert_eq!(map.get(&e.code).map(|v| v.len()), Some(1));
+
+        svc.remove_labeling(actor, &e.code, "Task").unwrap();
+        let map = svc.labelings_by_workspace(ws_id).unwrap();
+        assert!(map.get(&e.code).is_none(), "移除后索引必须清空");
         std::fs::remove_dir_all(&dir).ok();
     }
 
