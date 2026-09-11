@@ -7,14 +7,16 @@ use serde_json::Value;
 
 use crate::frontend::components::{display_enum_value, label_chip_class, logged_out, value_to_string};
 use crate::frontend::graphql_client::{
-    create_entry, create_view, delete_entry, delete_view, entries, entry, label_schemas,
-    update_entry, views, workspace_by_slug, Entry, Labeling, LabelSchema, View, Workspace,
+    create_entry, create_view, delete_entry, delete_view, entry, format_view_query, label_schemas,
+    parse_view_query, query_entries, update_entry, views, workspace_by_slug, Entry, Labeling,
+    LabelSchema, View, Workspace,
 };
 use crate::frontend::icons::{
     ic_add, ic_back, ic_close, ic_folder, ic_full, ic_search, ic_setting, ic_share,
 };
 use crate::frontend::label_editor::LabelEditor;
 use crate::frontend::tiny_editor::TinyEditor;
+use crate::frontend::view_filter::{build_query, chips, with_text, CondChip};
 
 #[component]
 pub fn WorkspaceMain() -> impl IntoView {
@@ -30,6 +32,14 @@ pub fn WorkspaceMain() -> impl IntoView {
     let show_new = RwSignal::new(false);
     let new_title = RwSignal::new(String::new());
     let error = RwSignal::new(None::<String>);
+
+    // ---- 筛选查询状态 ----
+    let query_ast = RwSignal::new(serde_json::json!({ "and": [] }));
+    let expr_mode = RwSignal::new(false);
+    let expr_text = RwSignal::new(String::new());
+    let ad_hoc_text = RwSignal::new(String::new());
+    let new_cond_label = RwSignal::new(String::new());
+    let refresh_view = RwSignal::new(0u32);
 
     // ---- 视图侧栏状态 ----
     let view_list = RwSignal::new(Vec::<View>::new());
@@ -73,6 +83,8 @@ pub fn WorkspaceMain() -> impl IntoView {
     Effect::new_sync(move |_| {
         let s = slug().to_string();
         let _ = refresh.get();
+        let _ = refresh_view.get();
+        let _ = query_ast.get();
         if !cfg!(target_arch = "wasm32") {
             return;
         }
@@ -80,12 +92,26 @@ pub fn WorkspaceMain() -> impl IntoView {
             navigate("/login", Default::default());
             return;
         }
+        // 查询须在 spawn 前同步组装，signal 读取才会登记为 Effect 依赖。
+        let ast = {
+            let base = active_view
+                .get()
+                .map(|v| v.query)
+                .unwrap_or(serde_json::json!({ "and": [] }));
+            with_text(&base, &ad_hoc_text.get())
+        };
+        let sort_field = active_view
+            .get()
+            .map(|v| v.sort.field)
+            .unwrap_or_else(|| "updatedAt".to_string());
+        let sort_desc = active_view.get().map(|v| v.sort.desc).unwrap_or(true);
         spawn_local(async move {
             let result = async {
                 let ws = workspace_by_slug(&s).await?.ok_or("工作空间不存在".to_string())?;
-                let items = entries(&ws.id).await?;
+                // Task 11 改为真实分页；此步先用 page=1、page_size=100 跑通。
+                let page = query_entries(&ws.id, &ast, &sort_field, sort_desc, 1, 100).await?;
                 let schema_list = label_schemas(&ws.id).await?;
-                Ok::<_, String>((ws, items, schema_list))
+                Ok::<_, String>((ws, page.items, schema_list))
             }
             .await;
             if let Ok((ref w, _, ref list)) = result {
@@ -138,7 +164,16 @@ pub fn WorkspaceMain() -> impl IntoView {
                         <h2>"全部任务"</h2>
                         <label class="inp">
                             {ic_search()}
-                            <input placeholder="搜索本视图（即将上线）" disabled />
+                            <input placeholder="搜索本视图，可与过滤组合" prop:value=ad_hoc_text
+                                on:input=move |ev| ad_hoc_text.set(event_target_value(&ev))
+                                on:keydown=move |ev| {
+                                    if ev.key() == "Enter" {
+                                        let mut ast = query_ast.get();
+                                        ast = with_text(&ast, &ad_hoc_text.get());
+                                        query_ast.set(ast);
+                                        refresh_view.update(|n| *n += 1);
+                                    }
+                                } />
                         </label>
                         <button class="btn" disabled>{ic_setting()}"视图配置"</button>
                         <button class="btn pri" on:click=move |_| show_new.set(!show_new.get())>
@@ -147,9 +182,55 @@ pub fn WorkspaceMain() -> impl IntoView {
                         </button>
                     </div>
                     <div class="filters">
-                        <span class="chip sel">"全部条目"</span>
-                        <span class="chip dim">"筛选 / 全文检索（即将上线）"</span>
-                        <span style="margin-left:auto" class="mut">"排序：更新时间 ↓"</span>
+                        {move || if expr_mode.get() {
+                            view! {
+                                <input class="inp" style="flex:1" placeholder="Task = \"Open\" AND present(Priority)"
+                                    prop:value=expr_text
+                                    on:input=move |ev| expr_text.set(event_target_value(&ev)) />
+                                <button class="btn" on:click=move |_| {
+                                    let Some(ws_id) = data.get().and_then(|r| r.ok()).map(|(w, _, _)| w.id.clone()) else { return };
+                                    let expr = expr_text.get();
+                                    spawn_local(async move {
+                                        match parse_view_query(&ws_id, &expr).await {
+                                            Ok(ast) => { query_ast.set(ast); expr_mode.set(false); error.set(None); }
+                                            Err(e) => error.set(Some(e)),
+                                        }
+                                    });
+                                }>"应用"</button>
+                                <button class="btn" on:click=move |_| expr_mode.set(false)>"取消"</button>
+                            }.into_any()
+                        } else {
+                            view! {
+                                {move || chips(&query_ast.get()).into_iter().map(|c| chip_view(c, query_ast)).collect::<Vec<_>>()}
+                                <select class="inp" style="width:130px" prop:value=new_cond_label
+                                    on:change=move |ev| new_cond_label.set(event_target_value(&ev))>
+                                    <option value="">"＋ 条件"</option>
+                                    {move || schemas.get().into_iter().map(|s| view! {
+                                        <option value=s.name.clone()>{s.title.clone()}</option>
+                                    }).collect::<Vec<_>>()}
+                                </select>
+                                <button class="btn" on:click=move |_| {
+                                    let name = new_cond_label.get();
+                                    if name.is_empty() { return; }
+                                    let mut cs = chips(&query_ast.get());
+                                    cs.push(CondChip::Label { name, op: "present".into(), value: serde_json::Value::Null });
+                                    query_ast.set(build_query(&cs));
+                                    new_cond_label.set(String::new());
+                                }>"添加"</button>
+                                <button class="btn" on:click=move |_| {
+                                    let ast = query_ast.get();
+                                    // 表达式文本由服务端格式化，避免前端复刻语法
+                                    let Some(ws_id) = data.get().and_then(|r| r.ok()).map(|(w, _, _)| w.id.clone()) else { return };
+                                    spawn_local(async move {
+                                        if let Ok(s) = format_view_query(&ws_id, &ast).await {
+                                            expr_text.set(s);
+                                        }
+                                        expr_mode.set(true);
+                                    });
+                                }>"表达式"</button>
+                            }.into_any()
+                        }}
+                        <span style="margin-left:auto" class="mut">{move || format!("排序：{}", sort_label())}</span>
                     </div>
 
                     {move || if show_new.get() {
@@ -505,4 +586,28 @@ fn EntryPanel(
             }
         }}
     }
+}
+
+/// 一枚可移除的条件芯片：点击 × 后从 AST 中剔除并回写。
+fn chip_view(chip: CondChip, ast: RwSignal<serde_json::Value>) -> impl IntoView {
+    let label = match &chip {
+        CondChip::Label { name, op, value } => format!("{name} {op} {}", value_to_string(value)),
+        CondChip::Time { field, op, value } => format!("{field} {op} {}", value_to_string(value)),
+        CondChip::Text { keyword } => format!("全文：「{keyword}」"),
+    };
+    let target = chip.clone();
+    view! {
+        <span class="chip sel">
+            {label}
+            <button class="ibtn" title="移除" on:click=move |_| {
+                let mut cs = chips(&ast.get());
+                cs.retain(|c| c != &target);
+                ast.set(build_query(&cs));
+            }>"×"</button>
+        </span>
+    }
+}
+
+fn sort_label() -> String {
+    "更新时间 ↓".to_string()
 }

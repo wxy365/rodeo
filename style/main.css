@@ -126,6 +126,16 @@ select:focus {
     background: var(--bg2);
     color: var(--ink2);
 }
+.chip .ibtn {
+    width: 16px;
+    height: 16px;
+    color: inherit;
+    opacity: 0.7;
+}
+.chip .ibtn:hover {
+    background: transparent;
+    opacity: 1;
+}
 .c-open {
     background: color-mix(in srgb, var(--ink) 8%, transparent);
     color: var(--ink2);
