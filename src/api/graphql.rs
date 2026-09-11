@@ -10,9 +10,11 @@ use axum::http::HeaderMap;
 use ulid::Ulid;
 
 use crate::domain::{
-    Account, AuditLog, Entry, LabelSchema, LabelValueType, Labeling, Workspace, WorkspaceRole,
+    Account, AuditLog, Entry, LabelSchema, LabelValueType, Labeling, Query as ViewQuery, SortField,
+    SortSpec, View, Workspace, WorkspaceRole,
 };
 use crate::error::AppError;
+use crate::service::entry::PageInput as EntryPageInput;
 use crate::service::{AuthContext, Services};
 
 // ---------- GraphQL 类型映射 ----------
@@ -168,6 +170,103 @@ impl From<AuditLog> for GqlAuditLog {
     }
 }
 
+#[derive(SimpleObject, Clone)]
+#[graphql(rename_fields = "camelCase")]
+pub struct GqlSortSpec {
+    field: String,
+    desc: bool,
+}
+
+impl From<SortSpec> for GqlSortSpec {
+    fn from(s: SortSpec) -> Self {
+        Self { field: s.field.as_str().to_string(), desc: s.desc }
+    }
+}
+
+#[derive(SimpleObject, Clone)]
+#[graphql(rename_fields = "camelCase")]
+pub struct GqlView {
+    id: ID,
+    name: String,
+    query: Json<serde_json::Value>,
+    query_expr: String,
+    sort: GqlSortSpec,
+    columns: Vec<String>,
+    is_shared: bool,
+    owner_id: ID,
+    created_at: String,
+    updated_at: String,
+}
+
+impl GqlView {
+    fn new(v: View) -> Self {
+        let query = serde_json::to_value(&v.query).unwrap_or(serde_json::Value::Null);
+        let query_expr = v.query.to_expr();
+        Self {
+            id: v.id.to_string().into(),
+            name: v.name,
+            query: Json(query),
+            query_expr,
+            sort: v.sort.into(),
+            columns: v.columns,
+            is_shared: v.is_shared,
+            owner_id: v.owner_id.to_string().into(),
+            created_at: v.created_at.to_rfc3339(),
+            updated_at: v.updated_at.to_rfc3339(),
+        }
+    }
+}
+
+#[derive(SimpleObject, Clone)]
+#[graphql(rename_fields = "camelCase")]
+pub struct GqlEntryConnection {
+    items: Vec<GqlEntry>,
+    total: i32,
+    page: i32,
+    page_size: i32,
+}
+
+#[derive(async_graphql::InputObject)]
+pub struct SortInput {
+    field: Option<String>,
+    desc: Option<bool>,
+}
+
+impl SortInput {
+    fn to_sort(&self) -> GqlResult<SortSpec> {
+        let field = match &self.field {
+            Some(f) => SortField::from_str(f)
+                .ok_or_else(|| AppError::InvalidQuery(format!("未知排序字段: {f}")))?,
+            None => SortField::UpdatedAt,
+        };
+        Ok(SortSpec { field, desc: self.desc.unwrap_or(true) })
+    }
+}
+
+#[derive(async_graphql::InputObject)]
+pub struct PageInput {
+    page: Option<i32>,
+    page_size: Option<i32>,
+}
+
+impl PageInput {
+    fn to_page(&self) -> EntryPageInput {
+        EntryPageInput {
+            page: self.page.unwrap_or(1).max(1) as usize,
+            page_size: self.page_size.unwrap_or(20).clamp(1, 100) as usize,
+        }
+    }
+}
+
+fn parse_query_json(value: Option<Json<serde_json::Value>>) -> GqlResult<ViewQuery> {
+    match value {
+        None => Ok(ViewQuery::all()),
+        Some(Json(v)) if v.is_null() => Ok(ViewQuery::all()),
+        Some(Json(v)) => serde_json::from_value(v)
+            .map_err(|e| AppError::InvalidQuery(format!("查询条件格式错误: {e}")).into()),
+    }
+}
+
 // ---------- Context ----------
 
 #[derive(Clone)]
@@ -237,19 +336,6 @@ impl Query {
         Ok(gql.services.workspace.get_by_slug(&slug)?.map(Into::into))
     }
 
-    async fn entries(&self, ctx: &Context<'_>, workspace_id: ID) -> GqlResult<Vec<GqlEntry>> {
-        let gql = ctx.data::<GraphqlContext>()?;
-        let ws_id = parse_ulid(workspace_id.as_str())?;
-        gql.require_member(ws_id)?;
-        let entries = gql.services.entry.list(ws_id)?;
-        let mut out = Vec::new();
-        for e in entries {
-            let labels = gql.services.entry.labelings(&e.code)?;
-            out.push(GqlEntry::new(e, labels));
-        }
-        Ok(out)
-    }
-
     async fn label_schemas(&self, ctx: &Context<'_>, workspace_id: ID) -> GqlResult<Vec<GqlLabelSchema>> {
         let gql = ctx.data::<GraphqlContext>()?;
         let ws_id = parse_ulid(workspace_id.as_str())?;
@@ -295,6 +381,91 @@ impl Query {
             Some(m) => Ok(m.role.as_str().to_string()),
             None => Ok("none".to_string()),
         }
+    }
+
+    async fn views(&self, ctx: &Context<'_>, workspace_id: ID) -> GqlResult<Vec<GqlView>> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let ws = parse_ulid(workspace_id.as_str())?;
+        gql.require_member(ws)?;
+        Ok(gql
+            .services
+            .view
+            .list(auth.account_id, ws)?
+            .into_iter()
+            .map(GqlView::new)
+            .collect())
+    }
+
+    async fn view(&self, ctx: &Context<'_>, id: ID) -> GqlResult<Option<GqlView>> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let view_id = parse_ulid(id.as_str())?;
+        let Some(v) = gql.services.view.get(view_id)? else {
+            return Ok(None);
+        };
+        gql.require_member(v.workspace_id)?;
+        if !v.is_shared && v.owner_id != auth.account_id {
+            return Err(AppError::Forbidden.into());
+        }
+        Ok(Some(GqlView::new(v)))
+    }
+
+    async fn parse_view_query(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: ID,
+        expr: String,
+    ) -> GqlResult<Json<serde_json::Value>> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let ws = parse_ulid(workspace_id.as_str())?;
+        gql.require_member(ws)?;
+        let query = ViewQuery::parse(&expr)?;
+        query.validate(&gql.services.label.list_schemas(ws)?)?;
+        Ok(Json(serde_json::to_value(&query).unwrap_or(serde_json::Value::Null)))
+    }
+
+    async fn format_view_query(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: ID,
+        query: Json<serde_json::Value>,
+    ) -> GqlResult<String> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let ws = parse_ulid(workspace_id.as_str())?;
+        gql.require_member(ws)?;
+        let q: ViewQuery = serde_json::from_value(query.0)
+            .map_err(|e| AppError::InvalidQuery(format!("查询条件格式错误: {e}")))?;
+        Ok(q.to_expr())
+    }
+
+    async fn query_entries(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: ID,
+        query: Option<Json<serde_json::Value>>,
+        sort: Option<SortInput>,
+        page: Option<PageInput>,
+    ) -> GqlResult<GqlEntryConnection> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let ws = parse_ulid(workspace_id.as_str())?;
+        gql.require_member(ws)?;
+        let q = parse_query_json(query)?;
+        q.validate(&gql.services.label.list_schemas(ws)?)?;
+        let sort = sort.map(|s| s.to_sort()).transpose()?.unwrap_or_default();
+        let page = page.map(|p| p.to_page()).unwrap_or_default();
+        let result = gql.services.entry.query(ws, &q, &sort, page)?;
+        let items = result
+            .items
+            .into_iter()
+            .map(|(e, labels)| GqlEntry::new(e, labels))
+            .collect();
+        Ok(GqlEntryConnection {
+            items,
+            total: result.total as i32,
+            page: page.page as i32,
+            page_size: page.page_size as i32,
+        })
     }
 }
 
@@ -472,6 +643,83 @@ impl Mutation {
         gql.services
             .entry
             .remove_labeling(auth.account_id, &entry_code, &label_name)?;
+        Ok(true)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn create_view(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: ID,
+        name: String,
+        query: Json<serde_json::Value>,
+        sort: Option<SortInput>,
+        columns: Vec<String>,
+        is_shared: bool,
+    ) -> GqlResult<GqlView> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let ws = parse_ulid(workspace_id.as_str())?;
+        gql.require_role(
+            ws,
+            if is_shared { WorkspaceRole::Maintainer } else { WorkspaceRole::Worker },
+        )?;
+        let q: ViewQuery = serde_json::from_value(query.0)
+            .map_err(|e| AppError::InvalidQuery(format!("查询条件格式错误: {e}")))?;
+        let sort = sort.map(|s| s.to_sort()).transpose()?.unwrap_or_default();
+        let v = gql
+            .services
+            .view
+            .create(auth.account_id, ws, &name, q, sort, columns, is_shared)?;
+        Ok(GqlView::new(v))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn update_view(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+        name: String,
+        query: Json<serde_json::Value>,
+        sort: Option<SortInput>,
+        columns: Vec<String>,
+        is_shared: bool,
+    ) -> GqlResult<GqlView> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let view_id = parse_ulid(id.as_str())?;
+        let existing = gql.services.view.get(view_id)?.ok_or(AppError::NotFound)?;
+        gql.require_member(existing.workspace_id)?;
+        // 共享视图需 Maintainer；个人视图本人可改，他人需 Maintainer。
+        let need = if is_shared || existing.is_shared || existing.owner_id != auth.account_id {
+            WorkspaceRole::Maintainer
+        } else {
+            WorkspaceRole::Worker
+        };
+        gql.require_role(existing.workspace_id, need)?;
+        let q: ViewQuery = serde_json::from_value(query.0)
+            .map_err(|e| AppError::InvalidQuery(format!("查询条件格式错误: {e}")))?;
+        let sort = sort.map(|s| s.to_sort()).transpose()?.unwrap_or_default();
+        let v = gql
+            .services
+            .view
+            .update(auth.account_id, view_id, &name, q, sort, columns, is_shared)?;
+        Ok(GqlView::new(v))
+    }
+
+    async fn delete_view(&self, ctx: &Context<'_>, id: ID) -> GqlResult<bool> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let view_id = parse_ulid(id.as_str())?;
+        let existing = gql.services.view.get(view_id)?.ok_or(AppError::NotFound)?;
+        gql.require_member(existing.workspace_id)?;
+        let need = if existing.is_shared || existing.owner_id != auth.account_id {
+            WorkspaceRole::Maintainer
+        } else {
+            WorkspaceRole::Worker
+        };
+        gql.require_role(existing.workspace_id, need)?;
+        gql.services.view.delete(auth.account_id, view_id)?;
         Ok(true)
     }
 }
