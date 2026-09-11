@@ -776,6 +776,32 @@ input[type="color"].sw:disabled {
 .vc-del:hover:not(:disabled) {
     color: var(--dgr);
 }
+/* 视图标题颜色规则编辑器 */
+.tc-rules {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    border-top: 1px solid var(--line);
+    padding-top: 8px;
+}
+.tc-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 13px;
+    color: var(--ink2);
+}
+.tc-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.inp.tc-expr {
+    flex: 1;
+    min-width: 0;
+    padding: 4px 8px;
+    font-size: 12px;
+}
 .btn.sm {
     padding: 2px 8px;
     font-size: 12px;

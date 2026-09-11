@@ -18,6 +18,22 @@ use crate::frontend::icons::{
 use crate::frontend::label_editor::LabelEditor;
 use crate::frontend::tiny_editor::TinyEditor;
 use crate::frontend::view_filter::{build_query, chips, is_flat, with_text, CondChip};
+use serde_json::Value;
+
+/// 视图「标题颜色规则」编辑行状态。`RwSignal` 便于逐字段就地更新；
+/// 全字段 Copy，便于在 `For` 的多个事件闭包间复用。
+#[derive(Clone, Copy)]
+struct TitleRule {
+    id: u32,
+    /// 条件表达式文本（提交前用 `parse_view_query` 转 AST）。
+    expr: RwSignal<String>,
+    /// #rrggbb 取色。
+    color: RwSignal<String>,
+    /// 预填时的原始表达式；与 `expr` 相同时可复用 `cached_ast`，免去重复解析。
+    cached_expr: RwSignal<String>,
+    /// 预填时已解析好的查询 AST；`Value::Null` 表示无缓存（新加的空行）。
+    cached_ast: RwSignal<Value>,
+}
 
 #[component]
 pub fn WorkspaceMain() -> impl IntoView {
@@ -116,6 +132,25 @@ pub fn WorkspaceMain() -> impl IntoView {
     let config_name_input = RwSignal::new(String::new());
     let config_columns_input = RwSignal::new(String::new());
     let config_shared_input = RwSignal::new(false);
+    // ---- 标题颜色规则编辑（视图配置弹窗内）----
+    let config_rules = RwSignal::new(Vec::<TitleRule>::new());
+    let next_rule_id = RwSignal::new(0u32);
+    // 打开弹窗时逐个把已有规则的 AST 反格式化为表达式文本（服务端串行请求），
+    // 期间禁用保存，避免把尚未回填、看似为空的条件误删。
+    let rules_loading = RwSignal::new(false);
+    let add_rule = move |_| {
+        let id = next_rule_id.get_untracked();
+        next_rule_id.set(id + 1);
+        config_rules.update(|rows| {
+            rows.push(TitleRule {
+                id,
+                expr: RwSignal::new(String::new()),
+                color: RwSignal::new("#3b82f6".to_string()),
+                cached_expr: RwSignal::new(String::new()),
+                cached_ast: RwSignal::new(Value::Null),
+            })
+        });
+    };
 
     Effect::new_sync(move |_| {
         let s = slug().to_string();
@@ -229,7 +264,51 @@ pub fn WorkspaceMain() -> impl IntoView {
                             config_name_input.set(v.name.clone());
                             config_columns_input.set(v.columns.join(", "));
                             config_shared_input.set(v.is_shared);
+                            // 预填标题颜色规则：先以缓存的 AST 建行，表达式文本异步反格式化回填。
+                            let raw = v.title_colors.as_array().cloned().unwrap_or_default();
+                            let rows: Vec<TitleRule> = raw.iter().enumerate().map(|(i, r)| {
+                                TitleRule {
+                                    id: i as u32,
+                                    expr: RwSignal::new(String::new()),
+                                    color: RwSignal::new(
+                                        r.get("color").and_then(|c| c.as_str())
+                                            .unwrap_or("#3b82f6").to_string(),
+                                    ),
+                                    cached_expr: RwSignal::new(String::new()),
+                                    cached_ast: RwSignal::new(
+                                        r.get("query").cloned().unwrap_or(Value::Null),
+                                    ),
+                                }
+                            }).collect();
+                            next_rule_id.set(rows.len() as u32);
+                            config_rules.set(rows);
                             show_config_dialog.set(true);
+                            let ws_id = data.get().and_then(|r| r.ok()).map(|(w, _, _)| w.id.clone());
+                            let ids: Vec<u32> = config_rules.get_untracked().iter().map(|r| r.id).collect();
+                            if ids.is_empty() { return; }
+                            let Some(ws_id) = ws_id else { return };
+                            rules_loading.set(true);
+                            spawn_local(async move {
+                                for id in ids {
+                                    let ast = config_rules.get_untracked().iter()
+                                        .find(|r| r.id == id)
+                                        .map(|r| r.cached_ast.get_untracked())
+                                        .unwrap_or(Value::Null);
+                                    if ast.is_null() { continue; }
+                                    if let Ok(s) = format_view_query(&ws_id, &ast).await {
+                                        config_rules.update(|rows| {
+                                            if let Some(r) = rows.iter_mut().find(|r| r.id == id) {
+                                                // 用户可能在请求返回前已开始输入，此时不覆盖。
+                                                if r.expr.get_untracked().is_empty() {
+                                                    r.expr.set(s.clone());
+                                                    r.cached_expr.set(s);
+                                                }
+                                            }
+                                        });
+                                    }
+                                }
+                                rules_loading.set(false);
+                            });
                         }>{ic_setting()}"视图配置"</button>
                         <button class="btn pri" on:click=move |_| show_new.set(!show_new.get())>
                             {ic_add()}
@@ -454,9 +533,43 @@ pub fn WorkspaceMain() -> impl IntoView {
                                     on:change=move |ev| config_shared_input.set(event_target_checked(&ev)) />
                                 "共享给工作空间"
                             </label>
+                            <div class="tc-rules">
+                                <div class="tc-head">
+                                    <span>"标题颜色规则"</span>
+                                    <button class="btn sm" type="button" on:click=add_rule>"＋ 规则"</button>
+                                </div>
+                                <For
+                                    each=move || config_rules.get()
+                                    key=|r| r.id
+                                    children=move |r: TitleRule| {
+                                        let exc = r.expr;
+                                        let col = r.color;
+                                        let rid = r.id;
+                                        view! {
+                                            <div class="tc-row">
+                                                <input class="inp tc-expr" type="text"
+                                                    placeholder=r#"条件表达式，如：Task = "Open" AND Score >= 60"#
+                                                    prop:value=move || exc.get()
+                                                    on:input=move |ev| exc.set(event_target_value(&ev)) />
+                                                <input type="color" class="sw sm" title="标题颜色"
+                                                    prop:value=move || {
+                                                        let c = col.get();
+                                                        if c.is_empty() { "#3b82f6".to_string() } else { c }
+                                                    }
+                                                    on:input=move |ev| col.set(event_target_value(&ev)) />
+                                                <button class="vc-op vc-del" type="button" title="删除"
+                                                    on:click=move |_| config_rules.update(|rows| rows.retain(|x| x.id != rid))>"×"</button>
+                                            </div>
+                                        }
+                                    }
+                                />
+                                <p class="mut" style="font-size:11px;margin:2px 0 0">
+                                    "按顺序匹配，首个命中即上色；条件支持 AND / OR / NOT 组合标签。留空的行保存时忽略。"
+                                </p>
+                            </div>
                             <div style="display:flex;gap:8px;justify-content:flex-end">
                                 <button class="btn" on:click=move |_| show_config_dialog.set(false)>"取消"</button>
-                                <button class="btn pri" on:click=move |_| {
+                                <button class="btn pri" disabled=move || rules_loading.get() on:click=move |_| {
                                     let Some(v) = active_view.get() else { return };
                                     let id = v.id.clone();
                                     let name = config_name_input.get();
@@ -466,8 +579,44 @@ pub fn WorkspaceMain() -> impl IntoView {
                                     let ast = query_ast.get();
                                     let field = v.sort.field.clone();
                                     let desc = v.sort.desc;
-                                    let title_colors = v.title_colors.clone();
+                                    let ws_id = data.get().and_then(|r| r.ok()).map(|(w, _, _)| w.id.clone());
+                                    // 快照规则：条件表达式 + 颜色 + 预填缓存。
+                                    let draft: Vec<(String, String, String, Value)> =
+                                        config_rules.get_untracked().iter().map(|r| (
+                                            r.expr.get_untracked(),
+                                            r.color.get_untracked(),
+                                            r.cached_expr.get_untracked(),
+                                            r.cached_ast.get_untracked(),
+                                        )).collect();
                                     spawn_local(async move {
+                                        let mut out: Vec<Value> = Vec::new();
+                                        for (expr, color, cached_expr, cached_ast) in draft {
+                                            let ast = if !expr.trim().is_empty() && expr != cached_expr {
+                                                // 条件被编辑过：让服务端解析成 AST；失败则整体不保存。
+                                                let Some(ws_id) = ws_id.as_deref() else {
+                                                    error.set(Some("缺少工作空间，无法解析条件".to_string()));
+                                                    return;
+                                                };
+                                                match parse_view_query(ws_id, &expr).await {
+                                                    Ok(a) => a,
+                                                    Err(e) => {
+                                                        error.set(Some(format!("标题颜色规则条件无效：{e}")));
+                                                        return;
+                                                    }
+                                                }
+                                            } else if expr.trim().is_empty() && !cached_expr.is_empty() {
+                                                // 预填规则被清空 → 视为删除该条件。
+                                                continue;
+                                            } else if !cached_ast.is_null() {
+                                                // 未编辑（或预填反格式化失败）：直接复用预填 AST。
+                                                cached_ast
+                                            } else {
+                                                // 空条件且无预填 → 未填写，丢弃。
+                                                continue;
+                                            };
+                                            out.push(serde_json::json!({ "query": ast, "color": color }));
+                                        }
+                                        let title_colors = Value::Array(out);
                                         match update_view(&id, &name, &ast, &field, desc, &cols, shared, &title_colors).await {
                                             Ok(saved) => {
                                                 view_list.update(|l| {
