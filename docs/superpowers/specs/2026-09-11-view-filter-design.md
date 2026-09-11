@@ -188,7 +188,7 @@ impl SearchIndex {
 }
 ```
 
-- **schema**：`entry_code`(STRING|STORED)、`workspace_id`(STRING)、`title`/`content`/`labels`(TEXT, tokenizer=`cjk`)、`updated_at`(DATE|FAST)。
+- **schema**：`entry_code`(STRING|STORED)、`workspace_id`(STRING)、`title`/`content`/`labels`(TEXT, tokenizer=`cjk`)。（实现不含 `updated_at` 字段：排序在 §5.2 内存中按 `Entry` 完成，索引不读该字段。）
 - **分词器**：注册 `NgramTokenizer::new(1, 2)`（unigram + bigram）为 `cjk`。零新依赖，解决中文整句成单一 token 导致「查不到」的问题。
 - **写入**：`index_entry` 先按 `entry_code` `delete_term` 再 `add_document`，`commit()` 后 `reader.reload()`。`content` 取 `strip_rich_text(&entry.detail)` —— 新增助手，从 Delta JSON 的 `ops[].insert` 提取纯文本（非 Delta 时原样返回）。
 - **查询**：`QueryParser`（字段 title/content/labels，tokenizer `cjk`）与 `workspace_id` 的 TermQuery 取交集，`TopDocs::with_limit(limit)`，返回 entry_code 列表。
