@@ -43,9 +43,8 @@ pub fn WorkspaceMain() -> impl IntoView {
     let load_views = move |ws_id: String| {
         spawn_local(async move {
             if let Ok(list) = views(&ws_id).await {
-                if let Some(first) = list.first().cloned() {
-                    set_active(Some(first));
-                }
+                // 始终重设 active：列表为空时清空，避免残留上一工作空间的视图。
+                set_active(list.first().cloned());
                 view_list.set(list);
             }
         });
