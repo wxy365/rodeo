@@ -9,7 +9,6 @@ use crate::service::audit::audit_ops;
 use crate::service::label::check_color;
 use crate::storage::{cf, keys, BatchOp, DocStore};
 
-/// 校验标题颜色规则的取色格式（`#rrggbb`）。
 pub struct ViewService {
     store: Arc<DocStore>,
 }
