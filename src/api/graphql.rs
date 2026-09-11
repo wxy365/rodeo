@@ -603,7 +603,7 @@ impl Mutation {
         let schema = gql
             .services
             .label
-            .create_schema(auth.account_id, ws_id, &name, &title, vt, enum_values)?;
+            .create_schema(auth.account_id, ws_id, &name, &title, vt, enum_values, None, Vec::new())?;
         Ok(schema.into())
     }
 
@@ -622,7 +622,7 @@ impl Mutation {
         let schema = gql
             .services
             .label
-            .update_schema(auth.account_id, ws_id, &name, &title, enum_values)?;
+            .update_schema(auth.account_id, ws_id, &name, &title, enum_values, None, Vec::new())?;
         Ok(schema.into())
     }
 
@@ -670,7 +670,7 @@ impl Mutation {
         let v = gql
             .services
             .view
-            .create(auth.account_id, ws, &name, q, sort, columns, is_shared)?;
+            .create(auth.account_id, ws, &name, q, sort, columns, is_shared, Vec::new())?;
         Ok(GqlView::new(v))
     }
 
@@ -703,7 +703,7 @@ impl Mutation {
         let v = gql
             .services
             .view
-            .update(auth.account_id, view_id, &name, q, sort, columns, is_shared)?;
+            .update(auth.account_id, view_id, &name, q, sort, columns, is_shared, Vec::new())?;
         Ok(GqlView::new(v))
     }
 

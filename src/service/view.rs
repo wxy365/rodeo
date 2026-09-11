@@ -3,10 +3,19 @@ use std::sync::Arc;
 use chrono::Utc;
 use ulid::Ulid;
 
-use crate::domain::{AuditAction, AuditLog, LabelSchema, Query, SortSpec, View};
+use crate::domain::{AuditAction, AuditLog, LabelSchema, Query, SortSpec, TitleColorRule, View};
 use crate::error::AppError;
 use crate::service::audit::audit_ops;
+use crate::service::label::check_color;
 use crate::storage::{cf, keys, BatchOp, DocStore};
+
+/// 校验标题颜色规则的取色格式（`#rrggbb`）。
+fn check_title_colors(rules: &[TitleColorRule]) -> Result<(), AppError> {
+    for r in rules {
+        check_color(&r.color)?;
+    }
+    Ok(())
+}
 
 pub struct ViewService {
     store: Arc<DocStore>,
@@ -47,8 +56,10 @@ impl ViewService {
         sort: SortSpec,
         columns: Vec<String>,
         is_shared: bool,
+        title_colors: Vec<TitleColorRule>,
     ) -> Result<View, AppError> {
         self.validate(ws, name, &query, &columns)?;
+        check_title_colors(&title_colors)?;
         let now = Utc::now();
         let view = View {
             id: Ulid::new(),
@@ -61,7 +72,7 @@ impl ViewService {
             owner_id: actor,
             created_at: now,
             updated_at: now,
-            title_colors: Vec::new(),
+            title_colors,
         };
         let audit = AuditLog::new(
             AuditAction::ViewCreated,
@@ -116,15 +127,18 @@ impl ViewService {
         sort: SortSpec,
         columns: Vec<String>,
         is_shared: bool,
+        title_colors: Vec<TitleColorRule>,
     ) -> Result<View, AppError> {
         let mut view = self.get(id)?.ok_or(AppError::NotFound)?;
         self.validate(view.workspace_id, name, &query, &columns)?;
+        check_title_colors(&title_colors)?;
         let before = serde_json::to_string(&view).unwrap_or_default();
         view.name = name.trim().to_string();
         view.query = query;
         view.sort = sort;
         view.columns = columns;
         view.is_shared = is_shared;
+        view.title_colors = title_colors;
         view.updated_at = Utc::now();
         let after = serde_json::to_string(&view).unwrap_or_default();
         let audit = AuditLog::new(
@@ -190,7 +204,7 @@ mod tests {
     fn create_list_and_delete_with_audit() {
         let (dir, store, svc, ws, actor) = setup();
         let v = svc
-            .create(actor, ws, "全部任务", Query::all(), SortSpec::default(), vec!["Task".into()], false)
+            .create(actor, ws, "全部任务", Query::all(), SortSpec::default(), vec!["Task".into()], false, vec![])
             .unwrap();
         assert_eq!(v.name, "全部任务");
         assert!(!v.is_shared);
@@ -203,7 +217,7 @@ mod tests {
 
         // 共享视图对所有人可见
         let shared = svc
-            .create(actor, ws, "看板", Query::all(), SortSpec::default(), vec![], true)
+            .create(actor, ws, "看板", Query::all(), SortSpec::default(), vec![], true, vec![])
             .unwrap();
         assert_eq!(svc.list(Ulid::new(), ws).unwrap().len(), 1);
         assert_eq!(svc.list(Ulid::new(), ws).unwrap()[0].id, shared.id);
@@ -221,7 +235,7 @@ mod tests {
     #[test]
     fn create_rejects_unknown_column_and_bad_query() {
         let (dir, _store, svc, ws, actor) = setup();
-        let bad_col = svc.create(actor, ws, "x", Query::all(), SortSpec::default(), vec!["Nope".into()], false);
+        let bad_col = svc.create(actor, ws, "x", Query::all(), SortSpec::default(), vec!["Nope".into()], false, vec![]);
         assert!(matches!(bad_col.unwrap_err(), AppError::InvalidQuery(_)));
 
         let bad_q = Query::Cond(crate::domain::Condition {
@@ -230,7 +244,7 @@ mod tests {
             value: None,
         });
         assert!(matches!(
-            svc.create(actor, ws, "x", bad_q, SortSpec::default(), vec![], false).unwrap_err(),
+            svc.create(actor, ws, "x", bad_q, SortSpec::default(), vec![], false, vec![]).unwrap_err(),
             AppError::InvalidQuery(_)
         ));
         std::fs::remove_dir_all(&dir).ok();
@@ -239,9 +253,9 @@ mod tests {
     #[test]
     fn update_changes_fields_and_audits() {
         let (dir, store, svc, ws, actor) = setup();
-        let v = svc.create(actor, ws, "a", Query::all(), SortSpec::default(), vec![], false).unwrap();
+        let v = svc.create(actor, ws, "a", Query::all(), SortSpec::default(), vec![], false, vec![]).unwrap();
         let u = svc
-            .update(actor, v.id, "b", Query::all(), SortSpec::default(), vec!["Task".into()], true)
+            .update(actor, v.id, "b", Query::all(), SortSpec::default(), vec!["Task".into()], true, vec![])
             .unwrap();
         assert_eq!(u.name, "b");
         assert!(u.is_shared);

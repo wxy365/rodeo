@@ -48,6 +48,7 @@ impl Services {
             config,
         };
         services.search.backfill(&services.store)?;
+        services.entry.labelings_by_workspace_backfill(&services.store)?;
         Ok(services)
     }
 }

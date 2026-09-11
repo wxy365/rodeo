@@ -2,13 +2,49 @@ use std::sync::Arc;
 
 use ulid::Ulid;
 
-use crate::domain::{AuditAction, AuditLog, LabelSchema, LabelValueType};
+use crate::domain::{AuditAction, AuditLog, LabelSchema, LabelValueType, ValueColor};
 use crate::error::AppError;
 use crate::service::audit::audit_ops;
 use crate::storage::{cf, keys, BatchOp, DocStore};
 
+/// 校验颜色字符串为 `#rrggbb` 形式（不引入 regex 依赖）。
+pub(crate) fn check_color(c: &str) -> Result<(), AppError> {
+    let bytes = c.as_bytes();
+    let valid = bytes.len() == 7
+        && bytes[0] == b'#'
+        && bytes[1..].iter().all(|b| b.is_ascii_hexdigit());
+    if valid {
+        Ok(())
+    } else {
+        Err(AppError::InvalidQuery("颜色格式应为 #rrggbb".to_string()))
+    }
+}
+
+/// 校验基础色与值色：基础色格式；每个值色格式 + 枚举值须属于 `enum_values`。
+fn validate_colors(
+    value_type: LabelValueType,
+    enum_values: &[String],
+    color: &Option<String>,
+    value_colors: &[ValueColor],
+) -> Result<(), AppError> {
+    if let Some(c) = color {
+        check_color(c)?;
+    }
+    for vc in value_colors {
+        check_color(&vc.color)?;
+        if let Some(v) = &vc.value {
+            if value_type != LabelValueType::Enum || !enum_values.iter().any(|e| e == v) {
+                return Err(AppError::InvalidQuery(format!(
+                    "枚举值色引用了无效的值: {v}"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// 自定义标签 schema CRUD。schema 以 workspace 内唯一的 name 作为稳定键，
-/// 一经创建不可改名；update_schema 只允许改 title / enum_values。
+/// 一经创建不可改名；update_schema 可改 title / enum_values / color / value_colors。
 /// 与 WorkspaceService::create 内置的 Task/Bug schema 存放在同一 column family，
 /// list_schemas 天然返回内置 + 自定义。
 pub struct LabelService {
@@ -44,6 +80,8 @@ impl LabelService {
         title: &str,
         value_type: LabelValueType,
         enum_values: Vec<String>,
+        color: Option<String>,
+        value_colors: Vec<ValueColor>,
     ) -> Result<LabelSchema, AppError> {
         let name = name.trim();
         if name.is_empty() {
@@ -52,13 +90,15 @@ impl LabelService {
         if self.get_schema(ws_id, name)?.is_some() {
             return Err(AppError::LabelNameExists);
         }
+        validate_colors(value_type, &enum_values, &color, &value_colors)?;
         let schema = LabelSchema::new(
             ws_id,
             name.to_string(),
             title.trim().to_string(),
             value_type,
             enum_values,
-        );
+        )
+        .with_colors(color, value_colors);
         let audit = AuditLog::new(
             AuditAction::LabelSchemaCreated,
             actor,
@@ -85,11 +125,16 @@ impl LabelService {
         name: &str,
         title: &str,
         enum_values: Vec<String>,
+        color: Option<String>,
+        value_colors: Vec<ValueColor>,
     ) -> Result<LabelSchema, AppError> {
         let mut schema = self.get_schema(ws_id, name)?.ok_or(AppError::NotFound)?;
+        validate_colors(schema.value_type, &enum_values, &color, &value_colors)?;
         let before = serde_json::to_string(&schema).unwrap_or_default();
         schema.title = title.trim().to_string();
         schema.enum_values = enum_values;
+        schema.color = color;
+        schema.value_colors = value_colors;
         let after = serde_json::to_string(&schema).unwrap_or_default();
         let audit = AuditLog::new(
             AuditAction::LabelSchemaUpdated,
@@ -138,6 +183,8 @@ mod tests {
                 "优先级",
                 LabelValueType::Enum,
                 vec!["High".into(), "Low".into()],
+                None,
+                vec![],
             )
             .unwrap();
         assert_eq!(s.name, "Priority");
@@ -145,7 +192,7 @@ mod tests {
 
         // 重复名称报错：客户端可修复，需有专用变体而非笼统的 Internal。
         let err = svc
-            .create_schema(actor, ws_id, "Priority", "x", LabelValueType::String, vec![])
+            .create_schema(actor, ws_id, "Priority", "x", LabelValueType::String, vec![], None, vec![])
             .unwrap_err();
         assert!(matches!(err, AppError::LabelNameExists));
 
@@ -161,6 +208,8 @@ mod tests {
                 "Priority",
                 "优先级2",
                 vec!["High".into(), "Mid".into()],
+                None,
+                vec![],
             )
             .unwrap();
         assert_eq!(u.name, "Priority");
@@ -186,14 +235,14 @@ mod tests {
         let actor = Ulid::new();
 
         assert!(svc
-            .create_schema(actor, ws_id, "   ", "x", LabelValueType::String, vec![])
+            .create_schema(actor, ws_id, "   ", "x", LabelValueType::String, vec![], None, vec![])
             .is_err());
         assert!(svc
-            .create_schema(actor, ws_id, "", "x", LabelValueType::String, vec![])
+            .create_schema(actor, ws_id, "", "x", LabelValueType::String, vec![], None, vec![])
             .is_err());
 
         let s = svc
-            .create_schema(actor, ws_id, "  Priority  ", "  优先级  ", LabelValueType::String, vec![])
+            .create_schema(actor, ws_id, "  Priority  ", "  优先级  ", LabelValueType::String, vec![], None, vec![])
             .unwrap();
         assert_eq!(s.name, "Priority");
         assert_eq!(s.title, "优先级");
@@ -215,7 +264,7 @@ mod tests {
         let actor = Ulid::new();
 
         let err = svc
-            .update_schema(actor, ws_id, "DoesNotExist", "t", vec![])
+            .update_schema(actor, ws_id, "DoesNotExist", "t", vec![], None, vec![])
             .unwrap_err();
         assert!(matches!(err, AppError::NotFound));
 
@@ -254,6 +303,8 @@ mod tests {
                 "优先级",
                 LabelValueType::Enum,
                 vec!["High".into(), "Low".into()],
+                None,
+                vec![],
             )
             .unwrap();
         let all = label.list_schemas(ws_id).unwrap();
@@ -263,7 +314,7 @@ mod tests {
 
         // 自定义 schema 不能覆盖内置名称
         assert!(label
-            .create_schema(actor, ws_id, "Task", "自定义任务", LabelValueType::String, vec![])
+            .create_schema(actor, ws_id, "Task", "自定义任务", LabelValueType::String, vec![], None, vec![])
             .is_err());
 
         // 其他 workspace 看不到这些 schema

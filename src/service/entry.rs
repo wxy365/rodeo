@@ -305,6 +305,44 @@ impl EntryService {
         Ok(map)
     }
 
+    /// `labelings_by_workspace` 列族为空时，遍历 `ENTRIES`（取 workspace_id）+
+    /// `LABELINGS` 重建次级索引；已填充则直接返回 0（幂等）。
+    /// 返回回填的 labeling 条数。
+    pub fn labelings_by_workspace_backfill(&self, store: &DocStore) -> Result<usize, AppError> {
+        if !store.scan_prefix(cf::LABELINGS_BY_WORKSPACE, b"")?.is_empty() {
+            return Ok(0);
+        }
+        let mut ops = Vec::new();
+        let mut count = 0;
+        for (_, ev) in store.scan_prefix(cf::ENTRIES, b"")? {
+            let entry: Entry = bincode::deserialize(&ev)?;
+            for (_, lv) in store.scan_prefix(cf::LABELINGS, entry.code.as_bytes())? {
+                let l: Labeling = bincode::deserialize(&lv)?;
+                ops.push(BatchOp::put(
+                    cf::LABELINGS_BY_WORKSPACE,
+                    keys::labeling_by_workspace_key(entry.workspace_id, &l.entry_code, &l.label_name),
+                    &l,
+                )?);
+                count += 1;
+            }
+        }
+        if !ops.is_empty() {
+            store.write_batch(ops)?;
+        }
+        Ok(count)
+    }
+
+    /// 侧栏计数：复用 `query` 的 total（只取一页一条，避免重复过滤逻辑）。
+    pub fn count(&self, ws: Ulid, query: &Query) -> Result<usize, AppError> {
+        let r = self.query(
+            ws,
+            query,
+            &SortSpec::default(),
+            PageInput { page: 1, page_size: 1 },
+        )?;
+        Ok(r.total)
+    }
+
     /// 单次求值的查询编排：一次性取回候选行、按需取回打标与全文命中，再过滤/排序/分页。
     pub fn query(
         &self,
