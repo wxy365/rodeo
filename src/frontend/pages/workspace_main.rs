@@ -300,9 +300,10 @@ pub fn WorkspaceMain() -> impl IntoView {
                             let name = v.name.clone();
                             let field = v.sort.field.clone();
                             let desc = v.sort.desc;
+                            let title_colors = v.title_colors.clone();
                             spawn_local(async move {
                                 if let Ok(saved) =
-                                    update_view(&id, &name, &ast, &field, desc, &cols, shared).await
+                                    update_view(&id, &name, &ast, &field, desc, &cols, shared, &title_colors).await
                                 {
                                     view_list.update(|l| {
                                         if let Some(slot) = l.iter_mut().find(|x| x.id == saved.id) {
@@ -426,7 +427,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                         .map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
                                     spawn_local(async move {
                                         if let Ok(v) = create_view(&ws_id, &name, &serde_json::json!({"and": []}),
-                                            "updatedAt", true, &cols, shared).await {
+                                            "updatedAt", true, &cols, shared, &serde_json::json!([])).await {
                                             view_list.update(|l| l.push(v.clone()));
                                             set_active(Some(v));
                                             show_view_dialog.set(false);
@@ -465,8 +466,9 @@ pub fn WorkspaceMain() -> impl IntoView {
                                     let ast = query_ast.get();
                                     let field = v.sort.field.clone();
                                     let desc = v.sort.desc;
+                                    let title_colors = v.title_colors.clone();
                                     spawn_local(async move {
-                                        match update_view(&id, &name, &ast, &field, desc, &cols, shared).await {
+                                        match update_view(&id, &name, &ast, &field, desc, &cols, shared, &title_colors).await {
                                             Ok(saved) => {
                                                 view_list.update(|l| {
                                                     if let Some(slot) = l.iter_mut().find(|x| x.id == saved.id) {

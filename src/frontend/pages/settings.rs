@@ -74,7 +74,7 @@ pub fn WorkspaceSettings() -> impl IntoView {
             .filter(|s| !s.is_empty())
             .collect();
         spawn_local(async move {
-            match create_label_schema(&ws_id, &n, &t, &vt, &evals).await {
+            match create_label_schema(&ws_id, &n, &t, &vt, &evals, None, &serde_json::json!([])).await {
                 Ok(_) => {
                     new_name.set(String::new());
                     new_title.set(String::new());
@@ -204,6 +204,8 @@ fn schema_row(
 
     let title_input = RwSignal::new(s.title.clone());
     let enum_input = RwSignal::new(enum_str.clone());
+    let color_input = s.color.clone();
+    let value_colors_input = s.value_colors.clone();
 
     view! {
         <tr class="static">
@@ -252,8 +254,10 @@ fn schema_row(
                             let t = title_input.get();
                             let ws = ws2.clone();
                             let n = nm.clone();
+                            let clr = color_input.clone();
+                            let vcs = value_colors_input.clone();
                             spawn_local(async move {
-                                if let Err(e) = update_label_schema(&ws, &n, &t, &evals).await {
+                                if let Err(e) = update_label_schema(&ws, &n, &t, &evals, clr.as_deref(), &vcs).await {
                                     error.set(Some(e));
                                 }
                                 refresh.update(|x| *x += 1);

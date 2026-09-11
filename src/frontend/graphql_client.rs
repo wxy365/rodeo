@@ -114,6 +114,9 @@ pub struct LabelSchema {
     pub title: String,
     pub value_type: String,
     pub enum_values: Vec<String>,
+    pub color: Option<String>,
+    #[serde(default)]
+    pub value_colors: Value,
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -224,7 +227,7 @@ pub async fn create_entry(workspace_id: &str, title: &str) -> Result<Entry, Stri
 
 pub async fn label_schemas(workspace_id: &str) -> Result<Vec<LabelSchema>, String> {
     let data = graphql(
-        "query($id: ID!) { labelSchemas(workspaceId: $id) { name title valueType enumValues } }",
+        "query($id: ID!) { labelSchemas(workspaceId: $id) { name title valueType enumValues color valueColors } }",
         json!({ "id": workspace_id }),
     )
     .await?;
@@ -298,10 +301,12 @@ pub async fn create_label_schema(
     title: &str,
     value_type: &str,
     enum_values: &[String],
+    color: Option<&str>,
+    value_colors: &Value,
 ) -> Result<LabelSchema, String> {
     let data = graphql(
-        "mutation($id: ID!, $n: String!, $t: String!, $vt: String!, $ev: [String!]!) { createLabelSchema(workspaceId: $id, name: $n, title: $t, valueType: $vt, enumValues: $ev) { name title valueType enumValues } }",
-        json!({ "id": workspace_id, "n": name, "t": title, "vt": value_type, "ev": enum_values }),
+        "mutation($id: ID!, $n: String!, $t: String!, $vt: String!, $ev: [String!]!, $color: String, $vc: JSON!) { createLabelSchema(workspaceId: $id, name: $n, title: $t, valueType: $vt, enumValues: $ev, color: $color, valueColors: $vc) { name title valueType enumValues color valueColors } }",
+        json!({ "id": workspace_id, "n": name, "t": title, "vt": value_type, "ev": enum_values, "color": color, "vc": value_colors }),
     )
     .await?;
     serde_json::from_value(data.get("createLabelSchema").cloned().unwrap_or(Value::Null))
@@ -313,10 +318,12 @@ pub async fn update_label_schema(
     name: &str,
     title: &str,
     enum_values: &[String],
+    color: Option<&str>,
+    value_colors: &Value,
 ) -> Result<LabelSchema, String> {
     let data = graphql(
-        "mutation($id: ID!, $n: String!, $t: String!, $ev: [String!]!) { updateLabelSchema(workspaceId: $id, name: $n, title: $t, enumValues: $ev) { name title valueType enumValues } }",
-        json!({ "id": workspace_id, "n": name, "t": title, "ev": enum_values }),
+        "mutation($id: ID!, $n: String!, $t: String!, $ev: [String!]!, $color: String, $vc: JSON!) { updateLabelSchema(workspaceId: $id, name: $n, title: $t, enumValues: $ev, color: $color, valueColors: $vc) { name title valueType enumValues color valueColors } }",
+        json!({ "id": workspace_id, "n": name, "t": title, "ev": enum_values, "color": color, "vc": value_colors }),
     )
     .await?;
     serde_json::from_value(data.get("updateLabelSchema").cloned().unwrap_or(Value::Null))
@@ -366,6 +373,9 @@ pub struct View {
     pub columns: Vec<String>,
     pub is_shared: bool,
     pub owner_id: String,
+    #[serde(default)]
+    pub title_colors: Value,
+    pub entry_count: i64,
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -377,7 +387,8 @@ pub struct EntryPage {
     pub page_size: i64,
 }
 
-const VIEW_FIELDS: &str = "id name query queryExpr sort { field desc } columns isShared ownerId";
+const VIEW_FIELDS: &str =
+    "id name query queryExpr sort { field desc } columns isShared ownerId titleColors entryCount";
 
 pub async fn views(workspace_id: &str) -> Result<Vec<View>, String> {
     let q = format!("query($id: ID!) {{ views(workspaceId: $id) {{ {VIEW_FIELDS} }} }}");
@@ -419,16 +430,18 @@ pub async fn create_view(
     desc: bool,
     columns: &[String],
     is_shared: bool,
+    title_colors: &Value,
 ) -> Result<View, String> {
     let q = format!(
-        "mutation($id: ID!, $n: String!, $q: JSON!, $s: SortInput, $c: [String!]!, $sh: Boolean!) {{ \
-         createView(workspaceId: $id, name: $n, query: $q, sort: $s, columns: $c, isShared: $sh) {{ {VIEW_FIELDS} }} }}"
+        "mutation($id: ID!, $n: String!, $q: JSON!, $s: SortInput, $c: [String!]!, $sh: Boolean!, $tc: JSON!) {{ \
+         createView(workspaceId: $id, name: $n, query: $q, sort: $s, columns: $c, isShared: $sh, titleColors: $tc) {{ {VIEW_FIELDS} }} }}"
     );
     let data = graphql(
         &q,
         json!({
             "id": workspace_id, "n": name, "q": query,
             "s": { "field": sort_field, "desc": desc }, "c": columns, "sh": is_shared,
+            "tc": title_colors,
         }),
     )
     .await?;
@@ -444,16 +457,18 @@ pub async fn update_view(
     desc: bool,
     columns: &[String],
     is_shared: bool,
+    title_colors: &Value,
 ) -> Result<View, String> {
     let q = format!(
-        "mutation($id: ID!, $n: String!, $q: JSON!, $s: SortInput, $c: [String!]!, $sh: Boolean!) {{ \
-         updateView(id: $id, name: $n, query: $q, sort: $s, columns: $c, isShared: $sh) {{ {VIEW_FIELDS} }} }}"
+        "mutation($id: ID!, $n: String!, $q: JSON!, $s: SortInput, $c: [String!]!, $sh: Boolean!, $tc: JSON!) {{ \
+         updateView(id: $id, name: $n, query: $q, sort: $s, columns: $c, isShared: $sh, titleColors: $tc) {{ {VIEW_FIELDS} }} }}"
     );
     let data = graphql(
         &q,
         json!({
             "id": id, "n": name, "q": query,
             "s": { "field": sort_field, "desc": desc }, "c": columns, "sh": is_shared,
+            "tc": title_colors,
         }),
     )
     .await?;
