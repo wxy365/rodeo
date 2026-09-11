@@ -58,8 +58,8 @@ pub struct ValueColor {
 
 **取色规则**（`fn resolve_color(label: &LabelSchema, value: &serde_json::Value) -> Option<String>`，纯函数，前端也有一份等价实现）：
 
-1. Enum：按 `value_colors` 里 `Value{value}` 精确匹配，首个命中。
-2. Integer/Float：按 `Range` 顺序，`min`（含）≤ v < `max`（不含），`min`/`max` 省略视为无界，首个命中。
+1. Enum：按 `value_colors` 里 `value` 字段精确匹配，首个命中。
+2. Integer/Float：按 `min`/`max` 区间顺序，`min`（含）≤ v < `max`（不含），`min`/`max` 省略视为无界，首个命中。
 3. 未命中 → `label.color`；再没有 → `None`（前端回退到现有哈希配色）。
 
 ### 3.2 View 扩展（`src/domain/view.rs`）

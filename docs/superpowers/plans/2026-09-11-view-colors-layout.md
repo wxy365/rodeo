@@ -97,7 +97,7 @@ git commit -m "feat(domain): add label colors and view title-color rules"
 
 - [ ] **Step 1: 颜色校验助手**
 
-在 `src/service/label.rs` 加 `fn check_color(c: &str) -> Result<(), AppError>`：`^#[0-9a-fA-F]{6}$`，否则 `InvalidQuery("颜色格式应为 #rrggbb")`；对 `ValueColor` 里每个 `color` 与 Enum 的 `Value{value}`（须在 `enum_values` 内）一并校验。
+在 `src/service/label.rs` 加 `fn check_color(c: &str) -> Result<(), AppError>`：`^#[0-9a-fA-F]{6}$`，否则 `InvalidQuery("颜色格式应为 #rrggbb")`；对 `ValueColor` 里每个 `color` 与 Enum 的 `value` 字段（须在 `enum_values` 内）一并校验。
 
 - [ ] **Step 2: create/update 签名与落库**（label.rs）——把 `color`/`value_colors` 写进 `LabelSchema`，保存前调 `check_color`。
 
