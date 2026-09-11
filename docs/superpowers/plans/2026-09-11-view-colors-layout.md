@@ -30,7 +30,7 @@
 **Interfaces:**
 - Produces:
   - `LabelSchema { …, color: Option<String>, value_colors: Vec<ValueColor> }`，两者 `#[serde(default)]`
-  - `enum ValueColor { Range{min:Option<f64>,max:Option<f64>,color:String}, Value{value:String,color:String} }`（`#[serde(tag="kind", rename_all="camelCase")]`，`PartialEq`）
+  - `struct ValueColor { color: String, min: Option<f64>, max: Option<f64>, value: Option<String> }`（`#[serde(rename_all="camelCase")]`，`PartialEq`）。**不用 tagged enum**：`LabelSchema` 走 bincode，bincode 不支持 `deserialize_any`。语义：`value` 为 `Some` → 枚举精确匹配；否则按 `min`/`max` 数值区间（`None` 无界）。
   - `LabelSchema::new(ws, name, title, value_type, enum_values)` 保持原签名（color/value_colors 默认空）；新增 `with_colors(self, color, value_colors) -> Self`
   - `pub fn resolve_color(schema: &LabelSchema, value: &serde_json::Value) -> Option<String>`
   - `View { …, title_colors: Vec<TitleColorRule> }`（`#[serde(default)]`）
@@ -38,7 +38,7 @@
 
 - [ ] **Step 1: 实现 `LabelSchema` 扩展与 `ValueColor`**
 
-在 `src/domain/label.rs`：给 `LabelSchema` 加 `color`/`value_colors`（`#[serde(default)]`），`new` 里置 `None`/`vec![]`，加 `with_colors`。加 `ValueColor` 枚举（派生 `Debug, Clone, PartialEq, Serialize, Deserialize`）。
+在 `src/domain/label.rs`：给 `LabelSchema` 加 `color`/`value_colors`（`#[serde(default)]`），`new` 里置 `None`/`vec![]`，加 `with_colors`。加 `ValueColor` **普通 struct**（非 tagged enum：bincode 不支持 `deserialize_any`；派生 `Debug, Clone, PartialEq, Serialize, Deserialize`）。
 
 - [ ] **Step 2: 实现 `resolve_color`**
 
@@ -46,21 +46,15 @@
 /// 标签值 → 颜色：Enum 精确匹配；数值按区间（左闭右开，首个命中）；未命中回退基础色。
 pub fn resolve_color(schema: &LabelSchema, value: &serde_json::Value) -> Option<String> {
     for vc in &schema.value_colors {
-        match vc {
-            ValueColor::Value { value: want, color } => {
-                if value.as_str() == Some(want.as_str()) {
-                    return Some(color.clone());
-                }
-            }
-            ValueColor::Range { min, max, color } => {
-                if let Some(v) = value.as_f64() {
-                    let lo_ok = min.map_or(true, |lo| v >= lo);
-                    let hi_ok = max.map_or(true, |hi| v < hi);
-                    if lo_ok && hi_ok {
-                        return Some(color.clone());
-                    }
-                }
-            }
+        let hit = if let Some(want) = &vc.value {
+            value.as_str() == Some(want.as_str())
+        } else if let Some(v) = value.as_f64() {
+            vc.min.map_or(true, |lo| v >= lo) && vc.max.map_or(true, |hi| v < hi)
+        } else {
+            false
+        };
+        if hit {
+            return Some(vc.color.clone());
         }
     }
     schema.color.clone()

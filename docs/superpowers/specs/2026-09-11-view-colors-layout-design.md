@@ -43,12 +43,18 @@ pub struct LabelSchema {
     pub value_colors: Vec<ValueColor>,  // 值 → 色
 }
 
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum ValueColor {
-    Range { min: Option<f64>, max: Option<f64>, color: String }, // Integer/Float，左闭右开
-    Value { value: String, color: String },                      // Enum 精确匹配
+// 注意：LabelSchema 以 bincode 持久化，bincode 不支持 internally-tagged enum
+// （deserialize_any）。故此处用普通 struct，bincode 与 JSON 均安全。
+#[serde(rename_all = "camelCase")]
+pub struct ValueColor {
+    pub color: String,
+    pub min: Option<f64>,    // 数值区间下界（含）；Enum 时为空
+    pub max: Option<f64>,    // 数值区间上界（不含）；Enum 时为空
+    pub value: Option<String>, // Enum 精确值；数值时为空
 }
 ```
+
+`ValueColor` 语义：`value` 为 `Some` → 枚举值精确匹配；否则视 `min`/`max` 为数值区间（`None` 表示无界）。
 
 **取色规则**（`fn resolve_color(label: &LabelSchema, value: &serde_json::Value) -> Option<String>`，纯函数，前端也有一份等价实现）：
 

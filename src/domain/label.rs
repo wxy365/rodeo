@@ -118,14 +118,16 @@ pub struct LabelSchema {
     pub value_colors: Vec<ValueColor>,
 }
 
-/// 标签值到颜色的映射规则。
+/// 标签值到颜色的映射规则。用普通 struct 而非 tagged enum：`LabelSchema` 以 bincode
+/// 持久化，bincode 不支持 `deserialize_any`（internally-tagged enum 依赖它）。
+/// 语义：`value` 为 `Some` → 枚举精确匹配；否则按 `min`（含）/`max`（不含）数值区间，None 无界。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-pub enum ValueColor {
-    /// Integer/Float：`min`（含）≤ v < `max`（不含），None 表示无界。
-    Range { min: Option<f64>, max: Option<f64>, color: String },
-    /// Enum：精确匹配 `value`。
-    Value { value: String, color: String },
+#[serde(rename_all = "camelCase")]
+pub struct ValueColor {
+    pub color: String,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    pub value: Option<String>,
 }
 
 impl LabelSchema {
@@ -188,21 +190,15 @@ impl LabelSchema {
 /// 标签值 → 颜色：Enum 精确匹配；数值按区间（左闭右开，首个命中）；未命中回退基础色。
 pub fn resolve_color(schema: &LabelSchema, value: &serde_json::Value) -> Option<String> {
     for vc in &schema.value_colors {
-        match vc {
-            ValueColor::Value { value: want, color } => {
-                if value.as_str() == Some(want.as_str()) {
-                    return Some(color.clone());
-                }
-            }
-            ValueColor::Range { min, max, color } => {
-                if let Some(v) = value.as_f64() {
-                    let lo_ok = min.map_or(true, |lo| v >= lo);
-                    let hi_ok = max.map_or(true, |hi| v < hi);
-                    if lo_ok && hi_ok {
-                        return Some(color.clone());
-                    }
-                }
-            }
+        let hit = if let Some(want) = &vc.value {
+            value.as_str() == Some(want.as_str())
+        } else if let Some(v) = value.as_f64() {
+            vc.min.map_or(true, |lo| v >= lo) && vc.max.map_or(true, |hi| v < hi)
+        } else {
+            false
+        };
+        if hit {
+            return Some(vc.color.clone());
         }
     }
     schema.color.clone()
