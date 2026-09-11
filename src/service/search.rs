@@ -99,7 +99,13 @@ impl SearchIndex {
         })
     }
 
-    pub fn index_entry(&self, entry: &Entry, labels: &[Labeling]) -> Result<(), AppError> {
+    /// 将一条文档写入给定 writer（不 commit），供单条索引与批量回填复用。
+    fn add_entry_doc(
+        &self,
+        writer: &IndexWriter,
+        entry: &Entry,
+        labels: &[Labeling],
+    ) -> Result<(), AppError> {
         let label_text = labels
             .iter()
             .map(|l| {
@@ -111,11 +117,6 @@ impl SearchIndex {
             })
             .collect::<Vec<_>>()
             .join(" ");
-
-        let mut writer = self
-            .writer
-            .lock()
-            .map_err(|_| AppError::Internal("索引写锁中毒".into()))?;
         writer.delete_term(Term::from_field_text(self.f_code, &entry.code));
         writer
             .add_document(doc!(
@@ -126,6 +127,15 @@ impl SearchIndex {
                 self.f_labels => label_text,
             ))
             .map_err(srch_err)?;
+        Ok(())
+    }
+
+    pub fn index_entry(&self, entry: &Entry, labels: &[Labeling]) -> Result<(), AppError> {
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|_| AppError::Internal("索引写锁中毒".into()))?;
+        self.add_entry_doc(&writer, entry, labels)?;
         writer.commit().map_err(srch_err)?;
         drop(writer);
         self.reader.reload().map_err(srch_err)?;
@@ -181,11 +191,16 @@ impl SearchIndex {
     }
 
     /// 索引为空时从 RocksDB 回填；已有文档则跳过（幂等）。
+    /// 全部文档在同一个 writer 会话内写入，末尾只 commit / reload 一次。
     pub fn backfill(&self, store: &DocStore) -> Result<usize, AppError> {
         if self.num_docs() > 0 {
             return Ok(0);
         }
         let rows = store.scan_prefix(cf::ENTRIES, b"")?;
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|_| AppError::Internal("索引写锁中毒".into()))?;
         let mut count = 0;
         for (_, v) in rows {
             let entry: Entry = bincode::deserialize(&v)?;
@@ -197,9 +212,12 @@ impl SearchIndex {
                 .into_iter()
                 .map(|(_, lv)| bincode::deserialize::<Labeling>(&lv))
                 .collect::<Result<Vec<_>, _>>()?;
-            self.index_entry(&entry, &labels)?;
+            self.add_entry_doc(&writer, &entry, &labels)?;
             count += 1;
         }
+        writer.commit().map_err(srch_err)?;
+        drop(writer);
+        self.reader.reload().map_err(srch_err)?;
         Ok(count)
     }
 }
