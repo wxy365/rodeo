@@ -10,13 +10,6 @@ use crate::service::label::check_color;
 use crate::storage::{cf, keys, BatchOp, DocStore};
 
 /// 校验标题颜色规则的取色格式（`#rrggbb`）。
-fn check_title_colors(rules: &[TitleColorRule]) -> Result<(), AppError> {
-    for r in rules {
-        check_color(&r.color)?;
-    }
-    Ok(())
-}
-
 pub struct ViewService {
     store: Arc<DocStore>,
 }
@@ -33,7 +26,14 @@ impl ViewService {
             .collect()
     }
 
-    fn validate(&self, ws: Ulid, name: &str, query: &Query, columns: &[String]) -> Result<(), AppError> {
+    fn validate(
+        &self,
+        ws: Ulid,
+        name: &str,
+        query: &Query,
+        columns: &[String],
+        title_colors: &[TitleColorRule],
+    ) -> Result<(), AppError> {
         if name.trim().is_empty() {
             return Err(AppError::InvalidQuery("视图名称不能为空".to_string()));
         }
@@ -43,7 +43,13 @@ impl ViewService {
                 return Err(AppError::InvalidQuery(format!("列引用了不存在的标签: {c}")));
             }
         }
-        query.validate(&schemas)
+        query.validate(&schemas)?;
+        // 标题色规则：颜色格式 + 条件 schema 校验（§7）。
+        for r in title_colors {
+            check_color(&r.color)?;
+            r.query.validate(&schemas)?;
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -58,8 +64,7 @@ impl ViewService {
         is_shared: bool,
         title_colors: Vec<TitleColorRule>,
     ) -> Result<View, AppError> {
-        self.validate(ws, name, &query, &columns)?;
-        check_title_colors(&title_colors)?;
+        self.validate(ws, name, &query, &columns, &title_colors)?;
         let now = Utc::now();
         let view = View {
             id: Ulid::new(),
@@ -130,8 +135,7 @@ impl ViewService {
         title_colors: Vec<TitleColorRule>,
     ) -> Result<View, AppError> {
         let mut view = self.get(id)?.ok_or(AppError::NotFound)?;
-        self.validate(view.workspace_id, name, &query, &columns)?;
-        check_title_colors(&title_colors)?;
+        self.validate(view.workspace_id, name, &query, &columns, &title_colors)?;
         let before = serde_json::to_string(&view).unwrap_or_default();
         view.name = name.trim().to_string();
         view.query = query;
