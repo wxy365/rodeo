@@ -203,6 +203,13 @@ select:focus {
     border-bottom: 1px solid var(--line);
     background: var(--bg2);
 }
+.tbl th.sortable {
+    cursor: pointer;
+    user-select: none;
+}
+.tbl th.sortable:hover {
+    color: var(--ink);
+}
 .tbl td {
     padding: 10px 12px;
     border-bottom: 1px solid var(--line);

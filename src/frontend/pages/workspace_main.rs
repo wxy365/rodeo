@@ -3,13 +3,14 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
 use leptos_router::hooks::{use_navigate, use_params_map};
-use serde_json::Value;
 
-use crate::frontend::components::{display_enum_value, label_chip_class, logged_out, value_to_string};
+use crate::frontend::components::{
+    display_enum_value, label_chip_class, logged_out, short_time, value_to_string,
+};
 use crate::frontend::graphql_client::{
     create_entry, create_view, delete_entry, delete_view, entry, format_view_query, label_schemas,
-    parse_view_query, query_entries, update_entry, views, workspace_by_slug, Entry, Labeling,
-    LabelSchema, View, Workspace,
+    parse_view_query, query_entries, update_entry, update_view, views, workspace_by_slug, Entry,
+    Labeling, LabelSchema, View, Workspace,
 };
 use crate::frontend::icons::{
     ic_add, ic_back, ic_close, ic_folder, ic_full, ic_search, ic_setting, ic_share,
@@ -40,6 +41,10 @@ pub fn WorkspaceMain() -> impl IntoView {
     let ad_hoc_text = RwSignal::new(String::new());
     let new_cond_label = RwSignal::new(String::new());
     let refresh_view = RwSignal::new(0u32);
+    // ---- 分页状态 ----
+    let page_signal = RwSignal::new(1i64);
+    let page_size: i64 = 20;
+    let total_signal = RwSignal::new(0i64);
 
     // ---- 视图侧栏状态 ----
     let view_list = RwSignal::new(Vec::<View>::new());
@@ -61,6 +66,11 @@ pub fn WorkspaceMain() -> impl IntoView {
         );
         active_id.set(new_id);
         active_view.set(v);
+        // 切换视图回到第 1 页，避免旧的页码超出新视图总页数导致空表。
+        // 仅在实际需要时写，防止无谓地多触发一次 Effect。
+        if page_signal.get_untracked() != 1 {
+            page_signal.set(1);
+        }
     };
     let load_views = move |ws_id: String| {
         spawn_local(async move {
@@ -113,19 +123,23 @@ pub fn WorkspaceMain() -> impl IntoView {
         }
         // 查询须在 spawn 前同步组装，signal 读取才会登记为 Effect 依赖。
         // 条件来自 query_ast（筛选芯片 / 表达式编辑它），再并入顶栏 ad-hoc 全文词。
-        let ast = with_text(&query_ast.get(), &ad_hoc_text.get());
+        // R16：ad-hoc 词仅在回车时写入 query_ast，故这里用 get_untracked 读取，
+        // 避免每次击键都触发重查；query_ast 才是真正的重查触发器。
+        let ast = with_text(&query_ast.get(), &ad_hoc_text.get_untracked());
         let sort_field = active_view
             .get()
             .map(|v| v.sort.field)
             .unwrap_or_else(|| "updatedAt".to_string());
         let sort_desc = active_view.get().map(|v| v.sort.desc).unwrap_or(true);
+        let page_now = page_signal.get();
         spawn_local(async move {
             let result = async {
                 let ws = workspace_by_slug(&s).await?.ok_or("工作空间不存在".to_string())?;
-                // Task 11 改为真实分页；此步先用 page=1、page_size=100 跑通。
-                let page = query_entries(&ws.id, &ast, &sort_field, sort_desc, 1, 100).await?;
+                let ep = query_entries(&ws.id, &ast, &sort_field, sort_desc, page_now, page_size)
+                    .await?;
+                total_signal.set(ep.total);
                 let schema_list = label_schemas(&ws.id).await?;
-                Ok::<_, String>((ws, page.items, schema_list))
+                Ok::<_, String>((ws, ep.items, schema_list))
             }
             .await;
             if let Ok((ref w, _, ref list)) = result {
@@ -244,7 +258,35 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 }>"表达式"</button>
                             }.into_any()
                         }}
-                        <span style="margin-left:auto" class="mut">{move || format!("排序：{}", sort_label())}</span>
+                        <button class="btn" style="margin-left:auto" on:click=move |_| {
+                            let Some(v) = active_view.get() else { return };
+                            let ast = query_ast.get();
+                            let cols = v.columns.clone();
+                            let shared = v.is_shared;
+                            let id = v.id.clone();
+                            let name = v.name.clone();
+                            let field = v.sort.field.clone();
+                            let desc = v.sort.desc;
+                            spawn_local(async move {
+                                if let Ok(saved) =
+                                    update_view(&id, &name, &ast, &field, desc, &cols, shared).await
+                                {
+                                    view_list.update(|l| {
+                                        if let Some(slot) = l.iter_mut().find(|x| x.id == saved.id) {
+                                            *slot = saved.clone();
+                                        }
+                                    });
+                                    active_view.set(Some(saved));
+                                }
+                            });
+                        }>"保存视图"</button>
+                        <span class="mut">{move || {
+                            let (field, desc) = active_view
+                                .get()
+                                .map(|v| (v.sort.field, v.sort.desc))
+                                .unwrap_or_else(|| ("updatedAt".to_string(), true));
+                            format!("排序：{}", sort_label(&field, desc))
+                        }}</span>
                     </div>
 
                     {move || if show_new.get() {
@@ -263,7 +305,56 @@ pub fn WorkspaceMain() -> impl IntoView {
 
                     <div class=move || if selected.get().is_empty() { "view-body full".to_string() } else { "view-body".to_string() }>
                         <div>
-                            <EntryTable data schemas selected />
+                            <EntryTable
+                                data
+                                schemas
+                                selected
+                                columns=Signal::derive(move || {
+                                    active_view.get().map(|v| v.columns).unwrap_or_default()
+                                })
+                                sort_field=Signal::derive(move || {
+                                    active_view
+                                        .get()
+                                        .map(|v| v.sort.field)
+                                        .unwrap_or_else(|| "updatedAt".to_string())
+                                })
+                                sort_desc=Signal::derive(move || {
+                                    active_view.get().map(|v| v.sort.desc).unwrap_or(true)
+                                })
+                                on_sort=Callback::new(move |field: String| {
+                                    // 后端 SortField 仅支持 updatedAt/createdAt/title，
+                                    // 未知字段会被拒绝；这里只接受受支持字段。
+                                    if !matches!(field.as_str(), "updatedAt" | "createdAt" | "title") {
+                                        return;
+                                    }
+                                    let (cur_field, cur_desc) = active_view
+                                        .get()
+                                        .map(|v| (v.sort.field, v.sort.desc))
+                                        .unwrap_or_else(|| ("updatedAt".to_string(), true));
+                                    let desc = if field == cur_field { !cur_desc } else { true };
+                                    if let Some(mut v) = active_view.get() {
+                                        v.sort.field = field;
+                                        v.sort.desc = desc;
+                                        active_view.set(Some(v));
+                                    }
+                                    page_signal.set(1);
+                                })
+                            />
+                            <div class="pager">
+                                <button on:click=move |_| page_signal.update(|p| *p = (*p - 1).max(1))>"‹"</button>
+                                {move || {
+                                    let pages = ((total_signal.get() + page_size - 1) / page_size).max(1);
+                                    (1..=pages.min(9)).map(|p| {
+                                        let cur = page_signal.get();
+                                        view! {
+                                            <button class=if p == cur { "on" } else { "" }
+                                                on:click=move |_| page_signal.set(p)>{p}</button>
+                                        }
+                                    }).collect::<Vec<_>>()
+                                }}
+                                <button on:click=move |_| page_signal.update(|p| *p += 1)>"›"</button>
+                                <span class="mut">{move || format!("共 {} 条", total_signal.get())}</span>
+                            </div>
                         </div>
                         <EntryPanel code=selected slug=slug().to_string() schemas refresh />
                     </div>
@@ -372,84 +463,112 @@ fn WorkspaceSidebar(
     }
 }
 
+/// 动态列条目表：列来自当前视图（`columns` 里的标签 name），标题/更新时间可点击排序。
 #[component]
 fn EntryTable(
     data: RwSignal<Option<Result<(Workspace, Vec<Entry>, Vec<LabelSchema>), String>>>,
     schemas: RwSignal<Vec<LabelSchema>>,
     selected: RwSignal<String>,
+    columns: Signal<Vec<String>>,
+    sort_field: Signal<String>,
+    sort_desc: Signal<bool>,
+    on_sort: Callback<String>,
 ) -> impl IntoView {
+    let cols = move || columns.get();
+    // 当前排序列的升降序箭头；未排序列为空。
+    let arrow = move |field: &str| -> &'static str {
+        if sort_field.get() == field {
+            if sort_desc.get() {
+                " ↓"
+            } else {
+                " ↑"
+            }
+        } else {
+            ""
+        }
+    };
+    // 可排序表头。后端 SortField 仅支持 title/updatedAt/createdAt，
+    // 标签列因此不接排序，避免提交未知字段被服务端拒绝。
+    let sortable_th = move |field: &'static str, label: &'static str| {
+        view! {
+            <th class="sortable" on:click=move |_| on_sort.run(field.to_string())>
+                {move || format!("{label}{}", arrow(field))}
+            </th>
+        }
+    };
+
     view! {
         <table class="tbl">
             <thead>
                 <tr>
                     <th>"Code"</th>
-                    <th>"标题"</th>
-                    {move || schemas.get().iter().map(|s| view! {
-                        <th>{s.title.clone()}</th>
+                    {sortable_th("title", "标题")}
+                    {move || cols().iter().map(|name| {
+                        let title = schemas.get().into_iter()
+                            .find(|s| &s.name == name)
+                            .map(|s| s.title)
+                            .unwrap_or_else(|| name.clone());
+                        view! { <th>{title}</th> }
                     }).collect::<Vec<_>>()}
-                    <th>"更新时间"</th>
+                    {sortable_th("updatedAt", "更新时间")}
                 </tr>
             </thead>
             <tbody>
                 {move || match data.get() {
-                    None => view! { <tr><td colspan="20" class="empty">"加载中…"</td></tr> }.into_any(),
-                    Some(Err(e)) => view! { <tr><td colspan="20" class="empty error">{e.clone()}</td></tr> }.into_any(),
-                    Some(Ok((_ws, items, _schemas))) => {
+                    None => view! {
+                        <tr><td colspan="20" class="empty">"加载中…"</td></tr>
+                    }.into_any(),
+                    Some(Err(e)) => view! {
+                        <tr><td colspan="20" class="empty error">{e.clone()}</td></tr>
+                    }.into_any(),
+                    Some(Ok((_ws, items, _))) if items.is_empty() => view! {
+                        <tr><td colspan="20" class="empty">"暂无条目，点击「新建 Entry」创建"</td></tr>
+                    }.into_any(),
+                    Some(Ok((_ws, items, _))) => {
                         let sc = schemas.get();
-                        if items.is_empty() {
-                            view! { <tr><td colspan="20" class="empty">"暂无条目，点击「新建 Entry」创建"</td></tr> }.into_any()
-                        } else {
-                            items.iter().map(|e| entry_row(e, &sc, selected)).collect::<Vec<_>>().into_any()
-                        }
+                        items.iter().map(|e| {
+                            let code = e.code.clone();
+                            let code_for_class = e.code.clone();
+                            let code_for_click = e.code.clone();
+                            let labels = e.labels.clone();
+                            let names = cols();
+                            view! {
+                                <tr
+                                    class=move || if selected.get() == code_for_class { "sel".to_string() } else { String::new() }
+                                    on:click=move |_| selected.set(code_for_click.clone())
+                                >
+                                    <td class="code">{code.clone()}</td>
+                                    <td>{e.title.clone()}</td>
+                                    {names.iter().map(|name| {
+                                        let lv = labels.iter()
+                                            .find(|l| &l.label_name == name)
+                                            .map(|l| l.value.clone());
+                                        match lv {
+                                            None => view! { <td class="mut">"—"</td> }.into_any(),
+                                            Some(v) => {
+                                                let s = value_to_string(&v);
+                                                let is_enum = sc.iter().any(|sch| {
+                                                    &sch.name == name && sch.value_type == "enum"
+                                                });
+                                                if is_enum {
+                                                    let cls = label_chip_class(name, &s);
+                                                    view! {
+                                                        <td><span class=format!("chip {cls}")>{display_enum_value(&s)}</span></td>
+                                                    }.into_any()
+                                                } else {
+                                                    view! { <td>{s}</td> }.into_any()
+                                                }
+                                            }
+                                        }
+                                    }).collect::<Vec<_>>()}
+                                    <td class="mut">{short_time(&e.updated_at)}</td>
+                                </tr>
+                            }
+                        }).collect::<Vec<_>>().into_any()
                     }
                 }}
             </tbody>
         </table>
-    }
-}
-
-fn find_label<'a>(entry: &'a Entry, name: &str) -> Option<&'a Value> {
-    entry
-        .labels
-        .iter()
-        .find(|l| l.label_name == name)
-        .map(|l| &l.value)
-}
-
-fn label_cell(schema: &LabelSchema, entry: &Entry) -> impl IntoView {
-    let v = find_label(entry, &schema.name);
-    let is_enum = schema.value_type == "enum";
-    match v {
-        None => view! { <td class="mut">"—"</td> }.into_any(),
-        Some(val) => {
-            let s = value_to_string(val);
-            if is_enum {
-                let disp = display_enum_value(&s);
-                let cls = label_chip_class(&schema.name, &s);
-                view! { <td><span class=format!("chip {cls}")>{disp}</span></td> }.into_any()
-            } else {
-                view! { <td>{s}</td> }.into_any()
-            }
-        }
-    }
-}
-
-fn entry_row(entry: &Entry, schemas: &[LabelSchema], selected: RwSignal<String>) -> impl IntoView {
-    let code = entry.code.clone();
-    let title = entry.title.clone();
-    let updated_at = entry.updated_at.clone();
-    let code_for_class = entry.code.clone();
-    let code_for_click = entry.code.clone();
-    view! {
-        <tr
-            class=move || if selected.get() == code_for_class { "sel".to_string() } else { String::new() }
-            on:click=move |_| selected.set(code_for_click.clone())
-        >
-            <td class="code">{code.clone()}</td>
-            <td>{title.clone()}</td>
-            {schemas.iter().map(|s| label_cell(s, entry)).collect::<Vec<_>>()}
-            <td class="mut">{updated_at.clone()}</td>
-        </tr>
     }
 }
 
@@ -622,6 +741,12 @@ fn chip_view(chip: CondChip, ast: RwSignal<serde_json::Value>) -> impl IntoView 
     }
 }
 
-fn sort_label() -> String {
-    "更新时间 ↓".to_string()
+fn sort_label(field: &str, desc: bool) -> String {
+    let name = match field {
+        "title" => "标题",
+        "createdAt" => "创建时间",
+        "updatedAt" | "" => "更新时间",
+        other => other,
+    };
+    format!("{name} {}", if desc { "↓" } else { "↑" })
 }
