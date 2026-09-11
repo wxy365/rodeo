@@ -446,17 +446,23 @@ mod tests {
     }
 
     #[test]
-    fn query_sorts_by_title_desc_when_requested() {
+    fn query_sorts_by_title_both_directions() {
         let (dir, store, _svc, ws_id, actor) = setup();
         let (_sdir, search) = temp_search();
         let svc = EntryService::with_search(store.clone(), search);
         for t in ["b", "a", "c"] {
             svc.create(actor, ws_id, t).unwrap();
         }
-        let sort = SortSpec { field: SortField::Title, desc: false };
-        let r = svc.query(ws_id, &Query::all(), &sort, PageInput::default()).unwrap();
+        let asc = SortSpec { field: SortField::Title, desc: false };
+        let r = svc.query(ws_id, &Query::all(), &asc, PageInput::default()).unwrap();
         let titles: Vec<String> = r.items.into_iter().map(|(e, _)| e.title).collect();
         assert_eq!(titles, vec!["a", "b", "c"]);
+
+        // desc 是默认排序方向，必须单独覆盖。
+        let desc = SortSpec { field: SortField::Title, desc: true };
+        let r = svc.query(ws_id, &Query::all(), &desc, PageInput::default()).unwrap();
+        let titles: Vec<String> = r.items.into_iter().map(|(e, _)| e.title).collect();
+        assert_eq!(titles, vec!["c", "b", "a"]);
         std::fs::remove_dir_all(&dir).ok();
     }
 

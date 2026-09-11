@@ -586,7 +586,6 @@ impl Condition {
 mod tests {
     use super::*;
     use crate::domain::{Entry, LabelSchema, LabelValue, LabelValueType, Labeling};
-    use chrono::Utc;
     use ulid::Ulid;
 
     fn entry() -> Entry {
