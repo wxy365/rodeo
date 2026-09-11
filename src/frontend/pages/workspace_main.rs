@@ -46,8 +46,18 @@ pub fn WorkspaceMain() -> impl IntoView {
     let active_view = RwSignal::new(None::<View>);
     // 侧栏高亮只需 id；与 active_view 一并更新，保持二者同步。
     let active_id = RwSignal::new(None::<String>);
+    // 选中视图变化时，把该视图的查询条件播种到 query_ast；同 id 重复选中不覆盖用户编辑，
+    // 也避免 Effect（依赖 query_ast）与 load_views 之间形成回环。
     let set_active = move |v: Option<View>| {
-        active_id.set(v.as_ref().map(|v| v.id.clone()));
+        let new_id = v.as_ref().map(|v| v.id.clone());
+        if active_id.get_untracked() != new_id {
+            query_ast.set(
+                v.as_ref()
+                    .map(|v| v.query.clone())
+                    .unwrap_or_else(|| serde_json::json!({ "and": [] })),
+            );
+        }
+        active_id.set(new_id);
         active_view.set(v);
     };
     let load_views = move |ws_id: String| {
@@ -93,13 +103,8 @@ pub fn WorkspaceMain() -> impl IntoView {
             return;
         }
         // 查询须在 spawn 前同步组装，signal 读取才会登记为 Effect 依赖。
-        let ast = {
-            let base = active_view
-                .get()
-                .map(|v| v.query)
-                .unwrap_or(serde_json::json!({ "and": [] }));
-            with_text(&base, &ad_hoc_text.get())
-        };
+        // 条件来自 query_ast（筛选芯片 / 表达式编辑它），再并入顶栏 ad-hoc 全文词。
+        let ast = with_text(&query_ast.get(), &ad_hoc_text.get());
         let sort_field = active_view
             .get()
             .map(|v| v.sort.field)
