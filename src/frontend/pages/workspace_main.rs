@@ -45,6 +45,8 @@ pub fn WorkspaceMain() -> impl IntoView {
     let page_signal = RwSignal::new(1i64);
     let page_size: i64 = 20;
     let total_signal = RwSignal::new(0i64);
+    // 请求序号：并发请求乱序返回时只接受最新一次的结果。
+    let req_seq = RwSignal::new(0u32);
 
     // ---- 视图侧栏状态 ----
     let view_list = RwSignal::new(Vec::<View>::new());
@@ -132,22 +134,31 @@ pub fn WorkspaceMain() -> impl IntoView {
             .unwrap_or_else(|| "updatedAt".to_string());
         let sort_desc = active_view.get().map(|v| v.sort.desc).unwrap_or(true);
         let page_now = page_signal.get();
+        let my_seq = req_seq.get_untracked() + 1;
+        req_seq.set(my_seq);
         spawn_local(async move {
-            let result = async {
+            let fetched = async {
                 let ws = workspace_by_slug(&s).await?.ok_or("工作空间不存在".to_string())?;
                 let ep = query_entries(&ws.id, &ast, &sort_field, sort_desc, page_now, page_size)
                     .await?;
-                total_signal.set(ep.total);
                 let schema_list = label_schemas(&ws.id).await?;
-                Ok::<_, String>((ws, ep.items, schema_list))
+                Ok::<_, String>((ws, ep.items, schema_list, ep.total))
             }
             .await;
-            if let Ok((ref w, _, ref list)) = result {
-                ws_name.set(w.name.clone());
-                schemas.set(list.clone());
-                load_views(w.id.clone());
+            // 只接受最新一次请求的结果，丢弃乱序返回的旧响应（翻页/排序并发时可能发生）。
+            if req_seq.get_untracked() != my_seq {
+                return;
             }
-            data.set(Some(result));
+            match fetched {
+                Ok((w, items, list, total)) => {
+                    ws_name.set(w.name.clone());
+                    schemas.set(list.clone());
+                    total_signal.set(total);
+                    load_views(w.id.clone());
+                    data.set(Some(Ok((w, items, list))));
+                }
+                Err(e) => data.set(Some(Err(e))),
+            }
         });
     });
 
