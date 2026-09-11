@@ -3,11 +3,13 @@ pub mod auth;
 pub mod entry;
 pub mod label;
 pub mod search;
+pub mod view;
 pub mod workspace;
 
 use std::sync::Arc;
 
 use crate::config::Config;
+use crate::error::AppError;
 use crate::storage::DocStore;
 
 pub use audit::AuditService;
@@ -15,6 +17,7 @@ pub use auth::{AuthContext, AuthService};
 pub use entry::EntryService;
 pub use label::LabelService;
 pub use search::SearchIndex;
+pub use view::ViewService;
 pub use workspace::WorkspaceService;
 
 /// 聚合所有服务，供 GraphQL 层共享。
@@ -26,23 +29,25 @@ pub struct Services {
     pub entry: EntryService,
     pub label: LabelService,
     pub audit: AuditService,
+    pub search: Arc<SearchIndex>,
+    pub view: ViewService,
 }
 
 impl Services {
-    pub fn new(store: Arc<DocStore>, config: Arc<Config>) -> Self {
-        let auth = AuthService::new(store.clone(), config.clone());
-        let workspace = WorkspaceService::new(store.clone());
-        let entry = EntryService::new(store.clone());
-        let label = LabelService::new(store.clone());
-        let audit = AuditService::new(store.clone());
-        Self {
+    pub fn new(store: Arc<DocStore>, config: Arc<Config>) -> Result<Self, AppError> {
+        let search = Arc::new(SearchIndex::open(&format!("{}/search", config.data_dir()))?);
+        let services = Self {
+            auth: AuthService::new(store.clone(), config.clone()),
+            workspace: WorkspaceService::new(store.clone()),
+            entry: EntryService::with_search(store.clone(), search.clone()),
+            label: LabelService::new(store.clone()),
+            audit: AuditService::new(store.clone()),
+            view: ViewService::new(store.clone()),
+            search,
             store,
             config,
-            auth,
-            workspace,
-            entry,
-            label,
-            audit,
-        }
+        };
+        services.search.backfill(&services.store)?;
+        Ok(services)
     }
 }
