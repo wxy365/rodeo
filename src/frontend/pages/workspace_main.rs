@@ -17,7 +17,7 @@ use crate::frontend::icons::{
 };
 use crate::frontend::label_editor::LabelEditor;
 use crate::frontend::tiny_editor::TinyEditor;
-use crate::frontend::view_filter::{build_query, chips, with_text, CondChip};
+use crate::frontend::view_filter::{build_query, chips, is_flat, with_text, CondChip};
 
 #[component]
 pub fn WorkspaceMain() -> impl IntoView {
@@ -110,6 +110,12 @@ pub fn WorkspaceMain() -> impl IntoView {
     let view_name_input = RwSignal::new(String::new());
     let view_shared_input = RwSignal::new(false);
     let view_columns_input = RwSignal::new(String::new()); // 逗号分隔的标签 name
+
+    // ---- 视图配置弹窗（重命名 + 列配置）----
+    let show_config_dialog = RwSignal::new(false);
+    let config_name_input = RwSignal::new(String::new());
+    let config_columns_input = RwSignal::new(String::new());
+    let config_shared_input = RwSignal::new(false);
 
     Effect::new_sync(move |_| {
         let s = slug().to_string();
@@ -210,11 +216,21 @@ pub fn WorkspaceMain() -> impl IntoView {
                                         let mut ast = query_ast.get();
                                         ast = with_text(&ast, &ad_hoc_text.get());
                                         query_ast.set(ast);
+                                        page_signal.set(1);
                                         refresh_view.update(|n| *n += 1);
                                     }
                                 } />
                         </label>
-                        <button class="btn" disabled>{ic_setting()}"视图配置"</button>
+                        <button class="btn" on:click=move |_| {
+                            let Some(v) = active_view.get() else {
+                                error.set(Some("请先选择或新建一个视图".to_string()));
+                                return;
+                            };
+                            config_name_input.set(v.name.clone());
+                            config_columns_input.set(v.columns.join(", "));
+                            config_shared_input.set(v.is_shared);
+                            show_config_dialog.set(true);
+                        }>{ic_setting()}"视图配置"</button>
                         <button class="btn pri" on:click=move |_| show_new.set(!show_new.get())>
                             {ic_add()}
                             "新建 Entry"
@@ -231,7 +247,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                     let expr = expr_text.get();
                                     spawn_local(async move {
                                         match parse_view_query(&ws_id, &expr).await {
-                                            Ok(ast) => { query_ast.set(ast); expr_mode.set(false); error.set(None); }
+                                            Ok(ast) => { query_ast.set(ast); page_signal.set(1); expr_mode.set(false); error.set(None); }
                                             Err(e) => error.set(Some(e)),
                                         }
                                     });
@@ -240,7 +256,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                             }.into_any()
                         } else {
                             view! {
-                                {move || chips(&query_ast.get()).into_iter().map(|c| chip_view(c, query_ast)).collect::<Vec<_>>()}
+                                {move || chips(&query_ast.get()).into_iter().map(|c| chip_view(c, query_ast, page_signal, error)).collect::<Vec<_>>()}
                                 <select class="inp" style="width:130px" prop:value=new_cond_label
                                     on:change=move |ev| new_cond_label.set(event_target_value(&ev))>
                                     <option value="">"＋ 条件"</option>
@@ -251,9 +267,15 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 <button class="btn" on:click=move |_| {
                                     let name = new_cond_label.get();
                                     if name.is_empty() { return; }
+                                    if !is_flat(&query_ast.get()) {
+                                        error.set(Some("复杂条件（含 OR/NOT）请用「表达式」编辑".to_string()));
+                                        new_cond_label.set(String::new());
+                                        return;
+                                    }
                                     let mut cs = chips(&query_ast.get());
                                     cs.push(CondChip::Label { name, op: "present".into(), value: serde_json::Value::Null });
                                     query_ast.set(build_query(&cs));
+                                    page_signal.set(1);
                                     new_cond_label.set(String::new());
                                 }>"添加"</button>
                                 <button class="btn" on:click=move |_| {
@@ -367,7 +389,10 @@ pub fn WorkspaceMain() -> impl IntoView {
                                         }
                                     }).collect::<Vec<_>>()
                                 }}
-                                <button on:click=move |_| page_signal.update(|p| *p += 1)>"›"</button>
+                                <button on:click=move |_| {
+                                    let pages = ((total_signal.get() + page_size - 1) / page_size).max(1);
+                                    page_signal.update(|p| *p = (*p + 1).min(pages));
+                                }>"›"</button>
                                 <span class="mut">{move || format!("共 {} 条", total_signal.get())}</span>
                             </div>
                         </div>
@@ -408,6 +433,53 @@ pub fn WorkspaceMain() -> impl IntoView {
                                         }
                                     });
                                 }>"创建"</button>
+                            </div>
+                        </div>
+                    </div>
+                }.into_any()
+            } else { view! { <div></div> }.into_any() }}
+
+            {move || if show_config_dialog.get() {
+                view! {
+                    <div class="dmodal">
+                        <div class="panel dmbox">
+                            <h3>"视图配置"</h3>
+                            <input class="inp" placeholder="视图名称" prop:value=config_name_input
+                                on:input=move |ev| config_name_input.set(event_target_value(&ev)) />
+                            <input class="inp" placeholder="展示为列的标签（逗号分隔，可空）" prop:value=config_columns_input
+                                on:input=move |ev| config_columns_input.set(event_target_value(&ev)) />
+                            <label style="display:flex;gap:6px;align-items:center">
+                                <input type="checkbox" prop:checked=config_shared_input
+                                    on:change=move |ev| config_shared_input.set(event_target_checked(&ev)) />
+                                "共享给工作空间"
+                            </label>
+                            <div style="display:flex;gap:8px;justify-content:flex-end">
+                                <button class="btn" on:click=move |_| show_config_dialog.set(false)>"取消"</button>
+                                <button class="btn pri" on:click=move |_| {
+                                    let Some(v) = active_view.get() else { return };
+                                    let id = v.id.clone();
+                                    let name = config_name_input.get();
+                                    let shared = config_shared_input.get();
+                                    let cols: Vec<String> = config_columns_input.get().split(',')
+                                        .map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                                    let ast = query_ast.get();
+                                    let field = v.sort.field.clone();
+                                    let desc = v.sort.desc;
+                                    spawn_local(async move {
+                                        match update_view(&id, &name, &ast, &field, desc, &cols, shared).await {
+                                            Ok(saved) => {
+                                                view_list.update(|l| {
+                                                    if let Some(slot) = l.iter_mut().find(|x| x.id == saved.id) {
+                                                        *slot = saved.clone();
+                                                    }
+                                                });
+                                                active_view.set(Some(saved));
+                                                show_config_dialog.set(false);
+                                            }
+                                            Err(e) => error.set(Some(e)),
+                                        }
+                                    });
+                                }>"保存"</button>
                             </div>
                         </div>
                     </div>
@@ -737,7 +809,12 @@ fn EntryPanel(
 }
 
 /// 一枚可移除的条件芯片：点击 × 后从 AST 中剔除并回写。
-fn chip_view(chip: CondChip, ast: RwSignal<serde_json::Value>) -> impl IntoView {
+fn chip_view(
+    chip: CondChip,
+    ast: RwSignal<serde_json::Value>,
+    page: RwSignal<i64>,
+    error: RwSignal<Option<String>>,
+) -> impl IntoView {
     let label = match &chip {
         CondChip::Label { name, op, value } => format!("{name} {op} {}", value_to_string(value)),
         CondChip::Time { field, op, value } => format!("{field} {op} {}", value_to_string(value)),
@@ -748,9 +825,14 @@ fn chip_view(chip: CondChip, ast: RwSignal<serde_json::Value>) -> impl IntoView 
         <span class="chip sel">
             {label}
             <button class="ibtn" title="移除" on:click=move |_| {
+                if !is_flat(&ast.get()) {
+                    error.set(Some("复杂条件（含 OR/NOT）请用「表达式」编辑".to_string()));
+                    return;
+                }
                 let mut cs = chips(&ast.get());
                 cs.retain(|c| c != &target);
                 ast.set(build_query(&cs));
+                page.set(1);
             }>"×"</button>
         </span>
     }

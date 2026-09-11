@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -81,6 +83,14 @@ impl Query {
     }
 
     pub fn validate(&self, schemas: &[LabelSchema]) -> Result<(), AppError> {
+        // 引擎只按 first_text_keyword 检索，多个不同全文关键词会得出错误结果。
+        let mut kws = HashSet::new();
+        collect_text_keywords(self, &mut kws);
+        if kws.len() > 1 {
+            return Err(AppError::InvalidQuery(
+                "本轮仅支持单个全文条件".to_string(),
+            ));
+        }
         match self {
             Query::And(v) | Query::Or(v) => v.iter().try_for_each(|q| q.validate(schemas)),
             Query::Not(q) => q.validate(schemas),
@@ -105,16 +115,54 @@ impl Query {
 
 impl Condition {
     fn validate(&self, schemas: &[LabelSchema]) -> Result<(), AppError> {
-        if let Field::Label(name) = &self.field {
-            let schema = schemas
-                .iter()
-                .find(|s| &s.name == name)
-                .ok_or_else(|| AppError::InvalidQuery(format!("标签不存在: {name}")))?;
-            if !op_allowed(schema.value_type, self.op) {
-                return Err(AppError::InvalidQuery(format!(
-                    "运算符 {:?} 不适用于标签 {name}（{:?}）",
-                    self.op, schema.value_type
-                )));
+        match &self.field {
+            // 文法 text := 'text' '~' scalar 只允许 Contains。
+            Field::Text => {
+                if self.op != Op::Contains {
+                    return Err(AppError::InvalidQuery(format!(
+                        "全文条件仅支持 ~（包含），收到 {}",
+                        op_label(self.op)
+                    )));
+                }
+            }
+            Field::UpdatedAt | Field::CreatedAt => {
+                if let Some(v) = &self.value {
+                    let s = v.as_str().unwrap_or("");
+                    if parse_time(s).is_none() {
+                        return Err(AppError::InvalidQuery(format!("时间格式无效: {s}")));
+                    }
+                }
+            }
+            Field::Label(name) => {
+                let schema = schemas
+                    .iter()
+                    .find(|s| &s.name == name)
+                    .ok_or_else(|| AppError::InvalidQuery(format!("标签不存在: {name}")))?;
+                if !op_allowed(schema.value_type, self.op) {
+                    return Err(AppError::InvalidQuery(format!(
+                        "运算符 {} 不适用于标签 {name}（{}）",
+                        op_label(self.op),
+                        type_label(schema.value_type)
+                    )));
+                }
+                // in / not in 的候选值必须落在 enum_values 内。
+                if matches!(self.op, Op::In | Op::NotIn) && schema.value_type == LabelValueType::Enum
+                {
+                    let ok = self.value.as_ref().is_some_and(|v| {
+                        v.as_array().is_some_and(|arr| {
+                            arr.iter().all(|x| {
+                                x.as_str()
+                                    .is_some_and(|s| schema.enum_values.iter().any(|e| e == s))
+                            })
+                        })
+                    });
+                    if !ok {
+                        return Err(AppError::InvalidQuery(format!(
+                            "标签 {name} 的 in 候选值必须在枚举范围内: {}",
+                            schema.enum_values.join(", ")
+                        )));
+                    }
+                }
             }
         }
         Ok(())
@@ -138,6 +186,51 @@ impl Condition {
                     None => false,
                 },
             },
+        }
+    }
+}
+
+/// 运算符的可读中文/符号标签，用于用户可见的错误消息。
+fn op_label(op: Op) -> &'static str {
+    match op {
+        Op::Present => "present",
+        Op::Absent => "absent",
+        Op::Eq => "=",
+        Op::Ne => "!=",
+        Op::In => "in",
+        Op::NotIn => "not in",
+        Op::Gt => ">",
+        Op::Ge => ">=",
+        Op::Lt => "<",
+        Op::Le => "<=",
+        Op::Contains => "~",
+        Op::NotContains => "!~",
+    }
+}
+
+/// 标签值类型的中文名，用于用户可见的错误消息。
+fn type_label(vt: LabelValueType) -> &'static str {
+    match vt {
+        LabelValueType::Null => "空",
+        LabelValueType::Boolean => "布尔",
+        LabelValueType::Integer => "整数",
+        LabelValueType::Float => "浮点",
+        LabelValueType::String => "字符串",
+        LabelValueType::Enum => "枚举",
+    }
+}
+
+/// 收集整棵查询树中所有 Text 条件的关键词，用于检测多个全文条件。
+fn collect_text_keywords(q: &Query, out: &mut HashSet<String>) {
+    match q {
+        Query::And(v) | Query::Or(v) => v.iter().for_each(|c| collect_text_keywords(c, out)),
+        Query::Not(c) => collect_text_keywords(c, out),
+        Query::Cond(c) => {
+            if matches!(c.field, Field::Text) {
+                if let Some(s) = c.value.as_ref().and_then(|v| v.as_str()) {
+                    out.insert(s.to_string());
+                }
+            }
         }
     }
 }
@@ -337,6 +430,37 @@ fn lex(input: &str) -> Result<Vec<Tok>, AppError> {
     Ok(out)
 }
 
+/// 把词法单元转成可读文本，避免在错误消息中泄漏 Debug 表示。
+fn tok_label(t: Option<&Tok>) -> String {
+    match t {
+        None => "输入结束".to_string(),
+        Some(Tok::LParen) => "(".to_string(),
+        Some(Tok::RParen) => ")".to_string(),
+        Some(Tok::Comma) => ",".to_string(),
+        Some(Tok::Eq) => "=".to_string(),
+        Some(Tok::Ne) => "!=".to_string(),
+        Some(Tok::Gt) => ">".to_string(),
+        Some(Tok::Ge) => ">=".to_string(),
+        Some(Tok::Lt) => "<".to_string(),
+        Some(Tok::Le) => "<=".to_string(),
+        Some(Tok::Tilde) => "~".to_string(),
+        Some(Tok::NotTilde) => "!~".to_string(),
+        Some(Tok::And) => "AND".to_string(),
+        Some(Tok::Or) => "OR".to_string(),
+        Some(Tok::Not) => "NOT".to_string(),
+        Some(Tok::In) => "in".to_string(),
+        Some(Tok::Present) => "present".to_string(),
+        Some(Tok::Absent) => "absent".to_string(),
+        Some(Tok::Text) => "text".to_string(),
+        Some(Tok::Updated) => "updated".to_string(),
+        Some(Tok::Created) => "created".to_string(),
+        Some(Tok::Ident(s)) => s.clone(),
+        Some(Tok::Str(s)) => s.clone(),
+        Some(Tok::Num(n)) => n.to_string(),
+        Some(Tok::Bool(b)) => b.to_string(),
+    }
+}
+
 struct Parser {
     toks: Vec<Tok>,
     pos: usize,
@@ -360,7 +484,11 @@ impl Parser {
             self.pos += 1;
             Ok(())
         } else {
-            Err(AppError::InvalidQuery(format!("期望 {t:?}，实际 {:?}", self.peek())))
+            Err(AppError::InvalidQuery(format!(
+                "期望 {}，实际 {}",
+                tok_label(Some(t)),
+                tok_label(self.peek())
+            )))
         }
     }
 
@@ -419,14 +547,20 @@ impl Parser {
                 Ok(Query::Cond(Condition { field: Field::Text, op, value: Some(v) }))
             }
             Some(Tok::Updated) | Some(Tok::Created) | Some(Tok::Ident(_)) => self.parse_condition(),
-            other => Err(AppError::InvalidQuery(format!("无法解析: {other:?}"))),
+            other => Err(AppError::InvalidQuery(format!(
+                "无法解析: {}",
+                tok_label(other)
+            ))),
         }
     }
 
     fn ident(&mut self) -> Result<String, AppError> {
         match self.next() {
             Some(Tok::Ident(s)) => Ok(s),
-            other => Err(AppError::InvalidQuery(format!("期望标签名，实际 {other:?}"))),
+            other => Err(AppError::InvalidQuery(format!(
+                "期望标签名，实际 {}",
+                tok_label(other.as_ref())
+            ))),
         }
     }
 
@@ -445,7 +579,12 @@ impl Parser {
                 self.eat(&Tok::In)?;
                 Op::NotIn
             }
-            other => return Err(AppError::InvalidQuery(format!("期望运算符，实际 {other:?}"))),
+            other => {
+                return Err(AppError::InvalidQuery(format!(
+                    "期望运算符，实际 {}",
+                    tok_label(other.as_ref())
+                )))
+            }
         };
         Ok(op)
     }
@@ -457,7 +596,10 @@ impl Parser {
                 .unwrap_or(serde_json::Value::Null)),
             Some(Tok::Bool(b)) => Ok(serde_json::Value::Bool(b)),
             Some(Tok::Ident(s)) => Ok(serde_json::Value::String(s)),
-            other => Err(AppError::InvalidQuery(format!("期望值，实际 {other:?}"))),
+            other => Err(AppError::InvalidQuery(format!(
+                "期望值，实际 {}",
+                tok_label(other.as_ref())
+            ))),
         }
     }
 
@@ -466,7 +608,12 @@ impl Parser {
             Some(Tok::Updated) => Field::UpdatedAt,
             Some(Tok::Created) => Field::CreatedAt,
             Some(Tok::Ident(s)) => Field::Label(s),
-            other => return Err(AppError::InvalidQuery(format!("期望字段，实际 {other:?}"))),
+            other => {
+                return Err(AppError::InvalidQuery(format!(
+                    "期望字段，实际 {}",
+                    tok_label(other.as_ref())
+                )))
+            }
         };
         let op = self.comparison_op()?;
         let value = if self.peek() == Some(&Tok::LParen) {
@@ -748,5 +895,105 @@ mod tests {
             field: Field::Label("Score".into()), op: Op::Ge, value: Some(serde_json::json!(5)),
         });
         assert!(ok.validate(&schemas).is_ok());
+    }
+
+    #[test]
+    fn validate_text_only_contains() {
+        let schemas: Vec<LabelSchema> = vec![];
+        let ok = Query::Cond(Condition {
+            field: Field::Text, op: Op::Contains, value: Some(serde_json::json!("检索")),
+        });
+        assert!(ok.validate(&schemas).is_ok());
+
+        for bad_op in [Op::Eq, Op::Ne, Op::NotContains, Op::In] {
+            let q = Query::Cond(Condition {
+                field: Field::Text, op: bad_op, value: Some(serde_json::json!("检索")),
+            });
+            assert!(
+                matches!(q.validate(&schemas), Err(AppError::InvalidQuery(_))),
+                "{bad_op:?} 应当被拒绝"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_enum_in_candidates_must_be_in_enum_values() {
+        let schemas = vec![LabelSchema::new(
+            Ulid::new(), "Task".into(), "任务".into(), LabelValueType::Enum,
+            vec!["Open".into(), "Done".into()],
+        )];
+        let ok = Query::Cond(Condition {
+            field: Field::Label("Task".into()), op: Op::In,
+            value: Some(serde_json::json!(["Open", "Done"])),
+        });
+        assert!(ok.validate(&schemas).is_ok());
+
+        let out_of_range = Query::Cond(Condition {
+            field: Field::Label("Task".into()), op: Op::In,
+            value: Some(serde_json::json!(["Open", "Nope"])),
+        });
+        assert!(matches!(out_of_range.validate(&schemas), Err(AppError::InvalidQuery(_))));
+
+        let not_array = Query::Cond(Condition {
+            field: Field::Label("Task".into()), op: Op::NotIn,
+            value: Some(serde_json::json!("Open")),
+        });
+        assert!(matches!(not_array.validate(&schemas), Err(AppError::InvalidQuery(_))));
+    }
+
+    #[test]
+    fn validate_rejects_invalid_time_format() {
+        let schemas: Vec<LabelSchema> = vec![];
+        let bad = Query::Cond(Condition {
+            field: Field::UpdatedAt, op: Op::Ge, value: Some(serde_json::json!("2026-13-40")),
+        });
+        assert!(matches!(bad.validate(&schemas), Err(AppError::InvalidQuery(_))));
+
+        let ok_date = Query::Cond(Condition {
+            field: Field::CreatedAt, op: Op::Ge, value: Some(serde_json::json!("2026-09-01")),
+        });
+        assert!(ok_date.validate(&schemas).is_ok());
+
+        let ok_rfc = Query::Cond(Condition {
+            field: Field::UpdatedAt, op: Op::Le,
+            value: Some(serde_json::json!("2026-09-01T00:00:00Z")),
+        });
+        assert!(ok_rfc.validate(&schemas).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_multiple_text_keywords() {
+        let schemas: Vec<LabelSchema> = vec![];
+        let two = Query::And(vec![
+            Query::Cond(Condition {
+                field: Field::Text, op: Op::Contains, value: Some(serde_json::json!("a")),
+            }),
+            Query::Cond(Condition {
+                field: Field::Text, op: Op::Contains, value: Some(serde_json::json!("b")),
+            }),
+        ]);
+        assert!(matches!(two.validate(&schemas), Err(AppError::InvalidQuery(_))));
+
+        // 相同关键词只算一个，仍然允许。
+        let same = Query::And(vec![
+            Query::Cond(Condition {
+                field: Field::Text, op: Op::Contains, value: Some(serde_json::json!("a")),
+            }),
+            Query::Cond(Condition {
+                field: Field::Text, op: Op::Contains, value: Some(serde_json::json!("a")),
+            }),
+        ]);
+        assert!(same.validate(&schemas).is_ok());
+
+        let nested = Query::Not(Box::new(Query::Cond(Condition {
+            field: Field::Text, op: Op::Contains, value: Some(serde_json::json!("x")),
+        })));
+        let nested_two = Query::And(vec![
+            nested,
+            Query::Cond(Condition {
+                field: Field::Text, op: Op::Contains, value: Some(serde_json::json!("y")),
+            }),
+        ]);
+        assert!(matches!(nested_two.validate(&schemas), Err(AppError::InvalidQuery(_))));
     }
 }

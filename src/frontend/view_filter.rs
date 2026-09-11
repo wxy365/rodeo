@@ -62,17 +62,41 @@ pub fn build_query(chips: &[CondChip]) -> Value {
     json!({ "and": arr })
 }
 
-/// 把 ad-hoc 全文关键词并入查询：替换已有的 text 条件，没有则追加。
+/// 判断查询是否可被芯片编辑器无损表示：
+/// 顶层是 `{"and": [...]}`（每个元素都是 `{"cond": ...}`）、裸 `{"cond": ...}`，或空。
+/// 含 OR / NOT / 嵌套结构的树不可被芯片表示，改写前必须防护。
+pub fn is_flat(query: &Value) -> bool {
+    match query {
+        Value::Null => true,
+        Value::Object(map) if map.is_empty() => true,
+        Value::Object(map) if map.len() == 1 => {
+            if let Some(arr) = query.get("and").and_then(Value::as_array) {
+                arr.iter().all(|c| c.get("cond").is_some())
+            } else {
+                query.get("cond").is_some()
+            }
+        }
+        _ => false,
+    }
+}
+
+/// 把 ad-hoc 全文关键词并入查询：扁平时替换/追加 text 条件；否则整包一层 and 保留原树。
 pub fn with_text(query: &Value, keyword: &str) -> Value {
     let keyword = keyword.trim();
-    let mut arr: Vec<Value> = conditions(query)
-        .into_iter()
-        .filter(|c| chip_of(c).map(|ch| !matches!(ch, CondChip::Text { .. })).unwrap_or(true))
-        .collect();
-    if !keyword.is_empty() {
-        arr.push(chip_to_cond(&CondChip::Text { keyword: keyword.to_string() }));
+    if is_flat(query) {
+        let mut arr: Vec<Value> = conditions(query)
+            .into_iter()
+            .filter(|c| chip_of(c).map(|ch| !matches!(ch, CondChip::Text { .. })).unwrap_or(true))
+            .collect();
+        if !keyword.is_empty() {
+            arr.push(chip_to_cond(&CondChip::Text { keyword: keyword.to_string() }));
+        }
+        json!({ "and": arr })
+    } else if keyword.is_empty() {
+        query.clone()
+    } else {
+        json!({ "and": [query.clone(), chip_to_cond(&CondChip::Text { keyword: keyword.to_string() })] })
     }
-    json!({ "and": arr })
 }
 
 #[cfg(test)]
@@ -116,5 +140,39 @@ mod tests {
     fn with_text_on_empty_query_yields_single_text_cond() {
         let q = with_text(&json!({"and": []}), "词");
         assert_eq!(q["and"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn is_flat_recognizes_chip_editable_shapes() {
+        assert!(is_flat(&json!({"and": []})));
+        assert!(is_flat(&json!({"and": [{"cond": {"field": "text", "op": "contains", "value": "x"}}]})));
+        assert!(is_flat(&json!({"cond": {"field": {"label": "Task"}, "op": "eq", "value": "Open"}})));
+        assert!(is_flat(&Value::Null));
+        assert!(is_flat(&json!({})));
+
+        assert!(!is_flat(&json!({"or": [{"cond": {"field": {"label": "Task"}, "op": "eq", "value": "Open"}}]})));
+        assert!(!is_flat(&json!({"not": {"cond": {"field": "text", "op": "contains", "value": "x"}}})));
+        assert!(!is_flat(&json!({"and": [{"or": [{"cond": {"field": {"label": "Task"}, "op": "eq", "value": "Open"}}]}]})));
+    }
+
+    #[test]
+    fn with_text_preserves_non_flat_or_tree() {
+        let base = json!({"or": [
+            {"cond": {"field": {"label": "Task"}, "op": "eq", "value": "Open"}},
+            {"cond": {"field": {"label": "Task"}, "op": "eq", "value": "Done"}}
+        ]});
+        assert!(!is_flat(&base));
+
+        let q = with_text(&base, "检索");
+        let arr = q["and"].as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        // 原 or 树被完整保留在第一个元素里，而不是被压平丢弃。
+        assert!(arr[0].get("or").is_some());
+        assert_eq!(arr[0]["or"].as_array().unwrap().len(), 2);
+        assert_eq!(arr[1]["cond"]["field"], "text");
+
+        // 空关键词：非扁平树原样返回，不改写。
+        let unchanged = with_text(&base, "");
+        assert_eq!(unchanged, base);
     }
 }
