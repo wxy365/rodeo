@@ -46,25 +46,34 @@ pub fn WorkspaceMain() -> impl IntoView {
     let active_view = RwSignal::new(None::<View>);
     // 侧栏高亮只需 id；与 active_view 一并更新，保持二者同步。
     let active_id = RwSignal::new(None::<String>);
-    // 选中视图变化时，把该视图的查询条件播种到 query_ast；同 id 重复选中不覆盖用户编辑，
-    // 也避免 Effect（依赖 query_ast）与 load_views 之间形成回环。
+    // 选中视图变化时，播种 query_ast 并把 id/active_view 一并切换；id 未变则整体跳过。
+    // Leptos 0.8 的 RwSignal::set 无相等短路，无条件写 active_view 会让 Effect（以
+    // active_view / query_ast 为依赖）与 load_views 相互触发，形成无限刷新回环。
     let set_active = move |v: Option<View>| {
         let new_id = v.as_ref().map(|v| v.id.clone());
-        if active_id.get_untracked() != new_id {
-            query_ast.set(
-                v.as_ref()
-                    .map(|v| v.query.clone())
-                    .unwrap_or_else(|| serde_json::json!({ "and": [] })),
-            );
+        if active_id.get_untracked() == new_id {
+            return;
         }
+        query_ast.set(
+            v.as_ref()
+                .map(|v| v.query.clone())
+                .unwrap_or_else(|| serde_json::json!({ "and": [] })),
+        );
         active_id.set(new_id);
         active_view.set(v);
     };
     let load_views = move |ws_id: String| {
         spawn_local(async move {
             if let Ok(list) = views(&ws_id).await {
-                // 始终重设 active：列表为空时清空，避免残留上一工作空间的视图。
-                set_active(list.first().cloned());
+                // 仅当当前选中视图不在新列表里（切换工作空间、或列表为空）才重设，
+                // 否则会把用户在侧栏上的选择覆盖回第一个视图。
+                let current = active_id.get_untracked();
+                let still_valid = current
+                    .as_ref()
+                    .is_some_and(|id| list.iter().any(|v| &v.id == id));
+                if !still_valid {
+                    set_active(list.first().cloned());
+                }
                 view_list.set(list);
             }
         });
