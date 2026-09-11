@@ -59,18 +59,18 @@ pub fn WorkspaceMain() -> impl IntoView {
         if active_id.get_untracked() == new_id {
             return;
         }
-        query_ast.set(
-            v.as_ref()
-                .map(|v| v.query.clone())
-                .unwrap_or_else(|| serde_json::json!({ "and": [] })),
-        );
-        active_id.set(new_id);
-        active_view.set(v);
-        // 切换视图回到第 1 页，避免旧的页码超出新视图总页数导致空表。
-        // 仅在实际需要时写，防止无谓地多触发一次 Effect。
-        if page_signal.get_untracked() != 1 {
+        // 同一批内改写所有相关 signal，Effect 只跑一次，避免旧视图/旧页码的并发请求乱序覆盖。
+        batch(move || {
+            query_ast.set(
+                v.as_ref()
+                    .map(|v| v.query.clone())
+                    .unwrap_or_else(|| serde_json::json!({ "and": [] })),
+            );
+            active_id.set(new_id);
+            active_view.set(v);
+            // 切换视图回到第 1 页，避免旧的页码超出新视图总页数导致空表。
             page_signal.set(1);
-        }
+        });
     };
     let load_views = move |ws_id: String| {
         spawn_local(async move {
@@ -332,12 +332,16 @@ pub fn WorkspaceMain() -> impl IntoView {
                                         .map(|v| (v.sort.field, v.sort.desc))
                                         .unwrap_or_else(|| ("updatedAt".to_string(), true));
                                     let desc = if field == cur_field { !cur_desc } else { true };
-                                    if let Some(mut v) = active_view.get() {
-                                        v.sort.field = field;
-                                        v.sort.desc = desc;
-                                        active_view.set(Some(v));
-                                    }
-                                    page_signal.set(1);
+                                    // 同一批内改写 active_view 与 page_signal，Effect 只跑一次，
+                                    // 避免并发两次请求、旧页码的结果乱序覆盖新结果。
+                                    batch(move || {
+                                        if let Some(mut v) = active_view.get() {
+                                            v.sort.field = field;
+                                            v.sort.desc = desc;
+                                            active_view.set(Some(v));
+                                        }
+                                        page_signal.set(1);
+                                    });
                                 })
                             />
                             <div class="pager">
