@@ -3,20 +3,64 @@ use std::sync::Arc;
 use chrono::Utc;
 use ulid::Ulid;
 
+use crate::domain::view::{SortField, SortSpec};
 use crate::domain::{
-    generate_entry_code, AuditAction, AuditLog, Entry, LabelSchema, LabelValue, Labeling,
+    generate_entry_code, AuditAction, AuditLog, Entry, LabelSchema, LabelValue, Labeling, Query,
 };
 use crate::error::AppError;
 use crate::service::audit::audit_ops;
+use crate::service::search::{SearchIndex, TEXT_CANDIDATE_LIMIT};
 use crate::storage::{cf, keys, BatchOp, DocStore};
 
 pub struct EntryService {
     store: Arc<DocStore>,
+    search: Option<Arc<SearchIndex>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PageInput {
+    pub page: usize,
+    pub page_size: usize,
+}
+
+impl Default for PageInput {
+    fn default() -> Self {
+        Self { page: 1, page_size: 20 }
+    }
+}
+
+impl PageInput {
+    fn normalized(&self) -> (usize, usize) {
+        let page = self.page.max(1);
+        let page_size = self.page_size.clamp(1, 100);
+        (page, page_size)
+    }
+}
+
+pub struct QueryResult {
+    pub items: Vec<(Entry, Vec<Labeling>)>,
+    pub total: usize,
 }
 
 impl EntryService {
     pub fn new(store: Arc<DocStore>) -> Self {
-        Self { store }
+        Self { store, search: None }
+    }
+
+    pub fn with_search(store: Arc<DocStore>, search: Arc<SearchIndex>) -> Self {
+        Self { store, search: Some(search) }
+    }
+
+    fn reindex(&self, entry: &Entry) {
+        let Some(search) = &self.search else { return };
+        let labels = self.labelings(&entry.code).unwrap_or_default();
+        if entry.is_deleted() {
+            if let Err(e) = search.remove_entry(&entry.code) {
+                tracing::warn!("移除检索索引失败 {}: {e}", entry.code);
+            }
+        } else if let Err(e) = search.index_entry(entry, &labels) {
+            tracing::warn!("更新检索索引失败 {}: {e}", entry.code);
+        }
     }
 
     pub fn create(&self, actor: Ulid, workspace_id: Ulid, title: &str) -> Result<Entry, AppError> {
@@ -53,6 +97,7 @@ impl EntryService {
             Vec::new(),
         ));
         self.store.write_batch(ops)?;
+        self.reindex(&entry);
         Ok(entry)
     }
 
@@ -101,6 +146,7 @@ impl EntryService {
         let mut ops = audit_ops(&audit)?;
         ops.push(BatchOp::put(cf::ENTRIES, code.as_bytes().to_vec(), &entry)?);
         self.store.write_batch(ops)?;
+        self.reindex(&entry);
         Ok(entry)
     }
 
@@ -127,6 +173,7 @@ impl EntryService {
         let mut ops = audit_ops(&audit)?;
         ops.push(BatchOp::put(cf::ENTRIES, code.as_bytes().to_vec(), &entry)?);
         self.store.write_batch(ops)?;
+        self.reindex(&entry);
         Ok(())
     }
 
@@ -192,6 +239,9 @@ impl EntryService {
             &labeling,
         )?);
         self.store.write_batch(ops)?;
+        if let Ok(Some(e)) = self.get(entry_code) {
+            self.reindex(&e);
+        }
         Ok(labeling)
     }
 
@@ -223,6 +273,9 @@ impl EntryService {
             keys::labeling_by_workspace_key(entry.workspace_id, entry_code, label_name),
         ));
         self.store.write_batch(ops)?;
+        if let Ok(Some(e)) = self.get(entry_code) {
+            self.reindex(&e);
+        }
         Ok(())
     }
 
@@ -251,12 +304,161 @@ impl EntryService {
         }
         Ok(map)
     }
+
+    /// 单次求值的查询编排：一次性取回候选行、按需取回打标与全文命中，再过滤/排序/分页。
+    pub fn query(
+        &self,
+        ws: Ulid,
+        query: &Query,
+        sort: &SortSpec,
+        page: PageInput,
+    ) -> Result<QueryResult, AppError> {
+        let rows: Vec<Entry> = self.list(ws)?;
+
+        let labels_map = if query.contains_label() {
+            Some(self.labelings_by_workspace(ws)?)
+        } else {
+            None
+        };
+        let text_hits: Option<(String, std::collections::HashSet<String>)> =
+            match query.first_text_keyword() {
+                Some(keyword) => {
+                    let search = self
+                        .search
+                        .as_ref()
+                        .ok_or_else(|| AppError::Internal("全文检索不可用".to_string()))?;
+                    let hits = search
+                        .search(ws, &keyword, TEXT_CANDIDATE_LIMIT)?
+                        .into_iter()
+                        .collect::<std::collections::HashSet<_>>();
+                    Some((keyword, hits))
+                }
+                None => None,
+            };
+
+        let empty: Vec<Labeling> = Vec::new();
+        let mut matched: Vec<Entry> = rows
+            .into_iter()
+            .filter(|e| {
+                let labels: &[Labeling] = labels_map
+                    .as_ref()
+                    .and_then(|m| m.get(&e.code))
+                    .map(Vec::as_slice)
+                    .unwrap_or(&empty);
+                let text_ok = |kw: &str| match &text_hits {
+                    Some((keyword, set)) => kw == keyword && set.contains(&e.code),
+                    None => false,
+                };
+                query.evaluate(e, labels, &text_ok)
+            })
+            .collect();
+
+        sort_rows(&mut matched, sort);
+        let total = matched.len();
+        let (page, page_size) = page.normalized();
+        let slice: Vec<Entry> = matched
+            .into_iter()
+            .skip((page - 1) * page_size)
+            .take(page_size)
+            .collect();
+
+        let mut items = Vec::with_capacity(slice.len());
+        for e in slice {
+            let labels = match &labels_map {
+                Some(m) => m.get(&e.code).cloned().unwrap_or_default(),
+                None => self.labelings(&e.code)?,
+            };
+            items.push((e, labels));
+        }
+        Ok(QueryResult { items, total })
+    }
+}
+
+/// 按 SortSpec 对条目就地排序；标题大小写不敏感。
+fn sort_rows(rows: &mut [Entry], sort: &SortSpec) {
+    rows.sort_by(|a, b| {
+        let ord = match sort.field {
+            SortField::UpdatedAt => a.updated_at.cmp(&b.updated_at),
+            SortField::CreatedAt => a.created_at.cmp(&b.created_at),
+            SortField::Title => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
+        };
+        if sort.desc { ord.reverse() } else { ord }
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::service::WorkspaceService;
+
+    use crate::domain::query::{Condition, Field, Op, Query};
+    use crate::domain::view::{SortField, SortSpec};
+
+    fn temp_search() -> (String, std::sync::Arc<crate::service::search::SearchIndex>) {
+        let mut p = std::env::temp_dir();
+        p.push(format!("rodeo-entry-search-{}", Ulid::new()));
+        let dir = p.to_string_lossy().into_owned();
+        let idx = std::sync::Arc::new(crate::service::search::SearchIndex::open(&dir).unwrap());
+        (dir, idx)
+    }
+
+    #[test]
+    fn query_filters_by_label_and_pages() {
+        let (dir, store, _svc, ws_id, actor) = setup();
+        let (_sdir, search) = temp_search();
+        let svc = EntryService::with_search(store.clone(), search);
+        for i in 0..5 {
+            let e = svc.create(actor, ws_id, &format!("条目{i}")).unwrap();
+            if i % 2 == 0 {
+                svc.set_labeling(actor, &e.code, "Task", &serde_json::json!("Open")).unwrap();
+            }
+        }
+        let q = Query::Cond(Condition {
+            field: Field::Label("Task".into()), op: Op::Eq, value: Some(serde_json::json!("Open")),
+        });
+        let page = PageInput { page: 1, page_size: 2 };
+        let r = svc.query(ws_id, &q, &SortSpec::default(), page).unwrap();
+        assert_eq!(r.total, 3, "3 条被打了 Task=Open");
+        assert_eq!(r.items.len(), 2, "第一页取 2 条");
+        assert_eq!(r.items[0].1.len(), 1, "每行带上打标");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn query_fulltext_intersects_with_label_filter() {
+        let (dir, store, _svc, ws_id, actor) = setup();
+        let (_sdir, search) = temp_search();
+        let svc = EntryService::with_search(store.clone(), search);
+        let a = svc.create(actor, ws_id, "找回密码失败").unwrap();
+        svc.update(actor, &a.code, &a.updated_at.to_rfc3339(), "找回密码失败", "验证码收不到").unwrap();
+        let b = svc.create(actor, ws_id, "找回密码失败").unwrap();
+        svc.set_labeling(actor, &a.code, "Task", &serde_json::json!("Open")).unwrap();
+
+        let q = Query::And(vec![
+            Query::Cond(Condition { field: Field::Label("Task".into()), op: Op::Eq, value: Some(serde_json::json!("Open")) }),
+            Query::Cond(Condition { field: Field::Text, op: Op::Contains, value: Some(serde_json::json!("密码")) }),
+        ]);
+        let r = svc.query(ws_id, &q, &SortSpec::default(), PageInput::default()).unwrap();
+        assert_eq!(r.total, 1);
+        assert_eq!(r.items[0].0.code, a.code, "b 未打标，应被过滤掉");
+        let _ = b;
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn query_sorts_by_title_desc_when_requested() {
+        let (dir, store, _svc, ws_id, actor) = setup();
+        let (_sdir, search) = temp_search();
+        let svc = EntryService::with_search(store.clone(), search);
+        for t in ["b", "a", "c"] {
+            svc.create(actor, ws_id, t).unwrap();
+        }
+        let sort = SortSpec { field: SortField::Title, desc: false };
+        let r = svc.query(ws_id, &Query::all(), &sort, PageInput::default()).unwrap();
+        let titles: Vec<String> = r.items.into_iter().map(|(e, _)| e.title).collect();
+        assert_eq!(titles, vec!["a", "b", "c"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     fn temp_dir(name: &str) -> String {
         let mut p = std::env::temp_dir();
