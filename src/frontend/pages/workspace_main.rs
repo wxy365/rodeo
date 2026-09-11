@@ -16,6 +16,7 @@ use crate::frontend::icons::{
     ic_add, ic_back, ic_close, ic_folder, ic_full, ic_search, ic_setting, ic_share,
 };
 use crate::frontend::label_editor::LabelEditor;
+use crate::frontend::query_eval;
 use crate::frontend::tiny_editor::TinyEditor;
 use crate::frontend::view_filter::{build_query, chips, is_flat, with_text, CondChip};
 use serde_json::Value;
@@ -335,7 +336,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                             }.into_any()
                         } else {
                             view! {
-                                {move || chips(&query_ast.get()).into_iter().map(|c| chip_view(c, query_ast, page_signal, error)).collect::<Vec<_>>()}
+                                {move || chips(&query_ast.get()).into_iter().map(|c| chip_view(c, query_ast, page_signal, error, schemas)).collect::<Vec<_>>()}
                                 <select class="inp" style="width:130px" prop:value=new_cond_label
                                     on:change=move |ev| new_cond_label.set(event_target_value(&ev))>
                                     <option value="">"＋ 条件"</option>
@@ -433,6 +434,12 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 })
                                 sort_desc=Signal::derive(move || {
                                     active_view.get().map(|v| v.sort.desc).unwrap_or(true)
+                                })
+                                title_colors=Signal::derive(move || {
+                                    active_view
+                                        .get()
+                                        .map(|v| v.title_colors)
+                                        .unwrap_or(Value::Null)
                                 })
                                 on_sort=Callback::new(move |field: String| {
                                     // 后端 SortField 仅支持 updatedAt/createdAt/title，
@@ -657,6 +664,7 @@ fn WorkspaceSidebar(
     let row = move |v: View, shared_mark: bool| {
         let id = v.id.clone();
         let name = v.name.clone();
+        let count = v.entry_count;
         let is_active = {
             let id = id.clone();
             move || active.get().as_deref() == Some(id.as_str())
@@ -668,6 +676,7 @@ fn WorkspaceSidebar(
                  on:click=move |_| on_select.run(click_id.clone())>
                 {if shared_mark { ic_share().into_any() } else { ic_folder().into_any() }}
                 <span style="flex:1">{name}</span>
+                <span class="n">{count}</span>
                 <button class="ibtn" title="删除视图" on:click=move |ev| {
                     ev.stop_propagation();
                     on_delete.run(del_id.clone());
@@ -710,6 +719,8 @@ fn EntryTable(
     columns: Signal<Vec<String>>,
     sort_field: Signal<String>,
     sort_desc: Signal<bool>,
+    /// 当前视图的标题颜色规则 `[{query,color}]`；命中即给标题上色。
+    title_colors: Signal<Value>,
     on_sort: Callback<String>,
 ) -> impl IntoView {
     let cols = move || columns.get();
@@ -770,13 +781,21 @@ fn EntryTable(
                             let code_for_click = e.code.clone();
                             let labels = e.labels.clone();
                             let names = cols();
+                            // 标题着色：整行 Entry 克隆进响应式闭包，规则变化即刻重算。
+                            let entry_for_color = e.clone();
+                            let title_text = e.title.clone();
                             view! {
                                 <tr
                                     class=move || if selected.get() == code_for_class { "sel".to_string() } else { String::new() }
                                     on:click=move |_| selected.set(code_for_click.clone())
                                 >
                                     <td class="code">{code.clone()}</td>
-                                    <td>{e.title.clone()}</td>
+                                    <td style=move || match query_eval::title_color(
+                                        &title_colors.get(), &entry_for_color, &entry_for_color.labels,
+                                    ) {
+                                        Some(c) => format!("color:{c}"),
+                                        None => String::new(),
+                                    }>{title_text.clone()}</td>
                                     {names.iter().map(|name| {
                                         let lv = labels.iter()
                                             .find(|l| &l.label_name == name)
@@ -785,16 +804,33 @@ fn EntryTable(
                                             None => view! { <td class="mut">"—"</td> }.into_any(),
                                             Some(v) => {
                                                 let s = value_to_string(&v);
-                                                let is_enum = sc.iter().any(|sch| {
-                                                    &sch.name == name && sch.value_type == "enum"
+                                                let schema = sc.iter().find(|sch| &sch.name == name);
+                                                let is_enum = schema
+                                                    .map(|sch| sch.value_type == "enum")
+                                                    .unwrap_or(false);
+                                                // 值色优先（标签级配置），未配置回退 label_chip_class。
+                                                let color = schema.and_then(|sch| {
+                                                    let base = sch.color.clone().map(Value::String);
+                                                    query_eval::resolve_label_color(
+                                                        base.as_ref(), &sch.value_colors, &v,
+                                                    )
                                                 });
-                                                if is_enum {
-                                                    let cls = label_chip_class(name, &s);
-                                                    view! {
-                                                        <td><span class=format!("chip {cls}")>{display_enum_value(&s)}</span></td>
-                                                    }.into_any()
-                                                } else {
-                                                    view! { <td>{s}</td> }.into_any()
+                                                match color {
+                                                    Some(c) => {
+                                                        let style = format!(
+                                                            "background:color-mix(in srgb, {c} 15%, transparent);color:{c}"
+                                                        );
+                                                        view! {
+                                                            <td><span class="chip" style=style>{display_enum_value(&s)}</span></td>
+                                                        }.into_any()
+                                                    }
+                                                    None if is_enum => {
+                                                        let cls = label_chip_class(name, &s);
+                                                        view! {
+                                                            <td><span class=format!("chip {cls}")>{display_enum_value(&s)}</span></td>
+                                                        }.into_any()
+                                                    }
+                                                    None => view! { <td>{s}</td> }.into_any(),
                                                 }
                                             }
                                         }
@@ -965,15 +1001,35 @@ fn chip_view(
     ast: RwSignal<serde_json::Value>,
     page: RwSignal<i64>,
     error: RwSignal<Option<String>>,
+    schemas: RwSignal<Vec<LabelSchema>>,
 ) -> impl IntoView {
     let label = match &chip {
         CondChip::Label { name, op, value } => format!("{name} {op} {}", value_to_string(value)),
         CondChip::Time { field, op, value } => format!("{field} {op} {}", value_to_string(value)),
         CondChip::Text { keyword } => format!("全文：「{keyword}」"),
     };
+    // 标签芯片按值色上色（若标签配置了 value_colors / 基础色）。
+    let color = match &chip {
+        CondChip::Label { name, value, .. } if !value.is_null() => schemas
+            .get()
+            .into_iter()
+            .find(|s| &s.name == name)
+            .and_then(|s| {
+                let base = s.color.map(Value::String);
+                query_eval::resolve_label_color(base.as_ref(), &s.value_colors, value)
+            }),
+        _ => None,
+    };
+    let style = color
+        .map(|c| {
+            format!(
+                "background:color-mix(in srgb, {c} 15%, transparent);color:{c};border:1px solid {c}"
+            )
+        })
+        .unwrap_or_default();
     let target = chip.clone();
     view! {
-        <span class="chip sel">
+        <span class="chip sel" style=style>
             {label}
             <button class="ibtn" title="移除" on:click=move |_| {
                 if !is_flat(&ast.get()) {
