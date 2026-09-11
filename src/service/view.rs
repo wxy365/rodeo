@@ -61,6 +61,7 @@ impl ViewService {
             owner_id: actor,
             created_at: now,
             updated_at: now,
+            title_colors: Vec::new(),
         };
         let audit = AuditLog::new(
             AuditAction::ViewCreated,

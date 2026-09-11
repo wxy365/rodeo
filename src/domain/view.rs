@@ -17,6 +17,16 @@ pub struct View {
     pub owner_id: Ulid,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// 标题颜色规则；按顺序命中即用。
+    #[serde(default)]
+    pub title_colors: Vec<TitleColorRule>,
+}
+
+/// 标题着色规则：条件命中即用对应颜色。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TitleColorRule {
+    pub query: Query,
+    pub color: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,6 +103,7 @@ mod tests {
             owner_id: Ulid::new(),
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            title_colors: vec![],
         };
         let bytes = bincode::serialize(&v).unwrap();
         let back: View = bincode::deserialize(&bytes).unwrap();

@@ -103,13 +103,29 @@ impl LabelValue {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LabelSchema {
     pub workspace_id: Ulid,
     pub name: String,
     pub title: String,
     pub value_type: LabelValueType,
     pub enum_values: Vec<String>,
+    /// 基础色 `#rrggbb`，未配置为 None。
+    #[serde(default)]
+    pub color: Option<String>,
+    /// 值 → 色映射；按顺序取首个命中。
+    #[serde(default)]
+    pub value_colors: Vec<ValueColor>,
+}
+
+/// 标签值到颜色的映射规则。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ValueColor {
+    /// Integer/Float：`min`（含）≤ v < `max`（不含），None 表示无界。
+    Range { min: Option<f64>, max: Option<f64>, color: String },
+    /// Enum：精确匹配 `value`。
+    Value { value: String, color: String },
 }
 
 impl LabelSchema {
@@ -126,7 +142,16 @@ impl LabelSchema {
             title,
             value_type,
             enum_values,
+            color: None,
+            value_colors: Vec::new(),
         }
+    }
+
+    /// 链式设置基础色与值色。
+    pub fn with_colors(mut self, color: Option<String>, value_colors: Vec<ValueColor>) -> Self {
+        self.color = color;
+        self.value_colors = value_colors;
+        self
     }
 
     pub fn task(workspace_id: Ulid) -> Self {
@@ -158,6 +183,29 @@ impl LabelSchema {
             ],
         )
     }
+}
+
+/// 标签值 → 颜色：Enum 精确匹配；数值按区间（左闭右开，首个命中）；未命中回退基础色。
+pub fn resolve_color(schema: &LabelSchema, value: &serde_json::Value) -> Option<String> {
+    for vc in &schema.value_colors {
+        match vc {
+            ValueColor::Value { value: want, color } => {
+                if value.as_str() == Some(want.as_str()) {
+                    return Some(color.clone());
+                }
+            }
+            ValueColor::Range { min, max, color } => {
+                if let Some(v) = value.as_f64() {
+                    let lo_ok = min.map_or(true, |lo| v >= lo);
+                    let hi_ok = max.map_or(true, |hi| v < hi);
+                    if lo_ok && hi_ok {
+                        return Some(color.clone());
+                    }
+                }
+            }
+        }
+    }
+    schema.color.clone()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
