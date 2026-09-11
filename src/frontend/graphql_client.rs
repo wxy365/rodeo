@@ -96,6 +96,7 @@ pub struct Entry {
     pub code: String,
     pub title: String,
     pub detail: String,
+    pub created_at: String,
     pub updated_at: String,
     pub labels: Vec<Labeling>,
 }
@@ -207,7 +208,7 @@ pub async fn workspace_by_slug(slug: &str) -> Result<Option<Workspace>, String> 
 
 pub async fn entries(workspace_id: &str) -> Result<Vec<Entry>, String> {
     let data = graphql(
-        "query($id: ID!) { entries(workspaceId: $id) { code title detail updatedAt labels { labelName value } } }",
+        "query($id: ID!) { entries(workspaceId: $id) { code title detail createdAt updatedAt labels { labelName value } } }",
         json!({ "id": workspace_id }),
     )
     .await?;
@@ -217,7 +218,7 @@ pub async fn entries(workspace_id: &str) -> Result<Vec<Entry>, String> {
 
 pub async fn create_entry(workspace_id: &str, title: &str) -> Result<Entry, String> {
     let data = graphql(
-        "mutation($id: ID!, $t: String!) { createEntry(workspaceId: $id, title: $t) { code title detail updatedAt labels { labelName value } } }",
+        "mutation($id: ID!, $t: String!) { createEntry(workspaceId: $id, title: $t) { code title detail createdAt updatedAt labels { labelName value } } }",
         json!({ "id": workspace_id, "t": title }),
     )
     .await?;
@@ -246,7 +247,7 @@ pub async fn set_labeling(entry_code: &str, label_name: &str, value: &Value) -> 
 
 pub async fn entry(code: &str) -> Result<Option<Entry>, String> {
     let data = graphql(
-        "query($c: String!) { entry(code: $c) { code title detail updatedAt labels { labelName value } } }",
+        "query($c: String!) { entry(code: $c) { code title detail createdAt updatedAt labels { labelName value } } }",
         json!({ "c": code }),
     )
     .await?;
@@ -263,7 +264,7 @@ pub async fn update_entry(
     detail: &str,
 ) -> Result<Entry, String> {
     let data = graphql(
-        "mutation($c: String!, $e: String!, $t: String!, $d: String!) { updateEntry(code: $c, expectedUpdatedAt: $e, title: $t, detail: $d) { code title detail updatedAt labels { labelName value } } }",
+        "mutation($c: String!, $e: String!, $t: String!, $d: String!) { updateEntry(code: $c, expectedUpdatedAt: $e, title: $t, detail: $d) { code title detail createdAt updatedAt labels { labelName value } } }",
         json!({ "c": code, "e": expected_updated_at, "t": title, "d": detail }),
     )
     .await?;
@@ -407,7 +408,7 @@ pub async fn query_entries(
 ) -> Result<EntryPage, String> {
     let q = "query($id: ID!, $q: JSON, $s: SortInput, $p: PageInput) { \
         queryEntries(workspaceId: $id, query: $q, sort: $s, page: $p) { \
-        items { code title detail updatedAt labels { labelName value } } total page pageSize } }";
+        items { code title detail createdAt updatedAt labels { labelName value } } total page pageSize } }";
     let data = graphql(
         q,
         json!({

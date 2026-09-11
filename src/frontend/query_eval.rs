@@ -40,8 +40,8 @@ fn eval_cond(cond: &Value, entry: &Entry, labels: &[Labeling]) -> bool {
         return eval_label(name, op, want, labels);
     }
     match field.as_str() {
-        // 前端 Entry 无 createdAt，按简报统一用 updated_at 比较。
-        Some("updatedAt") | Some("createdAt") => cmp_time(&entry.updated_at, op, want),
+        Some("updatedAt") => cmp_time(&entry.updated_at, op, want),
+        Some("createdAt") => cmp_time(&entry.created_at, op, want),
         Some("text") => eval_text(op, want, entry, labels),
         _ => false,
     }
@@ -269,6 +269,7 @@ mod tests {
             code: "E1".into(),
             title: "登录失败".into(),
             detail: "找回密码报错".into(),
+            created_at: "2026-08-01T12:00:00Z".into(),
             updated_at: "2026-09-01T12:00:00Z".into(),
             labels: vec![
                 labeling("Task", json!("Open")),
