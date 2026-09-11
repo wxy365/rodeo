@@ -7,8 +7,8 @@ use serde_json::Value;
 
 use crate::frontend::components::{display_enum_value, label_chip_class, logged_out, value_to_string};
 use crate::frontend::graphql_client::{
-    create_entry, delete_entry, entries, entry, label_schemas, update_entry, workspace_by_slug,
-    Entry, Labeling, LabelSchema, Workspace,
+    create_entry, create_view, delete_entry, delete_view, entries, entry, label_schemas,
+    update_entry, views, workspace_by_slug, Entry, Labeling, LabelSchema, View, Workspace,
 };
 use crate::frontend::icons::{
     ic_add, ic_back, ic_close, ic_folder, ic_full, ic_search, ic_setting, ic_share,
@@ -31,6 +31,46 @@ pub fn WorkspaceMain() -> impl IntoView {
     let new_title = RwSignal::new(String::new());
     let error = RwSignal::new(None::<String>);
 
+    // ---- 视图侧栏状态 ----
+    let view_list = RwSignal::new(Vec::<View>::new());
+    let active_view = RwSignal::new(None::<View>);
+    // 侧栏高亮只需 id；与 active_view 一并更新，保持二者同步。
+    let active_id = RwSignal::new(None::<String>);
+    let set_active = move |v: Option<View>| {
+        active_id.set(v.as_ref().map(|v| v.id.clone()));
+        active_view.set(v);
+    };
+    let load_views = move |ws_id: String| {
+        spawn_local(async move {
+            if let Ok(list) = views(&ws_id).await {
+                if let Some(first) = list.first().cloned() {
+                    set_active(Some(first));
+                }
+                view_list.set(list);
+            }
+        });
+    };
+    let select_view = Callback::new(move |id: String| {
+        if let Some(v) = view_list.get().into_iter().find(|v| v.id == id) {
+            set_active(Some(v));
+        }
+    });
+    let delete_view_cb = Callback::new(move |id: String| {
+        spawn_local(async move {
+            let _ = delete_view(&id).await;
+            view_list.update(|l| l.retain(|v| v.id != id));
+            if active_id.get().as_deref() == Some(id.as_str()) {
+                set_active(view_list.get().first().cloned());
+            }
+        });
+    });
+
+    // ---- 新建视图弹窗 ----
+    let show_view_dialog = RwSignal::new(false);
+    let view_name_input = RwSignal::new(String::new());
+    let view_shared_input = RwSignal::new(false);
+    let view_columns_input = RwSignal::new(String::new()); // 逗号分隔的标签 name
+
     Effect::new_sync(move |_| {
         let s = slug().to_string();
         let _ = refresh.get();
@@ -52,6 +92,7 @@ pub fn WorkspaceMain() -> impl IntoView {
             if let Ok((ref w, _, ref list)) = result {
                 ws_name.set(w.name.clone());
                 schemas.set(list.clone());
+                load_views(w.id.clone());
             }
             data.set(Some(result));
         });
@@ -84,7 +125,15 @@ pub fn WorkspaceMain() -> impl IntoView {
                 {move || format!("/{} · 默认视图「全部任务」", slug())}
             </div>
             <div class="ws-layout">
-                <WorkspaceSidebar slug=slug().to_string() name=ws_name />
+                <WorkspaceSidebar
+                    slug=slug().to_string()
+                    name=ws_name
+                    views=view_list
+                    active=active_id
+                    on_select=select_view
+                    on_new=Callback::new(move |_| show_view_dialog.set(true))
+                    on_delete=delete_view_cb
+                />
                 <div class="panel wmain">
                     <div class="vhead">
                         <h2>"全部任务"</h2>
@@ -126,26 +175,97 @@ pub fn WorkspaceMain() -> impl IntoView {
                     </div>
                 </div>
             </div>
+
+            {move || if show_view_dialog.get() {
+                let ws_id = data.get().and_then(|r| r.ok()).map(|(w, _, _)| w.id.clone());
+                view! {
+                    <div class="dmodal">
+                        <div class="panel dmbox">
+                            <h3>"新建视图"</h3>
+                            <input class="inp" placeholder="视图名称" prop:value=view_name_input
+                                on:input=move |ev| view_name_input.set(event_target_value(&ev)) />
+                            <input class="inp" placeholder="展示为列的标签（逗号分隔，可空）" prop:value=view_columns_input
+                                on:input=move |ev| view_columns_input.set(event_target_value(&ev)) />
+                            <label style="display:flex;gap:6px;align-items:center">
+                                <input type="checkbox" prop:checked=view_shared_input
+                                    on:change=move |ev| view_shared_input.set(event_target_checked(&ev)) />
+                                "共享给工作空间"
+                            </label>
+                            <div style="display:flex;gap:8px;justify-content:flex-end">
+                                <button class="btn" on:click=move |_| show_view_dialog.set(false)>"取消"</button>
+                                <button class="btn pri" on:click=move |_| {
+                                    let Some(ws_id) = ws_id.clone() else { return };
+                                    let name = view_name_input.get();
+                                    let shared = view_shared_input.get();
+                                    let cols: Vec<String> = view_columns_input.get().split(',')
+                                        .map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                                    spawn_local(async move {
+                                        if let Ok(v) = create_view(&ws_id, &name, &serde_json::json!({"and": []}),
+                                            "updatedAt", true, &cols, shared).await {
+                                            view_list.update(|l| l.push(v.clone()));
+                                            set_active(Some(v));
+                                            show_view_dialog.set(false);
+                                        }
+                                    });
+                                }>"创建"</button>
+                            </div>
+                        </div>
+                    </div>
+                }.into_any()
+            } else { view! { <div></div> }.into_any() }}
         </div>
     }
 }
 
 #[component]
-fn WorkspaceSidebar(slug: String, name: RwSignal<String>) -> impl IntoView {
+fn WorkspaceSidebar(
+    slug: String,
+    name: RwSignal<String>,
+    views: RwSignal<Vec<View>>,
+    active: RwSignal<Option<String>>,
+    on_select: Callback<String>,
+    on_new: Callback<()>,
+    on_delete: Callback<String>,
+) -> impl IntoView {
+    let list = move || views.get();
+    let mine = move || list().into_iter().filter(|v| !v.is_shared).collect::<Vec<_>>();
+    let shared = move || list().into_iter().filter(|v| v.is_shared).collect::<Vec<_>>();
+
+    let row = move |v: View, shared_mark: bool| {
+        let id = v.id.clone();
+        let name = v.name.clone();
+        let is_active = {
+            let id = id.clone();
+            move || active.get().as_deref() == Some(id.as_str())
+        };
+        let click_id = id.clone();
+        let del_id = id.clone();
+        view! {
+            <div class=move || if is_active() { "it on" } else { "it" }
+                 on:click=move |_| on_select.run(click_id.clone())>
+                {if shared_mark { ic_share().into_any() } else { ic_folder().into_any() }}
+                <span style="flex:1">{name}</span>
+                <button class="ibtn" title="删除视图" on:click=move |ev| {
+                    ev.stop_propagation();
+                    on_delete.run(del_id.clone());
+                }>"×"</button>
+            </div>
+        }
+        .into_any()
+    };
+
     view! {
         <aside class="panel wside">
             <div style="padding:8px 12px;display:flex;gap:8px;align-items:center">
                 <b>{move || name.get()}</b>
             </div>
             <div class="grp">"我的视图"</div>
-            <div class="it on">{ic_folder()}"全部任务"</div>
-            <div class="it" title="即将上线">{ic_folder()}"我指派的"</div>
-            <div class="it" title="即将上线">{ic_folder()}"待修复 Bug"</div>
-            <div class="it" title="即将上线">{ic_folder()}"本周归档"</div>
+            {move || mine().into_iter().map(|v| row(v, false)).collect::<Vec<_>>()}
             <div class="grp">"共享视图"</div>
-            <div class="it" title="即将上线">{ic_share()}"P0 缺陷看板"</div>
-            <div class="it" title="即将上线">{ic_share()}"迭代计划"</div>
-            <div class="it" style="color:var(--ink3)">{ic_add()}"新建视图（即将上线）"</div>
+            {move || shared().into_iter().map(|v| row(v, true)).collect::<Vec<_>>()}
+            <div class="it" style="color:var(--ink3)" on:click=move |_| on_new.run(())>
+                {ic_add()}"新建视图"
+            </div>
             <div style="border-top:1px solid var(--line);margin-top:8px;padding-top:8px">
                 <A href=format!("/{slug}/settings")>
                     <div class="it">{ic_setting()}"工作空间设置"</div>

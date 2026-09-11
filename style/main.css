@@ -768,3 +768,24 @@ tr:hover .rowact {
 .tiny-editor .ql-container {
     border-radius: 0 0 6px 6px;
 }
+
+/* ===== 新建视图弹窗 ===== */
+.dmodal {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.35);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+}
+.dmbox {
+    width: 420px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.dmbox h3 {
+    margin: 0;
+}
