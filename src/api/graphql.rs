@@ -11,7 +11,7 @@ use ulid::Ulid;
 
 use crate::domain::{
     Account, AuditLog, Entry, LabelSchema, LabelValueType, Labeling, Query as ViewQuery, SortField,
-    SortSpec, View, Workspace, WorkspaceRole,
+    SortSpec, TitleColorRule, ValueColor, View, Workspace, WorkspaceRole,
 };
 use crate::error::AppError;
 use crate::service::entry::PageInput as EntryPageInput;
@@ -69,15 +69,21 @@ pub struct GqlLabelSchema {
     title: String,
     value_type: String,
     enum_values: Vec<String>,
+    color: Option<String>,
+    value_colors: Json<serde_json::Value>,
 }
 
 impl From<LabelSchema> for GqlLabelSchema {
     fn from(s: LabelSchema) -> Self {
+        let value_colors =
+            serde_json::to_value(&s.value_colors).unwrap_or(serde_json::Value::Null);
         Self {
             name: s.name,
             title: s.title,
             value_type: s.value_type.as_str().to_string(),
             enum_values: s.enum_values,
+            color: s.color,
+            value_colors: Json(value_colors),
         }
     }
 }
@@ -196,12 +202,16 @@ pub struct GqlView {
     owner_id: ID,
     created_at: String,
     updated_at: String,
+    title_colors: Json<serde_json::Value>,
+    entry_count: i32,
 }
 
 impl GqlView {
-    fn new(v: View) -> Self {
+    fn new(v: View, entry_count: i32) -> Self {
         let query = serde_json::to_value(&v.query).unwrap_or(serde_json::Value::Null);
         let query_expr = v.query.to_expr();
+        let title_colors =
+            serde_json::to_value(&v.title_colors).unwrap_or(serde_json::Value::Null);
         Self {
             id: v.id.to_string().into(),
             name: v.name,
@@ -213,6 +223,8 @@ impl GqlView {
             owner_id: v.owner_id.to_string().into(),
             created_at: v.created_at.to_rfc3339(),
             updated_at: v.updated_at.to_rfc3339(),
+            title_colors: Json(title_colors),
+            entry_count,
         }
     }
 }
@@ -388,13 +400,12 @@ impl Query {
         let auth = gql.require_auth()?;
         let ws = parse_ulid(workspace_id.as_str())?;
         gql.require_member(ws)?;
-        Ok(gql
-            .services
-            .view
-            .list(auth.account_id, ws)?
-            .into_iter()
-            .map(GqlView::new)
-            .collect())
+        let mut out = Vec::new();
+        for v in gql.services.view.list(auth.account_id, ws)? {
+            let count = gql.services.entry.count(ws, &v.query)? as i32;
+            out.push(GqlView::new(v, count));
+        }
+        Ok(out)
     }
 
     async fn view(&self, ctx: &Context<'_>, id: ID) -> GqlResult<Option<GqlView>> {
@@ -408,7 +419,8 @@ impl Query {
         if !v.is_shared && v.owner_id != auth.account_id {
             return Err(AppError::Forbidden.into());
         }
-        Ok(Some(GqlView::new(v)))
+        let count = gql.services.entry.count(v.workspace_id, &v.query)? as i32;
+        Ok(Some(GqlView::new(v, count)))
     }
 
     async fn parse_view_query(
@@ -593,6 +605,8 @@ impl Mutation {
         title: String,
         value_type: String,
         enum_values: Vec<String>,
+        color: Option<String>,
+        value_colors: Option<Json<serde_json::Value>>,
     ) -> GqlResult<GqlLabelSchema> {
         let gql = ctx.data::<GraphqlContext>()?;
         let auth = gql.require_auth()?;
@@ -600,10 +614,17 @@ impl Mutation {
         gql.require_role(ws_id, WorkspaceRole::Maintainer)?;
         let vt = LabelValueType::from_str(&value_type)
             .ok_or_else(|| AppError::Internal("无效的标签值类型".to_string()))?;
-        let schema = gql
-            .services
-            .label
-            .create_schema(auth.account_id, ws_id, &name, &title, vt, enum_values, None, Vec::new())?;
+        let value_colors: Vec<ValueColor> = parse_json_list(value_colors, "值颜色配置")?;
+        let schema = gql.services.label.create_schema(
+            auth.account_id,
+            ws_id,
+            &name,
+            &title,
+            vt,
+            enum_values,
+            color,
+            value_colors,
+        )?;
         Ok(schema.into())
     }
 
@@ -614,15 +635,23 @@ impl Mutation {
         name: String,
         title: String,
         enum_values: Vec<String>,
+        color: Option<String>,
+        value_colors: Option<Json<serde_json::Value>>,
     ) -> GqlResult<GqlLabelSchema> {
         let gql = ctx.data::<GraphqlContext>()?;
         let auth = gql.require_auth()?;
         let ws_id = parse_ulid(workspace_id.as_str())?;
         gql.require_role(ws_id, WorkspaceRole::Maintainer)?;
-        let schema = gql
-            .services
-            .label
-            .update_schema(auth.account_id, ws_id, &name, &title, enum_values, None, Vec::new())?;
+        let value_colors: Vec<ValueColor> = parse_json_list(value_colors, "值颜色配置")?;
+        let schema = gql.services.label.update_schema(
+            auth.account_id,
+            ws_id,
+            &name,
+            &title,
+            enum_values,
+            color,
+            value_colors,
+        )?;
         Ok(schema.into())
     }
 
@@ -656,6 +685,7 @@ impl Mutation {
         sort: Option<SortInput>,
         columns: Vec<String>,
         is_shared: bool,
+        title_colors: Option<Json<serde_json::Value>>,
     ) -> GqlResult<GqlView> {
         let gql = ctx.data::<GraphqlContext>()?;
         let auth = gql.require_auth()?;
@@ -667,11 +697,19 @@ impl Mutation {
         let q: ViewQuery = serde_json::from_value(query.0)
             .map_err(|e| AppError::InvalidQuery(format!("查询条件格式错误: {e}")))?;
         let sort = sort.map(|s| s.to_sort()).transpose()?.unwrap_or_default();
-        let v = gql
-            .services
-            .view
-            .create(auth.account_id, ws, &name, q, sort, columns, is_shared, Vec::new())?;
-        Ok(GqlView::new(v))
+        let title_colors: Vec<TitleColorRule> = parse_json_list(title_colors, "标题颜色规则")?;
+        let v = gql.services.view.create(
+            auth.account_id,
+            ws,
+            &name,
+            q,
+            sort,
+            columns,
+            is_shared,
+            title_colors,
+        )?;
+        let count = gql.services.entry.count(ws, &v.query)? as i32;
+        Ok(GqlView::new(v, count))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -684,6 +722,7 @@ impl Mutation {
         sort: Option<SortInput>,
         columns: Vec<String>,
         is_shared: bool,
+        title_colors: Option<Json<serde_json::Value>>,
     ) -> GqlResult<GqlView> {
         let gql = ctx.data::<GraphqlContext>()?;
         let auth = gql.require_auth()?;
@@ -700,11 +739,19 @@ impl Mutation {
         let q: ViewQuery = serde_json::from_value(query.0)
             .map_err(|e| AppError::InvalidQuery(format!("查询条件格式错误: {e}")))?;
         let sort = sort.map(|s| s.to_sort()).transpose()?.unwrap_or_default();
-        let v = gql
-            .services
-            .view
-            .update(auth.account_id, view_id, &name, q, sort, columns, is_shared, Vec::new())?;
-        Ok(GqlView::new(v))
+        let title_colors: Vec<TitleColorRule> = parse_json_list(title_colors, "标题颜色规则")?;
+        let v = gql.services.view.update(
+            auth.account_id,
+            view_id,
+            &name,
+            q,
+            sort,
+            columns,
+            is_shared,
+            title_colors,
+        )?;
+        let count = gql.services.entry.count(existing.workspace_id, &v.query)? as i32;
+        Ok(GqlView::new(v, count))
     }
 
     async fn delete_view(&self, ctx: &Context<'_>, id: ID) -> GqlResult<bool> {
@@ -784,4 +831,17 @@ fn bearer_token(headers: &HeaderMap) -> Option<String> {
 
 fn parse_ulid(s: &str) -> GqlResult<Ulid> {
     Ulid::from_string(s).map_err(|e| AppError::Internal(format!("无效 ID: {e}")).into())
+}
+
+/// 将可选的 GraphQL JSON 入参反序列化为 `Vec<T>`；缺省时返回空列表。
+/// 解析失败映射为 `InvalidQuery`，`what` 用于错误前缀（如「值颜色配置」）。
+fn parse_json_list<T: serde::de::DeserializeOwned>(
+    value: Option<Json<serde_json::Value>>,
+    what: &str,
+) -> GqlResult<Vec<T>> {
+    match value {
+        None => Ok(Vec::new()),
+        Some(Json(v)) => serde_json::from_value(v)
+            .map_err(|e| AppError::InvalidQuery(format!("{what}格式错误: {e}")).into()),
+    }
 }
