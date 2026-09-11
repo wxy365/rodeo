@@ -4,6 +4,7 @@ pub mod icons;
 pub mod label_editor;
 pub mod pages;
 pub mod tiny_editor;
+pub mod view_filter;
 
 use leptos::prelude::*;
 

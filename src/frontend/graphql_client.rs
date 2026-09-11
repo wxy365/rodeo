@@ -345,3 +345,149 @@ pub async fn my_role(workspace_id: &str) -> Result<String, String> {
         .unwrap_or("none")
         .to_string())
 }
+
+// ---------- 视图（View） ----------
+
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ViewSort {
+    pub field: String,
+    pub desc: bool,
+}
+
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct View {
+    pub id: String,
+    pub name: String,
+    pub query: Value,
+    pub query_expr: String,
+    pub sort: ViewSort,
+    pub columns: Vec<String>,
+    pub is_shared: bool,
+    pub owner_id: String,
+}
+
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntryPage {
+    pub items: Vec<Entry>,
+    pub total: i64,
+    pub page: i64,
+    pub page_size: i64,
+}
+
+const VIEW_FIELDS: &str = "id name query queryExpr sort { field desc } columns isShared ownerId";
+
+pub async fn views(workspace_id: &str) -> Result<Vec<View>, String> {
+    let q = format!("query($id: ID!) {{ views(workspaceId: $id) {{ {VIEW_FIELDS} }} }}");
+    let data = graphql(&q, json!({ "id": workspace_id })).await?;
+    serde_json::from_value(data.get("views").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+pub async fn query_entries(
+    workspace_id: &str,
+    query: &Value,
+    sort_field: &str,
+    desc: bool,
+    page: i64,
+    page_size: i64,
+) -> Result<EntryPage, String> {
+    let q = "query($id: ID!, $q: JSON, $s: SortInput, $p: PageInput) { \
+        queryEntries(workspaceId: $id, query: $q, sort: $s, page: $p) { \
+        items { code title detail updatedAt labels { labelName value } } total page pageSize } }";
+    let data = graphql(
+        q,
+        json!({
+            "id": workspace_id,
+            "q": query,
+            "s": { "field": sort_field, "desc": desc },
+            "p": { "page": page, "pageSize": page_size },
+        }),
+    )
+    .await?;
+    serde_json::from_value(data.get("queryEntries").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+pub async fn create_view(
+    workspace_id: &str,
+    name: &str,
+    query: &Value,
+    sort_field: &str,
+    desc: bool,
+    columns: &[String],
+    is_shared: bool,
+) -> Result<View, String> {
+    let q = format!(
+        "mutation($id: ID!, $n: String!, $q: JSON!, $s: SortInput, $c: [String!]!, $sh: Boolean!) {{ \
+         createView(workspaceId: $id, name: $n, query: $q, sort: $s, columns: $c, isShared: $sh) {{ {VIEW_FIELDS} }} }}"
+    );
+    let data = graphql(
+        &q,
+        json!({
+            "id": workspace_id, "n": name, "q": query,
+            "s": { "field": sort_field, "desc": desc }, "c": columns, "sh": is_shared,
+        }),
+    )
+    .await?;
+    serde_json::from_value(data.get("createView").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+pub async fn update_view(
+    id: &str,
+    name: &str,
+    query: &Value,
+    sort_field: &str,
+    desc: bool,
+    columns: &[String],
+    is_shared: bool,
+) -> Result<View, String> {
+    let q = format!(
+        "mutation($id: ID!, $n: String!, $q: JSON!, $s: SortInput, $c: [String!]!, $sh: Boolean!) {{ \
+         updateView(id: $id, name: $n, query: $q, sort: $s, columns: $c, isShared: $sh) {{ {VIEW_FIELDS} }} }}"
+    );
+    let data = graphql(
+        &q,
+        json!({
+            "id": id, "n": name, "q": query,
+            "s": { "field": sort_field, "desc": desc }, "c": columns, "sh": is_shared,
+        }),
+    )
+    .await?;
+    serde_json::from_value(data.get("updateView").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+pub async fn delete_view(id: &str) -> Result<bool, String> {
+    let data = graphql(
+        "mutation($id: ID!) { deleteView(id: $id) }",
+        json!({ "id": id }),
+    )
+    .await?;
+    Ok(data.get("deleteView").and_then(|v| v.as_bool()).unwrap_or(false))
+}
+
+pub async fn parse_view_query(workspace_id: &str, expr: &str) -> Result<Value, String> {
+    let data = graphql(
+        "query($id: ID!, $e: String!) { parseViewQuery(workspaceId: $id, expr: $e) }",
+        json!({ "id": workspace_id, "e": expr }),
+    )
+    .await?;
+    Ok(data.get("parseViewQuery").cloned().unwrap_or(Value::Null))
+}
+
+pub async fn format_view_query(workspace_id: &str, query: &Value) -> Result<String, String> {
+    let data = graphql(
+        "query($id: ID!, $q: JSON!) { formatViewQuery(workspaceId: $id, query: $q) }",
+        json!({ "id": workspace_id, "q": query }),
+    )
+    .await?;
+    Ok(data
+        .get("formatViewQuery")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string())
+}
