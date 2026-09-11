@@ -31,6 +31,29 @@ pub fn get_token() -> Option<String> {
     None
 }
 
+// ---------- 布局偏好存储（侧栏收缩状态，仅 WASM 生效） ----------
+
+pub const SIDEBAR_KEY: &str = "rodeo_sidebar_collapsed";
+
+#[cfg(target_arch = "wasm32")]
+pub fn get_sidebar_collapsed() -> bool {
+    use gloo_storage::{LocalStorage, Storage};
+    LocalStorage::get::<bool>(SIDEBAR_KEY).unwrap_or(false)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn set_sidebar_collapsed(collapsed: bool) {
+    use gloo_storage::{LocalStorage, Storage};
+    let _ = LocalStorage::set(SIDEBAR_KEY, collapsed);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn get_sidebar_collapsed() -> bool {
+    false
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn set_sidebar_collapsed(_collapsed: bool) {}
+
 // ---------- 底层 GraphQL 请求 ----------
 
 #[cfg(target_arch = "wasm32")]

@@ -8,9 +8,10 @@ use crate::frontend::components::{
     display_enum_value, label_chip_class, logged_out, short_time, value_to_string,
 };
 use crate::frontend::graphql_client::{
-    create_entry, create_view, delete_entry, delete_view, entry, format_view_query, label_schemas,
-    parse_view_query, query_entries, update_entry, update_view, views, workspace_by_slug, Entry,
-    Labeling, LabelSchema, View, Workspace,
+    create_entry, create_view, delete_entry, delete_view, entry, format_view_query,
+    get_sidebar_collapsed, label_schemas, parse_view_query, query_entries, set_sidebar_collapsed,
+    update_entry, update_view, views, workspace_by_slug, Entry, Labeling, LabelSchema, View,
+    Workspace,
 };
 use crate::frontend::icons::{
     ic_add, ic_back, ic_close, ic_folder, ic_full, ic_search, ic_setting, ic_share,
@@ -50,6 +51,31 @@ pub fn WorkspaceMain() -> impl IntoView {
     let show_new = RwSignal::new(false);
     let new_title = RwSignal::new(String::new());
     let error = RwSignal::new(None::<String>);
+
+    // ---- 布局状态 ----
+    // 侧栏收缩：初始 false，挂载后在 Effect 内从 localStorage 恢复，避免 SSR/hydrate 不一致。
+    let sidebar_collapsed = RwSignal::new(false);
+    Effect::new_sync(move |_| {
+        if cfg!(target_arch = "wasm32") {
+            sidebar_collapsed.set(get_sidebar_collapsed());
+        }
+    });
+    // 全屏详情浮层开关（浮层内复用 EntryPanel）。
+    let fullscreen = RwSignal::new(false);
+
+    // 全局 Esc：优先退出全屏浮层，否则关闭右侧详情面板。
+    if cfg!(target_arch = "wasm32") {
+        let handle = window_event_listener(leptos::ev::keydown, move |ev| {
+            if ev.key() == "Escape" {
+                if fullscreen.get_untracked() {
+                    fullscreen.set(false);
+                } else if !selected.get_untracked().is_empty() {
+                    selected.set(String::new());
+                }
+            }
+        });
+        on_cleanup(move || handle.remove());
+    }
 
     // ---- 筛选查询状态 ----
     let query_ast = RwSignal::new(serde_json::json!({ "and": [] }));
@@ -226,16 +252,17 @@ pub fn WorkspaceMain() -> impl IntoView {
     };
 
     view! {
-        <div class="page">
+        <div class="page page-app">
             <div class="crumb">
                 {move || format!("/{} · 默认视图「全部任务」", slug())}
             </div>
-            <div class="ws-layout">
+            <div class=move || if sidebar_collapsed.get() { "ws-layout collapsed" } else { "ws-layout" }>
                 <WorkspaceSidebar
                     slug=slug().to_string()
                     name=ws_name
                     views=view_list
                     active=active_id
+                    collapsed=sidebar_collapsed
                     on_select=select_view
                     on_new=Callback::new(move |_| show_view_dialog.set(true))
                     on_delete=delete_view_cb
@@ -417,12 +444,19 @@ pub fn WorkspaceMain() -> impl IntoView {
 
                     {move || error.get().map(|e| view! { <p class="error" style="padding:8px 16px">{e}</p> })}
 
-                    <div class=move || if selected.get().is_empty() { "view-body full".to_string() } else { "view-body".to_string() }>
+                    <div class=move || {
+                        if selected.get().is_empty() || fullscreen.get() {
+                            "view-body full".to_string()
+                        } else {
+                            "view-body".to_string()
+                        }
+                    }>
                         <div>
                             <EntryTable
                                 data
                                 schemas
                                 selected
+                                fullscreen
                                 columns=Signal::derive(move || {
                                     active_view.get().map(|v| v.columns).unwrap_or_default()
                                 })
@@ -483,10 +517,35 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 <span class="mut">{move || format!("共 {} 条", total_signal.get())}</span>
                             </div>
                         </div>
-                        <EntryPanel code=selected slug=slug().to_string() schemas refresh />
+                        {move || if fullscreen.get() {
+                            view! { <div></div> }.into_any()
+                        } else {
+                            view! {
+                                <EntryPanel code=selected slug=slug().to_string() schemas refresh />
+                            }.into_any()
+                        }}
                     </div>
                 </div>
             </div>
+
+            {move || if fullscreen.get() && !selected.get().is_empty() {
+                view! {
+                    <div class="fullscreen">
+                        <div class="fs-head">
+                            <b>"全屏详情"</b>
+                            <span class="mut">{move || selected.get()}</span>
+                            <button class="ibtn" title="关闭 (Esc)" on:click=move |_| fullscreen.set(false)>
+                                {ic_close()}
+                            </button>
+                        </div>
+                        <div class="fs-body">
+                            <EntryPanel code=selected slug=slug().to_string() schemas refresh />
+                        </div>
+                    </div>
+                }.into_any()
+            } else {
+                view! { <div></div> }.into_any()
+            }}
 
             {move || if show_view_dialog.get() {
                 let ws_id = data.get().and_then(|r| r.ok()).map(|(w, _, _)| w.id.clone());
@@ -653,6 +712,7 @@ fn WorkspaceSidebar(
     name: RwSignal<String>,
     views: RwSignal<Vec<View>>,
     active: RwSignal<Option<String>>,
+    collapsed: RwSignal<bool>,
     on_select: Callback<String>,
     on_new: Callback<()>,
     on_delete: Callback<String>,
@@ -675,7 +735,7 @@ fn WorkspaceSidebar(
             <div class=move || if is_active() { "it on" } else { "it" }
                  on:click=move |_| on_select.run(click_id.clone())>
                 {if shared_mark { ic_share().into_any() } else { ic_folder().into_any() }}
-                <span style="flex:1">{name}</span>
+                <span class="lbl" style="flex:1">{name}</span>
                 <span class="n">{count}</span>
                 <button class="ibtn" title="删除视图" on:click=move |ev| {
                     ev.stop_propagation();
@@ -687,23 +747,28 @@ fn WorkspaceSidebar(
     };
 
     view! {
-        <aside class="panel wside">
-            <div style="padding:8px 12px;display:flex;gap:8px;align-items:center">
-                <b>{move || name.get()}</b>
+        <aside class=move || if collapsed.get() { "panel wside collapsed" } else { "panel wside" }>
+            <div class="sb-head">
+                <b class="lbl">{move || name.get()}</b>
+                <button class="ibtn sb-toggle" title="收起/展开侧栏" on:click=move |_| {
+                    let v = !collapsed.get_untracked();
+                    collapsed.set(v);
+                    set_sidebar_collapsed(v);
+                }>{move || if collapsed.get() { "»" } else { "«" }}</button>
             </div>
             <div class="grp">"我的视图"</div>
             {move || mine().into_iter().map(|v| row(v, false)).collect::<Vec<_>>()}
             <div class="grp">"共享视图"</div>
             {move || shared().into_iter().map(|v| row(v, true)).collect::<Vec<_>>()}
-            <div class="it" style="color:var(--ink3)" on:click=move |_| on_new.run(())>
-                {ic_add()}"新建视图"
+            <div class="it" style="color:var(--ink3)" title="新建视图" on:click=move |_| on_new.run(())>
+                {ic_add()}<span class="lbl">"新建视图"</span>
             </div>
             <div style="border-top:1px solid var(--line);margin-top:8px;padding-top:8px">
                 <A href=format!("/{slug}/settings")>
-                    <div class="it">{ic_setting()}"工作空间设置"</div>
+                    <div class="it" title="工作空间设置">{ic_setting()}<span class="lbl">"工作空间设置"</span></div>
                 </A>
                 <A href="/workspaces">
-                    <div class="it">{ic_back()}"工作空间列表"</div>
+                    <div class="it" title="工作空间列表">{ic_back()}<span class="lbl">"工作空间列表"</span></div>
                 </A>
             </div>
         </aside>
@@ -716,6 +781,8 @@ fn EntryTable(
     data: RwSignal<Option<Result<(Workspace, Vec<Entry>, Vec<LabelSchema>), String>>>,
     schemas: RwSignal<Vec<LabelSchema>>,
     selected: RwSignal<String>,
+    /// 双击行时置 true，打开全屏详情浮层。
+    fullscreen: RwSignal<bool>,
     columns: Signal<Vec<String>>,
     sort_field: Signal<String>,
     sort_desc: Signal<bool>,
@@ -779,6 +846,7 @@ fn EntryTable(
                             let code = e.code.clone();
                             let code_for_class = e.code.clone();
                             let code_for_click = e.code.clone();
+                            let code_for_dbl = e.code.clone();
                             let labels = e.labels.clone();
                             let names = cols();
                             // 标题着色：整行 Entry 克隆进响应式闭包，规则变化即刻重算。
@@ -787,7 +855,20 @@ fn EntryTable(
                             view! {
                                 <tr
                                     class=move || if selected.get() == code_for_class { "sel".to_string() } else { String::new() }
-                                    on:click=move |_| selected.set(code_for_click.clone())
+                                    on:click=move |ev| {
+                                        // 双击的第二次 click（detail==2）交给 dblclick 处理，
+                                        // 避免单击开合逻辑与双击互斥冲突。
+                                        if ev.detail() > 1 { return; }
+                                        if selected.get_untracked() == code_for_click {
+                                            selected.set(String::new());
+                                        } else {
+                                            selected.set(code_for_click.clone());
+                                        }
+                                    }
+                                    on:dblclick=move |_| {
+                                        selected.set(code_for_dbl.clone());
+                                        fullscreen.set(true);
+                                    }
                                 >
                                     <td class="code">{code.clone()}</td>
                                     <td style=move || match query_eval::title_color(
