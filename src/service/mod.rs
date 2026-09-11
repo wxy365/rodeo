@@ -2,6 +2,7 @@ pub mod audit;
 pub mod auth;
 pub mod entry;
 pub mod label;
+pub mod search;
 pub mod workspace;
 
 use std::sync::Arc;
@@ -13,6 +14,7 @@ pub use audit::AuditService;
 pub use auth::{AuthContext, AuthService};
 pub use entry::EntryService;
 pub use label::LabelService;
+pub use search::SearchIndex;
 pub use workspace::WorkspaceService;
 
 /// 聚合所有服务，供 GraphQL 层共享。
