@@ -975,7 +975,7 @@ input[type="color"].sw:disabled {
 .wside.collapsed .lbl,
 .wside.collapsed .grp,
 .wside.collapsed .n,
-.wside.collapsed .ibtn {
+.wside.collapsed .it .ibtn {
     display: none;
 }
 .wside.collapsed .it {

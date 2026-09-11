@@ -77,6 +77,13 @@ pub fn WorkspaceMain() -> impl IntoView {
         on_cleanup(move || handle.remove());
     }
 
+    // 详情被关闭（selected 清空）时一并退出全屏，避免下次单击直接进入全屏浮层。
+    Effect::new_sync(move |_| {
+        if selected.get().is_empty() && fullscreen.get_untracked() {
+            fullscreen.set(false);
+        }
+    });
+
     // ---- 筛选查询状态 ----
     let query_ast = RwSignal::new(serde_json::json!({ "and": [] }));
     let expr_mode = RwSignal::new(false);
