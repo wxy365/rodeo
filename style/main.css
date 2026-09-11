@@ -704,6 +704,83 @@ tr:hover .rowact {
     opacity: 1;
 }
 
+/* 标签颜色编辑器 */
+.color-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 240px;
+}
+.color-base {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+input[type="color"].sw {
+    width: 34px;
+    height: 26px;
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: var(--r-s);
+    background: none;
+    cursor: pointer;
+    flex: none;
+}
+input[type="color"].sw.sm {
+    width: 26px;
+    height: 22px;
+}
+input[type="color"].sw:disabled {
+    cursor: default;
+    opacity: 0.55;
+}
+.vc-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    align-items: flex-start;
+}
+.vc-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.inp.vc-num {
+    width: 66px;
+    padding: 3px 6px;
+    font-size: 12px;
+}
+.inp.vc-enum {
+    width: 112px;
+    padding: 3px 6px;
+    font-size: 12px;
+}
+.vc-op {
+    border: 0;
+    background: none;
+    color: var(--ink3);
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1;
+    padding: 3px 5px;
+    border-radius: var(--r-s);
+}
+.vc-op:hover:not(:disabled) {
+    background: var(--bg2);
+    color: var(--ink);
+}
+.vc-op:disabled {
+    opacity: 0.35;
+    cursor: default;
+}
+.vc-del:hover:not(:disabled) {
+    color: var(--dgr);
+}
+.btn.sm {
+    padding: 2px 8px;
+    font-size: 12px;
+}
+
 /* ===== 6 系统管理 ===== */
 .stats {
     display: grid;
