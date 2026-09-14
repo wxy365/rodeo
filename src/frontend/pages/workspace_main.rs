@@ -1370,6 +1370,8 @@ fn EntryTable(
                             let names = cols();
                             // 标题着色：整行 Entry 克隆进响应式闭包，规则变化即刻重算。
                             let entry_for_color = e.clone();
+                            // 时间型标签的比较需要 schema（布局），随规则闭包一起克隆。
+                            let schemas_for_color = sc.clone();
                             let title_text = e.title.clone();
                             view! {
                                 <tr
@@ -1423,6 +1425,7 @@ fn EntryTable(
                                     </td>
                                     <td style=move || match query_eval::title_color(
                                         &title_colors.get(), &entry_for_color, &entry_for_color.labels,
+                                        &schemas_for_color,
                                     ) {
                                         Some(c) => format!("color:{c}"),
                                         None => String::new(),

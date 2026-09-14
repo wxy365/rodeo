@@ -6,30 +6,31 @@
 
 use serde_json::Value;
 
-use crate::frontend::graphql_client::{AccountBrief, Entry, Labeling};
+use crate::frontend::graphql_client::{AccountBrief, Entry, LabelSchema, Labeling};
 
 // ---------- 查询求值 ----------
 
 /// 对一行 `entry`（携带 `labels`）求值后端下发的 `Query` JSON。
 ///
 /// 支持 `{"and":[…]}` / `{"or":[…]}` / `{"not":{…}}` / `{"cond":{…}}`。
-pub fn eval(query: &Value, entry: &Entry, labels: &[Labeling]) -> bool {
+/// `schemas` 用于时间型标签：按 schema 的布局解析成时刻再比较（与后端同构）。
+pub fn eval(query: &Value, entry: &Entry, labels: &[Labeling], schemas: &[LabelSchema]) -> bool {
     if let Some(list) = query.get("and").and_then(Value::as_array) {
-        return list.iter().all(|q| eval(q, entry, labels));
+        return list.iter().all(|q| eval(q, entry, labels, schemas));
     }
     if let Some(list) = query.get("or").and_then(Value::as_array) {
-        return list.iter().any(|q| eval(q, entry, labels));
+        return list.iter().any(|q| eval(q, entry, labels, schemas));
     }
     if let Some(inner) = query.get("not") {
-        return !eval(inner, entry, labels);
+        return !eval(inner, entry, labels, schemas);
     }
     if let Some(cond) = query.get("cond") {
-        return eval_cond(cond, entry, labels);
+        return eval_cond(cond, entry, labels, schemas);
     }
     false
 }
 
-fn eval_cond(cond: &Value, entry: &Entry, labels: &[Labeling]) -> bool {
+fn eval_cond(cond: &Value, entry: &Entry, labels: &[Labeling], schemas: &[LabelSchema]) -> bool {
     let Some(field) = cond.get("field") else {
         return false;
     };
@@ -37,7 +38,7 @@ fn eval_cond(cond: &Value, entry: &Entry, labels: &[Labeling]) -> bool {
     let want = cond.get("value");
 
     if let Some(name) = field.get("label").and_then(Value::as_str) {
-        return eval_label(name, op, want, labels);
+        return eval_label(name, op, want, labels, schemas);
     }
     match field.as_str() {
         Some("updatedAt") => cmp_time(&entry.updated_at, op, want),
@@ -101,15 +102,71 @@ fn cmp_account(acct: Option<&AccountBrief>, op: &str, want: Option<&Value>) -> b
     }
 }
 
-fn eval_label(name: &str, op: &str, want: Option<&Value>, labels: &[Labeling]) -> bool {
+fn eval_label(
+    name: &str,
+    op: &str,
+    want: Option<&Value>,
+    labels: &[Labeling],
+    schemas: &[LabelSchema],
+) -> bool {
     let found = labels.iter().find(|l| l.label_name == name);
     match op {
         "present" => found.is_some(),
         "absent" => found.is_none(),
         _ => match found {
-            Some(l) => cmp_value(&l.value, op, want),
+            Some(l) => {
+                // 时间型标签按布局解析成时刻再比，避免默认 / 自定义布局下字符串比较出错。
+                // 与后端 `Condition::evaluate` 的 `Field::Label` 分支同构。
+                if let Some(s) = schemas.iter().find(|s| s.name == name) {
+                    if matches!(s.value_type.as_str(), "date" | "time" | "datetime")
+                        && matches!(op, "eq" | "ne" | "gt" | "ge" | "lt" | "le")
+                    {
+                        let layout = s
+                            .format
+                            .as_deref()
+                            .unwrap_or_else(|| default_layout(&s.value_type));
+                        return cmp_time_layout(&l.value, layout, op, want);
+                    }
+                }
+                cmp_value(&l.value, op, want)
+            }
             None => false,
         },
+    }
+}
+
+/// 与后端 `domain::label::default_layout` 同构；非时间型返回空串。
+fn default_layout(value_type: &str) -> &'static str {
+    match value_type {
+        "date" => crate::golayout::DATE_LAYOUT,
+        "time" => crate::golayout::TIME_LAYOUT,
+        "datetime" => crate::golayout::DATETIME_LAYOUT,
+        _ => "",
+    }
+}
+
+/// 与后端 `domain/query.rs::cmp_time_layout` 同构：两侧按同一布局解析成
+/// `YmdHms`，再按字段元组比较先后。
+fn cmp_time_layout(got: &Value, layout: &str, op: &str, want: Option<&Value>) -> bool {
+    let (Some(a), Some(b)) = (got.as_str(), want.and_then(Value::as_str)) else {
+        return false;
+    };
+    let (Some(x), Some(y)) = (
+        crate::golayout::parse(layout, a),
+        crate::golayout::parse(layout, b),
+    ) else {
+        return false;
+    };
+    let ord = (x.year, x.month, x.day, x.hour, x.minute, x.second)
+        .cmp(&(y.year, y.month, y.day, y.hour, y.minute, y.second));
+    match op {
+        "eq" => ord == std::cmp::Ordering::Equal,
+        "ne" => ord != std::cmp::Ordering::Equal,
+        "gt" => ord == std::cmp::Ordering::Greater,
+        "ge" => ord != std::cmp::Ordering::Less,
+        "lt" => ord == std::cmp::Ordering::Less,
+        "le" => ord != std::cmp::Ordering::Greater,
+        _ => false,
     }
 }
 
@@ -355,12 +412,17 @@ pub fn resolve_label_color(base: Option<&Value>, value_colors: &Value, value: &V
 }
 
 /// 按 `rules`（`[{query,color}]`）顺序求值，返回首个命中规则的颜色。
-pub fn title_color(rules: &Value, entry: &Entry, labels: &[Labeling]) -> Option<String> {
+pub fn title_color(
+    rules: &Value,
+    entry: &Entry,
+    labels: &[Labeling],
+    schemas: &[LabelSchema],
+) -> Option<String> {
     let list = rules.as_array()?;
     for rule in list {
         let matched = rule
             .get("query")
-            .map(|q| eval(q, entry, labels))
+            .map(|q| eval(q, entry, labels, schemas))
             .unwrap_or(false);
         if matched {
             if let Some(c) = rule.get("color").and_then(Value::as_str) {
@@ -399,6 +461,7 @@ mod tests {
             labels: vec![
                 labeling("Task", json!("Open")),
                 labeling("Score", json!(75)),
+                labeling("DueTime", json!("09:30:00")),
             ],
         }
     }
@@ -410,6 +473,23 @@ mod tests {
         }
     }
 
+    /// `LabelSchema` 无 `Default`，测试里逐字段构造；除 `name` / `value_type` 外
+    /// 一律给「未配置」值（`format: None` 即走 `default_layout`）。
+    fn schema(name: &str, value_type: &str, format: Option<&str>) -> LabelSchema {
+        LabelSchema {
+            name: name.into(),
+            title: name.into(),
+            value_type: value_type.into(),
+            enum_values: Vec::new(),
+            color: None,
+            value_colors: json!(null),
+            multi: false,
+            format: format.map(str::to_string),
+            currency_symbol: None,
+            unit: None,
+        }
+    }
+
     #[test]
     fn eval_boolean_and_label_ops() {
         let e = entry();
@@ -418,21 +498,23 @@ mod tests {
             {"cond": {"field": {"label": "Task"}, "op": "eq", "value": "Open"}},
             {"not": {"cond": {"field": {"label": "Score"}, "op": "lt", "value": 60}}}
         ]});
-        assert!(eval(&q, &e, &ls));
+        assert!(eval(&q, &e, &ls, &[]));
         assert!(eval(
             &json!({"cond": {"field": {"label": "Priority"}, "op": "absent", "value": null}}),
             &e,
-            &ls
+            &ls,
+            &[]
         ));
         // 缺失标签的比较一律 false
         assert!(!eval(
             &json!({"cond": {"field": {"label": "Priority"}, "op": "eq", "value": "P0"}}),
             &e,
-            &ls
+            &ls,
+            &[]
         ));
         // 空 AND 恒真，空 OR 恒假
-        assert!(eval(&json!({"and": []}), &e, &ls));
-        assert!(!eval(&json!({"or": []}), &e, &ls));
+        assert!(eval(&json!({"and": []}), &e, &ls, &[]));
+        assert!(!eval(&json!({"or": []}), &e, &ls, &[]));
     }
 
     #[test]
@@ -441,49 +523,106 @@ mod tests {
         assert!(eval(
             &json!({"cond": {"field": "updatedAt", "op": "ge", "value": "2026-09-01"}}),
             &e,
+            &[],
             &[]
         ));
         assert!(!eval(
             &json!({"cond": {"field": "updatedAt", "op": "lt", "value": "2026-09-01"}}),
             &e,
+            &[],
             &[]
         ));
         assert!(eval(
             &json!({"cond": {"field": "text", "op": "contains", "value": "密码"}}),
             &e,
+            &[],
             &[]
         ));
         assert!(eval(
             &json!({"cond": {"field": "text", "op": "contains", "value": "open"}}),
             &e,
-            &e.labels
+            &e.labels,
+            &[]
         ));
         // Code 也纳入全文检索（大小写不敏感）。
         assert!(eval(
             &json!({"cond": {"field": "text", "op": "contains", "value": "e1"}}),
             &e,
+            &[],
             &[]
         ));
         assert!(!eval(
             &json!({"cond": {"field": "text", "op": "contains", "value": "e9"}}),
             &e,
+            &[],
             &[]
         ));
         // 内置 CreatedBy / UpdatedBy：显示名或邮箱任一命中即真（大小写不敏感）。
         assert!(eval(
             &json!({"cond": {"field": "createdBy", "op": "eq", "value": "张三"}}),
             &e,
+            &[],
             &[]
         ));
         assert!(eval(
             &json!({"cond": {"field": "updatedBy", "op": "eq", "value": "Zhangsan@Example.com"}}),
             &e,
+            &[],
             &[]
         ));
         assert!(!eval(
             &json!({"cond": {"field": "createdBy", "op": "eq", "value": "李四"}}),
             &e,
+            &[],
             &[]
+        ));
+    }
+
+    /// 时间型标签的比较必须按 schema 布局解析成时刻，而不是回退字符串 / `parse_ts`。
+    /// 默认 Time 布局 `15:04:05` 下 `parse_ts` 恒为 `None`，旧实现对所有比较都返回 false。
+    #[test]
+    fn eval_time_label_uses_schema_layout() {
+        let e = entry();
+        let schemas = vec![schema("DueTime", "time", None)];
+        assert!(eval(
+            &json!({"cond": {"field": {"label": "DueTime"}, "op": "gt", "value": "09:00:00"}}),
+            &e,
+            &e.labels,
+            &schemas
+        ));
+        assert!(!eval(
+            &json!({"cond": {"field": {"label": "DueTime"}, "op": "gt", "value": "10:00:00"}}),
+            &e,
+            &e.labels,
+            &schemas
+        ));
+        assert!(eval(
+            &json!({"cond": {"field": {"label": "DueTime"}, "op": "le", "value": "09:30:00"}}),
+            &e,
+            &e.labels,
+            &schemas
+        ));
+        // Eq / Ne 同样走布局解析（而非 `cmp_value` 的严格字符串相等）。
+        assert!(eval(
+            &json!({"cond": {"field": {"label": "DueTime"}, "op": "eq", "value": "9:30:00"}}),
+            &e,
+            &e.labels,
+            &schemas
+        ));
+        assert!(eval(
+            &json!({"cond": {"field": {"label": "DueTime"}, "op": "ne", "value": "09:00:00"}}),
+            &e,
+            &e.labels,
+            &schemas
+        ));
+        // 自定义布局优先于默认布局：`15:04` 解析不了 `09:30:00`（尾部 `:00` 残留），
+        // 比较取 false —— 证明用的是 schema.format 而非 default_layout。
+        let custom = vec![schema("DueTime", "time", Some("15:04"))];
+        assert!(!eval(
+            &json!({"cond": {"field": {"label": "DueTime"}, "op": "lt", "value": "10:00:00"}}),
+            &e,
+            &e.labels,
+            &custom
         ));
     }
 
@@ -517,6 +656,18 @@ mod tests {
             {"query": {"cond": {"field": {"label": "Score"}, "op": "ge", "value": 90}}, "color": "#0f0"},
             {"query": {"and": []}, "color": "#888"}
         ]);
-        assert_eq!(title_color(&rules, &e, &e.labels).as_deref(), Some("#888"));
+        assert_eq!(
+            title_color(&rules, &e, &e.labels, &[]).as_deref(),
+            Some("#888")
+        );
+        // 规则里的时间型标签比较拿得到 schema：`DueTime gt 09:00:00` 命中。
+        let time_rules = json!([
+            {"query": {"cond": {"field": {"label": "DueTime"}, "op": "gt", "value": "09:00:00"}}, "color": "#0ff"}
+        ]);
+        let schemas = vec![schema("DueTime", "time", None)];
+        assert_eq!(
+            title_color(&time_rules, &e, &e.labels, &schemas).as_deref(),
+            Some("#0ff")
+        );
     }
 }
