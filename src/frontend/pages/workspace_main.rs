@@ -734,6 +734,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                     if ev.key() == "Enter" {
                                         ev.prevent_default();
                                         hint_open.set(false);
+                                        time_pick.set(None);
                                         apply_expr();
                                     } else if ev.key() == "Escape" {
                                         hint_open.set(false);
@@ -1991,7 +1992,7 @@ enum TimeKind {
 
 /// 光标前的最后一段若形如「键 + 比较运算符 + 结尾空白」（运算符后尚未写值），
 /// 且键属于时间型标签或 CreatedAt / UpdatedAt，返回 (类型, 插入位置)。
-/// 纯手写扫描，不引入 regex。键与运算符之间不能有空白。
+/// 纯手写扫描，不引入 regex。键与运算符之间允许空白。
 fn detect_time_picker(
     text: &str,
     kind_of: &dyn Fn(&str) -> Option<TimeKind>,
@@ -2007,7 +2008,16 @@ fn detect_time_picker(
     } else {
         return None;
     };
-    let key_end = trimmed.len() - op_len;
+    let mut key_end = trimmed.len() - op_len;
+    // 键与运算符之间允许空白（用户示例就是 `CreateTime >`）。
+    while key_end > 0 {
+        let c = trimmed[..key_end].chars().next_back()?;
+        if c.is_whitespace() {
+            key_end -= c.len_utf8();
+        } else {
+            break;
+        }
+    }
     // 从运算符左侧往回扫键。逐字符后退（按 `len_utf8`），保证切片始终落在
     // 字符边界上——键可能是中文（`is_alphanumeric` 对 CJK 为真）。
     let mut j = key_end;
