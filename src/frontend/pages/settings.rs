@@ -163,7 +163,12 @@ pub fn WorkspaceSettings() -> impl IntoView {
             .filter(|s| !s.is_empty())
             .collect();
         // 服务端整体替换 attrs，必须传齐四个键（label_attrs 已保证）。
+        // 每个属性只在所属类型下组装：否则切类型时会把手滑填的值一起写进库
+        //（如先填日期布局再改成金额），而列表里那类属性不展示，用户再也清不掉。
+        // 按类型过滤而非在 on:change 里清信号，是为了保住用户切回原类型时已填的内容。
         // 空串（含纯空白）归一为 None，避免把空白写进库。
+        let is_time = matches!(vt.as_str(), "date" | "time" | "datetime");
+        let is_currency = vt == "currency";
         let attrs = {
             let fv = new_format.get();
             let sv = new_symbol.get();
@@ -173,9 +178,9 @@ pub fn WorkspaceSettings() -> impl IntoView {
             let u = uv.trim();
             label_attrs(
                 vt == "enum" && new_multi.get(),
-                (!f.is_empty()).then_some(f),
-                (!sy.is_empty()).then_some(sy),
-                (!u.is_empty()).then_some(u),
+                if is_time && !f.is_empty() { Some(f) } else { None },
+                if is_currency && !sy.is_empty() { Some(sy) } else { None },
+                if is_currency && !u.is_empty() { Some(u) } else { None },
             )
         };
         spawn_local(async move {
@@ -487,8 +492,15 @@ pub fn WorkspaceSettings() -> impl IntoView {
                                                             </label>
                                                         }.into_any()
                                                     } else if vt == "date" || vt == "time" || vt == "datetime" {
+                                                        // 占位用该类型自己的默认布局，而不是固定给日期时间的那个。
+                                                        let ph = match vt.as_str() {
+                                                            "date" => crate::golayout::DATE_LAYOUT,
+                                                            "time" => crate::golayout::TIME_LAYOUT,
+                                                            _ => crate::golayout::DATETIME_LAYOUT,
+                                                        };
+                                                        let ph_text = format!("展示格式（Go 布局，如 {ph}）");
                                                         view! {
-                                                            <input class="inp" placeholder="展示格式（Go 布局，如 2006-01-02）" prop:value=new_format
+                                                            <input class="inp" placeholder=ph_text prop:value=new_format
                                                                 on:input=move |ev| new_format.set(event_target_value(&ev)) />
                                                         }.into_any()
                                                     } else if vt == "currency" {
@@ -977,8 +989,14 @@ fn schema_row(
                         </label>
                     }.into_any()
                 } else if value_type == "date" || value_type == "time" || value_type == "datetime" {
+                    // 窄单元格里放该类型自己的默认布局，省略「展示格式」的说明文字。
+                    let ph = match value_type.as_str() {
+                        "date" => crate::golayout::DATE_LAYOUT,
+                        "time" => crate::golayout::TIME_LAYOUT,
+                        _ => crate::golayout::DATETIME_LAYOUT,
+                    };
                     view! {
-                        <input class="inp" style="width:100%" placeholder="2006-01-02 15:04:05" disabled=!editable
+                        <input class="inp" style="width:100%" placeholder=ph disabled=!editable
                             prop:value=move || format_input.get()
                             on:input=move |ev| {
                                 format_input.set(event_target_value(&ev));
