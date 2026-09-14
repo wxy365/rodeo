@@ -25,6 +25,9 @@ pub fn LabelEditor(
     // 正在新增、还没落库的标签名（本地待定行）。
     let pending = RwSignal::new(None::<String>);
 
+    // 最近一次写值 / 删值被服务端拒绝的原因。此前 Result 被丢弃，非法值会静默回退。
+    let error = RwSignal::new(None::<String>);
+
     // 换条目时丢掉没填完的待定行。
     Effect::new(move |_| {
         code.get();
@@ -35,14 +38,11 @@ pub fn LabelEditor(
     let apply = Callback::new(move |(name, value): (String, Option<Value>)| {
         let c = code.get_untracked();
         spawn_local(async move {
-            match value {
-                Some(v) => {
-                    let _ = set_labeling(&c, &name, &v).await;
-                }
-                None => {
-                    let _ = remove_labeling(&c, &name).await;
-                }
-            }
+            let res = match value {
+                Some(v) => set_labeling(&c, &name, &v).await.map(|_| ()),
+                None => remove_labeling(&c, &name).await.map(|_| ()),
+            };
+            error.set(res.err());
             pending.set(None);
             on_changed.run(());
         });
@@ -128,6 +128,7 @@ pub fn LabelEditor(
                 }
                 .into_any()
             }}
+            {move || error.get().map(|e| view! { <div class="hint">{"⚠ "}{e}</div> })}
         </div>
     }
 }
