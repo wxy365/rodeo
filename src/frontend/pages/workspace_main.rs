@@ -405,13 +405,18 @@ pub fn WorkspaceMain() -> impl IntoView {
         let page_now = page_signal.get();
         let my_seq = req_seq.get_untracked() + 1;
         req_seq.set(my_seq);
+        // 地址里的工作空间可能已不存在（库被重置、链接失效），此时要把用户送回列表。
+        let nav_missing = navigate.clone();
         spawn_local(async move {
             let fetched = async {
-                let ws = workspace_by_slug(&s).await?.ok_or("工作空间不存在".to_string())?;
+                let ws = workspace_by_slug(&s).await?;
+                let Some(ws) = ws else {
+                    return Ok(None);
+                };
                 let ep = query_entries(&ws.id, &ast, &sort_field, sort_desc, page_now, page_size)
                     .await?;
                 let schema_list = label_schemas(&ws.id).await?;
-                Ok::<_, String>((ws, ep.items, schema_list, ep.total, ep.label_names))
+                Ok::<_, String>(Some((ws, ep.items, schema_list, ep.total, ep.label_names)))
             }
             .await;
             // 只接受最新一次请求的结果，丢弃乱序返回的旧响应（翻页/排序并发时可能发生）。
@@ -419,7 +424,9 @@ pub fn WorkspaceMain() -> impl IntoView {
                 return;
             }
             match fetched {
-                Ok((w, items, list, total, names)) => {
+                // 工作空间不存在：整页留着只会让每个操作都报「尚未加载完成」，回列表重选。
+                Ok(None) => nav_missing("/workspaces", Default::default()),
+                Ok(Some((w, items, list, total, names))) => {
                     ws_name.set(w.name.clone());
                     schemas.set(list.clone());
                     total_signal.set(total);
