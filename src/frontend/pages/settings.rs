@@ -67,6 +67,11 @@ pub fn WorkspaceSettings() -> impl IntoView {
     let new_title = RwSignal::new(String::new());
     let new_type = RwSignal::new(String::from("enum"));
     let new_enum = RwSignal::new(String::new());
+    // 新类型属性：enum 的多选、时间型的展示格式、金额的符号 / 单位。
+    let new_multi = RwSignal::new(false);
+    let new_format = RwSignal::new(String::new());
+    let new_symbol = RwSignal::new(String::new());
+    let new_unit = RwSignal::new(String::new());
 
     // 邀请成员表单
     let invite_email = RwSignal::new(String::new());
@@ -157,13 +162,32 @@ pub fn WorkspaceSettings() -> impl IntoView {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
+        // 服务端整体替换 attrs，必须传齐四个键（label_attrs 已保证）。
+        // 空串（含纯空白）归一为 None，避免把空白写进库。
+        let attrs = {
+            let fv = new_format.get();
+            let sv = new_symbol.get();
+            let uv = new_unit.get();
+            let f = fv.trim();
+            let sy = sv.trim();
+            let u = uv.trim();
+            label_attrs(
+                vt == "enum" && new_multi.get(),
+                (!f.is_empty()).then_some(f),
+                (!sy.is_empty()).then_some(sy),
+                (!u.is_empty()).then_some(u),
+            )
+        };
         spawn_local(async move {
-            let attrs = label_attrs(false, None, None, None);
             match create_label_schema(&ws_id, &n, &t, &vt, &evals, &attrs, None, &serde_json::json!([])).await {
                 Ok(_) => {
                     new_name.set(String::new());
                     new_title.set(String::new());
                     new_enum.set(String::new());
+                    new_multi.set(false);
+                    new_format.set(String::new());
+                    new_symbol.set(String::new());
+                    new_unit.set(String::new());
                     refresh.update(|x| *x += 1);
                 }
                 Err(e) => error.set(Some(e)),
@@ -445,8 +469,39 @@ pub fn WorkspaceSettings() -> impl IntoView {
                                                     <option value="boolean">"Boolean"</option>
                                                     <option value="integer">"Integer"</option>
                                                     <option value="float">"Float"</option>
+                                                    <option value="date">"日期"</option>
+                                                    <option value="time">"时间"</option>
+                                                    <option value="datetime">"日期时间"</option>
+                                                    <option value="currency">"金额"</option>
+                                                    <option value="email">"邮箱"</option>
                                                 </select>
                                                 <input class="inp" placeholder="枚举值（逗号分隔）" prop:value=new_enum on:input=move |ev| new_enum.set(event_target_value(&ev)) />
+                                                {move || {
+                                                    let vt = new_type.get();
+                                                    if vt == "enum" {
+                                                        view! {
+                                                            <label style="display:flex;align-items:center;gap:6px;white-space:nowrap">
+                                                                <input type="checkbox" prop:checked=move || new_multi.get()
+                                                                    on:change=move |ev| new_multi.set(event_target_checked(&ev)) />
+                                                                "多选"
+                                                            </label>
+                                                        }.into_any()
+                                                    } else if vt == "date" || vt == "time" || vt == "datetime" {
+                                                        view! {
+                                                            <input class="inp" placeholder="展示格式（Go 布局，如 2006-01-02）" prop:value=new_format
+                                                                on:input=move |ev| new_format.set(event_target_value(&ev)) />
+                                                        }.into_any()
+                                                    } else if vt == "currency" {
+                                                        view! {
+                                                            <input class="inp" style="width:100px" placeholder="符号（如 ¥）" prop:value=new_symbol
+                                                                on:input=move |ev| new_symbol.set(event_target_value(&ev)) />
+                                                            <input class="inp" style="width:100px" placeholder="单位（如 万）" prop:value=new_unit
+                                                                on:input=move |ev| new_unit.set(event_target_value(&ev)) />
+                                                        }.into_any()
+                                                    } else {
+                                                        ().into_any()
+                                                    }
+                                                }}
                                                 <button class="btn pri" type="submit">{ic_add()}"新建标签"</button>
                                             </form>
                                         }.into_any()
@@ -454,7 +509,7 @@ pub fn WorkspaceSettings() -> impl IntoView {
                                         view! { <p class="mut">"仅 Maintainer 及以上可管理标签"</p> }.into_any()
                                     }}
                                     <table class="tbl">
-                                        <thead><tr><th>"name（不可改）"</th><th>"title"</th><th>"值类型"</th><th>"可选值 / 说明"</th><th>"颜色"</th><th>"来源"</th><th style="width:80px"></th></tr></thead>
+                                        <thead><tr><th>"name（不可改）"</th><th>"title"</th><th>"值类型"</th><th>"可选值 / 说明"</th><th>"属性"</th><th>"颜色"</th><th>"来源"</th><th style="width:80px"></th></tr></thead>
                                         <tbody>
                                             {schemas.iter().map(|s| schema_row(s, can_manage, _ws.id.clone(), refresh, error)).collect::<Vec<_>>()}
                                         </tbody>
@@ -754,14 +809,12 @@ fn schema_row(
     let title_input = RwSignal::new(s.title.clone());
     let enum_input = RwSignal::new(enum_str.clone());
     let base_color = RwSignal::new(s.color.clone());
-    // Task 8 会改成由表单状态组装；这里先沿用库中已有属性——
-    // 服务端 update 是整体替换，不传就会把已有属性清空。
-    let attrs_json = label_attrs(
-        s.multi,
-        s.format.as_deref(),
-        s.currency_symbol.as_deref(),
-        s.unit.as_deref(),
-    );
+    // 新类型属性表单状态，初值取自库中已有属性；保存时一并回写。
+    // 服务端 update 是整体替换，必须传齐四键，否则会清空已有属性。
+    let multi_input = RwSignal::new(s.multi);
+    let format_input = RwSignal::new(s.format.clone().unwrap_or_default());
+    let symbol_input = RwSignal::new(s.currency_symbol.clone().unwrap_or_default());
+    let unit_input = RwSignal::new(s.unit.clone().unwrap_or_default());
 
     let editable = !builtin && can_manage;
     let is_numeric = value_type == "integer" || value_type == "float";
@@ -912,6 +965,48 @@ fn schema_row(
                 }}
             </td>
             <td>
+                {if value_type == "enum" {
+                    view! {
+                        <label style="display:flex;align-items:center;gap:6px;white-space:nowrap">
+                            <input type="checkbox" disabled=!editable prop:checked=move || multi_input.get()
+                                on:change=move |ev| {
+                                    multi_input.set(event_target_checked(&ev));
+                                    dirty.set(true);
+                                } />
+                            "多选"
+                        </label>
+                    }.into_any()
+                } else if value_type == "date" || value_type == "time" || value_type == "datetime" {
+                    view! {
+                        <input class="inp" style="width:100%" placeholder="2006-01-02 15:04:05" disabled=!editable
+                            prop:value=move || format_input.get()
+                            on:input=move |ev| {
+                                format_input.set(event_target_value(&ev));
+                                dirty.set(true);
+                            } />
+                    }.into_any()
+                } else if value_type == "currency" {
+                    view! {
+                        <div style="display:flex;gap:6px">
+                            <input class="inp" style="width:80px" placeholder="符号" disabled=!editable
+                                prop:value=move || symbol_input.get()
+                                on:input=move |ev| {
+                                    symbol_input.set(event_target_value(&ev));
+                                    dirty.set(true);
+                                } />
+                            <input class="inp" style="width:80px" placeholder="单位" disabled=!editable
+                                prop:value=move || unit_input.get()
+                                on:input=move |ev| {
+                                    unit_input.set(event_target_value(&ev));
+                                    dirty.set(true);
+                                } />
+                        </div>
+                    }.into_any()
+                } else {
+                    view! { <span class="mut">"—"</span> }.into_any()
+                }}
+            </td>
+            <td>
                 <div class="color-cell">
                     <div class="color-base">
                         <input
@@ -1008,7 +1103,20 @@ fn schema_row(
                             let n = nm.clone();
                             let clr = base_color.get();
                             let vcs = build_value_colors(vc_rows.get(), &vt_save);
-                            let attrs = attrs_json.clone();
+                            let attrs = {
+                                let fv = format_input.get();
+                                let sv = symbol_input.get();
+                                let uv = unit_input.get();
+                                let f = fv.trim();
+                                let sy = sv.trim();
+                                let u = uv.trim();
+                                label_attrs(
+                                    multi_input.get(),
+                                    (!f.is_empty()).then_some(f),
+                                    (!sy.is_empty()).then_some(sy),
+                                    (!u.is_empty()).then_some(u),
+                                )
+                            };
                             spawn_local(async move {
                                 if let Err(e) = update_label_schema(&ws, &n, &t, &evals, &attrs, clr.as_deref(), &vcs).await {
                                     error.set(Some(e));

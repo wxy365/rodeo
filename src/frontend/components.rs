@@ -236,14 +236,20 @@ fn clip(s: &str) -> String {
 /// 值类型显示名。
 pub fn value_type_label(vt: &str) -> String {
     match vt {
-        "null" => "Null".to_string(),
-        "boolean" => "Boolean".to_string(),
-        "integer" => "Integer".to_string(),
-        "float" => "Float".to_string(),
-        "string" => "String".to_string(),
-        "enum" => "Enum".to_string(),
-        other => other.to_string(),
+        "null" => "Null",
+        "boolean" => "Boolean",
+        "integer" => "Integer",
+        "float" => "Float",
+        "string" => "String",
+        "enum" => "Enum",
+        "date" => "日期",
+        "time" => "时间",
+        "datetime" => "日期时间",
+        "currency" => "金额",
+        "email" => "邮箱",
+        other => other,
     }
+    .to_string()
 }
 
 #[cfg(test)]
