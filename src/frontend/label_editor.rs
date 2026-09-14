@@ -2,7 +2,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use serde_json::Value;
 
-use super::components::{display_enum_value, value_to_string};
+use super::components::{display_enum_value, from_native, is_native_time_layout, value_to_string};
 use super::graphql_client::{remove_labeling, set_labeling, Labeling, LabelSchema};
 use super::icons::{ic_close, ic_tag};
 use super::query_eval::resolve_label_color;
@@ -277,9 +277,7 @@ fn LabelRow(
                     "time" => crate::golayout::TIME_LAYOUT.to_string(),
                     _ => crate::golayout::DATETIME_LAYOUT.to_string(),
                 });
-            let native_ok = layout == crate::golayout::DATE_LAYOUT
-                || layout == crate::golayout::TIME_LAYOUT
-                || layout == crate::golayout::DATETIME_LAYOUT;
+            let native_ok = is_native_time_layout(&vt, s.format.as_deref());
             if !native_ok {
                 // 自定义布局：原生控件表达不了，退回文本输入；解析通过才落库。
                 let input = RwSignal::new(current.clone());
@@ -304,8 +302,10 @@ fn LabelRow(
                 view! {
                     <input class="inp" type=input_type prop:value=current_native on:change=move |ev| {
                         let v = event_target_value(&ev);
-                        if let Some(stored) = from_native(&vt, &v) {
-                            on_set.run(Value::String(stored));
+                        match from_native(&vt, &v) {
+                            Some(stored) => on_set.run(Value::String(stored)),
+                            // 清空原生控件 → 移除该标签，与 currency / email 分支一致。
+                            None => on_remove.run(()),
                         }
                     } />
                 }
@@ -424,14 +424,3 @@ fn to_native(vt: &str, s: &str) -> String {
     }
 }
 
-/// 原生控件的值 → 存储串（时间类补齐秒）。
-fn from_native(vt: &str, s: &str) -> Option<String> {
-    if s.is_empty() {
-        return None;
-    }
-    Some(match vt {
-        "datetime" => format!("{}:00", s.replacen('T', " ", 1)).get(..19)?.to_string(),
-        "time" => format!("{s}:00").get(..8)?.to_string(),
-        _ => s.to_string(),
-    })
-}

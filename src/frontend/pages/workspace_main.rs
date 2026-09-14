@@ -5,7 +5,8 @@ use leptos_router::components::A;
 use leptos_router::hooks::{use_navigate, use_params_map};
 
 use crate::frontend::components::{
-    display_enum_value, label_chip_class, logged_out, short_time, value_to_string,
+    display_enum_value, from_native, is_native_time_layout, label_chip_class, logged_out,
+    short_time, value_to_string,
 };
 use crate::frontend::graphql_client::{
     archive_entry, archived_entries, create_entry, create_view, delete_entry, delete_view, entry,
@@ -47,6 +48,8 @@ struct DraftLabel {
     value_type: &'static str,
     /// 是否多值（目前用于多选 Enum）。
     multi: bool,
+    /// date / time / datetime 的自定义 Go 布局；`None` 表示默认布局（可用原生控件表达）。
+    format: Option<String>,
     enum_values: RwSignal<Vec<String>>,
     /// 字符串 / 数值 / 枚举选中的原始文本；空串表示「未设置」。
     text: RwSignal<String>,
@@ -75,8 +78,9 @@ impl DraftLabel {
                 "email" => "email",
                 _ => "string",
             },
-            // 先读 `multi`，再把 `enum_values` 移进信号。
+            // 先读 `multi` / `format`，再把 `enum_values` 移进信号。
             multi: s.multi,
+            format: s.format,
             enum_values: RwSignal::new(s.enum_values),
             text: RwSignal::new(String::new()),
             many: RwSignal::new(Vec::new()),
@@ -115,6 +119,12 @@ impl DraftLabel {
                 .ok()
                 .and_then(serde_json::Number::from_f64)
                 .map(Value::Number),
+            // 时间类默认布局用原生控件，写下的是浏览器格式（time 为 "14:30"，
+            // datetime-local 为 "2026-09-15T14:30"），落库前补成 Go 存储布局；
+            // 自定义布局走文本输入，用户给的已是存储串，落到下面的原样上报。
+            "time" | "datetime" if is_native_time_layout(self.value_type, self.format.as_deref()) => {
+                from_native(self.value_type, &self.text.get_untracked()).map(Value::String)
+            }
             _ => {
                 let v = self.text.get_untracked();
                 (!v.trim().is_empty()).then_some(Value::String(v))
@@ -1794,14 +1804,23 @@ fn LabelDraft(rows: RwSignal<Vec<DraftLabel>>) -> impl IntoView {
                             }.into_any()
                         } else {
                             let inp = r.text;
-                            // 时间类走原生控件；金额 / 整数 / 浮点走数字输入；其余为文本。
-                            let input_type = match r.value_type {
-                                "string" => "text",
-                                "email" => "email",
-                                "date" => "date",
-                                "time" => "time",
-                                "datetime" => "datetime-local",
-                                _ => "number",
+                            // 时间类默认布局走原生控件；自定义 Go 布局原生控件表达不了，
+                            // 退回文本输入（与 LabelRow 一致）。金额 / 整数 / 浮点走数字
+                            // 输入；其余为文本。
+                            let is_time = matches!(r.value_type, "date" | "time" | "datetime");
+                            let custom_layout =
+                                is_time && !is_native_time_layout(r.value_type, r.format.as_deref());
+                            let input_type = if custom_layout {
+                                "text"
+                            } else {
+                                match r.value_type {
+                                    "string" => "text",
+                                    "email" => "email",
+                                    "date" => "date",
+                                    "time" => "time",
+                                    "datetime" => "datetime-local",
+                                    _ => "number",
+                                }
                             };
                             view! {
                                 <div class="lblrow">

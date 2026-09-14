@@ -22,6 +22,32 @@ pub fn value_to_string(v: &Value) -> String {
     }
 }
 
+/// date / time / datetime 三类中，`format` 缺省或恰为默认 Go 布局时，原生 HTML
+/// 控件就能表达该值；只有自定义布局才需要退回文本输入。
+pub fn is_native_time_layout(vt: &str, format: Option<&str>) -> bool {
+    let layout = format.unwrap_or(match vt {
+        "date" => crate::golayout::DATE_LAYOUT,
+        "time" => crate::golayout::TIME_LAYOUT,
+        _ => crate::golayout::DATETIME_LAYOUT,
+    });
+    layout == crate::golayout::DATE_LAYOUT
+        || layout == crate::golayout::TIME_LAYOUT
+        || layout == crate::golayout::DATETIME_LAYOUT
+}
+
+/// 原生控件的值 → 存储串（Go 默认布局：时间类补齐秒、datetime 去 `T` 换空格）。
+/// 空串返回 `None`，由调用方决定是「不写」还是「移除」。
+pub fn from_native(vt: &str, s: &str) -> Option<String> {
+    if s.is_empty() {
+        return None;
+    }
+    Some(match vt {
+        "datetime" => format!("{}:00", s.replacen('T', " ", 1)).get(..19)?.to_string(),
+        "time" => format!("{s}:00").get(..8)?.to_string(),
+        _ => s.to_string(),
+    })
+}
+
 /// 内置枚举值 → 友好展示（InProgress → In progress 等）。
 pub fn display_enum_value(v: &str) -> String {
     match v {

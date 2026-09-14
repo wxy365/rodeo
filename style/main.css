@@ -741,6 +741,8 @@ select:focus {
     height: 20px;
     border-radius: 6px;
 }
+/* 多选 Enum 的勾选组：换行排列，免得挤成一坨。 */
+.multienum { display: flex; flex-wrap: wrap; gap: 4px 10px; }
 /* 「＋ 添加标签」：虚线 chip，视觉上区别于已落库的实线标签块。 */
 .lbladd {
     width: auto;
