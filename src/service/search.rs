@@ -124,9 +124,12 @@ impl SearchIndex {
         let label_text = labels
             .iter()
             .map(|l| {
-                let v = match l.value.to_json() {
-                    serde_json::Value::String(s) => s,
-                    other => other.to_string(),
+                let v = match &l.value {
+                    crate::domain::LabelValue::EnumList(v) => v.join(" "),
+                    other => match other.to_json() {
+                        serde_json::Value::String(s) => s,
+                        o => o.to_string(),
+                    },
                 };
                 format!("{} {}", l.label_name, v)
             })

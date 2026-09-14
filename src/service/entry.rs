@@ -5,7 +5,8 @@ use ulid::Ulid;
 
 use crate::domain::view::{SortField, SortSpec};
 use crate::domain::{
-    generate_entry_code, AuditAction, AuditLog, Entry, LabelSchema, LabelValue, Labeling, Query,
+    generate_entry_code, AuditAction, AuditLog, Entry, EvalEnv, LabelSchema, LabelValue, Labeling,
+    Query,
 };
 use crate::error::AppError;
 use crate::service::audit::audit_ops;
@@ -548,6 +549,32 @@ impl EntryService {
                 None => None,
             };
 
+        // 账号解析只在查询树真的引用 CreatedBy / UpdatedBy 时才扫表。
+        let accounts: std::collections::HashMap<ulid::Ulid, (String, String)> =
+            if query.contains_account_field() {
+                let mut m = std::collections::HashMap::new();
+                for (_, v) in self.store.scan_prefix(cf::ACCOUNTS, b"")? {
+                    let a: crate::domain::Account = bincode::deserialize(&v)?;
+                    m.insert(a.id, (a.name, a.email));
+                }
+                m
+            } else {
+                std::collections::HashMap::new()
+            };
+        // 标签名 → (值类型, 时间格式)，供时间型标签的 >/< 比较取布局。
+        let schemas: std::collections::HashMap<
+            String,
+            (crate::domain::LabelValueType, Option<String>),
+        > = self
+            .store
+            .scan_prefix(cf::LABEL_SCHEMAS, &ws.to_bytes())?
+            .into_iter()
+            .filter_map(|(_, v)| bincode::deserialize::<crate::domain::LabelSchema>(&v).ok())
+            .map(|s| (s.name, (s.value_type, s.format)))
+            .collect();
+        let account_of = |id: ulid::Ulid| accounts.get(&id).cloned();
+        let label_of = |name: &str| schemas.get(name).cloned();
+
         let empty: Vec<Labeling> = Vec::new();
         let labels_of = |code: &str| -> &[Labeling] {
             labels_map.get(code).map(Vec::as_slice).unwrap_or(&empty)
@@ -560,7 +587,12 @@ impl EntryService {
                     Some((keyword, set)) => kw == keyword && set.contains(&e.code),
                     None => false,
                 };
-                query.evaluate(e, labels, &text_ok)
+                let env = EvalEnv {
+                    text_hit: &text_ok,
+                    account_of: &account_of,
+                    label_of: &label_of,
+                };
+                query.evaluate(e, labels, &env)
             })
             .collect();
 
