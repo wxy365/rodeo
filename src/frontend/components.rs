@@ -16,7 +16,8 @@ pub fn value_to_string(v: &Value) -> String {
         Value::Number(n) => n.to_string(),
         Value::Bool(b) => b.to_string(),
         Value::Null => String::new(),
-        Value::Array(a) => serde_json::to_string(a).unwrap_or_default(),
+        // 多值标签（如多选 Enum）按「逗号 + 空格」拼接各元素，而不是吐 JSON。
+        Value::Array(a) => a.iter().map(value_to_string).collect::<Vec<_>>().join(", "),
         _ => v.to_string(),
     }
 }

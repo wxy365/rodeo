@@ -45,9 +45,13 @@ struct DraftLabel {
     name: String,
     title: String,
     value_type: &'static str,
+    /// 是否多值（目前用于多选 Enum）。
+    multi: bool,
     enum_values: RwSignal<Vec<String>>,
     /// 字符串 / 数值 / 枚举选中的原始文本；空串表示「未设置」。
     text: RwSignal<String>,
+    /// 多选 Enum 选中的值集合。
+    many: RwSignal<Vec<String>>,
     /// 布尔标签三态：`None` 未设置，`Some(b)` 明确写入 true / false。
     /// 用三态而非复选框，否则「未勾选」无法与「明确设为假」区分。
     flag: RwSignal<Option<bool>>,
@@ -64,10 +68,18 @@ impl DraftLabel {
                 "boolean" => "boolean",
                 "integer" => "integer",
                 "float" => "float",
+                "date" => "date",
+                "time" => "time",
+                "datetime" => "datetime",
+                "currency" => "currency",
+                "email" => "email",
                 _ => "string",
             },
+            // 先读 `multi`，再把 `enum_values` 移进信号。
+            multi: s.multi,
             enum_values: RwSignal::new(s.enum_values),
             text: RwSignal::new(String::new()),
+            many: RwSignal::new(Vec::new()),
             flag: RwSignal::new(None),
         }
     }
@@ -78,6 +90,12 @@ impl DraftLabel {
             // 无值标签：勾上即写 `null`，用来表示「打上了」。
             "null" => self.flag.get_untracked().filter(|b| *b).map(|_| Value::Null),
             "boolean" => self.flag.get_untracked().map(Value::Bool),
+            // 多选 Enum：整体写成一个字符串数组；一个都没选则视为未设置。
+            "enum" if self.multi => {
+                let many = self.many.get_untracked();
+                (!many.is_empty())
+                    .then_some(Value::Array(many.into_iter().map(Value::String).collect()))
+            }
             "enum" => {
                 let v = self.text.get_untracked();
                 (!v.is_empty()).then_some(Value::String(v))
@@ -89,7 +107,7 @@ impl DraftLabel {
                 .parse::<i64>()
                 .ok()
                 .map(|i| Value::Number(i.into())),
-            "float" => self
+            "float" | "currency" => self
                 .text
                 .get_untracked()
                 .trim()
@@ -1437,7 +1455,16 @@ fn EntryTable(
                                         match lv {
                                             None => view! { <td class="mut">"—"</td> }.into_any(),
                                             Some(v) => {
-                                                let s = value_to_string(&v);
+                                                // 多值（数组）逐元素走内置枚举的友好展示，再拼接；
+                                                // 否则 display_enum_value 只作用在整串上，内层 token 漏掉。
+                                                let s = match &v {
+                                                    Value::Array(a) => a
+                                                        .iter()
+                                                        .map(|x| display_enum_value(&value_to_string(x)))
+                                                        .collect::<Vec<_>>()
+                                                        .join(", "),
+                                                    other => value_to_string(other),
+                                                };
                                                 let schema = sc.iter().find(|sch| &sch.name == name);
                                                 let is_enum = schema
                                                     .is_some_and(|sch| sch.value_type == "enum");
@@ -1695,6 +1722,38 @@ fn LabelDraft(rows: RwSignal<Vec<DraftLabel>>) -> impl IntoView {
                                     </label>
                                 </div>
                             }.into_any()
+                        } else if r.value_type == "enum" && r.multi {
+                            // 多选 Enum：勾选集合整体写成一个数组值。
+                            let opts = r.enum_values.get();
+                            let many = r.many;
+                            view! {
+                                <div class="lblrow">
+                                    <span class="k">{ic_tag()}{title}</span>
+                                    <div class="multienum">
+                                        {opts.into_iter().map(|o| {
+                                            let oc_chk = o.clone();
+                                            let oc_set = o.clone();
+                                            let hit = o.clone();
+                                            view! {
+                                                <label class="mut">
+                                                    <input type="checkbox"
+                                                        prop:checked=move || many.get().contains(&oc_chk)
+                                                        on:change=move |ev| {
+                                                            if event_target_checked(&ev) {
+                                                                let oc = oc_set.clone();
+                                                                many.update(|v| if !v.contains(&oc) { v.push(oc.clone()) });
+                                                            } else {
+                                                                let oc = oc_set.clone();
+                                                                many.update(|v| v.retain(|x| x != &oc));
+                                                            }
+                                                        } />
+                                                    {display_enum_value(&hit)}
+                                                </label>
+                                            }
+                                        }).collect::<Vec<_>>()}
+                                    </div>
+                                </div>
+                            }.into_any()
                         } else if r.value_type == "enum" {
                             let opts = r.enum_values.get();
                             let sel = r.text;
@@ -1735,7 +1794,15 @@ fn LabelDraft(rows: RwSignal<Vec<DraftLabel>>) -> impl IntoView {
                             }.into_any()
                         } else {
                             let inp = r.text;
-                            let input_type = if r.value_type == "string" { "text" } else { "number" };
+                            // 时间类走原生控件；金额 / 整数 / 浮点走数字输入；其余为文本。
+                            let input_type = match r.value_type {
+                                "string" => "text",
+                                "email" => "email",
+                                "date" => "date",
+                                "time" => "time",
+                                "datetime" => "datetime-local",
+                                _ => "number",
+                            };
                             view! {
                                 <div class="lblrow">
                                     <span class="k">{ic_tag()}{title}</span>
