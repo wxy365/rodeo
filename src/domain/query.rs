@@ -476,15 +476,26 @@ fn as_f64(v: &serde_json::Value) -> Option<f64> {
     v.as_f64()
 }
 
-/// 把标签值归一成字符串集合：EnumList 是数组，单值即 1 元素，非字符串值给空集。
+/// 标量 JSON 值 → 可比较的字符串。数组/对象不是标量，返回 None。
+///
+/// 布尔、数字、null 也要参与比较：多值集合语义不应丢掉 Task 3 之前
+/// `got == want` 对这几类标量的判断能力。
+fn scalar_string(v: &serde_json::Value) -> Option<String> {
+    match v {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Null => Some("null".to_string()),
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => None,
+    }
+}
+
+/// 把标签值归一成字符串集合：EnumList 是数组（逐元素，仅标量），
+/// 单标量即 1 元素，其余（数组里的非标量、对象）不入集合。
 fn elem_strings(got: &serde_json::Value) -> Vec<String> {
     match got {
-        serde_json::Value::Array(a) => a
-            .iter()
-            .filter_map(|x| x.as_str().map(str::to_string))
-            .collect(),
-        serde_json::Value::String(s) => vec![s.clone()],
-        _ => Vec::new(),
+        serde_json::Value::Array(a) => a.iter().filter_map(scalar_string).collect(),
+        other => scalar_string(other).into_iter().collect(),
     }
 }
 
@@ -505,6 +516,14 @@ fn cmp_value(got: &serde_json::Value, op: Op, want: Option<&serde_json::Value>) 
         }
         Op::Contains | Op::NotContains => {
             let Some(b) = want.as_str() else { return false };
+            // 非字符串标量（数字/布尔/null）不参与包含判断：与旧行为一致，
+            // 正负两种运算符都返回 false，而不是让 `!~` 恒真。
+            if !matches!(
+                got,
+                serde_json::Value::String(_) | serde_json::Value::Array(_)
+            ) {
+                return false;
+            }
             let needle = b.to_lowercase();
             let hit = elem_strings(got)
                 .iter()
@@ -513,11 +532,13 @@ fn cmp_value(got: &serde_json::Value, op: Op, want: Option<&serde_json::Value>) 
         }
         Op::In | Op::NotIn => {
             let Some(list) = want.as_array() else { return false };
-            let cand: Vec<String> = list
-                .iter()
-                .filter_map(|x| x.as_str().map(str::to_string))
-                .collect();
-            let hit = elem_strings(got).iter().any(|s| cand.iter().any(|w| w == s));
+            let elems = elem_strings(got);
+            // 数值候选先按数值比较（解析器产出的数字是 float，标签值可能是 int），
+            // 其余按标量字符串集合语义：数组值任一元素命中候选即可。
+            let hit = list.iter().any(|x| match (as_f64(got), as_f64(x)) {
+                (Some(a), Some(b)) => a == b,
+                _ => scalar_string(x).is_some_and(|w| elems.iter().any(|s| s == &w)),
+            });
             if op == Op::In { hit } else { !hit }
         }
         Op::Gt | Op::Ge | Op::Lt | Op::Le => match (as_f64(got), as_f64(want)) {
