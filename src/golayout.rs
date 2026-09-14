@@ -139,7 +139,10 @@ fn take_month(rest: &str) -> Option<(u32, &str)> {
         if !name[..3].eq_ignore_ascii_case(&rest[..3]) {
             continue;
         }
-        let take = if rest.len() >= name.len() && name.eq_ignore_ascii_case(&rest[..name.len()]) {
+        let take = if rest.len() >= name.len()
+            && rest.is_char_boundary(name.len())
+            && name.eq_ignore_ascii_case(&rest[..name.len()])
+        {
             name.len()
         } else {
             3
@@ -158,7 +161,10 @@ fn take_weekday(rest: &str) -> Option<&str> {
         if !name[..3].eq_ignore_ascii_case(&rest[..3]) {
             continue;
         }
-        let take = if rest.len() >= name.len() && name.eq_ignore_ascii_case(&rest[..name.len()]) {
+        let take = if rest.len() >= name.len()
+            && rest.is_char_boundary(name.len())
+            && name.eq_ignore_ascii_case(&rest[..name.len()])
+        {
             name.len()
         } else {
             3
@@ -172,11 +178,14 @@ pub fn parse(layout: &str, s: &str) -> Option<YmdHms> {
     let mut t = YmdHms::default();
     let (mut rest, mut lay) = (s, layout);
     let (mut pm, mut has_ampm) = (false, false);
+    // 只有布局里真正出现了月/日 token 时才校验对应字段，否则保留 `Default` 的 0
+    //（`TIME_LAYOUT = "15:04:05"` 没有日期 token，0 是合法值）。
+    let (mut has_month, mut has_day) = (false, false);
     while !lay.is_empty() {
         if let Some((tok, kind)) = match_token(lay) {
             lay = &lay[tok.len()..];
             let (n, r) = match kind {
-                Tok::Year4 => take_digits(rest, 4, 4).map(|(n, r)| (n, r))?,
+                Tok::Year4 => take_digits(rest, 4, 4)?,
                 Tok::Year2 => take_digits(rest, 1, 2)?,
                 Tok::Month2 | Tok::Month1 => take_digits(rest, 1, 2)?,
                 Tok::Day2 | Tok::Day1 => take_digits(rest, 1, 2)?,
@@ -185,6 +194,7 @@ pub fn parse(layout: &str, s: &str) -> Option<YmdHms> {
                 Tok::MonAbbr | Tok::MonFull => {
                     let (m, r) = take_month(rest)?;
                     t.month = m;
+                    has_month = true;
                     rest = r;
                     continue;
                 }
@@ -193,9 +203,13 @@ pub fn parse(layout: &str, s: &str) -> Option<YmdHms> {
                     continue;
                 }
                 Tok::PmUpper | Tok::PmLower => {
-                    if rest.len() >= 2 && rest[..2].eq_ignore_ascii_case("PM") {
+                    if rest.len() >= 2 && rest.is_char_boundary(2) && rest[..2].eq_ignore_ascii_case("PM")
+                    {
                         pm = true;
-                    } else if rest.len() >= 2 && rest[..2].eq_ignore_ascii_case("AM") {
+                    } else if rest.len() >= 2
+                        && rest.is_char_boundary(2)
+                        && rest[..2].eq_ignore_ascii_case("AM")
+                    {
                         pm = false;
                     } else {
                         return None;
@@ -209,8 +223,14 @@ pub fn parse(layout: &str, s: &str) -> Option<YmdHms> {
             match kind {
                 Tok::Year4 => t.year = n as i32,
                 Tok::Year2 => t.year = 2000 + n as i32,
-                Tok::Month2 | Tok::Month1 => t.month = n as u32,
-                Tok::Day2 | Tok::Day1 => t.day = n as u32,
+                Tok::Month2 | Tok::Month1 => {
+                    t.month = n as u32;
+                    has_month = true;
+                }
+                Tok::Day2 | Tok::Day1 => {
+                    t.day = n as u32;
+                    has_day = true;
+                }
                 Tok::Hour24 | Tok::Hour12 => t.hour = n as u32,
                 Tok::Minute => t.minute = n as u32,
                 Tok::Second => t.second = n as u32,
@@ -237,7 +257,12 @@ pub fn parse(layout: &str, s: &str) -> Option<YmdHms> {
             t.hour = 0;
         }
     }
-    if !(1..=12).contains(&t.month) || !(1..=31).contains(&t.day) || t.hour > 23 || t.minute > 59 || t.second > 60 {
+    if (has_month && !(1..=12).contains(&t.month))
+        || (has_day && !(1..=31).contains(&t.day))
+        || t.hour > 23
+        || t.minute > 59
+        || t.second > 60
+    {
         return None;
     }
     Some(t)
