@@ -24,6 +24,18 @@ use crate::frontend::tiny_editor::TinyEditor;
 use crate::frontend::view_filter::with_text;
 use serde_json::Value;
 
+/// 内置元数据关键字 → 中文展示名。恒定并入 `/` 候选，与视图里有哪些标签无关
+/// （`src/domain/query.rs` 的 `RESERVED_FIELDS` 是同一份名单）。
+const BUILTIN_FIELDS: [(&str, &str); 7] = [
+    ("Code", "编码"),
+    ("Title", "标题"),
+    ("Detail", "详情"),
+    ("CreatedBy", "创建人"),
+    ("CreatedAt", "创建时间"),
+    ("UpdatedBy", "更新人"),
+    ("UpdatedAt", "更新时间"),
+];
+
 /// 视图「标题颜色规则」编辑行状态。`RwSignal` 便于逐字段就地更新；
 /// 全字段 Copy，便于在 `For` 的多个事件闭包间复用。
 #[derive(Clone, Copy)]
@@ -207,6 +219,9 @@ pub fn WorkspaceMain() -> impl IntoView {
     let expr_text = RwSignal::new(String::new());
     // 输入 `/` 时弹出的标签候选列表开关。
     let hint_open = RwSignal::new(false);
+    // 光标前是「时间型键 + 比较运算符 + 空白」时，浮出原生时间控件的状态：
+    // 控件类型 + 值该插入的字节位置（即当前文本末尾）。
+    let time_pick = RwSignal::new(None::<(TimeKind, usize)>);
     // 表达式语法帮助弹窗开关。
     let expr_help = RwSignal::new(false);
     // 本视图命中的条目实际带过的标签名（跨分页去重），即 `/` 的候选集。
@@ -253,6 +268,8 @@ pub fn WorkspaceMain() -> impl IntoView {
             active_view.set(v);
             expr_text.set(expr);
             hint_open.set(false);
+            // 整段文本被换掉，旧的时间控件插入位置随之失效，一并收起。
+            time_pick.set(None);
             // 切换视图回到第 1 页，避免旧的页码超出新视图总页数导致空表。
             page_signal.set(1);
         });
@@ -691,6 +708,26 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 on:input=move |ev| {
                                     let v = event_target_value(&ev);
                                     hint_open.set(label_fragment(&v).is_some());
+                                    // 时间型键（date/time/datetime 标签或 CreatedAt /
+                                    // UpdatedAt）后紧跟比较运算符再一个空白，就浮出原生控件。
+                                    let kind_of = |key: &str| -> Option<TimeKind> {
+                                        if key.eq_ignore_ascii_case("CreatedAt")
+                                            || key.eq_ignore_ascii_case("UpdatedAt")
+                                        {
+                                            return Some(TimeKind::DateTime);
+                                        }
+                                        schemas
+                                            .get_untracked()
+                                            .iter()
+                                            .find(|s| s.name.eq_ignore_ascii_case(key))
+                                            .and_then(|s| match s.value_type.as_str() {
+                                                "date" => Some(TimeKind::Date),
+                                                "time" => Some(TimeKind::Time),
+                                                "datetime" => Some(TimeKind::DateTime),
+                                                _ => None,
+                                            })
+                                    };
+                                    time_pick.set(detect_time_picker(&v, &kind_of));
                                     expr_text.set(v);
                                 }
                                 on:keydown=move |ev| {
@@ -700,6 +737,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                         apply_expr();
                                     } else if ev.key() == "Escape" {
                                         hint_open.set(false);
+                                        time_pick.set(None);
                                     }
                                 }
                                 on:blur=move |_| hint_open.set(false) />
@@ -715,18 +753,26 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 // 候选按标签的展示名（title，如「任务」）呈现——用户认的是它；
                                 // 插进表达式的仍是标签 key（如 Task）。key 以淡色跟在后面，说明落进输入框的是什么。
                                 let schemas_now = schemas.get();
-                                let items: Vec<(String, String)> = view_label_names
-                                    .get()
+                                // 先摆 7 个内置元数据名（用户不用先给视图打上这些标签才能引用），
+                                // 再摆本视图已有标签；同名（大小写无关，老 schema 可能留着小写 code）只留内置。
+                                let mut items: Vec<(String, String)> = BUILTIN_FIELDS
+                                    .iter()
+                                    .map(|(k, t)| (k.to_string(), t.to_string()))
+                                    .collect();
+                                for name in view_label_names.get() {
+                                    if items.iter().any(|(n, _)| n.eq_ignore_ascii_case(&name)) {
+                                        continue;
+                                    }
+                                    let title = schemas_now
+                                        .iter()
+                                        .find(|s| s.name == name)
+                                        .map(|s| s.title.trim().to_string())
+                                        .filter(|t| !t.is_empty())
+                                        .unwrap_or_else(|| name.clone());
+                                    items.push((name, title));
+                                }
+                                let items: Vec<(String, String)> = items
                                     .into_iter()
-                                    .map(|name| {
-                                        let title = schemas_now
-                                            .iter()
-                                            .find(|s| s.name == name)
-                                            .map(|s| s.title.trim().to_string())
-                                            .filter(|t| !t.is_empty())
-                                            .unwrap_or_else(|| name.clone());
-                                        (name, title)
-                                    })
                                     .filter(|(name, title)| {
                                         name.to_lowercase().contains(&frag)
                                             || title.to_lowercase().contains(&frag)
@@ -750,6 +796,34 @@ pub fn WorkspaceMain() -> impl IntoView {
                                     </div>
                                 }.into_any()
                             }}
+                            {move || time_pick.get().map(|(kind, at)| {
+                                // 控件值 → 存储串（补秒、datetime 去 T 换空格）交给共享实现，
+                                // 浏览器多吐的秒不会被二次拼接。
+                                let vt = match kind {
+                                    TimeKind::Date => "date",
+                                    TimeKind::Time => "time",
+                                    TimeKind::DateTime => "datetime",
+                                };
+                                let input_type = match kind {
+                                    TimeKind::Date => "date",
+                                    TimeKind::Time => "time",
+                                    TimeKind::DateTime => "datetime-local",
+                                };
+                                view! {
+                                    <div class="timepick">
+                                        <input type=input_type on:change=move |ev| {
+                                            let raw = event_target_value(&ev);
+                                            let Some(formatted) = from_native(vt, &raw) else { return; };
+                                            let cur = expr_text.get_untracked();
+                                            // 时间值必须加引号，否则词法器会把它当数字解析。
+                                            let head = cur.get(..at).unwrap_or(&cur).to_string();
+                                            expr_text.set(format!("{head}\"{formatted}\" "));
+                                            time_pick.set(None);
+                                            hint_open.set(false);
+                                        } />
+                                    </div>
+                                }
+                            })}
                         </div>
                         <button class="btn" style="margin-left:auto" disabled=move || !view_dirty()
                             on:click=move |_| {
@@ -1000,8 +1074,13 @@ pub fn WorkspaceMain() -> impl IntoView {
                                         <tr><td><code>"Summary ~ \"登录\""</code></td><td>"文本标签包含「登录」"</td></tr>
                                     </tbody>
                                 </table>
-                                <p class="mut">"提示：在输入框里输入 "<code>"/"</code>" 可从本视图已有标签中选择；"
-                                    "回车应用表达式，Escape 关闭提示。"</p>
+                                <p class="mut">"内置元数据："<code>"Code"</code>" / "<code>"Title"</code>" / "
+                                    <code>"Detail"</code>" / "<code>"CreatedBy"</code>" / "
+                                    <code>"CreatedAt"</code>" / "<code>"UpdatedBy"</code>" / "
+                                    <code>"UpdatedAt"</code>"（这些名字不可用作自定义标签名）。"</p>
+                                <p class="mut">"提示：在输入框里输入 "<code>"/"</code>" 可从内置元数据与本视图已有标签中选择；"
+                                    "回车应用表达式，Escape 关闭提示。时间型标签后紧跟比较运算符再一个空格，"
+                                    "会浮出日期 / 时间选择器。"</p>
                             </div>
                             <div style="display:flex;justify-content:flex-end">
                                 <button class="btn pri" on:click=move |_| expr_help.set(false)>"知道了"</button>
@@ -1900,6 +1979,51 @@ fn sort_label(field: &str, desc: bool) -> String {
         other => other,
     };
     format!("{name} {}", if desc { "↓" } else { "↑" })
+}
+
+/// 时间型内置名 / 标签的值，用哪种原生控件表达。
+#[derive(Clone, Copy, PartialEq)]
+enum TimeKind {
+    Date,
+    Time,
+    DateTime,
+}
+
+/// 光标前的最后一段若形如「键 + 比较运算符 + 结尾空白」（运算符后尚未写值），
+/// 且键属于时间型标签或 CreatedAt / UpdatedAt，返回 (类型, 插入位置)。
+/// 纯手写扫描，不引入 regex。键与运算符之间不能有空白。
+fn detect_time_picker(
+    text: &str,
+    kind_of: &dyn Fn(&str) -> Option<TimeKind>,
+) -> Option<(TimeKind, usize)> {
+    let trimmed = text.trim_end();
+    if trimmed.len() == text.len() {
+        return None; // 运算符后必须有空白，才说明「值还没写」
+    }
+    let op_len = if trimmed.ends_with(">=") || trimmed.ends_with("<=") || trimmed.ends_with("!=") {
+        2
+    } else if trimmed.ends_with('>') || trimmed.ends_with('<') {
+        1
+    } else {
+        return None;
+    };
+    let key_end = trimmed.len() - op_len;
+    // 从运算符左侧往回扫键。逐字符后退（按 `len_utf8`），保证切片始终落在
+    // 字符边界上——键可能是中文（`is_alphanumeric` 对 CJK 为真）。
+    let mut j = key_end;
+    while j > 0 {
+        let c = trimmed[..j].chars().next_back()?;
+        if c.is_alphanumeric() || c == '_' || c == '-' {
+            j -= c.len_utf8();
+        } else {
+            break;
+        }
+    }
+    if j == key_end {
+        return None;
+    }
+    let key = &trimmed[j..key_end];
+    kind_of(key).map(|k| (k, text.len()))
 }
 
 /// 取出表达式里最后一个 `/` 之后的输入片段——即「正在输入的标签名」。

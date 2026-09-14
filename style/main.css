@@ -592,6 +592,17 @@ select:focus {
 .lblhint-it:hover {
     background: var(--bg2);
 }
+/* 时间型标签「键 + 运算符 + 空白」后浮出的原生日期 / 时间控件。 */
+.timepick {
+    position: absolute;
+    z-index: 30;
+    margin-top: 4px;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 6px;
+    box-shadow: 0 6px 18px rgb(0 0 0 / 18%);
+}
 .view-body {
     flex: 1;
     min-height: 0;
