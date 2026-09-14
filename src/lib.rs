@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod frontend;
+pub mod golayout;
 
 #[cfg(feature = "ssr")]
 pub mod api;
