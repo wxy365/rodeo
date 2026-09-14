@@ -86,6 +86,10 @@ pub struct GqlLabelSchema {
     enum_values: Vec<String>,
     color: Option<String>,
     value_colors: Json<serde_json::Value>,
+    multi: bool,
+    format: Option<String>,
+    currency_symbol: Option<String>,
+    unit: Option<String>,
 }
 
 impl From<LabelSchema> for GqlLabelSchema {
@@ -99,6 +103,45 @@ impl From<LabelSchema> for GqlLabelSchema {
             enum_values: s.enum_values,
             color: s.color,
             value_colors: Json(value_colors),
+            multi: s.multi,
+            format: s.format,
+            currency_symbol: s.currency_symbol,
+            unit: s.unit,
+        }
+    }
+}
+
+/// 标签类型的附加属性，随 create/update 一起提交；缺省时保持默认（非多值、无格式）。
+#[derive(async_graphql::InputObject)]
+#[graphql(rename_fields = "camelCase")]
+pub struct LabelSchemaAttrsInput {
+    multi: Option<bool>,
+    format: Option<String>,
+    currency_symbol: Option<String>,
+    unit: Option<String>,
+}
+
+impl LabelSchemaAttrsInput {
+    fn to_service(
+        self,
+        name: String,
+        title: String,
+        value_type: LabelValueType,
+        enum_values: Vec<String>,
+        color: Option<String>,
+        value_colors: Vec<ValueColor>,
+    ) -> crate::service::label::LabelSchemaInput {
+        crate::service::label::LabelSchemaInput {
+            name,
+            title,
+            value_type,
+            enum_values,
+            multi: self.multi.unwrap_or(false),
+            format: self.format,
+            currency_symbol: self.currency_symbol,
+            unit: self.unit,
+            color,
+            value_colors,
         }
     }
 }
@@ -136,11 +179,20 @@ pub struct GqlEntry {
     updated_at: String,
     /// 归档时间（RFC3339）；未归档为 null。前端据此决定详情面板显示「归档」还是「取消归档」。
     archived_at: Option<String>,
+    /// 创建人 / 更新人账号；账号已删除则为 null。不改上面的 createdBy / updatedBy（ID）。
+    created_by_account: Option<GqlAccount>,
+    updated_by_account: Option<GqlAccount>,
     labels: Vec<GqlLabeling>,
 }
 
 impl GqlEntry {
-    fn new(entry: Entry, labels: Vec<Labeling>, archived_at: Option<String>) -> Self {
+    fn new(
+        entry: Entry,
+        labels: Vec<Labeling>,
+        archived_at: Option<String>,
+        created_by_account: Option<GqlAccount>,
+        updated_by_account: Option<GqlAccount>,
+    ) -> Self {
         Self {
             code: entry.code,
             workspace_id: entry.workspace_id.to_string().into(),
@@ -151,19 +203,29 @@ impl GqlEntry {
             created_at: entry.created_at.to_rfc3339(),
             updated_at: entry.updated_at.to_rfc3339(),
             archived_at,
+            created_by_account,
+            updated_by_account,
             labels: labels.into_iter().map(Into::into).collect(),
         }
     }
 }
 
-/// 组装 GqlEntry，顺带补上归档标记——调用点不必各自去查 CF。
+/// 组装 GqlEntry，顺带补上归档标记与创建/更新人账号——调用点不必各自去查 CF。
 fn gql_entry(
     gql: &GraphqlContext,
     entry: Entry,
     labels: Vec<Labeling>,
 ) -> GqlResult<GqlEntry> {
     let archived_at = gql.services.entry.archived_at(&entry.code)?;
-    Ok(GqlEntry::new(entry, labels, archived_at))
+    let created_by_account = gql.services.auth.find_by_id(entry.created_by)?.map(Into::into);
+    let updated_by_account = gql.services.auth.find_by_id(entry.updated_by)?.map(Into::into);
+    Ok(GqlEntry::new(
+        entry,
+        labels,
+        archived_at,
+        created_by_account,
+        updated_by_account,
+    ))
 }
 
 #[derive(SimpleObject, Clone)]
@@ -922,6 +984,7 @@ impl Mutation {
         name: String,
         title: String,
         value_type: String,
+        attrs: LabelSchemaAttrsInput,
         enum_values: Vec<String>,
         color: Option<String>,
         value_colors: Option<Json<serde_json::Value>>,
@@ -933,16 +996,8 @@ impl Mutation {
         let vt = LabelValueType::from_str(&value_type)
             .ok_or_else(|| AppError::Internal("无效的标签值类型".to_string()))?;
         let value_colors: Vec<ValueColor> = parse_json_list(value_colors, "值颜色配置")?;
-        let schema = gql.services.label.create_schema(
-            auth.account_id,
-            ws_id,
-            &name,
-            &title,
-            vt,
-            enum_values,
-            color,
-            value_colors,
-        )?;
+        let input = attrs.to_service(name, title, vt, enum_values, color, value_colors);
+        let schema = gql.services.label.create_schema(auth.account_id, ws_id, input)?;
         Ok(schema.into())
     }
 
@@ -952,6 +1007,7 @@ impl Mutation {
         workspace_id: ID,
         name: String,
         title: String,
+        attrs: LabelSchemaAttrsInput,
         enum_values: Vec<String>,
         color: Option<String>,
         value_colors: Option<Json<serde_json::Value>>,
@@ -961,15 +1017,16 @@ impl Mutation {
         let ws_id = parse_ulid(workspace_id.as_str())?;
         gql.require_role(ws_id, WorkspaceRole::Maintainer)?;
         let value_colors: Vec<ValueColor> = parse_json_list(value_colors, "值颜色配置")?;
-        let schema = gql.services.label.update_schema(
-            auth.account_id,
-            ws_id,
-            &name,
-            &title,
+        // 类型不入参：服务层会保留库中已有类型。
+        let input = attrs.to_service(
+            name,
+            title,
+            LabelValueType::Null,
             enum_values,
             color,
             value_colors,
-        )?;
+        );
+        let schema = gql.services.label.update_schema(auth.account_id, ws_id, input)?;
         Ok(schema.into())
     }
 
