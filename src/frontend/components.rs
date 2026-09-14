@@ -124,6 +124,16 @@ pub fn short_time(at: &str) -> String {
     s.chars().take(16).collect()
 }
 
+/// RFC3339 → 默认展示格式 `2006-01-02 15:04:05`（按字符串切片，不引入 chrono）。
+pub fn fmt_datetime(rfc: &str) -> String {
+    let s = rfc.trim();
+    match (s.get(..10), s.get(11..19)) {
+        (Some(d), Some(t)) => format!("{d} {t}"),
+        (Some(d), None) => d.to_string(),
+        _ => s.to_string(),
+    }
+}
+
 /// 审计 action → 中文标签。
 pub fn action_label(action: &str) -> &'static str {
     match action {

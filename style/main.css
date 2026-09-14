@@ -648,6 +648,9 @@ select:focus {
     gap: 6px;
     margin-left: auto;
 }
+.dmeta { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 4px 16px; padding: 8px 12px; font-size: 12px; }
+.dmeta .mut { margin-right: 6px; }
 .editing {
     display: flex;
     align-items: center;

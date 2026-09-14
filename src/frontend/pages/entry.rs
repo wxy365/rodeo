@@ -2,10 +2,10 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::hooks::{use_navigate, use_params_map};
 
-use crate::frontend::components::{action_label, audit_change, logged_out, short_time};
+use crate::frontend::components::{action_label, audit_change, fmt_datetime, logged_out, short_time};
 use crate::frontend::graphql_client::{
-    audit_logs, delete_entry, entry, label_schemas, update_entry, workspace_by_slug, AuditLog,
-    Entry, Labeling, LabelSchema, Workspace,
+    audit_logs, delete_entry, entry, label_schemas, update_entry, workspace_by_slug, AccountBrief,
+    AuditLog, Entry, Labeling, LabelSchema, Workspace,
 };
 use crate::frontend::icons::{
     ic_back, ic_check, ic_history, ic_share, ic_tag, ic_upload,
@@ -144,6 +144,22 @@ pub fn EntryFullScreen() -> impl IntoView {
                 <button class="btn" disabled>{ic_share()}"分享链接（即将上线）"</button>
                 <button class="btn danger" on:click=del>"删除"</button>
             </div>
+
+            {move || data.get().and_then(|r| r.ok()).map(|(_, e, _, _)| {
+                let by = |a: &Option<AccountBrief>| a.as_ref().map(|x| x.name.clone()).unwrap_or_else(|| "—".to_string());
+                view! {
+                    <div class="dmeta">
+                        <div><span class="mut">"编码"</span><span class="code">{e.code.clone()}</span></div>
+                        <div><span class="mut">"创建人"</span>{by(&e.created_by_account)}</div>
+                        <div><span class="mut">"创建时间"</span>{fmt_datetime(&e.created_at)}</div>
+                        <div><span class="mut">"更新人"</span>{by(&e.updated_by_account)}</div>
+                        <div><span class="mut">"更新时间"</span>{fmt_datetime(&e.updated_at)}</div>
+                        {e.archived_at.clone().map(|at| view! {
+                            <div><span class="mut">"归档时间"</span>{fmt_datetime(&at)}</div>
+                        })}
+                    </div>
+                }
+            })}
 
             {move || error.get().map(|e| view! { <div class="hint" style="margin-bottom:12px">{"⚠ "}{e}</div> })}
 

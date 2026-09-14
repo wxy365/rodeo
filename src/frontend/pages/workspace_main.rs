@@ -5,14 +5,14 @@ use leptos_router::components::A;
 use leptos_router::hooks::{use_navigate, use_params_map};
 
 use crate::frontend::components::{
-    display_enum_value, from_native, is_native_time_layout, label_chip_class, logged_out,
-    short_time, value_to_string,
+    display_enum_value, fmt_datetime, from_native, is_native_time_layout, label_chip_class,
+    logged_out, short_time, value_to_string,
 };
 use crate::frontend::graphql_client::{
     archive_entry, archived_entries, create_entry, create_view, delete_entry, delete_view, entry,
     format_view_query, get_sidebar_collapsed, label_schemas, parse_view_query, query_entries,
     set_labeling, set_labelings, set_sidebar_collapsed, unarchive_entry, update_entry, update_view,
-    views, workspace_by_slug, Entry, Labeling, LabelSchema, View, Workspace,
+    views, workspace_by_slug, AccountBrief, Entry, Labeling, LabelSchema, View, Workspace,
 };
 use crate::frontend::icons::{
     ic_add, ic_back, ic_check, ic_close, ic_copy, ic_folder, ic_full, ic_help, ic_search,
@@ -1761,6 +1761,21 @@ fn EntryPanel(
                                 <button class="ibtn" title="关闭面板" on:click=close>{ic_close()}</button>
                             </div>
                         </div>
+                        {move || data.get().and_then(|r| r.ok()).map(|e| {
+                            let by = |a: &Option<AccountBrief>| a.as_ref().map(|x| x.name.clone()).unwrap_or_else(|| "—".to_string());
+                            view! {
+                                <div class="dmeta">
+                                    <div><span class="mut">"编码"</span><span class="code">{e.code.clone()}</span></div>
+                                    <div><span class="mut">"创建人"</span>{by(&e.created_by_account)}</div>
+                                    <div><span class="mut">"创建时间"</span>{fmt_datetime(&e.created_at)}</div>
+                                    <div><span class="mut">"更新人"</span>{by(&e.updated_by_account)}</div>
+                                    <div><span class="mut">"更新时间"</span>{fmt_datetime(&e.updated_at)}</div>
+                                    {e.archived_at.clone().map(|at| view! {
+                                        <div><span class="mut">"归档时间"</span>{fmt_datetime(&at)}</div>
+                                    })}
+                                </div>
+                            }
+                        })}
                         <div class="editing"><span class="dot"></span>"乐观并发 · 保存时检测冲突"</div>
                         <div class="dtabs">
                             <button class="on">"详情"</button>
