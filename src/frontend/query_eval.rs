@@ -6,7 +6,7 @@
 
 use serde_json::Value;
 
-use crate::frontend::graphql_client::{Entry, Labeling};
+use crate::frontend::graphql_client::{AccountBrief, Entry, Labeling};
 
 // ---------- 查询求值 ----------
 
@@ -42,7 +42,61 @@ fn eval_cond(cond: &Value, entry: &Entry, labels: &[Labeling]) -> bool {
     match field.as_str() {
         Some("updatedAt") => cmp_time(&entry.updated_at, op, want),
         Some("createdAt") => cmp_time(&entry.created_at, op, want),
+        Some("code") => cmp_value(&Value::String(entry.code.clone()), op, want),
+        Some("title") => cmp_value(&Value::String(entry.title.clone()), op, want),
+        Some("detail") => cmp_value(&Value::String(entry.detail.clone()), op, want),
+        Some("createdBy") => cmp_account(entry.created_by_account.as_ref(), op, want),
+        Some("updatedBy") => cmp_account(entry.updated_by_account.as_ref(), op, want),
         Some("text") => eval_text(op, want, entry, labels),
+        _ => false,
+    }
+}
+
+/// 内置 CreatedBy / UpdatedBy：显示名或邮箱任一命中即真，大小写不敏感。
+/// 与后端 `acc_eq` / `acc_contains` / `acc_in` 同构（`=` / `in` 用 ASCII 折叠，`~` 用 Unicode 小写）。
+fn cmp_account(acct: Option<&AccountBrief>, op: &str, want: Option<&Value>) -> bool {
+    let Some(a) = acct else {
+        return false;
+    };
+    match op {
+        "eq" | "ne" => {
+            let Some(w) = want.and_then(Value::as_str) else {
+                return false;
+            };
+            let hit = a.name.eq_ignore_ascii_case(w) || a.email.eq_ignore_ascii_case(w);
+            if op == "eq" {
+                hit
+            } else {
+                !hit
+            }
+        }
+        "contains" | "notContains" => {
+            let Some(w) = want.and_then(Value::as_str) else {
+                return false;
+            };
+            let w = w.to_lowercase();
+            let hit = a.name.to_lowercase().contains(&w) || a.email.to_lowercase().contains(&w);
+            if op == "contains" {
+                hit
+            } else {
+                !hit
+            }
+        }
+        "in" | "notIn" => {
+            let Some(list) = want.and_then(Value::as_array) else {
+                return false;
+            };
+            let hit = list.iter().any(|x| {
+                x.as_str().is_some_and(|w| {
+                    a.name.eq_ignore_ascii_case(w) || a.email.eq_ignore_ascii_case(w)
+                })
+            });
+            if op == "in" {
+                hit
+            } else {
+                !hit
+            }
+        }
         _ => false,
     }
 }
@@ -59,27 +113,39 @@ fn eval_label(name: &str, op: &str, want: Option<&Value>, labels: &[Labeling]) -
     }
 }
 
+/// 与后端 `Condition::evaluate` 的 `cmp_value` 同构：标量归一到字符串集合后比较，
+/// 正负运算符成对（任一命中 / 无一命中），数值先走 `as_f64` 快路径。
 fn cmp_value(got: &Value, op: &str, want: Option<&Value>) -> bool {
     let Some(want) = want else {
         return false;
     };
     match op {
-        "eq" => json_eq(got, want),
-        "ne" => !json_eq(got, want),
-        "gt" | "ge" | "lt" | "le" => match (as_f64(got), as_f64(want)) {
-            (Some(a), Some(b)) => match op {
-                "gt" => a > b,
-                "ge" => a >= b,
-                "lt" => a < b,
-                _ => a <= b,
-            },
-            _ => false,
-        },
+        "eq" | "ne" => {
+            // 数值优先：标签值可能是 int，而解析器产出的字面量是 float。
+            if let (Some(a), Some(b)) = (as_f64(got), as_f64(want)) {
+                return if op == "eq" { a == b } else { a != b };
+            }
+            let want_s = scalar_string(want).unwrap_or_else(|| want.to_string());
+            let hit = elem_strings(got).iter().any(|s| s == &want_s);
+            if op == "eq" {
+                hit
+            } else {
+                !hit
+            }
+        }
         "contains" | "notContains" => {
-            let (Some(a), Some(b)) = (got.as_str(), want.as_str()) else {
+            let Some(b) = want.as_str() else {
                 return false;
             };
-            let hit = contains_ci(a, &b.to_lowercase());
+            // 非字符串标量（数字/布尔/null）不参与包含判断：正负两种运算符都返回 false，
+            // 而不是让 `!~` 恒真。数组仍按逐元素判断。
+            if !matches!(got, Value::String(_) | Value::Array(_)) {
+                return false;
+            }
+            let needle = b.to_lowercase();
+            let hit = elem_strings(got)
+                .iter()
+                .any(|s| s.to_lowercase().contains(&needle));
             if op == "contains" {
                 hit
             } else {
@@ -90,11 +156,39 @@ fn cmp_value(got: &Value, op: &str, want: Option<&Value>) -> bool {
             let Some(list) = want.as_array() else {
                 return false;
             };
-            let hit = list.iter().any(|x| x == got);
+            let elems = elem_strings(got);
+            // 数值候选先按数值比较，其余按标量字符串集合语义：数组值任一元素命中即可。
+            let hit = list.iter().any(|x| match (as_f64(got), as_f64(x)) {
+                (Some(a), Some(b)) => a == b,
+                _ => scalar_string(x).is_some_and(|w| elems.iter().any(|s| s == &w)),
+            });
             if op == "in" {
                 hit
             } else {
                 !hit
+            }
+        }
+        "gt" | "ge" | "lt" | "le" => {
+            if let (Some(a), Some(b)) = (as_f64(got), as_f64(want)) {
+                return match op {
+                    "gt" => a > b,
+                    "ge" => a >= b,
+                    "lt" => a < b,
+                    _ => a <= b,
+                };
+            }
+            // 时间型标签：两侧都能按时间戳解析时按时刻比较（默认布局与 RFC3339 都覆盖）。
+            let (Some(a), Some(b)) = (
+                got.as_str().and_then(parse_ts),
+                want.as_str().and_then(parse_ts),
+            ) else {
+                return false;
+            };
+            match op {
+                "gt" => a > b,
+                "ge" => a >= b,
+                "lt" => a < b,
+                _ => a <= b,
             }
         }
         _ => false,
@@ -134,11 +228,23 @@ fn contains_ci(hay: &str, needle_lower: &str) -> bool {
     hay.to_lowercase().contains(needle_lower)
 }
 
-/// 与后端一致的相等语义：两边都可转数值时按数值，否则按 JSON 相等。
-fn json_eq(a: &Value, b: &Value) -> bool {
-    match (as_f64(a), as_f64(b)) {
-        (Some(x), Some(y)) => x == y,
-        _ => a == b,
+/// 标量 JSON 值 → 可比较的字符串。数组/对象不是标量，返回 None。
+/// 与后端 `scalar_string` 同构：布尔、数字、null 也参与比较。
+fn scalar_string(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Bool(b) => Some(b.to_string()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Null => Some("null".to_string()),
+        Value::Array(_) | Value::Object(_) => None,
+    }
+}
+
+/// 把标签值归一成字符串集合：数组是（逐元素，仅标量），单标量即 1 元素。
+fn elem_strings(got: &Value) -> Vec<String> {
+    match got {
+        Value::Array(a) => a.iter().filter_map(scalar_string).collect(),
+        other => scalar_string(other).into_iter().collect(),
     }
 }
 
@@ -226,7 +332,11 @@ pub fn resolve_label_color(base: Option<&Value>, value_colors: &Value, value: &V
     if let Some(list) = value_colors.as_array() {
         for vc in list {
             let matched = match vc.get("value") {
-                Some(exact) if !exact.is_null() => exact == value,
+                // 多值标签的值是数组：任一元素等于精确值即命中。
+                Some(exact) if !exact.is_null() => match value {
+                    Value::Array(a) => a.iter().any(|x| x == exact),
+                    _ => exact == value,
+                },
                 _ => match (value.as_f64(), vc.get("min").and_then(Value::as_f64), vc.get("max").and_then(Value::as_f64)) {
                     (Some(v), min, max) => {
                         min.map_or(true, |lo| v >= lo) && max.map_or(true, |hi| v < hi)
@@ -273,6 +383,18 @@ mod tests {
             detail: "找回密码报错".into(),
             created_at: "2026-08-01T12:00:00Z".into(),
             updated_at: "2026-09-01T12:00:00Z".into(),
+            created_by: "01H".into(),
+            updated_by: "01H".into(),
+            created_by_account: Some(AccountBrief {
+                id: "01H".into(),
+                email: "zhangsan@example.com".into(),
+                name: "张三".into(),
+            }),
+            updated_by_account: Some(AccountBrief {
+                id: "01H".into(),
+                email: "zhangsan@example.com".into(),
+                name: "张三".into(),
+            }),
             archived_at: None,
             labels: vec![
                 labeling("Task", json!("Open")),
@@ -344,6 +466,22 @@ mod tests {
         ));
         assert!(!eval(
             &json!({"cond": {"field": "text", "op": "contains", "value": "e9"}}),
+            &e,
+            &[]
+        ));
+        // 内置 CreatedBy / UpdatedBy：显示名或邮箱任一命中即真（大小写不敏感）。
+        assert!(eval(
+            &json!({"cond": {"field": "createdBy", "op": "eq", "value": "张三"}}),
+            &e,
+            &[]
+        ));
+        assert!(eval(
+            &json!({"cond": {"field": "updatedBy", "op": "eq", "value": "Zhangsan@Example.com"}}),
+            &e,
+            &[]
+        ));
+        assert!(!eval(
+            &json!({"cond": {"field": "createdBy", "op": "eq", "value": "李四"}}),
             &e,
             &[]
         ));

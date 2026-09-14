@@ -9,9 +9,9 @@ use crate::frontend::components::{
     value_type_label,
 };
 use crate::frontend::graphql_client::{
-    audit_logs, create_label_schema, delete_workspace, invite_member, invites, label_schemas,
-    members, my_role, remove_member, restore_workspace, revoke_invite, transfer_owner,
-    update_label_schema, update_member_role, update_view, update_workspace, views,
+    audit_logs, create_label_schema, delete_workspace, invite_member, invites, label_attrs,
+    label_schemas, members, my_role, remove_member, restore_workspace, revoke_invite,
+    transfer_owner, update_label_schema, update_member_role, update_view, update_workspace, views,
     workspace_by_slug, AuditLog, Invite, LabelSchema, Member, View, Workspace,
 };
 use crate::frontend::use_auth;
@@ -158,7 +158,8 @@ pub fn WorkspaceSettings() -> impl IntoView {
             .filter(|s| !s.is_empty())
             .collect();
         spawn_local(async move {
-            match create_label_schema(&ws_id, &n, &t, &vt, &evals, None, &serde_json::json!([])).await {
+            let attrs = label_attrs(false, None, None, None);
+            match create_label_schema(&ws_id, &n, &t, &vt, &evals, &attrs, None, &serde_json::json!([])).await {
                 Ok(_) => {
                     new_name.set(String::new());
                     new_title.set(String::new());
@@ -753,6 +754,14 @@ fn schema_row(
     let title_input = RwSignal::new(s.title.clone());
     let enum_input = RwSignal::new(enum_str.clone());
     let base_color = RwSignal::new(s.color.clone());
+    // Task 8 会改成由表单状态组装；这里先沿用库中已有属性——
+    // 服务端 update 是整体替换，不传就会把已有属性清空。
+    let attrs_json = label_attrs(
+        s.multi,
+        s.format.as_deref(),
+        s.currency_symbol.as_deref(),
+        s.unit.as_deref(),
+    );
 
     let editable = !builtin && can_manage;
     let is_numeric = value_type == "integer" || value_type == "float";
@@ -999,8 +1008,9 @@ fn schema_row(
                             let n = nm.clone();
                             let clr = base_color.get();
                             let vcs = build_value_colors(vc_rows.get(), &vt_save);
+                            let attrs = attrs_json.clone();
                             spawn_local(async move {
-                                if let Err(e) = update_label_schema(&ws, &n, &t, &evals, clr.as_deref(), &vcs).await {
+                                if let Err(e) = update_label_schema(&ws, &n, &t, &evals, &attrs, clr.as_deref(), &vcs).await {
                                     error.set(Some(e));
                                 }
                                 refresh.update(|x| *x += 1);

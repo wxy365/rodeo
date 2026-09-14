@@ -118,6 +118,15 @@ pub struct WorkspaceItem {
     pub role: String,
 }
 
+/// 创建人 / 更新人账号的精简投影。账号已删除时服务端返回 None。
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountBrief {
+    pub id: String,
+    pub email: String,
+    pub name: String,
+}
+
 #[derive(Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Entry {
@@ -126,6 +135,13 @@ pub struct Entry {
     pub detail: String,
     pub created_at: String,
     pub updated_at: String,
+    /// 创建人 / 更新人账号 id。展示与账号筛选用下面的 `*_account`。
+    pub created_by: String,
+    pub updated_by: String,
+    #[serde(default)]
+    pub created_by_account: Option<AccountBrief>,
+    #[serde(default)]
+    pub updated_by_account: Option<AccountBrief>,
     /// 归档时间；未归档为 None。决定了详情面板显示「归档」还是「取消归档」。
     #[serde(default)]
     pub archived_at: Option<String>,
@@ -149,6 +165,18 @@ pub struct LabelSchema {
     pub color: Option<String>,
     #[serde(default)]
     pub value_colors: Value,
+    /// 值类型之外附加的属性。`multi` 允许多值（数组）。
+    #[serde(default)]
+    pub multi: bool,
+    /// 时间 / 日期型标签的布局（Go layout）。
+    #[serde(default)]
+    pub format: Option<String>,
+    /// 金额型标签的货币符号。
+    #[serde(default)]
+    pub currency_symbol: Option<String>,
+    /// 数值型标签的单位后缀。
+    #[serde(default)]
+    pub unit: Option<String>,
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -163,6 +191,34 @@ pub struct AuditLog {
     pub before: Option<String>,
     /// 变更后的资源快照（JSON 字符串），删除类操作为 None。
     pub after: Option<String>,
+}
+
+// ---------- 共享字段列表 ----------
+// 所有请求 Entry / LabelSchema 的查询都从这里取字段，避免新增字段时六处手改漏一处。
+
+const ENTRY_FIELDS: &str = "code title detail createdAt updatedAt createdBy updatedBy \
+     createdByAccount { id name email } updatedByAccount { id name email } archivedAt \
+     labels { labelName value }";
+
+const LABEL_SCHEMA_FIELDS: &str =
+    "name title valueType enumValues color valueColors multi format currencySymbol unit";
+
+/// 组装 `LabelSchemaAttrsInput`（camelCase）。
+///
+/// 服务端 update 是「整体替换」，所以调用方必须始终传齐四个键——
+/// 这里用 Option → null 也保留键位，不会把未改的属性抹掉。
+pub fn label_attrs(
+    multi: bool,
+    format: Option<&str>,
+    currency_symbol: Option<&str>,
+    unit: Option<&str>,
+) -> Value {
+    json!({
+        "multi": multi,
+        "format": format,
+        "currencySymbol": currency_symbol,
+        "unit": unit,
+    })
 }
 
 // ---------- 类型化查询/变更 ----------
@@ -306,31 +362,26 @@ pub async fn workspace_by_slug(slug: &str) -> Result<Option<Workspace>, String> 
 }
 
 pub async fn entries(workspace_id: &str) -> Result<Vec<Entry>, String> {
-    let data = graphql(
-        "query($id: ID!) { entries(workspaceId: $id) { code title detail createdAt updatedAt archivedAt labels { labelName value } } }",
-        json!({ "id": workspace_id }),
-    )
-    .await?;
+    let q = format!("query($id: ID!) {{ entries(workspaceId: $id) {{ {ENTRY_FIELDS} }} }}");
+    let data = graphql(&q, json!({ "id": workspace_id })).await?;
     serde_json::from_value(data.get("entries").cloned().unwrap_or(Value::Null))
         .map_err(|e| e.to_string())
 }
 
 pub async fn create_entry(workspace_id: &str, title: &str) -> Result<Entry, String> {
-    let data = graphql(
-        "mutation($id: ID!, $t: String!) { createEntry(workspaceId: $id, title: $t) { code title detail createdAt updatedAt archivedAt labels { labelName value } } }",
-        json!({ "id": workspace_id, "t": title }),
-    )
-    .await?;
+    let q = format!(
+        "mutation($id: ID!, $t: String!) {{ createEntry(workspaceId: $id, title: $t) {{ {ENTRY_FIELDS} }} }}"
+    );
+    let data = graphql(&q, json!({ "id": workspace_id, "t": title })).await?;
     serde_json::from_value(data.get("createEntry").cloned().unwrap_or(Value::Null))
         .map_err(|e| e.to_string())
 }
 
 pub async fn label_schemas(workspace_id: &str) -> Result<Vec<LabelSchema>, String> {
-    let data = graphql(
-        "query($id: ID!) { labelSchemas(workspaceId: $id) { name title valueType enumValues color valueColors } }",
-        json!({ "id": workspace_id }),
-    )
-    .await?;
+    let q = format!(
+        "query($id: ID!) {{ labelSchemas(workspaceId: $id) {{ {LABEL_SCHEMA_FIELDS} }} }}"
+    );
+    let data = graphql(&q, json!({ "id": workspace_id })).await?;
     serde_json::from_value(data.get("labelSchemas").cloned().unwrap_or(Value::Null))
         .map_err(|e| e.to_string())
 }
@@ -357,11 +408,8 @@ pub async fn set_labelings(entry_codes: &[String], labelings: &Value) -> Result<
 }
 
 pub async fn entry(code: &str) -> Result<Option<Entry>, String> {
-    let data = graphql(
-        "query($c: String!) { entry(code: $c) { code title detail createdAt updatedAt archivedAt labels { labelName value } } }",
-        json!({ "c": code }),
-    )
-    .await?;
+    let q = format!("query($c: String!) {{ entry(code: $c) {{ {ENTRY_FIELDS} }} }}");
+    let data = graphql(&q, json!({ "c": code })).await?;
     Ok(data
         .get("entry")
         .cloned()
@@ -374,8 +422,12 @@ pub async fn update_entry(
     title: &str,
     detail: &str,
 ) -> Result<Entry, String> {
+    let q = format!(
+        "mutation($c: String!, $e: String!, $t: String!, $d: String!) {{ \
+         updateEntry(code: $c, expectedUpdatedAt: $e, title: $t, detail: $d) {{ {ENTRY_FIELDS} }} }}"
+    );
     let data = graphql(
-        "mutation($c: String!, $e: String!, $t: String!, $d: String!) { updateEntry(code: $c, expectedUpdatedAt: $e, title: $t, detail: $d) { code title detail createdAt updatedAt archivedAt labels { labelName value } } }",
+        &q,
         json!({ "c": code, "e": expected_updated_at, "t": title, "d": detail }),
     )
     .await?;
@@ -423,11 +475,10 @@ pub async fn unarchive_entry(code: &str) -> Result<bool, String> {
 
 /// 已归档条目，按归档时间倒序。
 pub async fn archived_entries(workspace_id: &str) -> Result<Vec<Entry>, String> {
-    let data = graphql(
-        "query($id: ID!) { archivedEntries(workspaceId: $id) { code title detail createdAt updatedAt archivedAt labels { labelName value } } }",
-        json!({ "id": workspace_id }),
-    )
-    .await?;
+    let q = format!(
+        "query($id: ID!) {{ archivedEntries(workspaceId: $id) {{ {ENTRY_FIELDS} }} }}"
+    );
+    let data = graphql(&q, json!({ "id": workspace_id })).await?;
     serde_json::from_value(data.get("archivedEntries").cloned().unwrap_or(Value::Null))
         .map_err(|e| e.to_string())
 }
@@ -450,29 +501,52 @@ pub async fn create_label_schema(
     title: &str,
     value_type: &str,
     enum_values: &[String],
+    attrs: &Value,
     color: Option<&str>,
     value_colors: &Value,
 ) -> Result<LabelSchema, String> {
+    let q = format!(
+        "mutation($id: ID!, $n: String!, $t: String!, $vt: String!, $ev: [String!]!, \
+         $attrs: LabelSchemaAttrsInput!, $color: String, $vc: JSON!) {{ \
+         createLabelSchema(workspaceId: $id, name: $n, title: $t, valueType: $vt, \
+         enumValues: $ev, attrs: $attrs, color: $color, valueColors: $vc) \
+         {{ {LABEL_SCHEMA_FIELDS} }} }}"
+    );
     let data = graphql(
-        "mutation($id: ID!, $n: String!, $t: String!, $vt: String!, $ev: [String!]!, $color: String, $vc: JSON!) { createLabelSchema(workspaceId: $id, name: $n, title: $t, valueType: $vt, enumValues: $ev, color: $color, valueColors: $vc) { name title valueType enumValues color valueColors } }",
-        json!({ "id": workspace_id, "n": name, "t": title, "vt": value_type, "ev": enum_values, "color": color, "vc": value_colors }),
+        &q,
+        json!({
+            "id": workspace_id, "n": name, "t": title, "vt": value_type,
+            "ev": enum_values, "attrs": attrs, "color": color, "vc": value_colors,
+        }),
     )
     .await?;
     serde_json::from_value(data.get("createLabelSchema").cloned().unwrap_or(Value::Null))
         .map_err(|e| e.to_string())
 }
 
+/// 改标签（不改类型）。attrs 必须传齐四个键：服务端整体替换，漏传会清空已有属性。
 pub async fn update_label_schema(
     workspace_id: &str,
     name: &str,
     title: &str,
     enum_values: &[String],
+    attrs: &Value,
     color: Option<&str>,
     value_colors: &Value,
 ) -> Result<LabelSchema, String> {
+    let q = format!(
+        "mutation($id: ID!, $n: String!, $t: String!, $ev: [String!]!, \
+         $attrs: LabelSchemaAttrsInput!, $color: String, $vc: JSON!) {{ \
+         updateLabelSchema(workspaceId: $id, name: $n, title: $t, \
+         enumValues: $ev, attrs: $attrs, color: $color, valueColors: $vc) \
+         {{ {LABEL_SCHEMA_FIELDS} }} }}"
+    );
     let data = graphql(
-        "mutation($id: ID!, $n: String!, $t: String!, $ev: [String!]!, $color: String, $vc: JSON!) { updateLabelSchema(workspaceId: $id, name: $n, title: $t, enumValues: $ev, color: $color, valueColors: $vc) { name title valueType enumValues color valueColors } }",
-        json!({ "id": workspace_id, "n": name, "t": title, "ev": enum_values, "color": color, "vc": value_colors }),
+        &q,
+        json!({
+            "id": workspace_id, "n": name, "t": title, "ev": enum_values,
+            "attrs": attrs, "color": color, "vc": value_colors,
+        }),
     )
     .await?;
     serde_json::from_value(data.get("updateLabelSchema").cloned().unwrap_or(Value::Null))
@@ -678,11 +752,13 @@ pub async fn query_entries(
     page: i64,
     page_size: i64,
 ) -> Result<EntryPage, String> {
-    let q = "query($id: ID!, $q: JSON, $s: SortInput, $p: PageInput) { \
-        queryEntries(workspaceId: $id, query: $q, sort: $s, page: $p) { \
-        items { code title detail createdAt updatedAt labels { labelName value } } total page pageSize labelNames } }";
+    let q = format!(
+        "query($id: ID!, $q: JSON, $s: SortInput, $p: PageInput) {{ \
+         queryEntries(workspaceId: $id, query: $q, sort: $s, page: $p) {{ \
+         items {{ {ENTRY_FIELDS} }} total page pageSize labelNames }} }}"
+    );
     let data = graphql(
-        q,
+        &q,
         json!({
             "id": workspace_id,
             "q": query,
