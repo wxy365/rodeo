@@ -118,14 +118,46 @@ pub fn logged_out() -> bool {
     }
 }
 
-/// RFC3339 时间 → 简短 "YYYY-MM-DD HH:MM"。
+/// RFC3339 → 本地时区的 (年, 月, 日, 时, 分, 秒)；解析失败返回 `None`。
+///
+/// 服务端的时间戳一律是 UTC（`Utc::now().to_rfc3339()`），直接切字符串会把 UTC 当本地时间展示。
+/// 本地时区偏移只有浏览器知道，所以只有 wasm 端能换算；SSR 阶段这些时间戳还没取到，
+/// 走下面各自的切片回退。
+#[cfg(target_arch = "wasm32")]
+fn local_parts(rfc: &str) -> Option<(u32, u32, u32, u32, u32, u32)> {
+    let d = js_sys::Date::new(&wasm_bindgen::JsValue::from_str(rfc.trim()));
+    if js_sys::Date::get_time(&d).is_nan() {
+        return None;
+    }
+    Some((
+        js_sys::Date::get_full_year(&d),
+        js_sys::Date::get_month(&d) + 1,
+        js_sys::Date::get_date(&d),
+        js_sys::Date::get_hours(&d),
+        js_sys::Date::get_minutes(&d),
+        js_sys::Date::get_seconds(&d),
+    ))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn local_parts(_rfc: &str) -> Option<(u32, u32, u32, u32, u32, u32)> {
+    None
+}
+
+/// RFC3339 时间 → 本地时区 "YYYY-MM-DD HH:MM"。
 pub fn short_time(at: &str) -> String {
+    if let Some((y, mo, d, h, mi, _)) = local_parts(at) {
+        return format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}");
+    }
     let s = at.replace('T', " ");
     s.chars().take(16).collect()
 }
 
-/// RFC3339 → 默认展示格式 `2006-01-02 15:04:05`（按字符串切片，不引入 chrono）。
+/// RFC3339 → 本地时区的 `2006-01-02 15:04:05`。
 pub fn fmt_datetime(rfc: &str) -> String {
+    if let Some((y, mo, d, h, mi, s)) = local_parts(rfc) {
+        return format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:02}");
+    }
     let s = rfc.trim();
     match (s.get(..10), s.get(11..19)) {
         (Some(d), Some(t)) => format!("{d} {t}"),
