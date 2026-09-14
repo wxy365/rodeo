@@ -73,3 +73,31 @@ impl WorkspaceMember {
         }
     }
 }
+
+/// 待接受的邀请。存在即「待接受」——接受 / 拒绝 / 撤销都是删掉这条记录，
+/// 状态变迁只留在审计日志里，因此这里没有 status 字段，也不会出现「已接受的邀请」。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Invite {
+    pub workspace_id: Ulid,
+    pub account_id: Ulid,
+    pub role: WorkspaceRole,
+    pub invited_by: Ulid,
+    pub created_at: DateTime<Utc>,
+}
+
+impl Invite {
+    pub fn new(
+        workspace_id: Ulid,
+        account_id: Ulid,
+        role: WorkspaceRole,
+        invited_by: Ulid,
+    ) -> Self {
+        Self {
+            workspace_id,
+            account_id,
+            role,
+            invited_by,
+            created_at: Utc::now(),
+        }
+    }
+}

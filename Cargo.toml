@@ -45,6 +45,7 @@ tantivy = { version = "0.26", optional = true, default-features = false, feature
 gloo-net = { version = "0.6", features = ["http"] }
 gloo-storage = "0.3"
 js-sys = "0.3"
+web-sys = { version = "0.3", features = ["Clipboard", "Navigator", "Window"] }
 
 [features]
 default = ["ssr"]

@@ -325,12 +325,11 @@ enum Tok {
     Le,
     Tilde,
     NotTilde,
+    Bang,
     And,
     Or,
     Not,
     In,
-    Present,
-    Absent,
     Text,
     Updated,
     Created,
@@ -364,7 +363,7 @@ fn lex(input: &str) -> Result<Vec<Tok>, AppError> {
             '!' => match chars.get(i + 1) {
                 Some('=') => { out.push(Tok::Ne); i += 2; }
                 Some('~') => { out.push(Tok::NotTilde); i += 2; }
-                _ => return Err(AppError::InvalidQuery("期望 != 或 !~".to_string())),
+                _ => { out.push(Tok::Bang); i += 1; }
             },
             '~' => { out.push(Tok::Tilde); i += 1; }
             '"' | '\'' => {
@@ -412,8 +411,6 @@ fn lex(input: &str) -> Result<Vec<Tok>, AppError> {
                         "or" => out.push(Tok::Or),
                         "not" => out.push(Tok::Not),
                         "in" => out.push(Tok::In),
-                        "present" => out.push(Tok::Present),
-                        "absent" => out.push(Tok::Absent),
                         "text" => out.push(Tok::Text),
                         "updated" => out.push(Tok::Updated),
                         "created" => out.push(Tok::Created),
@@ -445,12 +442,11 @@ fn tok_label(t: Option<&Tok>) -> String {
         Some(Tok::Le) => "<=".to_string(),
         Some(Tok::Tilde) => "~".to_string(),
         Some(Tok::NotTilde) => "!~".to_string(),
+        Some(Tok::Bang) => "!".to_string(),
         Some(Tok::And) => "AND".to_string(),
         Some(Tok::Or) => "OR".to_string(),
         Some(Tok::Not) => "NOT".to_string(),
         Some(Tok::In) => "in".to_string(),
-        Some(Tok::Present) => "present".to_string(),
-        Some(Tok::Absent) => "absent".to_string(),
         Some(Tok::Text) => "text".to_string(),
         Some(Tok::Updated) => "updated".to_string(),
         Some(Tok::Created) => "created".to_string(),
@@ -515,6 +511,17 @@ impl Parser {
             self.next();
             return Ok(Query::Not(Box::new(self.parse_unary()?)));
         }
+        if self.peek() == Some(&Tok::Bang) {
+            self.next();
+            // `!标签名` 是存在性取反的语法糖，直接落成缺席条件（等价于旧的 absent()）；
+            // 其余形式按普通一元否定处理，`!x` 即 `NOT x`。
+            return Ok(match self.parse_primary()? {
+                Query::Cond(Condition { field: Field::Label(name), op: Op::Present, value: None }) => {
+                    Query::Cond(Condition { field: Field::Label(name), op: Op::Absent, value: None })
+                }
+                other => Query::Not(Box::new(other)),
+            });
+        }
         self.parse_primary()
     }
 
@@ -526,20 +533,6 @@ impl Parser {
                 self.eat(&Tok::RParen)?;
                 Ok(q)
             }
-            Some(Tok::Present) => {
-                self.next();
-                self.eat(&Tok::LParen)?;
-                let name = self.ident()?;
-                self.eat(&Tok::RParen)?;
-                Ok(Query::Cond(Condition { field: Field::Label(name), op: Op::Present, value: None }))
-            }
-            Some(Tok::Absent) => {
-                self.next();
-                self.eat(&Tok::LParen)?;
-                let name = self.ident()?;
-                self.eat(&Tok::RParen)?;
-                Ok(Query::Cond(Condition { field: Field::Label(name), op: Op::Absent, value: None }))
-            }
             Some(Tok::Text) => {
                 self.next();
                 let op = self.comparison_op()?;
@@ -550,16 +543,6 @@ impl Parser {
             other => Err(AppError::InvalidQuery(format!(
                 "无法解析: {}",
                 tok_label(other)
-            ))),
-        }
-    }
-
-    fn ident(&mut self) -> Result<String, AppError> {
-        match self.next() {
-            Some(Tok::Ident(s)) => Ok(s),
-            other => Err(AppError::InvalidQuery(format!(
-                "期望标签名，实际 {}",
-                tok_label(other.as_ref())
             ))),
         }
     }
@@ -615,6 +598,21 @@ impl Parser {
                 )))
             }
         };
+        if let Field::Label(_) = &field {
+            if self.peek() == Some(&Tok::LParen) {
+                return Err(AppError::InvalidQuery(
+                    "不再支持 present()/absent()：标签名单独出现即表示「存在」，前缀 ! 表示「不存在」"
+                        .to_string(),
+                ));
+            }
+            // 标签名后不接运算符时是存在性判断：`Task` 等价于旧的 present(Task)。
+            if !matches!(
+                self.peek(),
+                Some(Tok::Eq | Tok::Ne | Tok::Gt | Tok::Ge | Tok::Lt | Tok::Le | Tok::Tilde | Tok::NotTilde | Tok::In | Tok::Not)
+            ) {
+                return Ok(Query::Cond(Condition { field, op: Op::Present, value: None }));
+            }
+        }
         let op = self.comparison_op()?;
         let value = if self.peek() == Some(&Tok::LParen) {
             self.next();
@@ -719,8 +717,8 @@ impl Condition {
             Field::Text => "text".to_string(),
         };
         match self.op {
-            Op::Present => format!("present({field})"),
-            Op::Absent => format!("absent({field})"),
+            Op::Present => field,
+            Op::Absent => format!("!{field}"),
             _ => {
                 let value = self.value.as_ref().map(expr_scalar).unwrap_or_default();
                 format!("{field} {} {value}", expr_op(self.op))
@@ -768,12 +766,12 @@ mod tests {
     fn parse_and_to_expr_roundtrip() {
         let cases = [
             "Task = \"Open\"",
-            "present(Task)",
-            "absent(Priority)",
+            "Task",
+            "!Priority",
             "Task in (\"Open\", \"Done\")",
             "updated >= \"2026-09-01\"",
             "text ~ \"检索\"",
-            "Task = \"Open\" AND NOT present(Priority)",
+            "Task = \"Open\" AND NOT !Priority",
             "(Task = \"Open\" OR Bug = \"Fixed\") AND updated >= \"2026-09-01\"",
             r#"Title = "他说 \"你好\"""#,
         ];
@@ -814,6 +812,38 @@ mod tests {
         assert!(Query::parse("Task =").is_err());
         assert!(Query::parse("(Task = \"a\"").is_err());
         assert!(Query::parse("Task >< \"a\"").is_err());
+    }
+
+    #[test]
+    fn bare_label_is_present_and_bang_is_absent() {
+        let e = entry();
+        let labels = vec![labeling("Task", serde_json::json!("Open"))];
+        let never = |_: &str| false;
+
+        let present = Query::parse("Task").unwrap();
+        assert!(present.evaluate(&e, &labels, &never));
+        let absent = Query::parse("!Task").unwrap();
+        assert!(!absent.evaluate(&e, &labels, &never));
+        assert!(Query::parse("!Priority").unwrap().evaluate(&e, &labels, &never));
+
+        // 语法糖落成与旧函数等价的条件，且格式化后仍可回读。
+        assert_eq!(Query::parse("Task").unwrap().to_expr(), "Task");
+        assert_eq!(Query::parse("!Task").unwrap().to_expr(), "!Task");
+        // `!` 后接比较时退化为普通取反。
+        assert!(Query::parse("!(Task = \"Done\")").unwrap().evaluate(&e, &labels, &never));
+        // 组合表达式中存在性判断不再需要括号。
+        assert!(Query::parse("Task AND !Priority").unwrap().evaluate(&e, &labels, &never));
+    }
+
+    #[test]
+    fn removed_present_and_absent_functions_are_rejected() {
+        for src in ["present(Task)", "absent(Priority)", "Task AND present(Priority)"] {
+            let err = Query::parse(src).unwrap_err();
+            assert!(
+                err.to_string().contains("present"),
+                "{src} 应当提示函数已移除，实际：{err}"
+            );
+        }
     }
 
     #[test]

@@ -18,6 +18,9 @@ use crate::storage::{cf, DocStore};
 
 pub const TEXT_CANDIDATE_LIMIT: usize = 1000;
 const TOKENIZER: &str = "cjk";
+/// 承载 Entry Code 的可检索副本；`f_code` 是未分词的 STRING 字段，只能精确匹配，
+/// 供删除/取回用，检索需要走这里的分词字段。
+const CODE_TEXT_FIELD: &str = "entry_code_text";
 
 fn srch_err<E: std::fmt::Display>(e: E) -> AppError {
     AppError::Storage(format!("检索索引错误: {e}"))
@@ -57,6 +60,7 @@ pub struct SearchIndex {
     f_title: Field,
     f_content: Field,
     f_labels: Field,
+    f_code_text: Field,
 }
 
 impl SearchIndex {
@@ -74,10 +78,20 @@ impl SearchIndex {
         let f_title = text(&mut b, "title");
         let f_content = text(&mut b, "content");
         let f_labels = text(&mut b, "labels");
+        let f_code_text = text(&mut b, CODE_TEXT_FIELD);
         let schema = b.build();
 
         let index = match Index::open_in_dir(dir) {
-            Ok(i) => i,
+            // 旧索引缺少 code 检索字段：删掉重建。索引是纯派生物，
+            // 启动时的 `backfill` 会从 RocksDB 重新灌满。
+            Ok(existing) if existing.schema().get_field(CODE_TEXT_FIELD).is_err() => {
+                drop(existing);
+                std::fs::remove_dir_all(dir).map_err(srch_err)?;
+                // create_in_dir 要求父目录存在，重建刚被删掉的目录。
+                std::fs::create_dir_all(dir).map_err(srch_err)?;
+                Index::create_in_dir(Path::new(dir), schema.clone()).map_err(srch_err)?
+            }
+            Ok(existing) => existing,
             Err(_) => Index::create_in_dir(Path::new(dir), schema.clone()).map_err(srch_err)?,
         };
         let analyzer = TextAnalyzer::builder(NgramTokenizer::new(1, 2, false).map_err(srch_err)?)
@@ -96,6 +110,7 @@ impl SearchIndex {
             f_title,
             f_content,
             f_labels,
+            f_code_text,
         })
     }
 
@@ -125,6 +140,7 @@ impl SearchIndex {
                 self.f_title => entry.title.clone(),
                 self.f_content => strip_rich_text(&entry.detail),
                 self.f_labels => label_text,
+                self.f_code_text => entry.code.clone(),
             ))
             .map_err(srch_err)?;
         Ok(())
@@ -159,7 +175,10 @@ impl SearchIndex {
         if keyword.is_empty() {
             return Ok(Vec::new());
         }
-        let parser = QueryParser::for_index(&self.index, vec![self.f_title, self.f_content, self.f_labels]);
+        let parser = QueryParser::for_index(
+            &self.index,
+            vec![self.f_title, self.f_content, self.f_labels, self.f_code_text],
+        );
         let parsed = parser.parse_query(keyword).map_err(srch_err)?;
         let ws_query = TermQuery::new(
             Term::from_field_text(self.f_ws, &ws.to_string()),
@@ -204,7 +223,8 @@ impl SearchIndex {
         let mut count = 0;
         for (_, v) in rows {
             let entry: Entry = bincode::deserialize(&v)?;
-            if entry.is_deleted() {
+            // 归档条目与已删除一样不进检索索引。
+            if entry.is_deleted() || store.exists(cf::ENTRIES_ARCHIVED, entry.code.as_bytes())? {
                 continue;
             }
             let labels = store
@@ -257,6 +277,52 @@ mod tests {
 
         let hits = idx.search(ws, "验证码", 10).unwrap();
         assert_eq!(hits, vec![e.code.clone()], "详情正文必须可检索");
+        drop(idx);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn entry_code_is_searchable() {
+        let dir = temp_dir("code");
+        let idx = SearchIndex::open(&dir).unwrap();
+        let ws = Ulid::new();
+        let mut e = Entry::new(ws, "无关标题".to_string(), Ulid::new());
+        e.code = "RD-kM3vB7dR".to_string();
+        idx.index_entry(&e, &[]).unwrap();
+
+        // 整段 Code 与其中一段子串都应命中。
+        assert_eq!(idx.search(ws, "RD-kM3vB7dR", 10).unwrap(), vec![e.code.clone()]);
+        assert_eq!(idx.search(ws, "kM3v", 10).unwrap(), vec![e.code.clone()]);
+        drop(idx);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn legacy_index_without_code_field_is_rebuilt() {
+        let dir = temp_dir("legacy");
+        std::fs::create_dir_all(&dir).unwrap();
+        // 用缺字段的旧 schema 造一个索引，模拟升级前的残留。
+        let mut b = Schema::builder();
+        let f_code = b.add_text_field("entry_code", STORED | STRING);
+        let f_ws = b.add_text_field("workspace_id", STRING);
+        b.add_text_field("title", STORED | STRING);
+        b.add_text_field("content", STORED | STRING);
+        b.add_text_field("labels", STORED | STRING);
+        let old = b.build();
+        {
+            let index = Index::create_in_dir(Path::new(&dir), old).unwrap();
+            let mut w = index.writer_with_num_threads(1, 15_000_000).unwrap();
+            w.add_document(doc!(f_code => "RD-old", f_ws => Ulid::new().to_string())).unwrap();
+            w.commit().unwrap();
+        }
+
+        // 打开时检测到缺字段 → 重建为空索引，旧文档不再可见。
+        let idx = SearchIndex::open(&dir).unwrap();
+        assert_eq!(idx.num_docs(), 0, "旧索引应被重建");
+        let ws = Ulid::new();
+        let e = Entry::new(ws, "重建后".to_string(), Ulid::new());
+        idx.index_entry(&e, &[]).unwrap();
+        assert_eq!(idx.search(ws, e.code.as_str(), 10).unwrap(), vec![e.code.clone()]);
         drop(idx);
         std::fs::remove_dir_all(&dir).ok();
     }

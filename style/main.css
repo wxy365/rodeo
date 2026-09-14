@@ -230,10 +230,76 @@ select:focus {
 .tbl tbody tr.static {
     cursor: default;
 }
+/* 批量勾选列：窄、居中，且不抢走行的点击手感。 */
+.tbl th.pick,
+.tbl td.pick {
+    width: 34px;
+    padding: 0 0 0 12px;
+    text-align: center;
+}
+.tbl th.pick input,
+.tbl td.pick input {
+    cursor: pointer;
+    accent-color: var(--blue);
+}
+
+/* 选中若干条目后出现的批量操作条。 */
+.batchbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--line);
+    background: color-mix(in srgb, var(--blue) 5%, var(--bg2));
+}
+
+/* 「已归档」弹窗里的条目列表：等宽编码 + 标题 + 归档时间 + 恢复按钮。 */
+.archlist {
+    max-height: 46vh;
+    overflow-y: auto;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    margin: 4px 0 12px;
+}
+.archrow {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--line);
+}
+.archrow:last-child {
+    border-bottom: 0;
+}
+.archrow .lbl {
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+.archrow .at {
+    font-size: 12px;
+    white-space: nowrap;
+}
 
 .code {
     font: 12px ui-monospace, monospace;
     color: var(--ink3);
+}
+/* Code 单元格：编码 + 复制按钮，按钮平时淡显、悬停整行时明确。 */
+.codecell {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+}
+.codecell .codecopy {
+    width: 20px;
+    height: 20px;
+    opacity: 0.35;
+    transition: opacity 0.12s;
+}
+.tbl tbody tr:hover .codecell .codecopy {
+    opacity: 1;
 }
 .mut {
     color: var(--ink3);
@@ -449,6 +515,83 @@ select:focus {
     border-top: 1px solid var(--line);
     flex-wrap: wrap;
 }
+/* 表达式输入框容器：为 `/` 标签候选下拉提供定位基准。 */
+.exprwrap {
+    position: relative;
+    flex: 1;
+    min-width: 260px;
+}
+/* 表达式输入框右上角的小帮助图标：点开语法说明弹窗。 */
+.exprhelp {
+    position: absolute;
+    top: 3px;
+    right: 6px;
+    z-index: 21;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    border-radius: 50%;
+    background: none;
+    color: var(--ink3);
+    cursor: pointer;
+}
+.exprhelp:hover {
+    color: var(--ink);
+    background: var(--bg2);
+}
+.exprhelp .ic {
+    width: 15px;
+    height: 15px;
+}
+/* 语法说明弹窗正文。 */
+.exprdoc {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--ink2);
+}
+.exprdoc p {
+    margin: 0;
+    line-height: 1.7;
+}
+.exprdoc code {
+    padding: 1px 5px;
+    border-radius: 5px;
+    background: var(--bg2);
+    font-size: 12px;
+    color: var(--ink);
+}
+.lblhint {
+    position: absolute;
+    z-index: 20;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    max-height: 220px;
+    overflow: auto;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: var(--r-m);
+    box-shadow: 0 6px 20px rgb(0 0 0 / 8%);
+    padding: 4px;
+}
+.lblhint-it {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 6px 10px;
+    border-radius: var(--r-s);
+    font-size: 13px;
+    cursor: pointer;
+}
+.lblhint-it:hover {
+    background: var(--bg2);
+}
 .view-body {
     flex: 1;
     min-height: 0;
@@ -478,13 +621,21 @@ select:focus {
 }
 .dhead {
     display: flex;
-    align-items: flex-start;
+    align-items: center;
     gap: 8px;
+    flex-wrap: wrap;
 }
 .dhead h3 {
     font-size: 16px;
     font-weight: 500;
     flex: 1;
+}
+/* 详情操作按钮贴右上角，避免沉到底部被拉成等宽大按钮。 */
+.dacts {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
 }
 .editing {
     display: flex;
@@ -550,15 +701,27 @@ select:focus {
     font-size: 14px;
     line-height: 1.6;
 }
+/* 新建 Entry 表单里的标签草稿：占满整行，避免与标题/按钮挤在同一行。 */
+.filters .lbledit {
+    width: 100%;
+}
+/* 标签编辑器：一行排多个带边框的标签块（原先「一标签一行」的栅格太占竖向空间）。 */
+.lbledit {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
 .lblrow {
-    display: grid;
-    grid-template-columns: 88px 1fr;
-    gap: 12px;
+    display: inline-flex;
     align-items: center;
-    padding: 6px 0;
+    gap: 6px;
+    max-width: 100%;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 4px 8px;
 }
 .lblrow .k {
-    font-size: 13px;
+    font-size: 12px;
     color: var(--ink2);
     display: flex;
     align-items: center;
@@ -566,10 +729,29 @@ select:focus {
 }
 .lblrow select,
 .lblrow .inp {
-    width: 100%;
-    padding: 5px 8px;
-    font-size: 13px;
+    width: auto;
+    max-width: 100%;
+    padding: 3px 6px;
+    font-size: 12px;
+    border-radius: 6px;
+}
+/* 标签块里的移除按钮：比通用 .ibtn 小一圈，免得把 chip 撑高。 */
+.lblrow .ibtn {
+    width: 20px;
+    height: 20px;
+    border-radius: 6px;
+}
+/* 「＋ 添加标签」：虚线 chip，视觉上区别于已落库的实线标签块。 */
+.lbladd {
+    width: auto;
+    max-width: 100%;
+    border: 1px dashed var(--line);
     border-radius: 8px;
+    padding: 4px 8px;
+    font-size: 12px;
+    color: var(--ink2);
+    background: none;
+    cursor: pointer;
 }
 .pager {
     display: flex;
@@ -691,6 +873,36 @@ select:focus {
 .set-nav .it.dgr {
     color: var(--dgr);
 }
+.danger-box {
+    border: 1px solid color-mix(in srgb, var(--dgr) 35%, var(--line));
+    border-radius: var(--r-m);
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-width: 560px;
+    align-items: flex-start;
+}
+.danger-box p {
+    margin: 0;
+}
+.btn.dgr {
+    border-color: color-mix(in srgb, var(--dgr) 45%, var(--line));
+    color: var(--dgr);
+}
+.btn.dgr:hover {
+    background: color-mix(in srgb, var(--dgr) 10%, transparent);
+}
+.ws-deleted {
+    opacity: .72;
+}
+.ws-trash-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 22px 0 10px;
+    color: var(--ink2);
+}
 .set-body {
     padding: 20px;
     display: flex;
@@ -708,11 +920,38 @@ select:focus {
 .invite .inp {
     flex: 1;
 }
+.stack {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    max-width: 520px;
+    margin-top: 8px;
+}
+.fld {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.fld > span {
+    font-size: 13px;
+    color: var(--ink2);
+}
+textarea.inp {
+    font-family: inherit;
+    resize: vertical;
+}
 .rowact {
     opacity: 0;
 }
 tr:hover .rowact {
     opacity: 1;
+}
+/* 无改动时「保存」置灰；仍只在行 hover 时出现，避免表格常驻一排灰按钮。 */
+.btn.rowact:disabled {
+    opacity: 0;
+}
+tr:hover .btn.rowact:disabled {
+    opacity: 0.5;
 }
 
 /* 标签颜色编辑器 */
@@ -920,6 +1159,40 @@ input[type="color"].sw:disabled {
 .dmbox h3 {
     margin: 0;
 }
+/* 弹窗字段：标签 + 控件上下排布。 */
+.dfield {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.dlabel {
+    font-size: 13px;
+    color: var(--ink2);
+}
+/* 列选择器：以可勾选的标签 chip 呈现可用的列。 */
+.colpick {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+.colchip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    max-width: 100%;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 4px 8px;
+    font-size: 13px;
+    cursor: pointer;
+}
+.colchip.on {
+    border-color: var(--ink);
+    background: var(--bg2);
+}
+.colchip input {
+    margin: 0;
+}
 
 /* ===== 全窗口布局（工作空间主页） ===== */
 /* 仅工作空间主页用 .page-app 修饰：整页占满视口，滚动收敛到表格/侧栏内部。 */
@@ -1017,5 +1290,22 @@ input[type="color"].sw:disabled {
     flex: 1;
     border-left: 0;
     border-radius: 0;
-    overflow: visible;
+    overflow: auto;
+}
+/* 全屏下编辑区吃掉剩余高度，正文可滚动，而不是被压在 220px。 */
+.fs-body .editor {
+    flex: 1 1 auto;
+    min-height: 240px;
+    display: flex;
+    flex-direction: column;
+}
+.fs-body .editor .tiny-editor {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+.fs-body .editor .tiny-editor .ql-container {
+    flex: 1 1 auto;
+    min-height: 200px;
 }

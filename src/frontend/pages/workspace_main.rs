@@ -8,18 +8,19 @@ use crate::frontend::components::{
     display_enum_value, label_chip_class, logged_out, short_time, value_to_string,
 };
 use crate::frontend::graphql_client::{
-    create_entry, create_view, delete_entry, delete_view, entry, format_view_query,
-    get_sidebar_collapsed, label_schemas, parse_view_query, query_entries, set_sidebar_collapsed,
-    update_entry, update_view, views, workspace_by_slug, Entry, Labeling, LabelSchema, View,
-    Workspace,
+    archive_entry, archived_entries, create_entry, create_view, delete_entry, delete_view, entry,
+    format_view_query, get_sidebar_collapsed, label_schemas, parse_view_query, query_entries,
+    set_labeling, set_labelings, set_sidebar_collapsed, unarchive_entry, update_entry, update_view,
+    views, workspace_by_slug, Entry, Labeling, LabelSchema, View, Workspace,
 };
 use crate::frontend::icons::{
-    ic_add, ic_back, ic_close, ic_folder, ic_full, ic_search, ic_setting, ic_share,
+    ic_add, ic_back, ic_check, ic_close, ic_copy, ic_folder, ic_full, ic_help, ic_search,
+    ic_setting, ic_share, ic_tag,
 };
 use crate::frontend::label_editor::LabelEditor;
 use crate::frontend::query_eval;
 use crate::frontend::tiny_editor::TinyEditor;
-use crate::frontend::view_filter::{build_query, chips, is_flat, with_text, CondChip};
+use crate::frontend::view_filter::with_text;
 use serde_json::Value;
 
 /// 视图「标题颜色规则」编辑行状态。`RwSignal` 便于逐字段就地更新；
@@ -37,6 +38,73 @@ struct TitleRule {
     cached_ast: RwSignal<Value>,
 }
 
+/// 「新建 Entry」表单里的待写入标签。与 `LabelEditor` 不同，此时条目还不存在，
+/// 无法逐次 upsert，故先在这里收集，创建成功后再逐个落库。
+#[derive(Clone)]
+struct DraftLabel {
+    name: String,
+    title: String,
+    value_type: &'static str,
+    enum_values: RwSignal<Vec<String>>,
+    /// 字符串 / 数值 / 枚举选中的原始文本；空串表示「未设置」。
+    text: RwSignal<String>,
+    /// 布尔标签三态：`None` 未设置，`Some(b)` 明确写入 true / false。
+    /// 用三态而非复选框，否则「未勾选」无法与「明确设为假」区分。
+    flag: RwSignal<Option<bool>>,
+}
+
+impl DraftLabel {
+    fn from_schema(s: LabelSchema) -> Self {
+        Self {
+            name: s.name,
+            title: s.title,
+            value_type: match s.value_type.as_str() {
+                "null" => "null",
+                "enum" => "enum",
+                "boolean" => "boolean",
+                "integer" => "integer",
+                "float" => "float",
+                _ => "string",
+            },
+            enum_values: RwSignal::new(s.enum_values),
+            text: RwSignal::new(String::new()),
+            flag: RwSignal::new(None),
+        }
+    }
+
+    /// 用户填了值才返回 `Some`；空输入一律视为「本次不写这个标签」。
+    fn to_value(&self) -> Option<Value> {
+        match self.value_type {
+            // 无值标签：勾上即写 `null`，用来表示「打上了」。
+            "null" => self.flag.get_untracked().filter(|b| *b).map(|_| Value::Null),
+            "boolean" => self.flag.get_untracked().map(Value::Bool),
+            "enum" => {
+                let v = self.text.get_untracked();
+                (!v.is_empty()).then_some(Value::String(v))
+            }
+            "integer" => self
+                .text
+                .get_untracked()
+                .trim()
+                .parse::<i64>()
+                .ok()
+                .map(|i| Value::Number(i.into())),
+            "float" => self
+                .text
+                .get_untracked()
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .and_then(serde_json::Number::from_f64)
+                .map(Value::Number),
+            _ => {
+                let v = self.text.get_untracked();
+                (!v.trim().is_empty()).then_some(Value::String(v))
+            }
+        }
+    }
+}
+
 #[component]
 pub fn WorkspaceMain() -> impl IntoView {
     let params = use_params_map();
@@ -50,7 +118,25 @@ pub fn WorkspaceMain() -> impl IntoView {
     let selected = RwSignal::new(String::new());
     let show_new = RwSignal::new(false);
     let new_title = RwSignal::new(String::new());
+    // 新建表单里待写入的标签值；打开表单时按当前 workspace 的标签 schema 重建。
+    let new_labels = RwSignal::new(Vec::<DraftLabel>::new());
     let error = RwSignal::new(None::<String>);
+
+    // ---- 批量设置标签 ----
+    // 表格里勾选的条目 code。数据重载（翻页/换视图/刷新）时清空，避免选中的行
+    // 已经不在当前列表里却仍被写入。
+    let batch_selected = RwSignal::new(Vec::<String>::new());
+    let show_batch = RwSignal::new(false);
+    let batch_labels = RwSignal::new(Vec::<DraftLabel>::new());
+    let batch_error = RwSignal::new(None::<String>);
+    let batch_busy = RwSignal::new(false);
+
+    // ---- 归档 ----
+    // 已归档条目：打开「已归档」弹窗时拉取，恢复一条后就地移除，不整表重拉。
+    let archived_open = RwSignal::new(false);
+    let archived_list = RwSignal::new(Vec::<Entry>::new());
+    let archived_error = RwSignal::new(None::<String>);
+    let archived_busy = RwSignal::new(false);
 
     // ---- 布局状态 ----
     // 侧栏收缩：初始 false，挂载后在 Effect 内从 localStorage 恢复，避免 SSR/hydrate 不一致。
@@ -86,10 +172,18 @@ pub fn WorkspaceMain() -> impl IntoView {
 
     // ---- 筛选查询状态 ----
     let query_ast = RwSignal::new(serde_json::json!({ "and": [] }));
-    let expr_mode = RwSignal::new(false);
+    // 已落库的视图基线 (query, sort_field, sort_desc)。与当前编辑态比较，无差异时
+    // 「保存视图」置灰：既挡掉无效提交，也让保存成功有可见反馈（按钮重新变灰）。
+    let saved_baseline: RwSignal<(Value, String, bool)> =
+        RwSignal::new((serde_json::json!({ "and": [] }), "updatedAt".to_string(), true));
     let expr_text = RwSignal::new(String::new());
+    // 输入 `/` 时弹出的标签候选列表开关。
+    let hint_open = RwSignal::new(false);
+    // 表达式语法帮助弹窗开关。
+    let expr_help = RwSignal::new(false);
+    // 本视图命中的条目实际带过的标签名（跨分页去重），即 `/` 的候选集。
+    let view_label_names = RwSignal::new(Vec::<String>::new());
     let ad_hoc_text = RwSignal::new(String::new());
-    let new_cond_label = RwSignal::new(String::new());
     let refresh_view = RwSignal::new(0u32);
     // ---- 分页状态 ----
     let page_signal = RwSignal::new(1i64);
@@ -111,8 +205,17 @@ pub fn WorkspaceMain() -> impl IntoView {
         if active_id.get_untracked() == new_id {
             return;
         }
+        // 表达式输入框跟随视图：用服务端下发的 `queryExpr` 回填，避免前端复刻语法。
+        let expr = v.as_ref().map(|v| v.query_expr.clone()).unwrap_or_default();
         // 同一批内改写所有相关 signal，Effect 只跑一次，避免旧视图/旧页码的并发请求乱序覆盖。
         batch(move || {
+            saved_baseline.set(
+                v.as_ref()
+                    .map(|v| (v.query.clone(), v.sort.field.clone(), v.sort.desc))
+                    .unwrap_or_else(|| {
+                        (serde_json::json!({ "and": [] }), "updatedAt".to_string(), true)
+                    }),
+            );
             query_ast.set(
                 v.as_ref()
                     .map(|v| v.query.clone())
@@ -120,6 +223,8 @@ pub fn WorkspaceMain() -> impl IntoView {
             );
             active_id.set(new_id);
             active_view.set(v);
+            expr_text.set(expr);
+            hint_open.set(false);
             // 切换视图回到第 1 页，避免旧的页码超出新视图总页数导致空表。
             page_signal.set(1);
         });
@@ -155,17 +260,58 @@ pub fn WorkspaceMain() -> impl IntoView {
         });
     });
 
+    // 把表达式输入框的内容解析成查询 AST 并应用（回车触发）。空输入即清空过滤。
+    // 解析交给服务端 `parse_view_query`：语法与标签 schema 校验只有一份实现。
+    let apply_expr = move || {
+        let expr = expr_text.get_untracked();
+        let Some(ws_id) = data.get().and_then(|r| r.ok()).map(|(w, _, _)| w.id.clone()) else {
+            error.set(Some("工作空间尚未加载完成".to_string()));
+            return;
+        };
+        spawn_local(async move {
+            match parse_view_query(&ws_id, &expr).await {
+                Ok(ast) => {
+                    query_ast.set(ast);
+                    page_signal.set(1);
+                    error.set(None);
+                }
+                Err(e) => error.set(Some(e)),
+            }
+        });
+    };
+    // 选中候选标签：把最后一个 `/` 连同其后已输入的前缀替换成标签名，
+    // 并补一个空格，方便紧接着输入运算符或下一个标签。
+    let pick_label = move |name: String| {
+        let cur = expr_text.get_untracked();
+        expr_text.set(match cur.rfind('/') {
+            Some(i) => format!("{}{name} ", &cur[..i]),
+            None => format!("{name} "),
+        });
+        hint_open.set(false);
+    };
+
+    // 编辑态与已落库基线的差异：查询条件或排序任一变化即视为有未保存改动。
+    let view_dirty = move || {
+        let Some(v) = active_view.get() else {
+            return false;
+        };
+        let (q, f, d) = saved_baseline.get();
+        query_ast.get() != q || v.sort.field != f || v.sort.desc != d
+    };
+
     // ---- 新建视图弹窗 ----
     let show_view_dialog = RwSignal::new(false);
     let view_name_input = RwSignal::new(String::new());
     let view_shared_input = RwSignal::new(false);
-    let view_columns_input = RwSignal::new(String::new()); // 逗号分隔的标签 name
+    let view_columns_input = RwSignal::new(Vec::<String>::new()); // 选中展示为列的标签 name
 
     // ---- 视图配置弹窗（重命名 + 列配置）----
     let show_config_dialog = RwSignal::new(false);
     let config_name_input = RwSignal::new(String::new());
-    let config_columns_input = RwSignal::new(String::new());
+    let config_columns_input = RwSignal::new(Vec::<String>::new());
     let config_shared_input = RwSignal::new(false);
+    // 弹窗内错误单独存放：页面级 error 渲染在弹窗遮罩之下，用户看不到。
+    let dialog_error = RwSignal::new(None::<String>);
     // ---- 标题颜色规则编辑（视图配置弹窗内）----
     let config_rules = RwSignal::new(Vec::<TitleRule>::new());
     let next_rule_id = RwSignal::new(0u32);
@@ -191,6 +337,8 @@ pub fn WorkspaceMain() -> impl IntoView {
         let _ = refresh.get();
         let _ = refresh_view.get();
         let _ = query_ast.get();
+        // 列表整体重载时清空勾选：选中的行可能已不在当前视图/分页里。
+        batch_selected.set(Vec::new());
         if !cfg!(target_arch = "wasm32") {
             return;
         }
@@ -217,7 +365,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                 let ep = query_entries(&ws.id, &ast, &sort_field, sort_desc, page_now, page_size)
                     .await?;
                 let schema_list = label_schemas(&ws.id).await?;
-                Ok::<_, String>((ws, ep.items, schema_list, ep.total))
+                Ok::<_, String>((ws, ep.items, schema_list, ep.total, ep.label_names))
             }
             .await;
             // 只接受最新一次请求的结果，丢弃乱序返回的旧响应（翻页/排序并发时可能发生）。
@@ -225,10 +373,11 @@ pub fn WorkspaceMain() -> impl IntoView {
                 return;
             }
             match fetched {
-                Ok((w, items, list, total)) => {
+                Ok((w, items, list, total, names)) => {
                     ws_name.set(w.name.clone());
                     schemas.set(list.clone());
                     total_signal.set(total);
+                    view_label_names.set(names);
                     load_views(w.id.clone());
                     data.set(Some(Ok((w, items, list))));
                 }
@@ -240,6 +389,12 @@ pub fn WorkspaceMain() -> impl IntoView {
     let create_submit = move |ev: SubmitEvent| {
         ev.prevent_default();
         let t = new_title.get();
+        // 表单里已填的标签值先取快照；空输入不进列表。
+        let planned: Vec<(String, Value)> = new_labels
+            .get_untracked()
+            .iter()
+            .filter_map(|r| r.to_value().map(|v| (r.name.clone(), v)))
+            .collect();
         let Some(id) = data
             .get()
             .and_then(|r| r.ok())
@@ -248,12 +403,141 @@ pub fn WorkspaceMain() -> impl IntoView {
             return;
         };
         spawn_local(async move {
-            if let Err(e) = create_entry(&id, &t).await {
-                error.set(Some(e));
-            } else {
-                new_title.set(String::new());
-                show_new.set(false);
-                refresh.update(|n| *n += 1);
+            match create_entry(&id, &t).await {
+                Err(e) => error.set(Some(e)),
+                Ok(created) => {
+                    // 服务端 createEntry 只接收标题，标签需在条目存在后逐个 upsert。
+                    // 单个标签失败不丢弃已创建的条目，但要如实报出来。
+                    for (name, value) in &planned {
+                        if let Err(e) = set_labeling(&created.code, name, value).await {
+                            error.set(Some(format!("条目已创建，但标签「{name}」写入失败：{e}")));
+                            break;
+                        }
+                    }
+                    new_title.set(String::new());
+                    new_labels.set(Vec::new());
+                    show_new.set(false);
+                    refresh.update(|n| *n += 1);
+                }
+            }
+        });
+    };
+
+    // 打开批量弹窗：每次按当前标签 schema 重建草稿，抵消上一次的残留。
+    let open_batch = move |_| {
+        batch_labels.set(
+            schemas
+                .get_untracked()
+                .into_iter()
+                .map(DraftLabel::from_schema)
+                .collect(),
+        );
+        batch_error.set(None);
+        show_batch.set(true);
+    };
+
+    let apply_batch = move |_| {
+        let codes = batch_selected.get_untracked();
+        // 空输入一律视为「本次不写这个标签」，与新建表单的语义一致。
+        let pairs: Vec<Value> = batch_labels
+            .get_untracked()
+            .iter()
+            .filter_map(|r| {
+                r.to_value()
+                    .map(|v| serde_json::json!({ "name": r.name, "value": v }))
+            })
+            .collect();
+        if pairs.is_empty() {
+            batch_error.set(Some("请至少填写一个标签值".to_string()));
+            return;
+        }
+        batch_busy.set(true);
+        batch_error.set(None);
+        spawn_local(async move {
+            // 整批原子写入：服务端任一取值非法则整批失败，界面上不会出现「写了一半」。
+            match set_labelings(&codes, &Value::Array(pairs)).await {
+                Ok(_) => {
+                    batch_busy.set(false);
+                    show_batch.set(false);
+                    batch_labels.set(Vec::new());
+                    batch_selected.set(Vec::new());
+                    refresh.update(|n| *n += 1);
+                }
+                Err(e) => {
+                    batch_busy.set(false);
+                    batch_error.set(Some(e));
+                }
+            }
+        });
+    };
+
+    // 拉取已归档条目列表（弹窗打开时 + 归档/取消归档后刷新）。
+    let load_archived = move || {
+        let Some(ws_id) = data.get().and_then(|r| r.ok()).map(|(w, _, _)| w.id.clone()) else {
+            return;
+        };
+        archived_busy.set(true);
+        spawn_local(async move {
+            match archived_entries(&ws_id).await {
+                Ok(list) => {
+                    archived_list.set(list);
+                    archived_error.set(None);
+                }
+                Err(e) => archived_error.set(Some(e)),
+            }
+            archived_busy.set(false);
+        });
+    };
+
+    let open_archived = move |_| {
+        archived_open.set(true);
+        load_archived();
+    };
+
+    // 取消归档单条：成功后就地从列表移除，避免整表重拉。
+    let restore_archived = move |c: String| {
+        spawn_local(async move {
+            match unarchive_entry(&c).await {
+                Ok(_) => {
+                    archived_list.update(|l| l.retain(|e| e.code != c));
+                    archived_error.set(None);
+                    refresh.update(|n| *n += 1);
+                }
+                Err(e) => archived_error.set(Some(e)),
+            }
+        });
+    };
+
+    // 批量归档勾选的条目。服务端只有单条 mutation，故逐条请求：中途失败如实报告
+    // 已成功的条数，不假装整批成功，也不回滚已归档的条目（归档本身可逆）。
+    let archive_selected = move |_| {
+        let codes = batch_selected.get_untracked();
+        if codes.is_empty() {
+            return;
+        }
+        batch_busy.set(true);
+        spawn_local(async move {
+            let mut done = 0usize;
+            let mut failure = None;
+            for c in &codes {
+                match archive_entry(c).await {
+                    Ok(true) => done += 1,
+                    Ok(false) => {
+                        failure = Some("归档失败".to_string());
+                        break;
+                    }
+                    Err(e) => {
+                        failure = Some(e);
+                        break;
+                    }
+                }
+            }
+            batch_busy.set(false);
+            // 已归档的条目已不在当前列表里，清空勾选避免对不存在的行再操作。
+            batch_selected.set(Vec::new());
+            refresh.update(|n| *n += 1);
+            if let Some(e) = failure {
+                error.set(Some(format!("已归档 {done} 个，其余失败：{e}")));
             }
         });
     };
@@ -261,7 +545,10 @@ pub fn WorkspaceMain() -> impl IntoView {
     view! {
         <div class="page page-app">
             <div class="crumb">
-                {move || format!("/{} · 默认视图「全部任务」", slug())}
+                {move || match active_view.get() {
+                    Some(v) => format!("/{} · 视图「{}」", slug(), v.name),
+                    None => format!("/{} · 默认视图「全部内容」", slug()),
+                }}
             </div>
             <div class=move || if sidebar_collapsed.get() { "ws-layout collapsed" } else { "ws-layout" }>
                 <WorkspaceSidebar
@@ -271,12 +558,19 @@ pub fn WorkspaceMain() -> impl IntoView {
                     active=active_id
                     collapsed=sidebar_collapsed
                     on_select=select_view
-                    on_new=Callback::new(move |_| show_view_dialog.set(true))
+                    on_new=Callback::new(move |_| {
+                        view_name_input.set(String::new());
+                        view_columns_input.set(Vec::new());
+                        view_shared_input.set(false);
+                        dialog_error.set(None);
+                        show_view_dialog.set(true);
+                    })
                     on_delete=delete_view_cb
+                    on_archived=Callback::new(open_archived)
                 />
                 <div class="panel wmain">
                     <div class="vhead">
-                        <h2>"全部任务"</h2>
+                        <h2>{move || active_view.get().map(|v| v.name).unwrap_or_else(|| "全部内容".to_string())}</h2>
                         <label class="inp">
                             {ic_search()}
                             <input placeholder="搜索本视图，可与过滤组合" prop:value=ad_hoc_text
@@ -297,8 +591,9 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 return;
                             };
                             config_name_input.set(v.name.clone());
-                            config_columns_input.set(v.columns.join(", "));
+                            config_columns_input.set(v.columns.clone());
                             config_shared_input.set(v.is_shared);
+                            dialog_error.set(None);
                             // 预填标题颜色规则：先以缓存的 AST 建行，表达式文本异步反格式化回填。
                             let raw = v.title_colors.as_array().cloned().unwrap_or_default();
                             let rows: Vec<TitleRule> = raw.iter().enumerate().map(|(i, r)| {
@@ -345,89 +640,116 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 rules_loading.set(false);
                             });
                         }>{ic_setting()}"视图配置"</button>
-                        <button class="btn pri" on:click=move |_| show_new.set(!show_new.get())>
+                        <button class="btn pri" on:click=move |_| {
+                            if !show_new.get_untracked() {
+                                // 打开时按当前标签 schema 重建待填行（新建与取消都重置）。
+                                new_labels.set(
+                                    schemas.get_untracked().into_iter().map(DraftLabel::from_schema).collect(),
+                                );
+                            }
+                            show_new.set(!show_new.get_untracked());
+                        }>
                             {ic_add()}
                             "新建 Entry"
                         </button>
                     </div>
                     <div class="filters">
-                        {move || if expr_mode.get() {
-                            view! {
-                                <input class="inp" style="flex:1" placeholder="Task = \"Open\" AND present(Priority)"
-                                    prop:value=expr_text
-                                    on:input=move |ev| expr_text.set(event_target_value(&ev)) />
-                                <button class="btn" on:click=move |_| {
-                                    let Some(ws_id) = data.get().and_then(|r| r.ok()).map(|(w, _, _)| w.id.clone()) else { return };
-                                    let expr = expr_text.get();
-                                    spawn_local(async move {
-                                        match parse_view_query(&ws_id, &expr).await {
-                                            Ok(ast) => { query_ast.set(ast); page_signal.set(1); expr_mode.set(false); error.set(None); }
-                                            Err(e) => error.set(Some(e)),
-                                        }
-                                    });
-                                }>"应用"</button>
-                                <button class="btn" on:click=move |_| expr_mode.set(false)>"取消"</button>
-                            }.into_any()
-                        } else {
-                            view! {
-                                {move || chips(&query_ast.get()).into_iter().map(|c| chip_view(c, query_ast, page_signal, error, schemas)).collect::<Vec<_>>()}
-                                <select class="inp" style="width:130px" prop:value=new_cond_label
-                                    on:change=move |ev| new_cond_label.set(event_target_value(&ev))>
-                                    <option value="">"＋ 条件"</option>
-                                    {move || schemas.get().into_iter().map(|s| view! {
-                                        <option value=s.name.clone()>{s.title.clone()}</option>
-                                    }).collect::<Vec<_>>()}
-                                </select>
-                                <button class="btn" on:click=move |_| {
-                                    let name = new_cond_label.get();
-                                    if name.is_empty() { return; }
-                                    if !is_flat(&query_ast.get()) {
-                                        error.set(Some("复杂条件（含 OR/NOT）请用「表达式」编辑".to_string()));
-                                        new_cond_label.set(String::new());
-                                        return;
-                                    }
-                                    let mut cs = chips(&query_ast.get());
-                                    cs.push(CondChip::Label { name, op: "present".into(), value: serde_json::Value::Null });
-                                    query_ast.set(build_query(&cs));
-                                    page_signal.set(1);
-                                    new_cond_label.set(String::new());
-                                }>"添加"</button>
-                                <button class="btn" on:click=move |_| {
-                                    let ast = query_ast.get();
-                                    // 表达式文本由服务端格式化，避免前端复刻语法
-                                    let Some(ws_id) = data.get().and_then(|r| r.ok()).map(|(w, _, _)| w.id.clone()) else { return };
-                                    spawn_local(async move {
-                                        if let Ok(s) = format_view_query(&ws_id, &ast).await {
-                                            expr_text.set(s);
-                                        }
-                                        expr_mode.set(true);
-                                    });
-                                }>"表达式"</button>
-                            }.into_any()
-                        }}
-                        <button class="btn" style="margin-left:auto" on:click=move |_| {
-                            let Some(v) = active_view.get() else { return };
-                            let ast = query_ast.get();
-                            let cols = v.columns.clone();
-                            let shared = v.is_shared;
-                            let id = v.id.clone();
-                            let name = v.name.clone();
-                            let field = v.sort.field.clone();
-                            let desc = v.sort.desc;
-                            let title_colors = v.title_colors.clone();
-                            spawn_local(async move {
-                                if let Ok(saved) =
-                                    update_view(&id, &name, &ast, &field, desc, &cols, shared, &title_colors).await
-                                {
-                                    view_list.update(|l| {
-                                        if let Some(slot) = l.iter_mut().find(|x| x.id == saved.id) {
-                                            *slot = saved.clone();
-                                        }
-                                    });
-                                    active_view.set(Some(saved));
+                        <div class="exprwrap">
+                            <button class="exprhelp" title="标签表达式语法说明"
+                                on:click=move |_| expr_help.set(true)>{ic_help()}</button>
+                            <input class="inp" style="width:100%;padding-right:26px"
+                                placeholder=r#"标签表达式：Task AND !Bug（回车应用；输入 / 选标签）"#
+                                prop:value=expr_text
+                                on:input=move |ev| {
+                                    let v = event_target_value(&ev);
+                                    hint_open.set(label_fragment(&v).is_some());
+                                    expr_text.set(v);
                                 }
-                            });
-                        }>"保存视图"</button>
+                                on:keydown=move |ev| {
+                                    if ev.key() == "Enter" {
+                                        ev.prevent_default();
+                                        hint_open.set(false);
+                                        apply_expr();
+                                    } else if ev.key() == "Escape" {
+                                        hint_open.set(false);
+                                    }
+                                }
+                                on:blur=move |_| hint_open.set(false) />
+                            {move || {
+                                if !hint_open.get() {
+                                    return ().into_any();
+                                }
+                                let cur = expr_text.get();
+                                let Some(frag) = label_fragment(&cur) else {
+                                    return ().into_any();
+                                };
+                                let frag = frag.to_lowercase();
+                                // 候选按标签的展示名（title，如「任务」）呈现——用户认的是它；
+                                // 插进表达式的仍是标签 key（如 Task）。key 以淡色跟在后面，说明落进输入框的是什么。
+                                let schemas_now = schemas.get();
+                                let items: Vec<(String, String)> = view_label_names
+                                    .get()
+                                    .into_iter()
+                                    .map(|name| {
+                                        let title = schemas_now
+                                            .iter()
+                                            .find(|s| s.name == name)
+                                            .map(|s| s.title.trim().to_string())
+                                            .filter(|t| !t.is_empty())
+                                            .unwrap_or_else(|| name.clone());
+                                        (name, title)
+                                    })
+                                    .filter(|(name, title)| {
+                                        name.to_lowercase().contains(&frag)
+                                            || title.to_lowercase().contains(&frag)
+                                    })
+                                    .collect();
+                                if items.is_empty() {
+                                    return ().into_any();
+                                }
+                                view! {
+                                    <div class="lblhint">
+                                        {items.into_iter().map(|(name, title)| {
+                                            let n = name.clone();
+                                            view! {
+                                                <div class="lblhint-it"
+                                                    on:mousedown=move |ev| { ev.prevent_default(); pick_label(n.clone()); }>
+                                                    <span>{title}</span>
+                                                    <span class="mut">{name}</span>
+                                                </div>
+                                            }
+                                        }).collect::<Vec<_>>()}
+                                    </div>
+                                }.into_any()
+                            }}
+                        </div>
+                        <button class="btn" style="margin-left:auto" disabled=move || !view_dirty()
+                            on:click=move |_| {
+                                let Some(v) = active_view.get() else { return };
+                                let ast = query_ast.get();
+                                let cols = v.columns.clone();
+                                let shared = v.is_shared;
+                                let id = v.id.clone();
+                                let name = v.name.clone();
+                                let field = v.sort.field.clone();
+                                let desc = v.sort.desc;
+                                let title_colors = v.title_colors.clone();
+                                spawn_local(async move {
+                                    match update_view(&id, &name, &ast, &field, desc, &cols, shared, &title_colors).await {
+                                        Ok(saved) => {
+                                            view_list.update(|l| {
+                                                if let Some(slot) = l.iter_mut().find(|x| x.id == saved.id) {
+                                                    *slot = saved.clone();
+                                                }
+                                            });
+                                            active_view.set(Some(saved));
+                                            saved_baseline.set((ast, field, desc));
+                                            error.set(None);
+                                        }
+                                        Err(e) => error.set(Some(e)),
+                                    }
+                                });
+                            }>"保存视图"</button>
                         <span class="mut">{move || {
                             let (field, desc) = active_view
                                 .get()
@@ -442,7 +764,11 @@ pub fn WorkspaceMain() -> impl IntoView {
                             <form class="filters" on:submit=create_submit>
                                 <input class="inp" style="flex:1" placeholder="新条目标题" prop:value=new_title on:input=move |ev| new_title.set(event_target_value(&ev)) />
                                 <button class="btn pri" type="submit">"创建"</button>
-                                <button class="btn" type="button" on:click=move |_| show_new.set(false)>"取消"</button>
+                                <button class="btn" type="button" on:click=move |_| {
+                                    new_labels.set(Vec::new());
+                                    show_new.set(false);
+                                }>"取消"</button>
+                                <LabelDraft rows=new_labels />
                             </form>
                         }.into_any()
                     } else {
@@ -459,11 +785,26 @@ pub fn WorkspaceMain() -> impl IntoView {
                         }
                     }>
                         <div>
+                            {move || {
+                                let n = batch_selected.get().len();
+                                (n > 0).then(|| view! {
+                                    <div class="batchbar">
+                                        <span class="mut">{format!("已选 {n} 项")}</span>
+                                        <button class="btn pri sm" on:click=open_batch>"批量设置标签"</button>
+                                        <button class="btn sm" disabled=move || batch_busy.get()
+                                            on:click=archive_selected>"归档"</button>
+                                        <button class="btn sm" on:click=move |_| batch_selected.set(Vec::new())>
+                                            "清除选择"
+                                        </button>
+                                    </div>
+                                })
+                            }}
                             <EntryTable
                                 data
                                 schemas
                                 selected
                                 fullscreen
+                                batch_selected
                                 columns=Signal::derive(move || {
                                     active_view.get().map(|v| v.columns).unwrap_or_default()
                                 })
@@ -554,6 +895,94 @@ pub fn WorkspaceMain() -> impl IntoView {
                 view! { <div></div> }.into_any()
             }}
 
+            {move || show_batch.get().then(|| view! {
+                <div class="dmodal" on:click=move |_| show_batch.set(false)>
+                    <div class="panel dmbox" style="max-width:560px" on:click=|ev| ev.stop_propagation()>
+                        <h3>"批量设置标签"</h3>
+                        <p class="mut">{move || format!(
+                            "写入选中的 {} 个条目；留空的标签不会改动。", batch_selected.get().len()
+                        )}</p>
+                        <LabelDraft rows=batch_labels />
+                        {move || batch_error.get().map(|e| view! { <p class="error">{e}</p> })}
+                        <div style="display:flex;gap:8px;justify-content:flex-end">
+                            <button class="btn" on:click=move |_| show_batch.set(false)>"取消"</button>
+                            <button class="btn pri" disabled=move || batch_busy.get() on:click=apply_batch>
+                                "应用"
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            })}
+
+            {move || archived_open.get().then(|| view! {
+                <div class="dmodal" on:click=move |_| archived_open.set(false)>
+                    <div class="panel dmbox" style="width:720px;max-width:92vw" on:click=|ev| ev.stop_propagation()>
+                        <h3>"已归档条目"</h3>
+                        <p class="mut">"归档的条目不出现在视图与全文检索里，数据与标签都保留；可随时取消归档。"</p>
+                        {move || archived_error.get().map(|e| view! { <p class="error">{e}</p> })}
+                        <div class="archlist">
+                            {move || if archived_busy.get() {
+                                view! { <p class="mut">"加载中…"</p> }.into_any()
+                            } else if archived_list.get().is_empty() {
+                                view! { <p class="mut">"暂无已归档条目。"</p> }.into_any()
+                            } else {
+                                archived_list.get().into_iter().map(|e| {
+                                    let c = e.code.clone();
+                                    view! {
+                                        <div class="archrow">
+                                            <span class="code">{e.code.clone()}</span>
+                                            <span class="lbl" style="flex:1">{e.title.clone()}</span>
+                                            <span class="mut at">
+                                                {e.archived_at.as_deref().map(short_time).unwrap_or_default()}
+                                            </span>
+                                            <button class="btn sm" on:click=move |_| restore_archived(c.clone())>
+                                                "取消归档"
+                                            </button>
+                                        </div>
+                                    }
+                                }).collect::<Vec<_>>().into_any()
+                            }}
+                        </div>
+                        <div style="display:flex;justify-content:flex-end">
+                            <button class="btn" on:click=move |_| archived_open.set(false)>"关闭"</button>
+                        </div>
+                    </div>
+                </div>
+            })}
+
+            {move || if expr_help.get() {
+                view! {
+                    <div class="dmodal" on:click=move |_| expr_help.set(false)>
+                        <div class="panel dmbox" style="max-width:560px" on:click=|ev| ev.stop_propagation()>
+                            <h3>"标签表达式语法"</h3>
+                            <div class="exprdoc">
+                                <p>"用标签是否存在、或标签的值来筛选条目。多个条件用 "
+                                    <code>"AND"</code>" / "<code>"OR"</code>" 连接，"
+                                    <code>"NOT"</code>" 取反，括号可改变优先级。"</p>
+                                <table class="tbl">
+                                    <thead><tr><th style="width:42%">"写法"</th><th>"含义"</th></tr></thead>
+                                    <tbody>
+                                        <tr><td><code>"Task"</code></td><td>"打了「任务」标签"</td></tr>
+                                        <tr><td><code>"!Task"</code></td><td>"没有打「任务」标签"</td></tr>
+                                        <tr><td><code>"Bug AND !Task"</code></td><td>"打了 Bug 标签，没打 Task 标签"</td></tr>
+                                        <tr><td><code>"Status = \"Open\""</code></td><td>"Status 等于 Open"</td></tr>
+                                        <tr><td><code>"Status != \"Done\""</code></td><td>"Status 不等于 Done"</td></tr>
+                                        <tr><td><code>"Status IN (\"Open\", \"Done\")"</code></td><td>"Status 是其中之一"</td></tr>
+                                        <tr><td><code>"Priority >= 2"</code></td><td>"数值标签大于等于 2"</td></tr>
+                                        <tr><td><code>"Summary ~ \"登录\""</code></td><td>"文本标签包含「登录」"</td></tr>
+                                    </tbody>
+                                </table>
+                                <p class="mut">"提示：在输入框里输入 "<code>"/"</code>" 可从本视图已有标签中选择；"
+                                    "回车应用表达式，Escape 关闭提示。"</p>
+                            </div>
+                            <div style="display:flex;justify-content:flex-end">
+                                <button class="btn pri" on:click=move |_| expr_help.set(false)>"知道了"</button>
+                            </div>
+                        </div>
+                    </div>
+                }.into_any()
+            } else { view! { <div></div> }.into_any() }}
+
             {move || if show_view_dialog.get() {
                 let ws_id = data.get().and_then(|r| r.ok()).map(|(w, _, _)| w.id.clone());
                 view! {
@@ -562,27 +991,36 @@ pub fn WorkspaceMain() -> impl IntoView {
                             <h3>"新建视图"</h3>
                             <input class="inp" placeholder="视图名称" prop:value=view_name_input
                                 on:input=move |ev| view_name_input.set(event_target_value(&ev)) />
-                            <input class="inp" placeholder="展示为列的标签（逗号分隔，可空）" prop:value=view_columns_input
-                                on:input=move |ev| view_columns_input.set(event_target_value(&ev)) />
+                            <div class="dfield">
+                                <span class="dlabel">"展示为列的标签"</span>
+                                <ColumnPicker schemas=schemas selected=view_columns_input />
+                            </div>
                             <label style="display:flex;gap:6px;align-items:center">
                                 <input type="checkbox" prop:checked=view_shared_input
                                     on:change=move |ev| view_shared_input.set(event_target_checked(&ev)) />
                                 "共享给工作空间"
                             </label>
+                            {move || dialog_error.get().map(|e| view! { <p class="error" style="margin:0">{e}</p> })}
                             <div style="display:flex;gap:8px;justify-content:flex-end">
                                 <button class="btn" on:click=move |_| show_view_dialog.set(false)>"取消"</button>
                                 <button class="btn pri" on:click=move |_| {
-                                    let Some(ws_id) = ws_id.clone() else { return };
+                                    let Some(ws_id) = ws_id.clone() else {
+                                        dialog_error.set(Some("工作空间尚未加载完成".to_string()));
+                                        return;
+                                    };
                                     let name = view_name_input.get();
                                     let shared = view_shared_input.get();
-                                    let cols: Vec<String> = view_columns_input.get().split(',')
-                                        .map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                                    let cols = view_columns_input.get();
+                                    dialog_error.set(None);
                                     spawn_local(async move {
-                                        if let Ok(v) = create_view(&ws_id, &name, &serde_json::json!({"and": []}),
+                                        match create_view(&ws_id, &name, &serde_json::json!({"and": []}),
                                             "updatedAt", true, &cols, shared, &serde_json::json!([])).await {
-                                            view_list.update(|l| l.push(v.clone()));
-                                            set_active(Some(v));
-                                            show_view_dialog.set(false);
+                                            Ok(v) => {
+                                                view_list.update(|l| l.push(v.clone()));
+                                                set_active(Some(v));
+                                                show_view_dialog.set(false);
+                                            }
+                                            Err(e) => dialog_error.set(Some(e)),
                                         }
                                     });
                                 }>"创建"</button>
@@ -599,8 +1037,10 @@ pub fn WorkspaceMain() -> impl IntoView {
                             <h3>"视图配置"</h3>
                             <input class="inp" placeholder="视图名称" prop:value=config_name_input
                                 on:input=move |ev| config_name_input.set(event_target_value(&ev)) />
-                            <input class="inp" placeholder="展示为列的标签（逗号分隔，可空）" prop:value=config_columns_input
-                                on:input=move |ev| config_columns_input.set(event_target_value(&ev)) />
+                            <div class="dfield">
+                                <span class="dlabel">"展示为列的标签"</span>
+                                <ColumnPicker schemas=schemas selected=config_columns_input />
+                            </div>
                             <label style="display:flex;gap:6px;align-items:center">
                                 <input type="checkbox" prop:checked=config_shared_input
                                     on:change=move |ev| config_shared_input.set(event_target_checked(&ev)) />
@@ -640,15 +1080,19 @@ pub fn WorkspaceMain() -> impl IntoView {
                                     "按顺序匹配，首个命中即上色；条件支持 AND / OR / NOT 组合标签。留空的行保存时忽略。"
                                 </p>
                             </div>
+                            {move || dialog_error.get().map(|e| view! { <p class="error" style="margin:0">{e}</p> })}
                             <div style="display:flex;gap:8px;justify-content:flex-end">
                                 <button class="btn" on:click=move |_| show_config_dialog.set(false)>"取消"</button>
                                 <button class="btn pri" disabled=move || rules_loading.get() on:click=move |_| {
-                                    let Some(v) = active_view.get() else { return };
+                                    let Some(v) = active_view.get() else {
+                                        dialog_error.set(Some("请先选择或新建一个视图".to_string()));
+                                        return;
+                                    };
+                                    dialog_error.set(None);
                                     let id = v.id.clone();
                                     let name = config_name_input.get();
                                     let shared = config_shared_input.get();
-                                    let cols: Vec<String> = config_columns_input.get().split(',')
-                                        .map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                                    let cols = config_columns_input.get();
                                     let ast = query_ast.get();
                                     let field = v.sort.field.clone();
                                     let desc = v.sort.desc;
@@ -667,13 +1111,13 @@ pub fn WorkspaceMain() -> impl IntoView {
                                             let ast = if !expr.trim().is_empty() && expr != cached_expr {
                                                 // 条件被编辑过：让服务端解析成 AST；失败则整体不保存。
                                                 let Some(ws_id) = ws_id.as_deref() else {
-                                                    error.set(Some("缺少工作空间，无法解析条件".to_string()));
+                                                    dialog_error.set(Some("缺少工作空间，无法解析条件".to_string()));
                                                     return;
                                                 };
                                                 match parse_view_query(ws_id, &expr).await {
                                                     Ok(a) => a,
                                                     Err(e) => {
-                                                        error.set(Some(format!("标题颜色规则条件无效：{e}")));
+                                                        dialog_error.set(Some(format!("标题颜色规则条件无效：{e}")));
                                                         return;
                                                     }
                                                 }
@@ -700,7 +1144,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                                 active_view.set(Some(saved));
                                                 show_config_dialog.set(false);
                                             }
-                                            Err(e) => error.set(Some(e)),
+                                            Err(e) => dialog_error.set(Some(e)),
                                         }
                                     });
                                 }>"保存"</button>
@@ -723,12 +1167,26 @@ fn WorkspaceSidebar(
     on_select: Callback<String>,
     on_new: Callback<()>,
     on_delete: Callback<String>,
+    /// 「已归档」入口：打开归档条目列表弹窗。
+    on_archived: Callback<()>,
 ) -> impl IntoView {
     let list = move || views.get();
-    let mine = move || list().into_iter().filter(|v| !v.is_shared).collect::<Vec<_>>();
-    let shared = move || list().into_iter().filter(|v| v.is_shared).collect::<Vec<_>>();
+    // 默认视图单独置顶展示，不混进「我的 / 共享」两组。
+    let default_view = move || list().into_iter().find(|v| v.is_default);
+    let mine = move || {
+        list()
+            .into_iter()
+            .filter(|v| !v.is_default && !v.is_shared)
+            .collect::<Vec<_>>()
+    };
+    let shared = move || {
+        list()
+            .into_iter()
+            .filter(|v| !v.is_default && v.is_shared)
+            .collect::<Vec<_>>()
+    };
 
-    let row = move |v: View, shared_mark: bool| {
+    let row = move |v: View, shared_mark: bool, is_default: bool| {
         let id = v.id.clone();
         let name = v.name.clone();
         let count = v.entry_count;
@@ -741,13 +1199,22 @@ fn WorkspaceSidebar(
         view! {
             <div class=move || if is_active() { "it on" } else { "it" }
                  on:click=move |_| on_select.run(click_id.clone())>
-                {if shared_mark { ic_share().into_any() } else { ic_folder().into_any() }}
+                {if is_default {
+                    ic_tag().into_any()
+                } else if shared_mark {
+                    ic_share().into_any()
+                } else {
+                    ic_folder().into_any()
+                }}
                 <span class="lbl" style="flex:1">{name}</span>
+                {is_default.then(|| view! { <span class="chip dim" style="font-size:11px">"默认"</span> })}
                 <span class="n">{count}</span>
-                <button class="ibtn" title="删除视图" on:click=move |ev| {
-                    ev.stop_propagation();
-                    on_delete.run(del_id.clone());
-                }>"×"</button>
+                {(!is_default).then(|| view! {
+                    <button class="ibtn" title="删除视图" on:click=move |ev| {
+                        ev.stop_propagation();
+                        on_delete.run(del_id.clone());
+                    }>"×"</button>
+                })}
             </div>
         }
         .into_any()
@@ -763,14 +1230,19 @@ fn WorkspaceSidebar(
                     set_sidebar_collapsed(v);
                 }>{move || if collapsed.get() { "»" } else { "«" }}</button>
             </div>
+            <div class="grp">"默认视图"</div>
+            {move || default_view().map(|v| row(v, true, true))}
             <div class="grp">"我的视图"</div>
-            {move || mine().into_iter().map(|v| row(v, false)).collect::<Vec<_>>()}
+            {move || mine().into_iter().map(|v| row(v, false, false)).collect::<Vec<_>>()}
             <div class="grp">"共享视图"</div>
-            {move || shared().into_iter().map(|v| row(v, true)).collect::<Vec<_>>()}
+            {move || shared().into_iter().map(|v| row(v, true, false)).collect::<Vec<_>>()}
             <div class="it" style="color:var(--ink3)" title="新建视图" on:click=move |_| on_new.run(())>
                 {ic_add()}<span class="lbl">"新建视图"</span>
             </div>
             <div style="border-top:1px solid var(--line);margin-top:8px;padding-top:8px">
+                <div class="it" title="已归档条目" on:click=move |_| on_archived.run(())>
+                    {ic_folder()}<span class="lbl">"已归档"</span>
+                </div>
                 <A href=format!("/{slug}/settings")>
                     <div class="it" title="工作空间设置">{ic_setting()}<span class="lbl">"工作空间设置"</span></div>
                 </A>
@@ -788,6 +1260,8 @@ fn EntryTable(
     data: RwSignal<Option<Result<(Workspace, Vec<Entry>, Vec<LabelSchema>), String>>>,
     schemas: RwSignal<Vec<LabelSchema>>,
     selected: RwSignal<String>,
+    /// 批量操作勾选的条目 code。与 `selected`（详情面板当前条目）互相独立。
+    batch_selected: RwSignal<Vec<String>>,
     /// 双击行时置 true，打开全屏详情浮层。
     fullscreen: RwSignal<bool>,
     columns: Signal<Vec<String>>,
@@ -820,10 +1294,43 @@ fn EntryTable(
         }
     };
 
+    // 当前列表里的条目 code；「全选」按它来，只影响看得见的行。
+    let visible_codes = move || -> Vec<String> {
+        data.get()
+            .and_then(|r| r.ok())
+            .map(|(_, items, _)| items.into_iter().map(|e| e.code).collect())
+            .unwrap_or_default()
+    };
+
     view! {
         <table class="tbl">
             <thead>
                 <tr>
+                    <th class="pick">
+                        <input type="checkbox"
+                            title="全选当前列表"
+                            prop:checked=move || {
+                                let codes = visible_codes();
+                                !codes.is_empty()
+                                    && codes.iter().all(|c| batch_selected.get().contains(c))
+                            }
+                            on:change=move |ev| {
+                                let codes = visible_codes();
+                                let on = event_target_checked(&ev);
+                                batch_selected.update(|sel| {
+                                    if on {
+                                        for c in codes {
+                                            if !sel.contains(&c) {
+                                                sel.push(c);
+                                            }
+                                        }
+                                    } else {
+                                        sel.retain(|c| !codes.contains(c));
+                                    }
+                                });
+                            }
+                        />
+                    </th>
                     <th>"Code"</th>
                     {sortable_th("title", "标题")}
                     {move || cols().iter().map(|name| {
@@ -854,6 +1361,11 @@ fn EntryTable(
                             let code_for_class = e.code.clone();
                             let code_for_click = e.code.clone();
                             let code_for_dbl = e.code.clone();
+                            let code_for_copy = e.code.clone();
+                            let code_for_check = e.code.clone();
+                            let code_for_check_change = e.code.clone();
+                            // 复制成功后的短暂打勾反馈，逐行独立。
+                            let copied = RwSignal::new(false);
                             let labels = e.labels.clone();
                             let names = cols();
                             // 标题着色：整行 Entry 克隆进响应式闭包，规则变化即刻重算。
@@ -877,7 +1389,38 @@ fn EntryTable(
                                         fullscreen.set(true);
                                     }
                                 >
-                                    <td class="code">{code.clone()}</td>
+                                    <td class="pick">
+                                        <input type="checkbox"
+                                            prop:checked=move || batch_selected.get().contains(&code_for_check)
+                                            // 勾选不应触发「打开详情」（单击）或「全屏详情」（双击）。
+                                            on:click=|ev| ev.stop_propagation()
+                                            on:dblclick=|ev| ev.stop_propagation()
+                                            on:change=move |ev| {
+                                                let c = code_for_check_change.clone();
+                                                if event_target_checked(&ev) {
+                                                    batch_selected.update(|s| if !s.contains(&c) { s.push(c.clone()) });
+                                                } else {
+                                                    batch_selected.update(|s| s.retain(|x| x != &c));
+                                                }
+                                            }
+                                        />
+                                    </td>
+                                    <td class="code">
+                                        <span class="codecell">
+                                            <span>{code.clone()}</span>
+                                            <button class="ibtn codecopy" title="复制编码" on:click=move |ev| {
+                                                ev.stop_propagation();
+                                                copy_to_clipboard(&code_for_copy);
+                                                copied.set(true);
+                                                set_timeout(
+                                                    move || copied.set(false),
+                                                    std::time::Duration::from_millis(1200),
+                                                );
+                                            }>
+                                                {move || if copied.get() { ic_check().into_any() } else { ic_copy().into_any() }}
+                                            </button>
+                                        </span>
+                                    </td>
                                     <td style=move || match query_eval::title_color(
                                         &title_colors.get(), &entry_for_color, &entry_for_color.labels,
                                     ) {
@@ -894,8 +1437,23 @@ fn EntryTable(
                                                 let s = value_to_string(&v);
                                                 let schema = sc.iter().find(|sch| &sch.name == name);
                                                 let is_enum = schema
-                                                    .map(|sch| sch.value_type == "enum")
-                                                    .unwrap_or(false);
+                                                    .is_some_and(|sch| sch.value_type == "enum");
+                                                let is_null = schema
+                                                    .is_some_and(|sch| sch.value_type == "null");
+                                                // 无值标签没有可展示的值，退而展示标签标题。
+                                                let text = if is_null {
+                                                    schema
+                                                        .map(|sch| {
+                                                            if sch.title.trim().is_empty() {
+                                                                name.clone()
+                                                            } else {
+                                                                sch.title.clone()
+                                                            }
+                                                        })
+                                                        .unwrap_or_else(|| name.clone())
+                                                } else {
+                                                    display_enum_value(&s)
+                                                };
                                                 // 值色优先（标签级配置），未配置回退 label_chip_class。
                                                 let color = schema.and_then(|sch| {
                                                     let base = sch.color.clone().map(Value::String);
@@ -909,16 +1467,19 @@ fn EntryTable(
                                                             "background:color-mix(in srgb, {c} 15%, transparent);color:{c}"
                                                         );
                                                         view! {
-                                                            <td><span class="chip" style=style>{display_enum_value(&s)}</span></td>
+                                                            <td><span class="chip" style=style>{text}</span></td>
                                                         }.into_any()
                                                     }
                                                     None if is_enum => {
                                                         let cls = label_chip_class(name, &s);
                                                         view! {
-                                                            <td><span class=format!("chip {cls}")>{display_enum_value(&s)}</span></td>
+                                                            <td><span class=format!("chip {cls}")>{text}</span></td>
                                                         }.into_any()
                                                     }
-                                                    None => view! { <td>{s}</td> }.into_any(),
+                                                    None if is_null => {
+                                                        view! { <td><span class="chip">{text}</span></td> }.into_any()
+                                                    }
+                                                    None => view! { <td>{text}</td> }.into_any(),
                                                 }
                                             }
                                         }
@@ -984,7 +1545,12 @@ fn EntryPanel(
 
     Effect::new_sync(move |_| load(true));
 
-    let on_changed = Callback::new(move |_| load(false));
+    // 标签值改动后除了刷新面板自身，还必须触发列表重查：否则表格里的标签列
+    // 会一直停在改动前的值（无值为「—」），直到整页刷新才更新。
+    let on_changed = Callback::new(move |_| {
+        load(false);
+        refresh.update(|n| *n += 1);
+    });
     let on_editor_change = Callback::new(move |d: String| detail.set(d));
 
     let save = move |_| {
@@ -1029,6 +1595,22 @@ fn EntryPanel(
 
     let close = move |_| code.set(String::new());
 
+    // 单品归档：面板只可能显示未归档的条目（归档条目已被列表过滤掉，取消归档走
+    // 「已归档」弹窗），故这里是单向操作，归档成功后条目移出视图、面板关闭。
+    let arch = move |_| {
+        let c = code.get();
+        spawn_local(async move {
+            match archive_entry(&c).await {
+                Ok(true) => {
+                    code.set(String::new());
+                    refresh.update(|n| *n += 1);
+                }
+                Ok(false) => error.set(Some("归档失败".to_string())),
+                Err(e) => error.set(Some(e)),
+            }
+        });
+    };
+
     let open_full = move |_| {
         let c = code.get();
         if !c.is_empty() {
@@ -1046,9 +1628,15 @@ fn EntryPanel(
                         {move || error.get().map(|e| view! { <div class="hint">{"⚠ "}{e}</div> })}
                         <div class="dhead">
                             <span class="code">{move || code.get()}</span>
-                            <button class="ibtn" title="复制编码">{ic_share()}</button>
+                            <button class="ibtn" title="复制编码" on:click=move |_| copy_to_clipboard(&code.get_untracked())>{ic_copy()}</button>
                             <h3>{move || data.get().and_then(|r| r.ok()).map(|e| e.title.clone()).unwrap_or_default()}</h3>
-                            <button class="ibtn" title="关闭面板" on:click=close>{ic_close()}</button>
+                            <div class="dacts">
+                                <button class="btn sm" on:click=open_full.clone()>{ic_full()}"全屏"</button>
+                                <button class="btn pri sm" on:click=save>"保存"</button>
+                                <button class="btn sm" on:click=arch>"归档"</button>
+                                <button class="btn danger sm" on:click=del>"删除"</button>
+                                <button class="ibtn" title="关闭面板" on:click=close>{ic_close()}</button>
+                            </div>
                         </div>
                         <div class="editing"><span class="dot"></span>"乐观并发 · 保存时检测冲突"</div>
                         <div class="dtabs">
@@ -1069,12 +1657,7 @@ fn EntryPanel(
                                 }.into_any(),
                             }}
                         </div>
-                        <LabelEditor code=code.get() schemas labels on_changed />
-                        <div style="display:flex;gap:8px;margin-top:auto">
-                            <button class="btn" style="flex:1;justify-content:center" on:click=open_full.clone()>{ic_full()}"全屏打开"</button>
-                            <button class="btn pri" style="flex:1;justify-content:center" on:click=save>"保存"</button>
-                        </div>
-                        <button class="btn danger" style="justify-content:center" on:click=del>"删除"</button>
+                        <LabelEditor code=code schemas labels on_changed />
                     </aside>
                 }
                 .into_any()
@@ -1083,53 +1666,140 @@ fn EntryPanel(
     }
 }
 
-/// 一枚可移除的条件芯片：点击 × 后从 AST 中剔除并回写。
-fn chip_view(
-    chip: CondChip,
-    ast: RwSignal<serde_json::Value>,
-    page: RwSignal<i64>,
-    error: RwSignal<Option<String>>,
-    schemas: RwSignal<Vec<LabelSchema>>,
-) -> impl IntoView {
-    let label = match &chip {
-        CondChip::Label { name, op, value } => format!("{name} {op} {}", value_to_string(value)),
-        CondChip::Time { field, op, value } => format!("{field} {op} {}", value_to_string(value)),
-        CondChip::Text { keyword } => format!("全文：「{keyword}」"),
-    };
-    // 标签芯片按值色上色（若标签配置了 value_colors / 基础色）。
-    let color = match &chip {
-        CondChip::Label { name, value, .. } if !value.is_null() => schemas
-            .get()
-            .into_iter()
-            .find(|s| &s.name == name)
-            .and_then(|s| {
-                let base = s.color.map(Value::String);
-                query_eval::resolve_label_color(base.as_ref(), &s.value_colors, value)
-            }),
-        _ => None,
-    };
-    let style = color
-        .map(|c| {
-            format!(
-                "background:color-mix(in srgb, {c} 15%, transparent);color:{c};border:1px solid {c}"
-            )
-        })
-        .unwrap_or_default();
-    let target = chip.clone();
+/// 「新建 Entry」表单里的标签行：沿用 `LabelEditor` 的 chip 外观，但只写本地草稿，
+/// 等条目创建成功后再由 `create_submit` 逐个 upsert。
+#[component]
+fn LabelDraft(rows: RwSignal<Vec<DraftLabel>>) -> impl IntoView {
     view! {
-        <span class="chip sel" style=style>
-            {label}
-            <button class="ibtn" title="移除" on:click=move |_| {
-                if !is_flat(&ast.get()) {
-                    error.set(Some("复杂条件（含 OR/NOT）请用「表达式」编辑".to_string()));
-                    return;
+        <div class="lbledit">
+            {move || {
+                rows.get()
+                    .into_iter()
+                    .map(|r| {
+                        let title = if r.title.trim().is_empty() { r.name.clone() } else { r.title.clone() };
+                        if r.value_type == "null" {
+                            // 无值标签只有「打上 / 不打」两种状态。
+                            let flag = r.flag;
+                            let chip = title.clone();
+                            view! {
+                                <div class="lblrow">
+                                    <span class="k">{ic_tag()}{title}</span>
+                                    <label class="mut" style="display:flex;align-items:center;gap:4px">
+                                        <input type="checkbox"
+                                            prop:checked=move || flag.get() == Some(true)
+                                            on:change=move |ev| flag.set(event_target_checked(&ev).then_some(true)) />
+                                        <span>{move || if flag.get() == Some(true) { chip.clone() } else { "打上".to_string() }}</span>
+                                    </label>
+                                </div>
+                            }.into_any()
+                        } else if r.value_type == "enum" {
+                            let opts = r.enum_values.get();
+                            let sel = r.text;
+                            view! {
+                                <div class="lblrow">
+                                    <span class="k">{ic_tag()}{title}</span>
+                                    <select on:change=move |ev| sel.set(event_target_value(&ev))>
+                                        <option value="" selected=move || sel.get().is_empty()>"（未设置）"</option>
+                                        {opts.into_iter().map(|o| {
+                                            let oc = o.clone();
+                                            let hit = o.clone();
+                                            view! {
+                                                <option value=oc.clone() selected=move || sel.get() == oc>
+                                                    {display_enum_value(&hit)}
+                                                </option>
+                                            }
+                                        }).collect::<Vec<_>>()}
+                                    </select>
+                                </div>
+                            }.into_any()
+                        } else if r.value_type == "boolean" {
+                            let flag = r.flag;
+                            view! {
+                                <div class="lblrow">
+                                    <span class="k">{ic_tag()}{title}</span>
+                                    <select on:change=move |ev| {
+                                        flag.set(match event_target_value(&ev).as_str() {
+                                            "true" => Some(true),
+                                            "false" => Some(false),
+                                            _ => None,
+                                        });
+                                    }>
+                                        <option value="" selected=move || flag.get().is_none()>"（未设置）"</option>
+                                        <option value="true" selected=move || flag.get() == Some(true)>"是"</option>
+                                        <option value="false" selected=move || flag.get() == Some(false)>"否"</option>
+                                    </select>
+                                </div>
+                            }.into_any()
+                        } else {
+                            let inp = r.text;
+                            let input_type = if r.value_type == "string" { "text" } else { "number" };
+                            view! {
+                                <div class="lblrow">
+                                    <span class="k">{ic_tag()}{title}</span>
+                                    <input class="inp" type=input_type prop:value=inp
+                                        on:input=move |ev| inp.set(event_target_value(&ev)) />
+                                </div>
+                            }.into_any()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .into_any()
+            }}
+        </div>
+    }
+}
+
+/// 列选择器：把工作空间的标签以可勾选 chip 列出，产出「展示为列」的标签 name 列表。
+/// 用选择代替自由文本输入——用户手写的展示名与服务端要求的 name 不一致会被拒绝，
+/// 让新建/配置视图在无声中失败。
+#[component]
+fn ColumnPicker(
+    schemas: RwSignal<Vec<LabelSchema>>,
+    selected: RwSignal<Vec<String>>,
+) -> impl IntoView {
+    view! {
+        <div class="colpick">
+            {move || {
+                let list = schemas.get();
+                if list.is_empty() {
+                    return view! { <span class="mut">"工作空间暂无标签"</span> }.into_any();
                 }
-                let mut cs = chips(&ast.get());
-                cs.retain(|c| c != &target);
-                ast.set(build_query(&cs));
-                page.set(1);
-            }>"×"</button>
-        </span>
+                list.into_iter()
+                    .map(|s| {
+                        let title = if s.title.trim().is_empty() {
+                            s.name.clone()
+                        } else {
+                            s.title.clone()
+                        };
+                        let name = s.name.clone();
+                        let name_cls = name.clone();
+                        let name_chk = name.clone();
+                        view! {
+                            <label class=move || {
+                                if selected.get().contains(&name_cls) { "colchip on" } else { "colchip" }
+                            }>
+                                <input
+                                    type="checkbox"
+                                    prop:checked=move || selected.get().contains(&name_chk)
+                                    on:change=move |_| {
+                                        selected
+                                            .update(|v| {
+                                                if let Some(i) = v.iter().position(|x| x == &name) {
+                                                    v.remove(i);
+                                                } else {
+                                                    v.push(name.clone());
+                                                }
+                                            });
+                                    }
+                                />
+                                {title}
+                            </label>
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .into_any()
+            }}
+        </div>
     }
 }
 
@@ -1142,3 +1812,23 @@ fn sort_label(field: &str, desc: bool) -> String {
     };
     format!("{name} {}", if desc { "↓" } else { "↑" })
 }
+
+/// 取出表达式里最后一个 `/` 之后的输入片段——即「正在输入的标签名」。
+/// 无 `/` 时返回 `None`（不弹候选）。`/` 也可能出现在引号内的字符串里，
+/// 但表达式语法中标签名只出现在裸词位置，这里按最后一次出现处理足够准确。
+fn label_fragment(text: &str) -> Option<&str> {
+    text.rfind('/').map(|i| &text[i + 1..])
+}
+
+/// 复制文本到系统剪贴板。非 wasm 目标下为空实现，便于 `cargo check` 通过。
+#[cfg(target_arch = "wasm32")]
+fn copy_to_clipboard(text: &str) {
+    let Some(win) = leptos::web_sys::window() else {
+        return;
+    };
+    // 丢弃 Promise 不影响写入：它是已排入队列的异步任务。
+    let _ = win.navigator().clipboard().write_text(text);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn copy_to_clipboard(_text: &str) {}

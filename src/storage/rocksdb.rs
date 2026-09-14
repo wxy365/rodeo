@@ -6,12 +6,27 @@ use crate::error::AppError;
 pub mod cf {
     pub const ACCOUNTS: &str = "accounts";
     pub const ACCOUNTS_EMAIL_IDX: &str = "accounts_email_idx";
+    /// 令牌版本：account id → u64 大端。登出时自增，使该账号所有已签发 JWT 立即失效。
+    /// 与软删除同理，用独立 CF 而不是给 Account 加字段，避免 bincode 结构变更。
+    pub const ACCOUNT_TOKEN_VERSION: &str = "account_token_version";
     pub const WORKSPACES: &str = "workspaces";
     pub const WORKSPACES_SLUG_IDX: &str = "workspaces_slug_idx";
+    /// 软删除标记：workspace id → 删除时间（RFC3339）。单独一个 CF 而不是给 Workspace
+    /// 加字段，避免 bincode 结构变更导致存量工作空间读不出来。
+    pub const WORKSPACES_DELETED: &str = "workspaces_deleted";
     pub const WORKSPACE_MEMBERS: &str = "workspace_members";
     pub const WORKSPACE_MEMBERS_BY_ACCOUNT: &str = "workspace_members_by_account";
+    /// 待接受的邀请：(workspace_id, account_id) → `Invite`。接受之前不写成员关系，
+    /// 所以「邀请中」和「已是成员」是两套互不干扰的记录，`Invite` 也就不需要 status 字段。
+    pub const INVITES: &str = "invites";
+    /// 反向索引：(account_id, workspace_id) → 空值，供「我收到的邀请」前缀扫描。
+    pub const INVITES_BY_ACCOUNT: &str = "invites_by_account";
     pub const ENTRIES: &str = "entries";
     pub const ENTRIES_BY_WORKSPACE: &str = "entries_by_workspace";
+    /// 归档标记：entry code → 归档时间（RFC3339）。与软删除同理，用独立 CF 而不是给
+    /// Entry 加字段，避免 bincode 结构变更导致存量条目读不出来。归档不删除数据，
+    /// 只是把条目移出默认视图，可随时取消归档。
+    pub const ENTRIES_ARCHIVED: &str = "entries_archived";
     pub const LABEL_SCHEMAS: &str = "label_schemas";
     pub const LABELINGS: &str = "labelings";
     pub const AUDIT_LOGS: &str = "audit_logs";
@@ -19,18 +34,24 @@ pub mod cf {
     pub const AUDIT_LOGS_BY_WORKSPACE: &str = "audit_logs_by_workspace";
     pub const VIEWS: &str = "views";
     pub const VIEWS_BY_WORKSPACE: &str = "views_by_workspace";
+    pub const DEFAULT_VIEWS: &str = "default_views";
     pub const LABELINGS_BY_WORKSPACE: &str = "labelings_by_workspace";
 }
 
 const ALL_CFS: &[&str] = &[
     cf::ACCOUNTS,
     cf::ACCOUNTS_EMAIL_IDX,
+    cf::ACCOUNT_TOKEN_VERSION,
     cf::WORKSPACES,
     cf::WORKSPACES_SLUG_IDX,
+    cf::WORKSPACES_DELETED,
     cf::WORKSPACE_MEMBERS,
     cf::WORKSPACE_MEMBERS_BY_ACCOUNT,
+    cf::INVITES,
+    cf::INVITES_BY_ACCOUNT,
     cf::ENTRIES,
     cf::ENTRIES_BY_WORKSPACE,
+    cf::ENTRIES_ARCHIVED,
     cf::LABEL_SCHEMAS,
     cf::LABELINGS,
     cf::AUDIT_LOGS,
@@ -38,6 +59,7 @@ const ALL_CFS: &[&str] = &[
     cf::AUDIT_LOGS_BY_WORKSPACE,
     cf::VIEWS,
     cf::VIEWS_BY_WORKSPACE,
+    cf::DEFAULT_VIEWS,
     cf::LABELINGS_BY_WORKSPACE,
 ];
 

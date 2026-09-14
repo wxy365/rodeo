@@ -23,6 +23,17 @@ pub fn member_by_account_key(account_id: Ulid, workspace_id: Ulid) -> [u8; 32] {
     key
 }
 
+/// (workspace_id, account_id) 复合键，32 字节。邀请与成员关系同构、键布局一致，
+/// 但落在不同列族，故另起名字，免得读者以为两者可以互查。
+pub fn invite_key(workspace_id: Ulid, account_id: Ulid) -> [u8; 32] {
+    member_key(workspace_id, account_id)
+}
+
+/// (account_id, workspace_id) 反向索引，32 字节。
+pub fn invite_by_account_key(account_id: Ulid, workspace_id: Ulid) -> [u8; 32] {
+    member_by_account_key(account_id, workspace_id)
+}
+
 /// (workspace_id, entry_code) 复合键，16 + 16 字节。
 pub fn entry_by_workspace_key(workspace_id: Ulid, code: &str) -> Vec<u8> {
     let mut key = Vec::with_capacity(32);
@@ -82,6 +93,11 @@ pub fn audit_by_resource_key(resource_type: &str, resource_id: &str, at: DateTim
 /// 视图主键：16 字节 ulid。
 pub fn view_key(id: Ulid) -> [u8; 16] {
     id.to_bytes()
+}
+
+/// 默认视图指针：每个 workspace 一条，键即 workspace_id（16 字节），值为 view_id 的 16 字节。
+pub fn default_view_key(workspace_id: Ulid) -> [u8; 16] {
+    workspace_id.to_bytes()
 }
 
 /// (workspace_id, view_id) 复合键，32 字节。

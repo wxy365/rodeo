@@ -2,10 +2,10 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::hooks::{use_navigate, use_params_map};
 
-use crate::frontend::components::{action_label, logged_out, short_time};
+use crate::frontend::components::{action_label, audit_change, logged_out, short_time};
 use crate::frontend::graphql_client::{
-    audit_logs, entry, label_schemas, update_entry, workspace_by_slug, AuditLog, Entry,
-    Labeling, LabelSchema, Workspace,
+    audit_logs, delete_entry, entry, label_schemas, update_entry, workspace_by_slug, AuditLog,
+    Entry, Labeling, LabelSchema, Workspace,
 };
 use crate::frontend::icons::{
     ic_back, ic_check, ic_history, ic_share, ic_tag, ic_upload,
@@ -109,6 +109,21 @@ pub fn EntryFullScreen() -> impl IntoView {
         });
     };
 
+    // 删除后条目已不存在，留在详情页只会显示「条目不存在」，直接退回工作空间。
+    let nav_del = navigate.clone();
+    let del = move |_| {
+        let c = code();
+        let s = slug();
+        let nav = nav_del.clone();
+        spawn_local(async move {
+            match delete_entry(&c).await {
+                Ok(true) => nav(&format!("/{s}"), Default::default()),
+                Ok(false) => error.set(Some("删除失败".to_string())),
+                Err(e) => error.set(Some(e)),
+            }
+        });
+    };
+
     let back = move |_| navigate(&format!("/{}", slug()), Default::default());
 
     view! {
@@ -127,6 +142,7 @@ pub fn EntryFullScreen() -> impl IntoView {
                     view! { <span class="chip dim">"未保存"</span> }.into_any()
                 }}
                 <button class="btn" disabled>{ic_share()}"分享链接（即将上线）"</button>
+                <button class="btn danger" on:click=del>"删除"</button>
             </div>
 
             {move || error.get().map(|e| view! { <div class="hint" style="margin-bottom:12px">{"⚠ "}{e}</div> })}
@@ -151,7 +167,7 @@ pub fn EntryFullScreen() -> impl IntoView {
                 <aside class="panel entry-side">
                     <div>
                         <div class="grp-h">{ic_tag()}"标签（变更即保存）"</div>
-                        <LabelEditor code=code() schemas labels on_changed />
+                        <LabelEditor code=Signal::derive(code) schemas labels on_changed />
                     </div>
 
                     <div>
@@ -174,6 +190,9 @@ pub fn EntryFullScreen() -> impl IntoView {
                                                 <div class="tl">
                                                     <span class="t">{short_time(&l.at)}</span>
                                                     <span>{action_label(&l.action)}</span>
+                                                    <span class="mut" style="font-size:12px">
+                                                        {audit_change(l.before.as_deref(), l.after.as_deref())}
+                                                    </span>
                                                 </div>
                                             }).collect::<Vec<_>>()}
                                         }.into_any()

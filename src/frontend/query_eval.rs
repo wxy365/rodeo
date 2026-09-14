@@ -106,7 +106,9 @@ fn eval_text(op: &str, want: Option<&Value>, entry: &Entry, labels: &[Labeling])
         return false;
     };
     let needle = kw.to_lowercase();
-    let mut hit = contains_ci(&entry.title, &needle) || contains_ci(&entry.detail, &needle);
+    let mut hit = contains_ci(&entry.code, &needle)
+        || contains_ci(&entry.title, &needle)
+        || contains_ci(&entry.detail, &needle);
     if !hit {
         hit = labels.iter().any(|l| {
             label_text(&l.value).is_some_and(|t| contains_ci(&t, &needle))
@@ -271,6 +273,7 @@ mod tests {
             detail: "找回密码报错".into(),
             created_at: "2026-08-01T12:00:00Z".into(),
             updated_at: "2026-09-01T12:00:00Z".into(),
+            archived_at: None,
             labels: vec![
                 labeling("Task", json!("Open")),
                 labeling("Score", json!(75)),
@@ -332,6 +335,17 @@ mod tests {
             &json!({"cond": {"field": "text", "op": "contains", "value": "open"}}),
             &e,
             &e.labels
+        ));
+        // Code 也纳入全文检索（大小写不敏感）。
+        assert!(eval(
+            &json!({"cond": {"field": "text", "op": "contains", "value": "e1"}}),
+            &e,
+            &[]
+        ));
+        assert!(!eval(
+            &json!({"cond": {"field": "text", "op": "contains", "value": "e9"}}),
+            &e,
+            &[]
         ));
     }
 

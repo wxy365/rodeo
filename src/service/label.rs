@@ -292,7 +292,7 @@ mod tests {
         assert_eq!(names, vec!["Bug", "Task"], "按 name 升序");
         let task = builtin.iter().find(|x| x.name == "Task").unwrap();
         assert_eq!(task.title, "任务");
-        assert_eq!(task.value_type, LabelValueType::Enum);
+        assert_eq!(task.value_type, LabelValueType::Null);
 
         // 自定义 schema 与内置并存
         label

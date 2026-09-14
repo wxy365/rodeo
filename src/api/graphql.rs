@@ -10,8 +10,8 @@ use axum::http::HeaderMap;
 use ulid::Ulid;
 
 use crate::domain::{
-    Account, AuditLog, Entry, LabelSchema, LabelValueType, Labeling, Query as ViewQuery, SortField,
-    SortSpec, TitleColorRule, ValueColor, View, Workspace, WorkspaceRole,
+    Account, AuditLog, Entry, Invite, LabelSchema, LabelValueType, Labeling, Query as ViewQuery,
+    SortField, SortSpec, TitleColorRule, ValueColor, View, Workspace, WorkspaceMember, WorkspaceRole,
 };
 use crate::error::AppError;
 use crate::service::entry::PageInput as EntryPageInput;
@@ -38,22 +38,37 @@ impl From<Account> for GqlAccount {
     }
 }
 
+/// 免登录可见的服务端开关，供登录页决定是否展示注册入口。
+#[derive(SimpleObject, Clone)]
+pub struct GqlServerConfig {
+    allow_registration: bool,
+}
+
 #[derive(SimpleObject, Clone)]
 pub struct GqlWorkspace {
     id: ID,
     name: String,
     slug: String,
     description: String,
+    /// 软删除时间；null 表示正常。删除标记存在单独的 CF，不进 Workspace 文档。
+    deleted_at: Option<String>,
 }
 
-impl From<Workspace> for GqlWorkspace {
-    fn from(w: Workspace) -> Self {
+impl GqlWorkspace {
+    fn with_state(w: Workspace, deleted_at: Option<String>) -> Self {
         Self {
             id: w.id.to_string().into(),
             name: w.name,
             slug: w.slug,
             description: w.description,
+            deleted_at,
         }
+    }
+}
+
+impl From<Workspace> for GqlWorkspace {
+    fn from(w: Workspace) -> Self {
+        Self::with_state(w, None)
     }
 }
 
@@ -119,11 +134,13 @@ pub struct GqlEntry {
     updated_by: ID,
     created_at: String,
     updated_at: String,
+    /// 归档时间（RFC3339）；未归档为 null。前端据此决定详情面板显示「归档」还是「取消归档」。
+    archived_at: Option<String>,
     labels: Vec<GqlLabeling>,
 }
 
 impl GqlEntry {
-    fn new(entry: Entry, labels: Vec<Labeling>) -> Self {
+    fn new(entry: Entry, labels: Vec<Labeling>, archived_at: Option<String>) -> Self {
         Self {
             code: entry.code,
             workspace_id: entry.workspace_id.to_string().into(),
@@ -133,9 +150,20 @@ impl GqlEntry {
             updated_by: entry.updated_by.to_string().into(),
             created_at: entry.created_at.to_rfc3339(),
             updated_at: entry.updated_at.to_rfc3339(),
+            archived_at,
             labels: labels.into_iter().map(Into::into).collect(),
         }
     }
+}
+
+/// 组装 GqlEntry，顺带补上归档标记——调用点不必各自去查 CF。
+fn gql_entry(
+    gql: &GraphqlContext,
+    entry: Entry,
+    labels: Vec<Labeling>,
+) -> GqlResult<GqlEntry> {
+    let archived_at = gql.services.entry.archived_at(&entry.code)?;
+    Ok(GqlEntry::new(entry, labels, archived_at))
 }
 
 #[derive(SimpleObject, Clone)]
@@ -178,6 +206,59 @@ impl From<AuditLog> for GqlAuditLog {
 
 #[derive(SimpleObject, Clone)]
 #[graphql(rename_fields = "camelCase")]
+pub struct GqlMember {
+    account_id: ID,
+    email: String,
+    name: String,
+    role: String,
+    joined_at: String,
+}
+
+impl GqlMember {
+    fn new(m: WorkspaceMember, a: Account) -> Self {
+        Self {
+            account_id: m.account_id.to_string().into(),
+            email: a.email,
+            name: a.name,
+            role: m.role.as_str().to_string(),
+            joined_at: m.joined_at.to_rfc3339(),
+        }
+    }
+}
+
+/// 待接受的邀请。同一个类型服务两个方向：工作空间侧（谁被邀请了）与账号侧（我收到了什么）。
+#[derive(SimpleObject, Clone)]
+#[graphql(rename_fields = "camelCase")]
+pub struct GqlInvite {
+    workspace_id: ID,
+    workspace_name: String,
+    workspace_slug: String,
+    account_id: ID,
+    email: String,
+    name: String,
+    role: String,
+    invited_by: ID,
+    created_at: String,
+}
+
+impl GqlInvite {
+    fn new(inv: Invite, ws: &Workspace, a: &Account) -> Self {
+        Self {
+            workspace_id: inv.workspace_id.to_string().into(),
+            workspace_name: ws.name.clone(),
+            workspace_slug: ws.slug.clone(),
+            account_id: inv.account_id.to_string().into(),
+            email: a.email.clone(),
+            name: a.name.clone(),
+            role: inv.role.as_str().to_string(),
+            invited_by: inv.invited_by.to_string().into(),
+            created_at: inv.created_at.to_rfc3339(),
+        }
+    }
+}
+
+#[derive(SimpleObject, Clone)]
+#[graphql(rename_fields = "camelCase")]
 pub struct GqlSortSpec {
     field: String,
     desc: bool,
@@ -204,10 +285,12 @@ pub struct GqlView {
     updated_at: String,
     title_colors: Json<serde_json::Value>,
     entry_count: i32,
+    /// 是否为该工作空间的默认视图（不可删除、始终存在）。
+    is_default: bool,
 }
 
 impl GqlView {
-    fn new(v: View, entry_count: i32) -> Self {
+    fn new(v: View, entry_count: i32, is_default: bool) -> Self {
         let query = serde_json::to_value(&v.query).unwrap_or(serde_json::Value::Null);
         let query_expr = v.query.to_expr();
         let title_colors =
@@ -225,6 +308,7 @@ impl GqlView {
             updated_at: v.updated_at.to_rfc3339(),
             title_colors: Json(title_colors),
             entry_count,
+            is_default,
         }
     }
 }
@@ -236,6 +320,8 @@ pub struct GqlEntryConnection {
     total: i32,
     page: i32,
     page_size: i32,
+    /// 命中条目实际带有的标签名（跨分页去重），前端用它提示可用标签。
+    label_names: Vec<String>,
 }
 
 #[derive(async_graphql::InputObject)]
@@ -268,6 +354,13 @@ impl PageInput {
             page_size: self.page_size.unwrap_or(20).clamp(1, 100) as usize,
         }
     }
+}
+
+/// 批量设置标签时的一条待写值。无值标签（Task/Bug 这类）的 value 传 null 或缺省。
+#[derive(async_graphql::InputObject)]
+pub struct LabelingInput {
+    name: String,
+    value: Option<Json<serde_json::Value>>,
 }
 
 fn parse_query_json(value: Option<Json<serde_json::Value>>) -> GqlResult<ViewQuery> {
@@ -329,14 +422,22 @@ impl Query {
         Ok(gql.services.auth.find_by_id(auth.account_id)?.map(Into::into))
     }
 
+    /// 免登录：登录页据此渲染注册入口。
+    async fn server_config(&self, ctx: &Context<'_>) -> GqlResult<GqlServerConfig> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        Ok(GqlServerConfig {
+            allow_registration: gql.services.config.auth.builtin.allow_registration,
+        })
+    }
+
     async fn workspaces(&self, ctx: &Context<'_>) -> GqlResult<Vec<GqlWorkspaceWithRole>> {
         let gql = ctx.data::<GraphqlContext>()?;
         let auth = gql.require_auth()?;
         let list = gql.services.workspace.list_for(auth.account_id)?;
         Ok(list
             .into_iter()
-            .map(|(w, r)| GqlWorkspaceWithRole {
-                workspace: w.into(),
+            .map(|(w, r, deleted_at)| GqlWorkspaceWithRole {
+                workspace: GqlWorkspace::with_state(w, deleted_at),
                 role: r.as_str().to_string(),
             })
             .collect())
@@ -345,7 +446,11 @@ impl Query {
     async fn workspace(&self, ctx: &Context<'_>, slug: String) -> GqlResult<Option<GqlWorkspace>> {
         let gql = ctx.data::<GraphqlContext>()?;
         gql.require_auth()?;
-        Ok(gql.services.workspace.get_by_slug(&slug)?.map(Into::into))
+        let Some(ws) = gql.services.workspace.get_by_slug(&slug)? else {
+            return Ok(None);
+        };
+        let deleted_at = gql.services.workspace.deleted_at(ws.id)?;
+        Ok(Some(GqlWorkspace::with_state(ws, deleted_at)))
     }
 
     async fn label_schemas(&self, ctx: &Context<'_>, workspace_id: ID) -> GqlResult<Vec<GqlLabelSchema>> {
@@ -369,7 +474,7 @@ impl Query {
         };
         gql.require_member(entry.workspace_id)?;
         let labels = gql.services.entry.labelings(&code)?;
-        Ok(Some(GqlEntry::new(entry, labels)))
+        Ok(Some(gql_entry(gql, entry, labels)?))
     }
 
     async fn audit_logs(
@@ -395,15 +500,64 @@ impl Query {
         }
     }
 
+    async fn members(&self, ctx: &Context<'_>, workspace_id: ID) -> GqlResult<Vec<GqlMember>> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let ws = parse_ulid(workspace_id.as_str())?;
+        gql.require_member(ws)?;
+        Ok(gql
+            .services
+            .workspace
+            .list_members(ws)?
+            .into_iter()
+            .map(|(m, a)| GqlMember::new(m, a))
+            .collect())
+    }
+
+    /// 某工作空间待接受的邀请。需要是该工作空间的成员。
+    async fn invites(&self, ctx: &Context<'_>, workspace_id: ID) -> GqlResult<Vec<GqlInvite>> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let ws_id = parse_ulid(workspace_id.as_str())?;
+        gql.require_member(ws_id)?;
+        let ws = gql.services.workspace.get_by_id(ws_id)?.ok_or(AppError::NotFound)?;
+        Ok(gql
+            .services
+            .workspace
+            .list_invites(ws_id)?
+            .into_iter()
+            .map(|(inv, a)| GqlInvite::new(inv, &ws, &a))
+            .collect())
+    }
+
+    /// 我收到的、尚未接受的邀请。仅需登录——被邀请的人此时还不是成员。
+    async fn my_invites(&self, ctx: &Context<'_>) -> GqlResult<Vec<GqlInvite>> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let account = gql
+            .services
+            .auth
+            .find_by_id(auth.account_id)?
+            .ok_or(AppError::NotFound)?;
+        Ok(gql
+            .services
+            .workspace
+            .list_invites_for(auth.account_id)?
+            .into_iter()
+            .map(|(inv, ws)| GqlInvite::new(inv, &ws, &account))
+            .collect())
+    }
+
     async fn views(&self, ctx: &Context<'_>, workspace_id: ID) -> GqlResult<Vec<GqlView>> {
         let gql = ctx.data::<GraphqlContext>()?;
         let auth = gql.require_auth()?;
         let ws = parse_ulid(workspace_id.as_str())?;
         gql.require_member(ws)?;
+        // 默认视图可能还没建立（老工作空间），首次拉取时补上。
+        let def = gql.services.view.ensure_default(auth.account_id, ws)?.id;
         let mut out = Vec::new();
         for v in gql.services.view.list(auth.account_id, ws)? {
             let count = gql.services.entry.count(ws, &v.query)? as i32;
-            out.push(GqlView::new(v, count));
+            let is_default = v.id == def;
+            out.push(GqlView::new(v, count, is_default));
         }
         Ok(out)
     }
@@ -420,7 +574,8 @@ impl Query {
             return Err(AppError::Forbidden.into());
         }
         let count = gql.services.entry.count(v.workspace_id, &v.query)? as i32;
-        Ok(Some(GqlView::new(v, count)))
+        let is_default = gql.services.view.default_view_id(v.workspace_id)? == Some(v.id);
+        Ok(Some(GqlView::new(v, count, is_default)))
     }
 
     async fn parse_view_query(
@@ -470,14 +625,35 @@ impl Query {
         let items = result
             .items
             .into_iter()
-            .map(|(e, labels)| GqlEntry::new(e, labels))
-            .collect();
+            .map(|(e, labels)| gql_entry(gql, e, labels))
+            .collect::<GqlResult<Vec<_>>>()?;
         Ok(GqlEntryConnection {
             items,
             total: result.total as i32,
             page: page.page as i32,
             page_size: page.page_size as i32,
+            label_names: result.label_names,
         })
+    }
+
+    /// 已归档条目（Reader+），按归档时间倒序。
+    async fn archived_entries(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: ID,
+    ) -> GqlResult<Vec<GqlEntry>> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let ws = parse_ulid(workspace_id.as_str())?;
+        gql.require_member(ws)?;
+        gql.services
+            .entry
+            .list_archived(ws)?
+            .into_iter()
+            .map(|e| {
+                let labels = gql.services.entry.labelings(&e.code)?;
+                gql_entry(gql, e, labels)
+            })
+            .collect()
     }
 }
 
@@ -512,6 +688,16 @@ impl Mutation {
         })
     }
 
+    /// 登出：吊销该账号所有已签发令牌。无有效令牌时也返回成功，保证幂等，
+    /// 这样「令牌已过期/已吊销」的前端仍能干净地清掉本地状态。
+    async fn logout(&self, ctx: &Context<'_>) -> GqlResult<bool> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        if let Some(auth) = gql.auth {
+            gql.services.auth.revoke_tokens(auth.account_id)?;
+        }
+        Ok(true)
+    }
+
     async fn create_workspace(
         &self,
         ctx: &Context<'_>,
@@ -530,6 +716,70 @@ impl Mutation {
         Ok(ws.into())
     }
 
+    /// 改名称/描述需 Maintainer；slug 是 URL 身份，独立变更需 Owner。
+    async fn update_workspace(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: ID,
+        name: String,
+        description: String,
+        slug: Option<String>,
+    ) -> GqlResult<GqlWorkspace> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let ws_id = parse_ulid(workspace_id.as_str())?;
+        let min_role = if slug.is_some() {
+            WorkspaceRole::Owner
+        } else {
+            WorkspaceRole::Maintainer
+        };
+        gql.require_role(ws_id, min_role)?;
+        let ws = gql.services.workspace.update(
+            auth.account_id,
+            ws_id,
+            &name,
+            &description,
+            slug.as_deref(),
+        )?;
+        Ok(ws.into())
+    }
+
+    /// 一步转让所有权：对方升为 Owner，自己降为 Maintainer。仅 Owner。
+    async fn transfer_owner(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: ID,
+        account_id: ID,
+    ) -> GqlResult<bool> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let ws_id = parse_ulid(workspace_id.as_str())?;
+        let target = parse_ulid(account_id.as_str())?;
+        gql.require_role(ws_id, WorkspaceRole::Owner)?;
+        gql.services.workspace.transfer_owner(auth.account_id, ws_id, target)?;
+        Ok(true)
+    }
+
+    /// 软删除工作空间，仅 Owner。数据保留，可恢复。
+    async fn delete_workspace(&self, ctx: &Context<'_>, workspace_id: ID) -> GqlResult<bool> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let ws_id = parse_ulid(workspace_id.as_str())?;
+        gql.require_role(ws_id, WorkspaceRole::Owner)?;
+        gql.services.workspace.delete(auth.account_id, ws_id)?;
+        Ok(true)
+    }
+
+    /// 取消软删除，仅 Owner。
+    async fn restore_workspace(&self, ctx: &Context<'_>, workspace_id: ID) -> GqlResult<bool> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let ws_id = parse_ulid(workspace_id.as_str())?;
+        gql.require_role(ws_id, WorkspaceRole::Owner)?;
+        gql.services.workspace.restore(auth.account_id, ws_id)?;
+        Ok(true)
+    }
+
     async fn create_entry(
         &self,
         ctx: &Context<'_>,
@@ -541,7 +791,7 @@ impl Mutation {
         let ws_id = parse_ulid(workspace_id.as_str())?;
         gql.require_role(ws_id, WorkspaceRole::Worker)?;
         let entry = gql.services.entry.create(auth.account_id, ws_id, &title)?;
-        Ok(GqlEntry::new(entry, vec![]))
+        gql_entry(gql, entry, vec![])
     }
 
     async fn set_labeling(
@@ -549,7 +799,9 @@ impl Mutation {
         ctx: &Context<'_>,
         entry_code: String,
         label_name: String,
-        value: Json<serde_json::Value>,
+        // 无值标签（Null 类型，如内置 Task/Bug）的值就是 JSON null；async-graphql 的
+        // JSON! 标量会拒绝 null，故此处用可空参数：省略或传 null 都落到 serde_json::Null。
+        value: Option<Json<serde_json::Value>>,
     ) -> GqlResult<GqlLabeling> {
         let gql = ctx.data::<GraphqlContext>()?;
         let auth = gql.require_auth()?;
@@ -559,11 +811,57 @@ impl Mutation {
             .get(&entry_code)?
             .ok_or(AppError::NotFound)?;
         gql.require_role(entry.workspace_id, WorkspaceRole::Worker)?;
+        let value = value.map(|j| j.0).unwrap_or(serde_json::Value::Null);
         let labeling = gql
             .services
             .entry
-            .set_labeling(auth.account_id, &entry_code, &label_name, &value.0)?;
+            .set_labeling(auth.account_id, &entry_code, &label_name, &value)?;
         Ok(labeling.into())
+    }
+
+    /// 批量给多个条目写多个标签值（Worker+）。所有条目须同属一个工作空间，
+    /// 整批原子写入。返回写入的 Labeling 条数。
+    async fn set_labelings(
+        &self,
+        ctx: &Context<'_>,
+        entry_codes: Vec<String>,
+        labelings: Vec<LabelingInput>,
+    ) -> GqlResult<i32> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        // 权限按所选条目所属工作空间校验：先确认它们同属一个工作空间，
+        // 避免「用 A 空间的 Worker 身份改 B 空间的条目」。
+        let mut workspace_id = None;
+        for code in &entry_codes {
+            let entry = gql
+                .services
+                .entry
+                .get(code)?
+                .ok_or(AppError::NotFound)?;
+            match workspace_id {
+                None => workspace_id = Some(entry.workspace_id),
+                Some(id) if id != entry.workspace_id => {
+                    return Err(AppError::InvalidQuery(
+                        "选中的条目不属于同一个工作空间".to_string(),
+                    )
+                    .into())
+                }
+                Some(_) => {}
+            }
+        }
+        let Some(ws_id) = workspace_id else {
+            return Err(AppError::InvalidQuery("未选择任何条目".to_string()).into());
+        };
+        gql.require_role(ws_id, WorkspaceRole::Worker)?;
+        let pairs: Vec<(String, serde_json::Value)> = labelings
+            .into_iter()
+            .map(|l| (l.name, l.value.map(|j| j.0).unwrap_or(serde_json::Value::Null)))
+            .collect();
+        let written = gql
+            .services
+            .entry
+            .set_labelings(auth.account_id, &entry_codes, &pairs)?;
+        Ok(written as i32)
     }
 
     async fn update_entry(
@@ -585,7 +883,7 @@ impl Mutation {
             .entry
             .update(auth.account_id, &code, &expected_updated_at, &title, &detail)?;
         let labels = gql.services.entry.labelings(&code)?;
-        Ok(GqlEntry::new(updated, labels))
+        gql_entry(gql, updated, labels)
     }
 
     async fn delete_entry(&self, ctx: &Context<'_>, code: String) -> GqlResult<bool> {
@@ -594,6 +892,26 @@ impl Mutation {
         let entry = gql.services.entry.get(&code)?.ok_or(AppError::NotFound)?;
         gql.require_role(entry.workspace_id, WorkspaceRole::Worker)?;
         gql.services.entry.soft_delete(auth.account_id, &code)?;
+        Ok(true)
+    }
+
+    /// 归档条目（Worker+）：移出默认视图与全文检索，数据保留，可取消归档。
+    async fn archive_entry(&self, ctx: &Context<'_>, code: String) -> GqlResult<bool> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let entry = gql.services.entry.get(&code)?.ok_or(AppError::NotFound)?;
+        gql.require_role(entry.workspace_id, WorkspaceRole::Worker)?;
+        gql.services.entry.archive(auth.account_id, &code)?;
+        Ok(true)
+    }
+
+    /// 取消归档（Worker+）。
+    async fn unarchive_entry(&self, ctx: &Context<'_>, code: String) -> GqlResult<bool> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let entry = gql.services.entry.get(&code)?.ok_or(AppError::NotFound)?;
+        gql.require_role(entry.workspace_id, WorkspaceRole::Worker)?;
+        gql.services.entry.unarchive(auth.account_id, &code)?;
         Ok(true)
     }
 
@@ -709,7 +1027,7 @@ impl Mutation {
             title_colors,
         )?;
         let count = gql.services.entry.count(ws, &v.query)? as i32;
-        Ok(GqlView::new(v, count))
+        Ok(GqlView::new(v, count, false))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -751,7 +1069,8 @@ impl Mutation {
             title_colors,
         )?;
         let count = gql.services.entry.count(existing.workspace_id, &v.query)? as i32;
-        Ok(GqlView::new(v, count))
+        let is_default = gql.services.view.default_view_id(existing.workspace_id)? == Some(v.id);
+        Ok(GqlView::new(v, count, is_default))
     }
 
     async fn delete_view(&self, ctx: &Context<'_>, id: ID) -> GqlResult<bool> {
@@ -767,6 +1086,136 @@ impl Mutation {
         };
         gql.require_role(existing.workspace_id, need)?;
         gql.services.view.delete(auth.account_id, view_id)?;
+        Ok(true)
+    }
+
+    /// 邀请已有账号（按邮箱）加入工作空间。写入的是「待接受邀请」——对方接受后才成为成员。
+    /// 需要 Maintainer 及以上；授予 Owner 需要本人也是 Owner。
+    async fn invite_member(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: ID,
+        email: String,
+        role: String,
+    ) -> GqlResult<GqlInvite> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let ws = parse_ulid(workspace_id.as_str())?;
+        let role = parse_role(&role)?;
+        // 授予 Owner 需要本人也是 Owner；其余角色 Maintainer 即可。
+        let need = if role == WorkspaceRole::Owner {
+            WorkspaceRole::Owner
+        } else {
+            WorkspaceRole::Maintainer
+        };
+        gql.require_role(ws, need)?;
+        let invite = gql.services.workspace.invite(auth.account_id, ws, &email, role)?;
+        let account = gql
+            .services
+            .auth
+            .find_by_id(invite.account_id)?
+            .ok_or(AppError::NotFound)?;
+        let ws = gql.services.workspace.get_by_id(ws)?.ok_or(AppError::NotFound)?;
+        Ok(GqlInvite::new(invite, &ws, &account))
+    }
+
+    /// 接受别人发来的邀请，成为工作空间成员。仅需登录。
+    async fn accept_invite(&self, ctx: &Context<'_>, workspace_id: ID) -> GqlResult<GqlMember> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let ws = parse_ulid(workspace_id.as_str())?;
+        let member = gql.services.workspace.accept_invite(auth.account_id, ws)?;
+        let account = gql
+            .services
+            .auth
+            .find_by_id(member.account_id)?
+            .ok_or(AppError::NotFound)?;
+        Ok(GqlMember::new(member, account))
+    }
+
+    /// 拒绝别人发来的邀请。仅需登录。
+    async fn decline_invite(&self, ctx: &Context<'_>, workspace_id: ID) -> GqlResult<bool> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let ws = parse_ulid(workspace_id.as_str())?;
+        gql.services.workspace.decline_invite(auth.account_id, ws)?;
+        Ok(true)
+    }
+
+    /// 撤销尚未被接受的邀请。需要 Maintainer 及以上；撤销 Owner 角色的邀请需要 Owner。
+    async fn revoke_invite(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: ID,
+        account_id: ID,
+    ) -> GqlResult<bool> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let ws = parse_ulid(workspace_id.as_str())?;
+        let target = parse_ulid(account_id.as_str())?;
+        let invite = gql
+            .services
+            .workspace
+            .get_invite(ws, target)?
+            .ok_or(AppError::NotFound)?;
+        let need = if invite.role == WorkspaceRole::Owner {
+            WorkspaceRole::Owner
+        } else {
+            WorkspaceRole::Maintainer
+        };
+        gql.require_role(ws, need)?;
+        gql.services.workspace.revoke_invite(auth.account_id, ws, target)?;
+        Ok(true)
+    }
+
+    /// 变更成员角色。涉及 Owner 的调整需要 Owner 权限。
+    async fn update_member_role(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: ID,
+        account_id: ID,
+        role: String,
+    ) -> GqlResult<GqlMember> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let ws = parse_ulid(workspace_id.as_str())?;
+        let target = parse_ulid(account_id.as_str())?;
+        let role = parse_role(&role)?;
+        let existing = gql.services.workspace.get_member(ws, target)?.ok_or(AppError::NotFound)?;
+        let need = if existing.role == WorkspaceRole::Owner || role == WorkspaceRole::Owner {
+            WorkspaceRole::Owner
+        } else {
+            WorkspaceRole::Maintainer
+        };
+        gql.require_role(ws, need)?;
+        let member = gql.services.workspace.update_role(auth.account_id, ws, target, role)?;
+        let account = gql
+            .services
+            .auth
+            .find_by_id(member.account_id)?
+            .ok_or(AppError::NotFound)?;
+        Ok(GqlMember::new(member, account))
+    }
+
+    /// 移除成员。移除 Owner 需要 Owner 权限，且不能移除最后一名 Owner。
+    async fn remove_member(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: ID,
+        account_id: ID,
+    ) -> GqlResult<bool> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let ws = parse_ulid(workspace_id.as_str())?;
+        let target = parse_ulid(account_id.as_str())?;
+        let existing = gql.services.workspace.get_member(ws, target)?.ok_or(AppError::NotFound)?;
+        let need = if existing.role == WorkspaceRole::Owner {
+            WorkspaceRole::Owner
+        } else {
+            WorkspaceRole::Maintainer
+        };
+        gql.require_role(ws, need)?;
+        gql.services.workspace.remove_member(auth.account_id, ws, target)?;
         Ok(true)
     }
 }
@@ -831,6 +1280,12 @@ fn bearer_token(headers: &HeaderMap) -> Option<String> {
 
 fn parse_ulid(s: &str) -> GqlResult<Ulid> {
     Ulid::from_string(s).map_err(|e| AppError::Internal(format!("无效 ID: {e}")).into())
+}
+
+/// GraphQL 传入的角色字符串 → WorkspaceRole。
+fn parse_role(s: &str) -> GqlResult<WorkspaceRole> {
+    WorkspaceRole::from_str(s)
+        .ok_or_else(|| AppError::InvalidQuery(format!("未知角色: {s}")).into())
 }
 
 /// 将可选的 GraphQL JSON 入参反序列化为 `Vec<T>`；缺省时返回空列表。

@@ -3,7 +3,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::hooks::use_navigate;
 
-use crate::frontend::graphql_client::{login, register, set_token};
+use crate::frontend::graphql_client::{allow_registration as fetch_allow_registration, login, register, set_token};
 use crate::frontend::use_auth;
 
 #[component]
@@ -16,6 +16,17 @@ pub fn Login() -> impl IntoView {
     let is_register = RwSignal::new(false);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
+    // 服务端是否开放注册；None = 还没问到。未知时先不渲染注册入口，避免闪一下又消失。
+    let allow_reg = RwSignal::new(None::<bool>);
+
+    Effect::new_sync(move |_| {
+        if !cfg!(target_arch = "wasm32") {
+            return;
+        }
+        spawn_local(async move {
+            allow_reg.set(Some(fetch_allow_registration().await));
+        });
+    });
 
     let submit = move |ev: SubmitEvent| {
         ev.prevent_default();
@@ -67,9 +78,17 @@ pub fn Login() -> impl IntoView {
                     {move || if is_register.get() { "注册并登录" } else { "登录" }}
                 </button>
                 <div style="display:flex;justify-content:space-between" class="mut">
-                    <span class="link" on:click=move |_| is_register.update(|v| *v = !*v)>
-                        {move || if is_register.get() { "已有账号，去登录" } else { "开放注册已开启，立即注册" }}
-                    </span>
+                    {move || match allow_reg.get() {
+                        Some(true) => view! {
+                            <span class="link" on:click=move |_| is_register.update(|v| *v = !*v)>
+                                {if is_register.get() { "已有账号，去登录" } else { "立即注册" }}
+                            </span>
+                        }.into_any(),
+                        Some(false) => view! {
+                            <span class="mut">"已关闭开放注册，请联系系统管理员"</span>
+                        }.into_any(),
+                        None => ().into_any(),
+                    }}
                     <u class="mut">"忘记密码"</u>
                 </div>
                 <div class="divider">"或使用以下方式继续"</div>

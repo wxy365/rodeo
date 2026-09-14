@@ -105,6 +105,11 @@ pub struct Workspace {
     pub name: String,
     pub slug: String,
     pub description: String,
+    /// 软删除时间；None = 正常。查询里没请求该字段时为 None，与「未删除」不可区分——
+    /// 需要区分的地方（设置页、工作空间列表）都要显式请求 `deletedAt`。
+    /// 本结构体没有 rename_all，多词字段必须逐个 rename，否则会被当成未知字段静默丢弃。
+    #[serde(rename = "deletedAt", default)]
+    pub deleted_at: Option<String>,
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -121,6 +126,9 @@ pub struct Entry {
     pub detail: String,
     pub created_at: String,
     pub updated_at: String,
+    /// 归档时间；未归档为 None。决定了详情面板显示「归档」还是「取消归档」。
+    #[serde(default)]
+    pub archived_at: Option<String>,
     pub labels: Vec<Labeling>,
 }
 
@@ -151,6 +159,10 @@ pub struct AuditLog {
     pub resource_type: String,
     pub resource_id: String,
     pub at: String,
+    /// 变更前的资源快照（JSON 字符串），无则 None。
+    pub before: Option<String>,
+    /// 变更后的资源快照（JSON 字符串），删除类操作为 None。
+    pub after: Option<String>,
 }
 
 // ---------- 类型化查询/变更 ----------
@@ -161,6 +173,23 @@ pub async fn me() -> Result<Option<User>, String> {
         .get("me")
         .cloned()
         .and_then(|v| serde_json::from_value(v).ok()))
+}
+
+/// 免登录：登录页据此决定是否展示注册入口。取不到时按「关闭」处理（保守，宁可少显示）。
+pub async fn allow_registration() -> bool {
+    graphql("query { serverConfig { allowRegistration } }", json!({}))
+        .await
+        .ok()
+        .and_then(|d| d.get("serverConfig").cloned())
+        .and_then(|v| v.get("allowRegistration").and_then(|b| b.as_bool()))
+        .unwrap_or(false)
+}
+
+/// 服务端吊销当前令牌，再清理本地存储。吊销请求失败（离线等）也要清本地，
+/// 否则用户会卡在「退不出去」的状态——代价是那张令牌要到过期才失效。
+pub async fn logout() {
+    let _ = graphql("mutation { logout }", json!({})).await;
+    clear_token();
 }
 
 pub async fn login(email: &str, password: &str) -> Result<(String, User), String> {
@@ -199,7 +228,7 @@ pub async fn register(email: &str, name: &str, password: &str) -> Result<(String
 
 pub async fn workspaces() -> Result<Vec<WorkspaceItem>, String> {
     let data = graphql(
-        "query { workspaces { workspace { id name slug description } role } }",
+        "query { workspaces { workspace { id name slug description deletedAt } role } }",
         json!({}),
     )
     .await?;
@@ -217,9 +246,56 @@ pub async fn create_workspace(name: &str, description: &str) -> Result<Workspace
         .map_err(|e| e.to_string())
 }
 
+/// 改名称/描述（Maintainer+）。`slug` 传 Some 才会改地址，且服务端要求 Owner——
+/// 因此非 Owner 保存名称时必须传 None，否则会被 Owner 校验拦下。
+pub async fn update_workspace(
+    workspace_id: &str,
+    name: &str,
+    description: &str,
+    slug: Option<&str>,
+) -> Result<Workspace, String> {
+    let data = graphql(
+        "mutation($id: ID!, $n: String!, $d: String!, $s: String) { \
+         updateWorkspace(workspaceId: $id, name: $n, description: $d, slug: $s) { id name slug description } }",
+        json!({ "id": workspace_id, "n": name, "d": description, "s": slug }),
+    )
+    .await?;
+    serde_json::from_value(data.get("updateWorkspace").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+/// 一步转让所有权（Owner）：对方升为 Owner，自己降为 Maintainer。
+pub async fn transfer_owner(workspace_id: &str, account_id: &str) -> Result<bool, String> {
+    let data = graphql(
+        "mutation($id: ID!, $a: ID!) { transferOwner(workspaceId: $id, accountId: $a) }",
+        json!({ "id": workspace_id, "a": account_id }),
+    )
+    .await?;
+    Ok(data.get("transferOwner").and_then(|v| v.as_bool()).unwrap_or(false))
+}
+
+/// 软删除工作空间（Owner）。数据保留，可恢复。
+pub async fn delete_workspace(workspace_id: &str) -> Result<bool, String> {
+    let data = graphql(
+        "mutation($id: ID!) { deleteWorkspace(workspaceId: $id) }",
+        json!({ "id": workspace_id }),
+    )
+    .await?;
+    Ok(data.get("deleteWorkspace").and_then(|v| v.as_bool()).unwrap_or(false))
+}
+
+pub async fn restore_workspace(workspace_id: &str) -> Result<bool, String> {
+    let data = graphql(
+        "mutation($id: ID!) { restoreWorkspace(workspaceId: $id) }",
+        json!({ "id": workspace_id }),
+    )
+    .await?;
+    Ok(data.get("restoreWorkspace").and_then(|v| v.as_bool()).unwrap_or(false))
+}
+
 pub async fn workspace_by_slug(slug: &str) -> Result<Option<Workspace>, String> {
     let data = graphql(
-        "query($s: String!) { workspace(slug: $s) { id name slug description } }",
+        "query($s: String!) { workspace(slug: $s) { id name slug description deletedAt } }",
         json!({ "s": slug }),
     )
     .await?;
@@ -231,7 +307,7 @@ pub async fn workspace_by_slug(slug: &str) -> Result<Option<Workspace>, String> 
 
 pub async fn entries(workspace_id: &str) -> Result<Vec<Entry>, String> {
     let data = graphql(
-        "query($id: ID!) { entries(workspaceId: $id) { code title detail createdAt updatedAt labels { labelName value } } }",
+        "query($id: ID!) { entries(workspaceId: $id) { code title detail createdAt updatedAt archivedAt labels { labelName value } } }",
         json!({ "id": workspace_id }),
     )
     .await?;
@@ -241,7 +317,7 @@ pub async fn entries(workspace_id: &str) -> Result<Vec<Entry>, String> {
 
 pub async fn create_entry(workspace_id: &str, title: &str) -> Result<Entry, String> {
     let data = graphql(
-        "mutation($id: ID!, $t: String!) { createEntry(workspaceId: $id, title: $t) { code title detail createdAt updatedAt labels { labelName value } } }",
+        "mutation($id: ID!, $t: String!) { createEntry(workspaceId: $id, title: $t) { code title detail createdAt updatedAt archivedAt labels { labelName value } } }",
         json!({ "id": workspace_id, "t": title }),
     )
     .await?;
@@ -260,17 +336,29 @@ pub async fn label_schemas(workspace_id: &str) -> Result<Vec<LabelSchema>, Strin
 }
 
 pub async fn set_labeling(entry_code: &str, label_name: &str, value: &Value) -> Result<Value, String> {
+    // $v 可空：无值标签的值是 JSON null，非空标量 JSON! 会被服务端拒绝。
     let data = graphql(
-        "mutation($c: String!, $n: String!, $v: JSON!) { setLabeling(entryCode: $c, labelName: $n, value: $v) { labelName value } }",
+        "mutation($c: String!, $n: String!, $v: JSON) { setLabeling(entryCode: $c, labelName: $n, value: $v) { labelName value } }",
         json!({ "c": entry_code, "n": label_name, "v": value }),
     )
     .await?;
     Ok(data.get("setLabeling").cloned().unwrap_or(Value::Null))
 }
 
+/// 批量写标签：`labelings` 是 `[{name, value}]`，一次性原子写入所有选中条目。
+/// 返回写入的 Labeling 条数。服务端任一取值非法则整批失败。
+pub async fn set_labelings(entry_codes: &[String], labelings: &Value) -> Result<i64, String> {
+    let data = graphql(
+        "mutation($c: [String!]!, $l: [LabelingInput!]!) { setLabelings(entryCodes: $c, labelings: $l) }",
+        json!({ "c": entry_codes, "l": labelings }),
+    )
+    .await?;
+    Ok(data.get("setLabelings").and_then(|v| v.as_i64()).unwrap_or(0))
+}
+
 pub async fn entry(code: &str) -> Result<Option<Entry>, String> {
     let data = graphql(
-        "query($c: String!) { entry(code: $c) { code title detail createdAt updatedAt labels { labelName value } } }",
+        "query($c: String!) { entry(code: $c) { code title detail createdAt updatedAt archivedAt labels { labelName value } } }",
         json!({ "c": code }),
     )
     .await?;
@@ -287,7 +375,7 @@ pub async fn update_entry(
     detail: &str,
 ) -> Result<Entry, String> {
     let data = graphql(
-        "mutation($c: String!, $e: String!, $t: String!, $d: String!) { updateEntry(code: $c, expectedUpdatedAt: $e, title: $t, detail: $d) { code title detail createdAt updatedAt labels { labelName value } } }",
+        "mutation($c: String!, $e: String!, $t: String!, $d: String!) { updateEntry(code: $c, expectedUpdatedAt: $e, title: $t, detail: $d) { code title detail createdAt updatedAt archivedAt labels { labelName value } } }",
         json!({ "c": code, "e": expected_updated_at, "t": title, "d": detail }),
     )
     .await?;
@@ -305,6 +393,43 @@ pub async fn delete_entry(code: &str) -> Result<bool, String> {
         .get("deleteEntry")
         .and_then(|v| v.as_bool())
         .unwrap_or(false))
+}
+
+/// 归档条目：移出默认视图，数据保留。返回服务端确认。
+pub async fn archive_entry(code: &str) -> Result<bool, String> {
+    let data = graphql(
+        "mutation($c: String!) { archiveEntry(code: $c) }",
+        json!({ "c": code }),
+    )
+    .await?;
+    Ok(data
+        .get("archiveEntry")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false))
+}
+
+/// 取消归档。
+pub async fn unarchive_entry(code: &str) -> Result<bool, String> {
+    let data = graphql(
+        "mutation($c: String!) { unarchiveEntry(code: $c) }",
+        json!({ "c": code }),
+    )
+    .await?;
+    Ok(data
+        .get("unarchiveEntry")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false))
+}
+
+/// 已归档条目，按归档时间倒序。
+pub async fn archived_entries(workspace_id: &str) -> Result<Vec<Entry>, String> {
+    let data = graphql(
+        "query($id: ID!) { archivedEntries(workspaceId: $id) { code title detail createdAt updatedAt archivedAt labels { labelName value } } }",
+        json!({ "id": workspace_id }),
+    )
+    .await?;
+    serde_json::from_value(data.get("archivedEntries").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
 }
 
 pub async fn remove_labeling(entry_code: &str, label_name: &str) -> Result<bool, String> {
@@ -356,7 +481,7 @@ pub async fn update_label_schema(
 
 pub async fn audit_logs(workspace_id: &str) -> Result<Vec<AuditLog>, String> {
     let data = graphql(
-        "query($id: ID!) { auditLogs(workspaceId: $id) { id action resourceType resourceId at } }",
+        "query($id: ID!) { auditLogs(workspaceId: $id) { id action resourceType resourceId at before after } }",
         json!({ "id": workspace_id }),
     )
     .await?;
@@ -375,6 +500,125 @@ pub async fn my_role(workspace_id: &str) -> Result<String, String> {
         .and_then(|v| v.as_str())
         .unwrap_or("none")
         .to_string())
+}
+
+// ---------- 成员（Member） ----------
+
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Member {
+    pub account_id: String,
+    pub email: String,
+    pub name: String,
+    pub role: String,
+    pub joined_at: String,
+}
+
+const MEMBER_FIELDS: &str = "accountId email name role joinedAt";
+
+pub async fn members(workspace_id: &str) -> Result<Vec<Member>, String> {
+    let q = format!("query($id: ID!) {{ members(workspaceId: $id) {{ {MEMBER_FIELDS} }} }}");
+    let data = graphql(&q, json!({ "id": workspace_id })).await?;
+    serde_json::from_value(data.get("members").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+// ---------- 邀请（Invite） ----------
+
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Invite {
+    pub workspace_id: String,
+    pub workspace_name: String,
+    pub workspace_slug: String,
+    pub account_id: String,
+    pub email: String,
+    pub name: String,
+    pub role: String,
+    pub invited_by: String,
+    pub created_at: String,
+}
+
+const INVITE_FIELDS: &str = "workspaceId workspaceName workspaceSlug accountId email name role invitedBy createdAt";
+
+pub async fn invite_member(
+    workspace_id: &str,
+    email: &str,
+    role: &str,
+) -> Result<Invite, String> {
+    let q = format!(
+        "mutation($id: ID!, $e: String!, $r: String!) {{ \
+         inviteMember(workspaceId: $id, email: $e, role: $r) {{ {INVITE_FIELDS} }} }}"
+    );
+    let data = graphql(&q, json!({ "id": workspace_id, "e": email, "r": role })).await?;
+    serde_json::from_value(data.get("inviteMember").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+/// 某工作空间待接受的邀请（管理成员页用）。
+pub async fn invites(workspace_id: &str) -> Result<Vec<Invite>, String> {
+    let q = format!("query($id: ID!) {{ invites(workspaceId: $id) {{ {INVITE_FIELDS} }} }}");
+    let data = graphql(&q, json!({ "id": workspace_id })).await?;
+    serde_json::from_value(data.get("invites").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+/// 我收到的、尚未接受的邀请（收件箱用）。
+pub async fn my_invites() -> Result<Vec<Invite>, String> {
+    let q = format!("query {{ myInvites {{ {INVITE_FIELDS} }} }}");
+    let data = graphql(&q, json!({})).await?;
+    serde_json::from_value(data.get("myInvites").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+pub async fn accept_invite(workspace_id: &str) -> Result<Member, String> {
+    let q = format!(
+        "mutation($id: ID!) {{ acceptInvite(workspaceId: $id) {{ {MEMBER_FIELDS} }} }}"
+    );
+    let data = graphql(&q, json!({ "id": workspace_id })).await?;
+    serde_json::from_value(data.get("acceptInvite").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+pub async fn decline_invite(workspace_id: &str) -> Result<bool, String> {
+    let data = graphql(
+        "mutation($id: ID!) { declineInvite(workspaceId: $id) }",
+        json!({ "id": workspace_id }),
+    )
+    .await?;
+    Ok(data.get("declineInvite").and_then(|v| v.as_bool()).unwrap_or(false))
+}
+
+pub async fn revoke_invite(workspace_id: &str, account_id: &str) -> Result<bool, String> {
+    let data = graphql(
+        "mutation($id: ID!, $a: ID!) { revokeInvite(workspaceId: $id, accountId: $a) }",
+        json!({ "id": workspace_id, "a": account_id }),
+    )
+    .await?;
+    Ok(data.get("revokeInvite").and_then(|v| v.as_bool()).unwrap_or(false))
+}
+
+pub async fn update_member_role(
+    workspace_id: &str,
+    account_id: &str,
+    role: &str,
+) -> Result<Member, String> {
+    let q = format!(
+        "mutation($id: ID!, $a: ID!, $r: String!) {{ \
+         updateMemberRole(workspaceId: $id, accountId: $a, role: $r) {{ {MEMBER_FIELDS} }} }}"
+    );
+    let data = graphql(&q, json!({ "id": workspace_id, "a": account_id, "r": role })).await?;
+    serde_json::from_value(data.get("updateMemberRole").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+pub async fn remove_member(workspace_id: &str, account_id: &str) -> Result<bool, String> {
+    let data = graphql(
+        "mutation($id: ID!, $a: ID!) { removeMember(workspaceId: $id, accountId: $a) }",
+        json!({ "id": workspace_id, "a": account_id }),
+    )
+    .await?;
+    Ok(data.get("removeMember").and_then(|v| v.as_bool()).unwrap_or(false))
 }
 
 // ---------- 视图（View） ----------
@@ -400,6 +644,9 @@ pub struct View {
     #[serde(default)]
     pub title_colors: Value,
     pub entry_count: i64,
+    /// 默认视图：始终存在、不可删除，列表中置顶。
+    #[serde(default)]
+    pub is_default: bool,
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -409,10 +656,12 @@ pub struct EntryPage {
     pub total: i64,
     pub page: i64,
     pub page_size: i64,
+    #[serde(default)]
+    pub label_names: Vec<String>,
 }
 
-const VIEW_FIELDS: &str =
-    "id name query queryExpr sort { field desc } columns isShared ownerId titleColors entryCount";
+const VIEW_FIELDS: &str = "id name query queryExpr sort { field desc } columns isShared ownerId \
+     titleColors entryCount isDefault";
 
 pub async fn views(workspace_id: &str) -> Result<Vec<View>, String> {
     let q = format!("query($id: ID!) {{ views(workspaceId: $id) {{ {VIEW_FIELDS} }} }}");
@@ -431,7 +680,7 @@ pub async fn query_entries(
 ) -> Result<EntryPage, String> {
     let q = "query($id: ID!, $q: JSON, $s: SortInput, $p: PageInput) { \
         queryEntries(workspaceId: $id, query: $q, sort: $s, page: $p) { \
-        items { code title detail createdAt updatedAt labels { labelName value } } total page pageSize } }";
+        items { code title detail createdAt updatedAt labels { labelName value } } total page pageSize labelNames } }";
     let data = graphql(
         q,
         json!({
@@ -529,4 +778,34 @@ pub async fn format_view_query(workspace_id: &str, query: &Value) -> Result<Stri
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Workspace;
+
+    #[test]
+    fn workspace_maps_deleted_at_from_camel_case_json() {
+        // 结构体没有 rename_all，这里盯住那个坑：多词字段必须显式 rename，
+        // 否则 GraphQL 的 deletedAt 会被当成未知字段丢掉，删除态在 UI 上永远不出现。
+        let deleted: Workspace = serde_json::from_value(serde_json::json!({
+            "id": "1", "name": "n", "slug": "s", "description": "d",
+            "deletedAt": "2026-01-01T00:00:00+00:00"
+        }))
+        .unwrap();
+        assert_eq!(deleted.deleted_at.as_deref(), Some("2026-01-01T00:00:00+00:00"));
+
+        let live: Workspace = serde_json::from_value(serde_json::json!({
+            "id": "1", "name": "n", "slug": "s", "description": "d", "deletedAt": null
+        }))
+        .unwrap();
+        assert!(live.deleted_at.is_none());
+
+        // 老查询没请求 deletedAt 时也不能报错。
+        let bare: Workspace = serde_json::from_value(serde_json::json!({
+            "id": "1", "name": "n", "slug": "s", "description": "d"
+        }))
+        .unwrap();
+        assert!(bare.deleted_at.is_none());
+    }
 }

@@ -107,7 +107,129 @@ pub fn action_label(action: &str) -> &'static str {
         "LabelingRemoved" => "移除标签",
         "LabelSchemaCreated" => "创建标签定义",
         "LabelSchemaUpdated" => "更新标签定义",
+        "LabelSchemaDeleted" => "删除标签定义",
+        "ViewCreated" => "创建视图",
+        "ViewUpdated" => "更新视图",
+        "ViewDeleted" => "删除视图",
+        "EntryArchived" => "归档",
+        "EntryUnarchived" => "取消归档",
+        "MemberInvited" => "邀请成员",
+        "MemberJoined" => "接受邀请",
+        "InviteDeclined" => "拒绝邀请",
+        "InviteRevoked" => "撤销邀请",
+        "RoleChanged" => "变更成员角色",
+        "MemberRemoved" => "移除成员",
+        "WorkspaceUpdated" => "更新工作空间",
+        "WorkspaceDeleted" => "删除工作空间",
+        "WorkspaceRestored" => "恢复工作空间",
+        "WorkspaceCreated" => "创建工作空间",
         _ => "变更",
+    }
+}
+
+/// 审计 before/after 快照 → 一句话「具体改了什么」。
+///
+/// 两个快照都是 JSON 对象字符串（`serde_json::to_string` 出来的资源快照）。创建 / 删除
+/// 各只有一边，写成「创建「标题」」；两边都在时逐字段对比，只报实际变化的字段。
+pub fn audit_change(before: Option<&str>, after: Option<&str>) -> String {
+    let parse = |s: Option<&str>| -> Option<Value> {
+        let s = s?;
+        serde_json::from_str::<Value>(s).ok()
+    };
+    let b = parse(before);
+    let a = parse(after);
+    let bobj = b.as_ref().and_then(Value::as_object);
+    let aobj = a.as_ref().and_then(Value::as_object);
+    match (bobj, aobj) {
+        (None, None) => "—".to_string(),
+        (None, Some(ao)) => format!("创建「{}」", subject(ao)),
+        (Some(bo), None) => format!("删除「{}」", subject(bo)),
+        (Some(bo), Some(ao)) => diff(bo, ao),
+    }
+}
+
+/// 资源快照 → 一个能指代它的短标签。
+fn subject(o: &serde_json::Map<String, Value>) -> String {
+    for k in ["title", "name", "label_name", "value", "email", "account_id"] {
+        if let Some(v) = o.get(k) {
+            let s = show(v);
+            if s != "—" {
+                return s;
+            }
+        }
+    }
+    "（无标题）".to_string()
+}
+
+fn diff(b: &serde_json::Map<String, Value>, a: &serde_json::Map<String, Value>) -> String {
+    let null = Value::Null;
+    // 先按 after 的字段顺序，再补上只存在于 before 的字段（被移除的字段）。
+    let mut keys: Vec<&String> = a.keys().collect();
+    for k in b.keys() {
+        if !a.contains_key(k) {
+            keys.push(k);
+        }
+    }
+    let mut parts = Vec::new();
+    for k in keys {
+        let bv = b.get(k).unwrap_or(&null);
+        let av = a.get(k).unwrap_or(&null);
+        if bv == av {
+            continue;
+        }
+        parts.push(format!("{}: {} → {}", field_label(k), show(bv), show(av)));
+    }
+    if parts.is_empty() {
+        "无字段变化".to_string()
+    } else {
+        parts.join("；")
+    }
+}
+
+/// 快照字段名 → 中文；未在映射表里的字段直接沿用原名。
+fn field_label(k: &str) -> String {
+    match k {
+        "title" => "标题",
+        "detail" => "详情",
+        "name" => "名称",
+        "slug" => "地址",
+        "description" => "描述",
+        "deleted_at" => "删除时间",
+        "value" => "值",
+        "label_name" => "标签",
+        "value_type" => "值类型",
+        "enum_values" => "可选值",
+        "color" => "颜色",
+        "value_colors" => "值颜色",
+        "query" => "条件",
+        "columns" => "列",
+        "sort" => "排序",
+        "is_shared" => "共享",
+        "title_colors" => "标题颜色规则",
+        "role" => "角色",
+        "account_id" => "成员",
+        other => other,
+    }
+    .to_string()
+}
+
+/// 展示一个 JSON 值：字符串去掉引号，其余保持紧凑 JSON；过长则截断。
+fn show(v: &Value) -> String {
+    match v {
+        Value::Null => "—".to_string(),
+        Value::String(s) => clip(s),
+        other => clip(&other.to_string()),
+    }
+}
+
+fn clip(s: &str) -> String {
+    let one_line = s.replace('\n', " ");
+    if one_line.chars().count() <= 40 {
+        one_line
+    } else {
+        let mut t: String = one_line.chars().take(40).collect();
+        t.push('…');
+        t
     }
 }
 
@@ -121,5 +243,37 @@ pub fn value_type_label(vt: &str) -> String {
         "string" => "String".to_string(),
         "enum" => "Enum".to_string(),
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audit_change_reports_only_changed_fields() {
+        let b = r#"{"title":"旧","detail":"同","value":"Open"}"#;
+        let a = r#"{"title":"新","detail":"同","value":"Open"}"#;
+        assert_eq!(audit_change(Some(b), Some(a)), "标题: 旧 → 新");
+    }
+
+    #[test]
+    fn audit_change_summarizes_create_and_delete() {
+        assert_eq!(
+            audit_change(None, Some(r#"{"title":"条目0"}"#)),
+            "创建「条目0」"
+        );
+        assert_eq!(
+            audit_change(Some(r#"{"name":"看板"}"#), None),
+            "删除「看板」"
+        );
+        assert_eq!(audit_change(None, None), "—");
+    }
+
+    #[test]
+    fn audit_change_marks_added_and_removed_fields() {
+        let b = r#"{"a":1}"#;
+        let a = r#"{"b":2}"#;
+        assert_eq!(audit_change(Some(b), Some(a)), "b: — → 2；a: 1 → —");
     }
 }

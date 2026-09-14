@@ -851,7 +851,7 @@ mod tests {
         let v = View {
             id: Ulid::new(),
             workspace_id: Ulid::new(),
-            name: "全部任务".into(),
+            name: "全部内容".into(),
             query: Query::all(),
             sort: SortSpec::default(),
             columns: vec!["Task".into(), "Priority".into()],
@@ -1843,9 +1843,9 @@ mod tests {
     fn create_list_and_delete_with_audit() {
         let (dir, store, svc, ws, actor) = setup();
         let v = svc
-            .create(actor, ws, "全部任务", Query::all(), SortSpec::default(), vec!["Task".into()], false)
+            .create(actor, ws, "全部内容", Query::all(), SortSpec::default(), vec!["Task".into()], false)
             .unwrap();
-        assert_eq!(v.name, "全部任务");
+        assert_eq!(v.name, "全部内容");
         assert!(!v.is_shared);
 
         let mine = svc.list(actor, ws).unwrap();

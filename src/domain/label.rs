@@ -156,33 +156,25 @@ impl LabelSchema {
         self
     }
 
+    /// 内置「任务」：无值标签，只有「打上 / 没打上」两种状态（表达式里写作 `Task` / `!Task`）。
     pub fn task(workspace_id: Ulid) -> Self {
         Self::new(
             workspace_id,
             "Task".to_string(),
             "任务".to_string(),
-            LabelValueType::Enum,
-            vec![
-                "Open".to_string(),
-                "InProgress".to_string(),
-                "Done".to_string(),
-                "Archived".to_string(),
-            ],
+            LabelValueType::Null,
+            Vec::new(),
         )
     }
 
+    /// 内置「缺陷」：同 `task`，无值标签。
     pub fn bug(workspace_id: Ulid) -> Self {
         Self::new(
             workspace_id,
             "Bug".to_string(),
             "缺陷".to_string(),
-            LabelValueType::Enum,
-            vec![
-                "Open".to_string(),
-                "Fixed".to_string(),
-                "WontFix".to_string(),
-                "Archived".to_string(),
-            ],
+            LabelValueType::Null,
+            Vec::new(),
         )
     }
 }
