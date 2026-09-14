@@ -347,12 +347,18 @@ mod tests {
             .create_schema(
                 actor,
                 ws,
-                "Status",
-                "状态",
-                LabelValueType::Enum,
-                vec!["Open".into(), "Done".into()],
-                None,
-                vec![],
+                crate::service::label::LabelSchemaInput {
+                    name: "Status".into(),
+                    title: "状态".into(),
+                    value_type: LabelValueType::Enum,
+                    enum_values: vec!["Open".into(), "Done".into()],
+                    multi: false,
+                    format: None,
+                    currency_symbol: None,
+                    unit: None,
+                    color: None,
+                    value_colors: vec![],
+                },
             )
             .unwrap();
         let cond = |op| {

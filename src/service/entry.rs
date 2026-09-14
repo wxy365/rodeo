@@ -1011,12 +1011,18 @@ mod tests {
             .create_schema(
                 actor,
                 ws_id,
-                "Status",
-                "状态",
-                crate::domain::LabelValueType::Enum,
-                vec!["Open".to_string(), "Done".to_string()],
-                None,
-                vec![],
+                crate::service::label::LabelSchemaInput {
+                    name: "Status".into(),
+                    title: "状态".into(),
+                    value_type: crate::domain::LabelValueType::Enum,
+                    enum_values: vec!["Open".to_string(), "Done".to_string()],
+                    multi: false,
+                    format: None,
+                    currency_symbol: None,
+                    unit: None,
+                    color: None,
+                    value_colors: vec![],
+                },
             )
             .unwrap();
     }

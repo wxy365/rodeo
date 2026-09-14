@@ -21,6 +21,8 @@ pub enum AppError {
     ConflictDetected,
     #[error("标签名称已存在")]
     LabelNameExists,
+    #[error("与内置元数据重名")]
+    LabelNameReserved,
     #[error("{0}")]
     InvalidQuery(String),
     #[error("存储错误: {0}")]
@@ -41,6 +43,7 @@ impl AppError {
             AppError::InvalidLabelValue => "INVALID_LABEL_VALUE",
             AppError::ConflictDetected => "CONFLICT",
             AppError::LabelNameExists => "LABEL_NAME_EXISTS",
+            AppError::LabelNameReserved => "LABEL_NAME_RESERVED",
             AppError::InvalidQuery(_) => "INVALID_QUERY",
             AppError::Storage(_) => "STORAGE",
             AppError::Internal(_) => "INTERNAL",
