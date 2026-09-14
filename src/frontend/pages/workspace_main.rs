@@ -333,6 +333,7 @@ pub fn WorkspaceMain() -> impl IntoView {
             None => format!("{name} "),
         });
         hint_open.set(false);
+        time_pick.set(None);
     };
 
     // 编辑态与已落库基线的差异：查询条件或排序任一变化即视为有未保存改动。
@@ -709,7 +710,8 @@ pub fn WorkspaceMain() -> impl IntoView {
                                     let v = event_target_value(&ev);
                                     hint_open.set(label_fragment(&v).is_some());
                                     // 时间型键（date/time/datetime 标签或 CreatedAt /
-                                    // UpdatedAt）后紧跟比较运算符再一个空白，就浮出原生控件。
+                                    // UpdatedAt）后接比较运算符再一个空白，就浮出原生控件。
+                                    // 键与运算符之间可有空白。
                                     let kind_of = |key: &str| -> Option<TimeKind> {
                                         if key.eq_ignore_ascii_case("CreatedAt")
                                             || key.eq_ignore_ascii_case("UpdatedAt")
@@ -1080,7 +1082,8 @@ pub fn WorkspaceMain() -> impl IntoView {
                                     <code>"CreatedAt"</code>" / "<code>"UpdatedBy"</code>" / "
                                     <code>"UpdatedAt"</code>"（这些名字不可用作自定义标签名）。"</p>
                                 <p class="mut">"提示：在输入框里输入 "<code>"/"</code>" 可从内置元数据与本视图已有标签中选择；"
-                                    "回车应用表达式，Escape 关闭提示。时间型标签后紧跟比较运算符再一个空格，"
+                                    "回车应用表达式，Escape 关闭提示。时间型标签（含 "<code>"CreatedAt"</code>" / "
+                                    <code>"UpdatedAt"</code>"）后接比较运算符和一个空格（键与运算符之间可有空格），"
                                     "会浮出日期 / 时间选择器。"</p>
                             </div>
                             <div style="display:flex;justify-content:flex-end">
@@ -2003,7 +2006,7 @@ fn detect_time_picker(
     }
     let op_len = if trimmed.ends_with(">=") || trimmed.ends_with("<=") || trimmed.ends_with("!=") {
         2
-    } else if trimmed.ends_with('>') || trimmed.ends_with('<') {
+    } else if trimmed.ends_with('>') || trimmed.ends_with('<') || trimmed.ends_with('=') {
         1
     } else {
         return None;
@@ -2023,7 +2026,7 @@ fn detect_time_picker(
     let mut j = key_end;
     while j > 0 {
         let c = trimmed[..j].chars().next_back()?;
-        if c.is_alphanumeric() || c == '_' || c == '-' {
+        if c.is_alphanumeric() || c == '_' || c == '-' || c == '.' {
             j -= c.len_utf8();
         } else {
             break;
