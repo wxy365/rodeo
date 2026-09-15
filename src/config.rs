@@ -10,6 +10,8 @@ pub struct Config {
     pub auth: AuthConfig,
     #[serde(default)]
     pub storage: StorageConfig,
+    #[serde(default)]
+    pub ai: AiConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -48,6 +50,18 @@ pub struct BuiltinAuthConfig {
 pub struct StorageConfig {
     #[serde(default = "default_data_dir")]
     pub data_dir: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct AiConfig {
+    #[serde(default = "default_ai_base_url")]
+    pub base_url: String,
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default = "default_ai_timeout")]
+    pub timeout_seconds: u64,
 }
 
 impl Default for ServerConfig {
@@ -89,12 +103,32 @@ impl Default for StorageConfig {
     }
 }
 
+impl Default for AiConfig {
+    fn default() -> Self {
+        Self {
+            base_url: default_ai_base_url(),
+            api_key: String::new(),
+            model: String::new(),
+            timeout_seconds: default_ai_timeout(),
+        }
+    }
+}
+
+impl AiConfig {
+    /// 密钥与模型缺一都发不出可用请求，故两者任一为空即视为「未启用」。
+    /// 前端据此收到明确的 `AI_NOT_CONFIGURED`，而不是一个费解的 HTTP 错误。
+    pub fn enabled(&self) -> bool {
+        !self.api_key.trim().is_empty() && !self.model.trim().is_empty()
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             server: ServerConfig::default(),
             auth: AuthConfig::default(),
             storage: StorageConfig::default(),
+            ai: AiConfig::default(),
         }
     }
 }
@@ -140,4 +174,10 @@ fn default_admin_password() -> String {
 }
 fn default_data_dir() -> String {
     "./data".to_string()
+}
+fn default_ai_base_url() -> String {
+    "https://api.openai.com/v1".to_string()
+}
+fn default_ai_timeout() -> u64 {
+    60
 }

@@ -15,3 +15,11 @@ admin_password = "Admin12345"
 
 [storage]
 data_dir = "./data"
+
+[ai]
+# 兼容 Chat Completions 协议的服务（OpenAI 官方 / 自建网关 / vLLM / one-api / DeepSeek / 通义）。
+base_url = "https://api.openai.com/v1"
+# api_key 或 model 留空即视为未启用：生成总结时返回「服务端未配置 AI 模型」。
+api_key = ""
+model = ""
+timeout_seconds = 60

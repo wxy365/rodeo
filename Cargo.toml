@@ -39,6 +39,9 @@ http = { version = "1", optional = true }
 tower = { version = "0.5", features = ["util"], optional = true }
 tower-http = { version = "0.6", features = ["fs"], optional = true }
 tantivy = { version = "0.26", optional = true, default-features = false, features = ["mmap", "lz4-compression"] }
+# 服务端调用大模型（仅 ssr）。default-features = false 是为了不引入 openssl，
+# 与仓库其余依赖一样走 rustls。
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
 
 # 仅 WASM 目标
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -75,6 +78,7 @@ ssr = [
     "dep:tower",
     "dep:tower-http",
     "dep:tantivy",
+    "dep:reqwest",
     "leptos/ssr",
     "leptos_meta/ssr",
     "leptos_router/ssr",

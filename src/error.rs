@@ -29,6 +29,10 @@ pub enum AppError {
     Storage(String),
     #[error("内部错误: {0}")]
     Internal(String),
+    #[error("服务端未配置 AI 模型")]
+    AiNotConfigured,
+    #[error("{0}")]
+    Ai(String),
 }
 
 impl AppError {
@@ -47,6 +51,8 @@ impl AppError {
             AppError::InvalidQuery(_) => "INVALID_QUERY",
             AppError::Storage(_) => "STORAGE",
             AppError::Internal(_) => "INTERNAL",
+            AppError::AiNotConfigured => "AI_NOT_CONFIGURED",
+            AppError::Ai(_) => "AI_ERROR",
         }
     }
 }
