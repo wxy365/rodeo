@@ -127,6 +127,19 @@ pub struct AccountBrief {
     pub name: String,
 }
 
+/// 「名称 + 提示词」行。字段都是单词，不需要 rename。
+#[derive(Clone, serde::Deserialize, PartialEq)]
+pub struct NamedPrompt {
+    pub name: String,
+    pub prompt: String,
+}
+
+#[derive(Clone, serde::Deserialize, Default, PartialEq)]
+pub struct WorkspaceAiConfig {
+    pub scenarios: Vec<NamedPrompt>,
+    pub tones: Vec<NamedPrompt>,
+}
+
 #[derive(Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Entry {
@@ -383,6 +396,58 @@ pub async fn label_schemas(workspace_id: &str) -> Result<Vec<LabelSchema>, Strin
     );
     let data = graphql(&q, json!({ "id": workspace_id })).await?;
     serde_json::from_value(data.get("labelSchemas").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+/// 场景 / 语气行只请求 name prompt——显式列出字段，前端类型才不会跟着服务端结构悄悄漂移。
+const AI_CONFIG_FIELDS: &str = "scenarios { name prompt } tones { name prompt }";
+
+pub async fn workspace_ai_config(workspace_id: &str) -> Result<WorkspaceAiConfig, String> {
+    let q = format!(
+        "query($id: ID!) {{ workspaceAiConfig(workspaceId: $id) {{ {AI_CONFIG_FIELDS} }} }}"
+    );
+    let data = graphql(&q, json!({ "id": workspace_id })).await?;
+    serde_json::from_value(data.get("workspaceAiConfig").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+/// `scenarios` / `tones` 是 `[{name, prompt}]` 数组；整体替换语义。
+pub async fn update_workspace_ai_config(
+    workspace_id: &str,
+    scenarios: &Value,
+    tones: &Value,
+) -> Result<WorkspaceAiConfig, String> {
+    let q = format!(
+        "mutation($id: ID!, $s: [NamedPromptInput!]!, $t: [NamedPromptInput!]!) {{ \
+         updateWorkspaceAiConfig(workspaceId: $id, scenarios: $s, tones: $t) {{ {AI_CONFIG_FIELDS} }} }}"
+    );
+    let data = graphql(
+        &q,
+        json!({ "id": workspace_id, "s": scenarios, "t": tones }),
+    )
+    .await?;
+    serde_json::from_value(data.get("updateWorkspaceAiConfig").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+/// 生成总结并新建条目，返回那条新条目（调用方据此直接全屏打开）。
+/// 生成可能要几十秒，服务端超时由 `[ai] timeout_seconds` 控制。
+pub async fn summarize_entries(
+    workspace_id: &str,
+    codes: &[String],
+    scenario: Option<&str>,
+    tone: Option<&str>,
+) -> Result<Entry, String> {
+    let q = format!(
+        "mutation($id: ID!, $c: [String!]!, $s: String, $t: String) {{ \
+         summarizeEntries(workspaceId: $id, codes: $c, scenario: $s, tone: $t) {{ {ENTRY_FIELDS} }} }}"
+    );
+    let data = graphql(
+        &q,
+        json!({ "id": workspace_id, "c": codes, "s": scenario, "t": tone }),
+    )
+    .await?;
+    serde_json::from_value(data.get("summarizeEntries").cloned().unwrap_or(Value::Null))
         .map_err(|e| e.to_string())
 }
 
