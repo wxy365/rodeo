@@ -13,7 +13,7 @@ use crate::config::Config;
 use crate::error::AppError;
 use crate::storage::DocStore;
 
-pub use ai::AiService;
+pub use ai::{AiClient, AiService};
 pub use audit::AuditService;
 pub use auth::{AuthContext, AuthService};
 pub use entry::EntryService;
@@ -34,11 +34,14 @@ pub struct Services {
     pub search: Arc<SearchIndex>,
     pub view: ViewService,
     pub ai: AiService,
+    pub ai_client: Option<AiClient>,
 }
 
 impl Services {
     pub fn new(store: Arc<DocStore>, config: Arc<Config>) -> Result<Self, AppError> {
         let search = Arc::new(SearchIndex::open(&format!("{}/search", config.data_dir()))?);
+        // 未配置就保持 None，启动阶段不做任何网络操作。
+        let ai_client = AiClient::from_config(&config.ai)?;
         let services = Self {
             auth: AuthService::new(store.clone(), config.clone()),
             workspace: WorkspaceService::new(store.clone()),
@@ -47,6 +50,7 @@ impl Services {
             audit: AuditService::new(store.clone()),
             view: ViewService::new(store.clone()),
             ai: AiService::new(store.clone()),
+            ai_client,
             search,
             store,
             config,

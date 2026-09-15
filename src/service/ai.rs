@@ -134,6 +134,137 @@ impl AiService {
     }
 }
 
+pub struct AiClient {
+    http: reqwest::Client,
+    base_url: String,
+    api_key: String,
+    model: String,
+}
+
+impl AiClient {
+    /// 未配置密钥或模型时返回 `None`：调用方据此报 `AiNotConfigured`，
+    /// 而不是发一个注定 401 的请求。
+    ///
+    /// 客户端只在这里建一次（挂在 `Services` 上），连接池与超时因此跨请求复用。
+    pub fn from_config(cfg: &crate::config::AiConfig) -> Result<Option<Self>, AppError> {
+        if !cfg.enabled() {
+            return Ok(None);
+        }
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(cfg.timeout_seconds))
+            .build()
+            .map_err(|e| AppError::Ai(format!("HTTP 客户端初始化失败: {e}")))?;
+        Ok(Some(Self {
+            http,
+            // 去掉末尾斜杠，免得拼出 `//chat/completions`——不少网关对此直接 404。
+            base_url: cfg.base_url.trim_end_matches('/').to_string(),
+            api_key: cfg.api_key.clone(),
+            model: cfg.model.clone(),
+        }))
+    }
+
+    /// 一次性返回（不做流式）。失败一律落在 `AppError::Ai` 上，带上尽量可读的上游信息。
+    pub async fn complete(&self, prompt: &Prompt) -> Result<String, AppError> {
+        let url = format!("{}/chat/completions", self.base_url);
+        let body = serde_json::json!({
+            "model": self.model,
+            "messages": [
+                { "role": "system", "content": prompt.instructions },
+                { "role": "user", "content": prompt.input },
+            ],
+        });
+        let resp = self
+            .http
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| AppError::Ai(format!("调用模型失败: {e}")))?;
+
+        let status = resp.status();
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| AppError::Ai(format!("读取模型响应失败: {e}")))?;
+        if !status.is_success() {
+            return Err(AppError::Ai(format!(
+                "模型返回 {status}: {}",
+                upstream_error(&text)
+            )));
+        }
+        parse_completion(&text)
+    }
+}
+
+/// 解析 Chat Completions 响应：取 `choices[0].message.content`。
+/// 顶层 `error` 非空、`choices` 缺失或为空、内容为 null/空白，都按失败处理——
+/// 宁可报错，也不要把空串当总结建出一条空条目。
+fn parse_completion(text: &str) -> Result<String, AppError> {
+    let v: serde_json::Value = serde_json::from_str(text)
+        .map_err(|_| AppError::Ai("模型响应不是合法 JSON".to_string()))?;
+    if let Some(msg) = v.get("error").and_then(error_message) {
+        return Err(AppError::Ai(msg));
+    }
+    let content = v
+        .get("choices")
+        .and_then(|c| c.as_array())
+        .and_then(|a| a.first())
+        .and_then(|c| c.get("message"))
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AppError::Ai("模型没有返回内容".to_string()))?;
+    Ok(content.to_string())
+}
+
+fn error_message(err: &serde_json::Value) -> Option<String> {
+    err.get("message")
+        .and_then(|m| m.as_str())
+        .map(str::to_string)
+        .or_else(|| err.as_str().map(str::to_string))
+}
+
+/// 从错误响应体里尽量抠出可读信息；抠不出就退回原文截断。
+fn upstream_error(text: &str) -> String {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
+        if let Some(m) = v.get("error").and_then(error_message) {
+            return m;
+        }
+    }
+    truncate_chars(text.trim(), 200)
+}
+
+/// 标题抽取：优先取第一个 Markdown 标题行，其次取首个非空行的前 40 个字符，
+/// 都没有就兜底「AI 总结（N 条）」。按字符截断而不是按字节——标题基本是中文。
+pub fn derive_title(markdown: &str, count: usize) -> String {
+    for line in markdown.lines() {
+        let t = line.trim_start();
+        let Some(rest) = t.strip_prefix('#') else {
+            continue;
+        };
+        let title = rest.trim_start_matches('#').trim().trim_end_matches('#').trim();
+        if !title.is_empty() {
+            return title.to_string();
+        }
+    }
+    if let Some(line) = markdown.lines().map(str::trim).find(|l| !l.is_empty()) {
+        return truncate_chars(line, 40);
+    }
+    format!("AI 总结（{count} 条）")
+}
+
+/// 按字符截断，超出时补省略号，避免截出来看不出被截过。
+fn truncate_chars(s: &str, max: usize) -> String {
+    let mut out: String = s.chars().take(max).collect();
+    if s.chars().count() > max {
+        out.push('…');
+    }
+    out
+}
+
 /// 名称去空白后为空的行直接丢弃（用户加了行又没填）。名称是界面上的唯一标识，不能为空；
 /// 提示词允许为空——等价于这条没配。
 fn normalize(list: Vec<NamedPrompt>, kind: &str) -> Result<Vec<NamedPrompt>, AppError> {
