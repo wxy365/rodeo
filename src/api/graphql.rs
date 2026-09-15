@@ -10,10 +10,12 @@ use axum::http::HeaderMap;
 use ulid::Ulid;
 
 use crate::domain::{
-    Account, AuditLog, Entry, Invite, LabelSchema, LabelValueType, Labeling, Query as ViewQuery,
-    SortField, SortSpec, TitleColorRule, ValueColor, View, Workspace, WorkspaceMember, WorkspaceRole,
+    Account, AuditLog, Entry, Invite, LabelSchema, LabelValueType, Labeling, NamedPrompt,
+    Query as ViewQuery, SortField, SortSpec, TitleColorRule, ValueColor, View, Workspace,
+    WorkspaceAiConfig, WorkspaceMember, WorkspaceRole,
 };
 use crate::error::AppError;
+use crate::service::ai::derive_title;
 use crate::service::entry::PageInput as EntryPageInput;
 use crate::service::{AuthContext, Services};
 
@@ -163,6 +165,52 @@ impl From<Labeling> for GqlLabeling {
             value: Json(l.value.to_json()),
             set_by: l.set_by.to_string().into(),
             set_at: l.set_at.to_rfc3339(),
+        }
+    }
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct GqlNamedPrompt {
+    name: String,
+    prompt: String,
+}
+
+impl From<NamedPrompt> for GqlNamedPrompt {
+    fn from(p: NamedPrompt) -> Self {
+        Self {
+            name: p.name,
+            prompt: p.prompt,
+        }
+    }
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct GqlWorkspaceAiConfig {
+    scenarios: Vec<GqlNamedPrompt>,
+    tones: Vec<GqlNamedPrompt>,
+}
+
+impl From<WorkspaceAiConfig> for GqlWorkspaceAiConfig {
+    fn from(c: WorkspaceAiConfig) -> Self {
+        Self {
+            scenarios: c.scenarios.into_iter().map(Into::into).collect(),
+            tones: c.tones.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+/// 「名称 + 提示词」输入行。整体替换语义：提交什么就是什么。
+#[derive(async_graphql::InputObject)]
+pub struct NamedPromptInput {
+    name: String,
+    prompt: String,
+}
+
+impl NamedPromptInput {
+    fn into_named(self) -> NamedPrompt {
+        NamedPrompt {
+            name: self.name,
+            prompt: self.prompt,
         }
     }
 }
@@ -528,6 +576,18 @@ impl Query {
             .collect())
     }
 
+    /// 场景 / 语气配置。成员即可读（与 `labelSchemas` 一致）——生成弹窗要用它渲染下拉框。
+    async fn workspace_ai_config(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: ID,
+    ) -> GqlResult<GqlWorkspaceAiConfig> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let ws_id = parse_ulid(workspace_id.as_str())?;
+        gql.require_member(ws_id)?;
+        Ok(gql.services.ai.get_config(ws_id)?.into())
+    }
+
     async fn entry(&self, ctx: &Context<'_>, code: String) -> GqlResult<Option<GqlEntry>> {
         let gql = ctx.data::<GraphqlContext>()?;
         gql.require_auth()?;
@@ -853,6 +913,64 @@ impl Mutation {
         let ws_id = parse_ulid(workspace_id.as_str())?;
         gql.require_role(ws_id, WorkspaceRole::Worker)?;
         let entry = gql.services.entry.create(auth.account_id, ws_id, &title)?;
+        gql_entry(gql, entry, vec![])
+    }
+
+    /// 整体替换场景与语气：Maintainer 及以上（与标签管理一致）。
+    async fn update_workspace_ai_config(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: ID,
+        scenarios: Vec<NamedPromptInput>,
+        tones: Vec<NamedPromptInput>,
+    ) -> GqlResult<GqlWorkspaceAiConfig> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let ws_id = parse_ulid(workspace_id.as_str())?;
+        gql.require_role(ws_id, WorkspaceRole::Maintainer)?;
+        let cfg = gql.services.ai.update_config(
+            auth.account_id,
+            ws_id,
+            scenarios.into_iter().map(NamedPromptInput::into_named).collect(),
+            tones.into_iter().map(NamedPromptInput::into_named).collect(),
+        )?;
+        Ok(cfg.into())
+    }
+
+    /// 生成总结并新建条目（会写 Entry，故要 Worker 及以上）。
+    ///
+    /// 顺序是有意的：先确认模型配置存在（最快、最可操作的错误），再组装提示词
+    /// （这一步会校验选中条目的归属与状态），最后才发请求、建条目。
+    /// 任何失败都发生在 `create_with_detail` 之前，不会留下半成品条目。
+    async fn summarize_entries(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: ID,
+        codes: Vec<String>,
+        scenario: Option<String>,
+        tone: Option<String>,
+    ) -> GqlResult<GqlEntry> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let ws_id = parse_ulid(workspace_id.as_str())?;
+        gql.require_role(ws_id, WorkspaceRole::Worker)?;
+
+        let client = gql
+            .services
+            .ai_client
+            .as_ref()
+            .ok_or(AppError::AiNotConfigured)?;
+        let prompt = gql
+            .services
+            .ai
+            .build_prompt(ws_id, &codes, scenario.as_deref(), tone.as_deref())?;
+        let summary = client.complete(&prompt).await?;
+
+        let title = derive_title(&summary, codes.len());
+        let entry =
+            gql.services
+                .entry
+                .create_with_detail(auth.account_id, ws_id, &title, &summary)?;
         gql_entry(gql, entry, vec![])
     }
 
