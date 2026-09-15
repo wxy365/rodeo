@@ -36,6 +36,10 @@ pub mod cf {
     pub const VIEWS_BY_WORKSPACE: &str = "views_by_workspace";
     pub const DEFAULT_VIEWS: &str = "default_views";
     pub const LABELINGS_BY_WORKSPACE: &str = "labelings_by_workspace";
+    /// 工作空间级 AI 配置：workspace id → `WorkspaceAiConfig`（bincode）。
+    /// 与 `WORKSPACES_DELETED` / `ENTRIES_ARCHIVED` 同理，用独立列族而不是给 `Workspace`
+    /// 加字段——加字段会让存量工作空间反序列化失败。
+    pub const WORKSPACE_AI: &str = "workspace_ai";
 }
 
 const ALL_CFS: &[&str] = &[
@@ -61,6 +65,7 @@ const ALL_CFS: &[&str] = &[
     cf::VIEWS_BY_WORKSPACE,
     cf::DEFAULT_VIEWS,
     cf::LABELINGS_BY_WORKSPACE,
+    cf::WORKSPACE_AI,
 ];
 
 /// 单个批量写操作：文档/索引/审计统一原子写入。
