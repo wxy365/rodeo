@@ -1,3 +1,4 @@
+pub mod ai;
 pub mod audit;
 pub mod auth;
 pub mod entry;
@@ -12,6 +13,7 @@ use crate::config::Config;
 use crate::error::AppError;
 use crate::storage::DocStore;
 
+pub use ai::AiService;
 pub use audit::AuditService;
 pub use auth::{AuthContext, AuthService};
 pub use entry::EntryService;
@@ -31,6 +33,7 @@ pub struct Services {
     pub audit: AuditService,
     pub search: Arc<SearchIndex>,
     pub view: ViewService,
+    pub ai: AiService,
 }
 
 impl Services {
@@ -43,6 +46,7 @@ impl Services {
             label: LabelService::new(store.clone()),
             audit: AuditService::new(store.clone()),
             view: ViewService::new(store.clone()),
+            ai: AiService::new(store.clone()),
             search,
             store,
             config,
