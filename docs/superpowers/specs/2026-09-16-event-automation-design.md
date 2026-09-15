@@ -116,6 +116,13 @@ pub enum ValueSource {
 
 两者都要注册进 `src/storage/rocksdb.rs` 的 `ALL_CFS`。
 
+**`Query` / `serde_json::Value` 不能裸进 bincode。** bincode 不支持 `deserialize_any`，而
+`Query` 里 `Condition.value` 是 `Option<serde_json::Value>`——直接编码会「写得进去、读不出来」。
+`View` 早就踩过这个坑（见 `src/domain/view.rs` 顶部注释与 `query_json` 模块），规则沿用同一套
+办法：`trigger`、`ActionTarget::Query` 套 `#[serde(with = "query_json")]`，`ValueSource::Literal`
+套一个同形的 `raw_json`，都是先转 JSON 字符串再交给 bincode。相应地，`view.rs` 里的
+`query_json` 要从私有模块提为 `pub(crate)`。
+
 ## 6. 触发条件 DSL
 
 ### 6.1 文法扩展
@@ -300,6 +307,10 @@ RuleFailed(String), // code: "RULE_FAILED"
 - 规则保存校验失败 → `InvalidQuery(具体原因)`（沿用现有「面向用户、原样展示」的语义）。
 - 运行时动作失败（`$new` / `$old` 与目标标签类型不兼容、按 schema 渲染 `now` 失败等）→
   `RuleFailed("规则「X」写标签「Y」失败：…")`，**整个批次回滚**，主写入一并失败。
+- `$old` / `$new` 在当前事件里**没有值**（新增事件取 `$old`、删除事件取 `$new`）→ 该条写入
+  **跳过**，不算失败。删除是正常操作，不能因为它触发了一条引用 `$new` 的规则就整体回滚。跳过
+  只作用于「值来源缺值」这一种情形；`$new` / `$old` 有值但与目标标签类型不兼容，仍走
+  `RuleFailed` 回滚。
 - 目标表达式圈定 0 条 → 正常，不报错；`RuleApplied` 审计记 0 条。
 - 规则被禁用 / 触发条件无事件字段 / 条件不命中 → 正常路径，无错误。
 - 标签 schema 目前没有删除入口，类型也不可改（`update_label_schema` 保留库中已有类型），
