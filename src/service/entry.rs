@@ -69,11 +69,24 @@ impl EntryService {
     }
 
     pub fn create(&self, actor: Ulid, workspace_id: Ulid, title: &str) -> Result<Entry, AppError> {
+        self.create_with_detail(actor, workspace_id, title, "")
+    }
+
+    /// 建条目并一次性写入正文。与 `create` 分开是因为 AI 总结要带着正文落库：
+    /// 拆成 create + update 会产生两条审计，还要多走一次乐观并发校验。
+    pub fn create_with_detail(
+        &self,
+        actor: Ulid,
+        workspace_id: Ulid,
+        title: &str,
+        detail: &str,
+    ) -> Result<Entry, AppError> {
         let title = title.trim();
         if title.is_empty() {
             return Err(AppError::Internal("标题不能为空".to_string()));
         }
         let mut entry = Entry::new(workspace_id, title.to_string(), actor);
+        entry.detail = detail.to_string();
         while self
             .store
             .get::<Entry>(cf::ENTRIES, entry.code.as_bytes())?
