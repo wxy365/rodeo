@@ -257,8 +257,9 @@ git commit -m "feat(domain): add automation rule model and rule column families"
   - `Query::validate_for_rule(&self, schemas: &[LabelSchema], allow_event: bool) -> Result<(), AppError>`
   - `Query::contains_event_field(&self) -> bool`
   - `EvalEnv { text_hit, account_of, label_of, event: Option<&'a LabelEvent> }`
-  - `RuleService::{new, list, get, create, update, delete, parse_trigger}`
+  - `RuleService::{new, list, get, create, update, delete, parse_trigger, schemas}`
   - `RuleService::parse_trigger(&self, ws: Ulid, expr: &str) -> Result<Query, AppError>`
+  - `RuleService::schemas(&self, ws: Ulid) -> Result<Vec<LabelSchema>, AppError>`（`pub(crate)`，Task 3 的引擎复用）
 
 - [ ] **Step 1: 先写失败的单测（`src/service/rule.rs` 新建，只放测试模块）**
 
@@ -282,7 +283,7 @@ mod tests {
             value_type: vt,
             enum_values: vec!["InProgress".into(), "Finished".into()],
             color: None,
-            value_colors: serde_json::json!(null),
+            value_colors: Vec::new(),
             multi: false,
             format: None,
             currency_symbol: None,
@@ -319,15 +320,20 @@ mod tests {
         let q = Query::parse(expr).expect("表达式应能解析");
         let e = entry();
         let schemas = schemas();
+        // 具名闭包与 `src/domain/query.rs` 既有测试同形；内联 `&|_| false` 会因
+        // 参数类型无法推断而编译失败。
+        let never = |_: &str| false;
+        let no_acct = |_: Ulid| None;
+        let label_of = |n: &str| {
+            schemas
+                .iter()
+                .find(|s| s.name == n)
+                .map(|s| (s.value_type, s.format.clone()))
+        };
         let env = EvalEnv {
-            text_hit: &|_| false,
-            account_of: &|_| None,
-            label_of: &|n| {
-                schemas
-                    .iter()
-                    .find(|s| s.name == n)
-                    .map(|s| (s.value_type, s.format.clone()))
-            },
+            text_hit: &never,
+            account_of: &no_acct,
+            label_of: &label_of,
             event: Some(ev),
         };
         q.evaluate(&e, labels, &env)
@@ -976,22 +982,6 @@ impl RuleService {
     }
 
     pub(crate) fn schemas(&self, ws: Ulid) -> Result<Vec<LabelSchema>, AppError> {
-        self.store
-            .scan_prefix(cf::LABEL_SCHEMAS, &ws.to_bytes())?
-            .into_iter()
-            .filter_map(|(_, v)| bincode::deserialize::<LabelSchema>(&v).ok())
-            .collect::<Vec<_>>()
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e: bincode::Error| AppError::Internal(e.to_string()))
-    }
-}
-```
-
-把 `schemas` 简化成过滤器写法即可，别用上面那段绕的：
-
-```rust
-    pub(crate) fn schemas(&self, ws: Ulid) -> Result<Vec<LabelSchema>, AppError> {
         let mut out = Vec::new();
         for (_, v) in self.store.scan_prefix(cf::LABEL_SCHEMAS, &ws.to_bytes())? {
             if let Ok(s) = bincode::deserialize::<LabelSchema>(&v) {
@@ -1029,8 +1019,10 @@ pub mod rule;
 ```
 
 ```rust
-pub use rule::{RuleEngine, RuleService};
+pub use rule::RuleService;
 ```
+
+**只导出 `RuleService`**——`RuleEngine` 到 Task 3 才存在，此处一并导出会编译失败。Task 3 收尾时再把这一行改成 `pub use rule::{RuleEngine, RuleService};`。
 
 `Services` 结构体加字段 `pub rule: RuleService,`，`Services::new` 里加：
 
@@ -1059,9 +1051,10 @@ git commit -m "feat(domain): add \$label/\$old/\$new event fields and rule servi
 **Files:**
 - Modify: `src/service/rule.rs`
 - Modify: `src/service/entry.rs`（抽出 `list_entries` 与 `labeling_ops` 两个自由函数，供引擎共用）
+- Modify: `src/service/mod.rs`（`pub use rule::RuleService;` → `pub use rule::{RuleEngine, RuleService};`）
 
 **Interfaces:**
-- Consumes: Task 1/2 的全部类型；`service::entry::{list_entries, labeling_ops}`
+- Consumes: Task 1/2 的全部类型；`service::entry::{list_entries, labeling_ops}`；`RuleService::{new, list, schemas}`
 - Produces:
   - `service::entry::list_entries(store: &DocStore, ws: Ulid) -> Result<Vec<Entry>, AppError>`
   - `service::entry::labeling_ops(ws: Ulid, code: &str, label_name: &str, value: Option<&LabelValue>, actor: Ulid, before: Option<&Labeling>) -> Result<Vec<BatchOp>, AppError>`
@@ -1197,7 +1190,8 @@ pub fn labeling_ops(
     mod engine {
         use super::*;
         use crate::service::entry::{list_entries, labeling_ops};
-        use crate::service::{EntryService, RuleEngine};
+        use crate::service::rule::RuleEngine;
+        use crate::service::EntryService;
         use crate::storage::DocStore;
         use std::sync::Arc;
 
@@ -1870,7 +1864,7 @@ Expected: 全部 PASS（6 个 DSL 测试 + 4 个引擎测试）。
 - [ ] **Step 7: 提交**
 
 ```bash
-git add src/service/rule.rs src/service/entry.rs
+git add src/service/rule.rs src/service/entry.rs src/service/mod.rs
 git commit -m "feat(service): add layered rule engine with post-state overlay"
 ```
 
