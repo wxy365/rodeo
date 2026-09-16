@@ -1139,6 +1139,9 @@ mod tests {
                 label_name: "Priority".into(), op: WriteOp::Set,
                 value: Some(ValueSource::Literal(serde_json::json!(1))),
             }]).unwrap();
+            // `Ulid::new()` 只是 from_datetime(now())，毫秒内的低 80 位是随机的、并不单调，
+            // 两条规则若落在同一毫秒，id 相对顺序就是随机的；sleep 隔开时间戳才能保证 id 升序 = 创建顺序。
+            std::thread::sleep(std::time::Duration::from_millis(2));
             svc.create(actor, ws, "P+B", true, "Priority", true, None, vec![LabelWrite {
                 label_name: "Priority".into(), op: WriteOp::Set,
                 value: Some(ValueSource::Literal(serde_json::json!(2))),
