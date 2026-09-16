@@ -410,17 +410,21 @@ impl RuleEngine {
             let next = level + 1;
             // (规则下标, 写入)：下标用于把最终生效的写入归给产出它的规则。
             let mut staged: Vec<(usize, StagedWrite)> = Vec::new();
-            let mut fired: Vec<usize> = Vec::new();
+            // (规则下标, 它自己命中的事件)：审计要的正是后者，不是整层的事件。
+            let mut fired: Vec<(usize, Vec<&LabelEvent>)> = Vec::new();
 
             for (ri, rule) in rules.iter().enumerate() {
-                let matched: Vec<&LabelEvent> = events
-                    .iter()
-                    .filter(|ev| self.trigger_matches(rule, ev, &overlay, &schemas, &accounts))
-                    .collect();
+                // 不用 `filter` 收集：命中判断里的存储错误要经 `?` 向上抛，
+                // 闭包里做不到。
+                let mut matched: Vec<&LabelEvent> = Vec::new();
+                for ev in &events {
+                    if self.trigger_matches(rule, ev, &overlay, &schemas, &accounts)? {
+                        matched.push(ev);
+                    }
+                }
                 if matched.is_empty() {
                     continue;
                 }
-                fired.push(ri);
                 // 圈定结果在层内可复用：层内 overlay 冻结，目标集合不会变。
                 let target_codes = match &rule.action.target {
                     ActionTarget::EventSource => Vec::new(),
@@ -453,6 +457,7 @@ impl RuleEngine {
                         }
                     }
                 }
+                fired.push((ri, matched));
             }
 
             if staged.is_empty() {
@@ -460,7 +465,33 @@ impl RuleEngine {
             }
             // 同层同 (entry, label)：后者覆盖前者；与层初值相同的丢弃（级联的安全阀）。
             let collapsed = collapse(&overlay, &staged);
+
+            // (entry, label) → 产出最终生效写入的规则下标。一张表把归属查询摊平：
+            // 否则每条写入都要扫一遍 `collapsed`，命中规则多、目标集合大时是三重乘积。
+            let owner: std::collections::HashMap<(String, String), usize> = collapsed
+                .iter()
+                .map(|(ri, w)| ((w.entry_code.clone(), w.label_name.clone()), *ri))
+                .collect();
+            // 规则命中就落一条 RuleApplied，只记它自己命中的事件。
+            // 放在 `collapsed.is_empty()` 之前：写入全被去重丢掉时规则确实命中过，
+            // 审计不能缺席（此时每条写入 `applied: false`）。
+            let mut audits: Vec<BatchOp> = Vec::new();
+            for (ri, matched) in fired {
+                let own: Vec<(&StagedWrite, bool)> = staged
+                    .iter()
+                    .filter(|(r, _)| *r == ri)
+                    .map(|(_, w)| {
+                        let applied = owner
+                            .get(&(w.entry_code.clone(), w.label_name.clone()))
+                            .is_some_and(|o| *o == ri);
+                        (w, applied)
+                    })
+                    .collect();
+                audits.extend(audit_ops(&rule_audit(&rules[ri], next, &matched, &own))?);
+            }
+
             if collapsed.is_empty() {
+                ops.extend(audits);
                 break;
             }
 
@@ -488,22 +519,8 @@ impl RuleEngine {
                 affected.push(w.entry_code.clone());
             }
 
-            for ri in fired {
-                let own: Vec<(&StagedWrite, bool)> = staged
-                    .iter()
-                    .filter(|(r, _)| *r == ri)
-                    .map(|(_, w)| {
-                        let applied = collapsed.iter().any(|(cr, cw)| {
-                            *cr == ri
-                                && cw.entry_code == w.entry_code
-                                && cw.label_name == w.label_name
-                        });
-                        (w, applied)
-                    })
-                    .collect();
-                let audit = rule_audit(&rules[ri], next, &events, &own);
-                ops.extend(audit_ops(&audit)?);
-            }
+            // 审计仍排在标签写入之后，op 顺序与改动前一致。
+            ops.extend(audits);
 
             events = next_events;
             level = next;
@@ -529,6 +546,8 @@ impl RuleEngine {
         self.store.get::<Entry>(cf::ENTRIES, code.as_bytes())
     }
 
+    /// 条目不存在（`Ok(None)`）才算不命中；读库 / 解码失败必须向上抛——
+    /// 静默当作不命中，会让一条坏 `Entry` 悄悄关掉该条目的全部规则。
     fn trigger_matches(
         &self,
         rule: &AutomationRule,
@@ -536,9 +555,9 @@ impl RuleEngine {
         overlay: &Overlay,
         schemas: &Schemas,
         accounts: &std::collections::HashMap<Ulid, (String, String)>,
-    ) -> bool {
-        let Ok(Some(entry)) = self.entry_of(&ev.entry_code) else {
-            return false;
+    ) -> Result<bool, AppError> {
+        let Some(entry) = self.entry_of(&ev.entry_code)? else {
+            return Ok(false);
         };
         let labels = overlay.labels_of(&ev.entry_code);
         let env = crate::domain::EvalEnv {
@@ -547,7 +566,7 @@ impl RuleEngine {
             label_of: &|n| schemas.label_of(n),
             event: Some(ev),
         };
-        rule.trigger.evaluate(&entry, &labels, &env)
+        Ok(rule.trigger.evaluate(&entry, &labels, &env))
     }
 
     fn match_entries(
@@ -713,10 +732,11 @@ fn now_value(schema: &LabelSchema, now: chrono::DateTime<chrono::Utc>) -> Result
 }
 
 /// 一条 RuleApplied 审计：规则本次命中了哪些事件、它算了哪些写入、哪些真正生效。
+/// `events` 只含**本规则**命中的事件，不是整层的事件。
 fn rule_audit(
     rule: &AutomationRule,
     level: u8,
-    events: &[LabelEvent],
+    events: &[&LabelEvent],
     writes: &[(&StagedWrite, bool)],
 ) -> AuditLog {
     let triggers: Vec<serde_json::Value> = events
@@ -1035,10 +1055,10 @@ mod tests {
                 .map(|l| l.value)
         }
 
-        /// 走一遍「用户写入 + 引擎 plan + 同批提交」的真实路径。
+        /// 走一遍「用户写入 + 引擎 plan + 同批提交」的真实路径，返回引擎报告的受影响条目。
         /// 顺序必须是先 plan 再提交：引擎的 `before` 取自库里的前像，
         /// 用户写入若先落库，`collect_diff` 看到的就是「值没变」。
-        fn apply(store: &Arc<DocStore>, ws: Ulid, writes: &[StagedWrite]) {
+        fn apply(store: &Arc<DocStore>, ws: Ulid, writes: &[StagedWrite]) -> Vec<String> {
             let mut ops = Vec::new();
             for w in writes {
                 let before = store
@@ -1057,10 +1077,15 @@ mod tests {
                 );
             }
             let engine = RuleEngine::new(store.clone());
-            if let Some(p) = engine.plan(ws, writes).unwrap() {
-                ops.extend(p.ops);
-            }
+            let affected = match engine.plan(ws, writes).unwrap() {
+                Some(p) => {
+                    ops.extend(p.ops);
+                    p.affected
+                }
+                None => Vec::new(),
+            };
             store.write_batch(ops).unwrap();
+            affected
         }
 
         #[test]
@@ -1103,12 +1128,15 @@ mod tests {
             std::fs::remove_dir_all(&dir).ok();
         }
 
+        /// 同层两条规则写同一个标签：按规则 id 升序，后者覆盖前者。
+        /// 这条用例实际验证的不是层数上限——收敛靠的是「同层覆盖 + 写同值即丢弃」，
+        /// 层数上限由 `cascade_is_capped_at_max_level` 覆盖。
         #[test]
-        fn cascade_stops_at_max_level() {
+        fn same_level_writes_to_one_label_are_last_write_wins() {
             let (dir, store, ws, actor) = setup();
             let entry = EntryService::new(store.clone()).create(actor, ws, "任务").unwrap();
-            // A: 任意 Status 写入 → Priority = 1；B: Priority 落在范围内 → Priority = 2 …
-            // 用 Priority 自身做自触发的链，验证三层到顶后停下（而不是无限循环）。
+            // 两条规则都因 Priority 事件触发（`Priority` 条件对任意 Priority 值成立），
+            // 同一层里先后写 Priority = 1、2。
             let svc = RuleService::new(store.clone());
             svc.create(actor, ws, "P+A", true, "Priority", true, None, vec![LabelWrite {
                 label_name: "Priority".into(), op: WriteOp::Set,
@@ -1118,7 +1146,8 @@ mod tests {
                 label_name: "Priority".into(), op: WriteOp::Set,
                 value: Some(ValueSource::Literal(serde_json::json!(2))),
             }]).unwrap();
-            // 同层两条规则都写 Priority，后者覆盖前者，因此只应该发生有限轮写入。
+            // 层内后者覆盖前者 → 2；下一轮两条规则再算出的仍是 2，与当前值相同被丢弃，
+            // 级联就此收敛。
             apply(&store, ws, &[StagedWrite {
                 entry_code: entry.code.clone(),
                 label_name: "Priority".into(),
@@ -1190,7 +1219,8 @@ mod tests {
             std::fs::remove_dir_all(&dir).ok();
         }
 
-        /// 规则写出的值等于该标签的当前值：不是变更，既不写标签也不记审计。
+        /// 规则写出的值等于该标签的当前值：不是变更，既不写标签也不写标签审计
+        /// （规则命中本身仍有一条 `RuleApplied`，见 `noop_only_rule_still_audits`）。
         /// A→B、B→A 这类互相触发的规则正靠这条收敛。
         #[test]
         fn noop_rule_write_is_dropped_without_audit() {
@@ -1294,6 +1324,281 @@ mod tests {
                 Some(LabelValue::Enum("Finished".into())),
                 "跳过规则动作不得影响用户写入"
             );
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        /// $new 遇上删除事件：与 $old 遇上新增对称，同样跳过该条写入。
+        #[test]
+        fn missing_new_on_delete_event_skips_the_write() {
+            let (dir, store, ws, actor) = setup();
+            let entry = EntryService::new(store.clone()).create(actor, ws, "任务").unwrap();
+            set(&store, ws, &entry.code, "Status", LabelValue::Enum("Finished".into()), actor);
+            RuleService::new(store.clone())
+                .create(
+                    actor,
+                    ws,
+                    "转发新状态",
+                    true,
+                    r#"$label = "Status""#,
+                    true,
+                    None,
+                    vec![LabelWrite {
+                        label_name: "FinishedAt".into(),
+                        op: WriteOp::Set,
+                        value: Some(ValueSource::New),
+                    }],
+                )
+                .unwrap();
+            // 用户删除 Status：没有新值可转发。
+            apply(&store, ws, &[StagedWrite {
+                entry_code: entry.code.clone(),
+                label_name: "Status".into(),
+                value: None,
+                actor,
+            }]);
+            assert_eq!(get(&store, &entry.code, "FinishedAt"), None, "$new 在删除事件里无值，应跳过该条写入");
+            assert_eq!(get(&store, &entry.code, "Status"), None, "删标签的请求照常生效");
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        /// 命中但写入全被去重丢弃：标签没有变更，但规则确实命中过，仍要留一条 RuleApplied，
+        /// 并如实记 `applied: false`。
+        #[test]
+        fn noop_only_rule_still_audits() {
+            let (dir, store, ws, actor) = setup();
+            let entry = EntryService::new(store.clone()).create(actor, ws, "任务").unwrap();
+            // 触发条件是任意 Status 事件，动作把 $new 原样写回 Status：值没变。
+            RuleService::new(store.clone())
+                .create(
+                    actor,
+                    ws,
+                    "原样回写",
+                    true,
+                    r#"$label = "Status""#,
+                    true,
+                    None,
+                    vec![LabelWrite {
+                        label_name: "Status".into(),
+                        op: WriteOp::Set,
+                        value: Some(ValueSource::New),
+                    }],
+                )
+                .unwrap();
+            apply(&store, ws, &[StagedWrite {
+                entry_code: entry.code.clone(),
+                label_name: "Status".into(),
+                value: Some(LabelValue::Enum("Finished".into())),
+                actor,
+            }]);
+            let audits = crate::service::AuditService::new(store.clone()).list(ws, 100).unwrap();
+            let applied = audits
+                .iter()
+                .find(|a| a.action == AuditAction::RuleApplied)
+                .expect("命中过就该有一条 RuleApplied");
+            let after: serde_json::Value =
+                serde_json::from_str(applied.after.as_deref().unwrap_or("null")).unwrap();
+            assert_eq!(after["level"], serde_json::json!(1), "命中发生在第 1 层");
+            assert_eq!(
+                after["triggers"].as_array().map(Vec::len),
+                Some(1),
+                "审计要记下命中的事件: {after}"
+            );
+            let writes = after["writes"].as_array().expect("writes 是数组");
+            assert_eq!(writes.len(), 1, "算过一条写入就要记一条: {after}");
+            assert_eq!(writes[0]["applied"], serde_json::json!(false), "被去重丢弃的写入记 applied=false");
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        /// 一条规则只该在审计里记下**它自己**命中的事件：同层别的规则命中的事件不得混进来。
+        #[test]
+        fn audit_triggers_list_only_the_rules_own_matched_events() {
+            let (dir, store, ws, actor) = setup();
+            let entry = EntryService::new(store.clone()).create(actor, ws, "任务").unwrap();
+            let svc = RuleService::new(store.clone());
+            let set_write = |name: &str, value: ValueSource| LabelWrite {
+                label_name: name.into(),
+                op: WriteOp::Set,
+                value: Some(value),
+            };
+            // 两条规则各认一个标签的事件，两个事件同处层 0。
+            svc.create(
+                actor,
+                ws,
+                "记完成时间",
+                true,
+                r#"$label = "Status" AND $new = "Finished""#,
+                true,
+                None,
+                vec![set_write("FinishedAt", ValueSource::Now)],
+            )
+            .unwrap();
+            svc.create(
+                actor,
+                ws,
+                "转进行中",
+                true,
+                r#"$label = "Priority""#,
+                true,
+                None,
+                vec![set_write("Status", ValueSource::Literal(serde_json::json!("InProgress")))],
+            )
+            .unwrap();
+            apply(&store, ws, &[
+                StagedWrite {
+                    entry_code: entry.code.clone(),
+                    label_name: "Status".into(),
+                    value: Some(LabelValue::Enum("Finished".into())),
+                    actor,
+                },
+                StagedWrite {
+                    entry_code: entry.code.clone(),
+                    label_name: "Priority".into(),
+                    value: Some(LabelValue::Int(1)),
+                    actor,
+                },
+            ]);
+            let audits = crate::service::AuditService::new(store.clone()).list(ws, 100).unwrap();
+            let mut by_rule = std::collections::HashMap::new();
+            for a in audits.iter().filter(|a| a.action == AuditAction::RuleApplied) {
+                let after: serde_json::Value =
+                    serde_json::from_str(a.after.as_deref().unwrap_or("null")).unwrap();
+                by_rule.insert(after["ruleName"].as_str().unwrap_or("").to_string(), after);
+            }
+            assert_eq!(by_rule.len(), 2, "两条规则各写一条 RuleApplied");
+            for (rule_name, label) in [("记完成时间", "Status"), ("转进行中", "Priority")] {
+                let after = by_rule
+                    .get(rule_name)
+                    .unwrap_or_else(|| panic!("规则「{rule_name}」缺 RuleApplied 审计"));
+                let triggers = after["triggers"].as_array().unwrap();
+                assert_eq!(triggers.len(), 1, "规则「{rule_name}」只该记自己命中的那一个事件: {after}");
+                assert_eq!(triggers[0]["labelName"].as_str(), Some(label));
+            }
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        /// `ActionTarget::Query` 按表达式圈定目标：只写命中的条目。
+        /// 目标集合取自本层**之前**的 overlay——同层别的规则刚写下的标签它看不到，
+        /// 所以事件源 E1 不会被 R1 同层写的 Priority=1 拉进 R2 的目标集合。
+        #[test]
+        fn query_target_scopes_writes_to_matching_entries_and_is_frozen_within_level() {
+            let (dir, store, ws, actor) = setup();
+            let svc = EntryService::new(store.clone());
+            let e1 = svc.create(actor, ws, "任务一").unwrap();
+            let e2 = svc.create(actor, ws, "任务二").unwrap();
+            let e3 = svc.create(actor, ws, "任务三").unwrap();
+            // 只有 E2 命中 `Priority >= 1`；E3 的 Priority=0 与事件源 E1 都不命中。
+            set(&store, ws, &e2.code, "Priority", LabelValue::Int(5), actor);
+            set(&store, ws, &e3.code, "Priority", LabelValue::Int(0), actor);
+
+            let rules = RuleService::new(store.clone());
+            let set_write = |name: &str, value: ValueSource| LabelWrite {
+                label_name: name.into(),
+                op: WriteOp::Set,
+                value: Some(value),
+            };
+            rules
+                .create(
+                    actor,
+                    ws,
+                    "标记优先级",
+                    true,
+                    r#"$label = "Status" AND $new = "Finished""#,
+                    true,
+                    None,
+                    vec![set_write("Priority", ValueSource::Literal(serde_json::json!(1)))],
+                )
+                .unwrap();
+            rules
+                .create(
+                    actor,
+                    ws,
+                    "记完成时间",
+                    true,
+                    r#"$label = "Status" AND $new = "Finished""#,
+                    false,
+                    Some("Priority >= 1"),
+                    vec![set_write("FinishedAt", ValueSource::Now)],
+                )
+                .unwrap();
+
+            let affected = apply(&store, ws, &[StagedWrite {
+                entry_code: e1.code.clone(),
+                label_name: "Status".into(),
+                value: Some(LabelValue::Enum("Finished".into())),
+                actor,
+            }]);
+
+            assert!(get(&store, &e2.code, "FinishedAt").is_some(), "圈定命中的条目应被写入");
+            assert_eq!(
+                get(&store, &e1.code, "FinishedAt"),
+                None,
+                "事件源不得被同层刚写下的 Priority 拉进目标集合"
+            );
+            assert_eq!(get(&store, &e3.code, "FinishedAt"), None, "不命中的条目不得被写入");
+            assert_eq!(get(&store, &e1.code, "Priority"), Some(LabelValue::Int(1)));
+
+            let mut want = vec![e1.code.clone(), e2.code.clone()];
+            want.sort();
+            assert_eq!(affected, want, "affected 应覆盖用户写入与规则写入的条目，不含 E3");
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        /// `affected` 要覆盖引擎在每一层写过的条目——Task 4 靠它决定 reindex 谁。
+        #[test]
+        fn affected_covers_entries_written_at_every_level() {
+            let (dir, store, ws, actor) = setup();
+            let svc = EntryService::new(store.clone());
+            let e1 = svc.create(actor, ws, "任务一").unwrap();
+            let e2 = svc.create(actor, ws, "任务二").unwrap();
+            set(&store, ws, &e2.code, "Priority", LabelValue::Int(5), actor);
+            let rules = RuleService::new(store.clone());
+            let set_write = |name: &str, value: ValueSource| LabelWrite {
+                label_name: name.into(),
+                op: WriteOp::Set,
+                value: Some(value),
+            };
+            // 层 1：E1 的 Status=Finished → E1 写 FinishedAt。
+            // 层 2：FinishedAt 事件 → 表达式圈到 E2（Priority=5）→ 改 E2 的 Priority。
+            rules
+                .create(
+                    actor,
+                    ws,
+                    "记完成时间",
+                    true,
+                    r#"$label = "Status" AND $new = "Finished""#,
+                    true,
+                    None,
+                    vec![set_write("FinishedAt", ValueSource::Now)],
+                )
+                .unwrap();
+            rules
+                .create(
+                    actor,
+                    ws,
+                    "压优先级",
+                    true,
+                    r#"$label = "FinishedAt""#,
+                    false,
+                    Some("Priority >= 1"),
+                    vec![set_write("Priority", ValueSource::Literal(serde_json::json!(2)))],
+                )
+                .unwrap();
+
+            let affected = apply(&store, ws, &[StagedWrite {
+                entry_code: e1.code.clone(),
+                label_name: "Status".into(),
+                value: Some(LabelValue::Enum("Finished".into())),
+                actor,
+            }]);
+
+            assert_eq!(
+                get(&store, &e2.code, "Priority"),
+                Some(LabelValue::Int(2)),
+                "第 2 层应圈到 E2 并改它的 Priority"
+            );
+            let mut want = vec![e1.code.clone(), e2.code.clone()];
+            want.sort();
+            assert_eq!(affected, want, "affected 应列出每一层被写过的条目");
             std::fs::remove_dir_all(&dir).ok();
         }
     }
