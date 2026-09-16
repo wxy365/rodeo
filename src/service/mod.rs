@@ -19,7 +19,7 @@ pub use audit::AuditService;
 pub use auth::{AuthContext, AuthService};
 pub use entry::EntryService;
 pub use label::LabelService;
-pub use rule::RuleService;
+pub use rule::{RuleEngine, RuleService};
 pub use search::SearchIndex;
 pub use view::ViewService;
 pub use workspace::WorkspaceService;

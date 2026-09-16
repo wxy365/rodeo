@@ -289,22 +289,7 @@ impl EntryService {
 
     /// 工作空间内的「在视图内」条目：不含已删除，也不含已归档。
     pub fn list(&self, workspace_id: Ulid) -> Result<Vec<Entry>, AppError> {
-        let prefix = workspace_id.to_bytes();
-        let rows = self.store.scan_prefix(cf::ENTRIES_BY_WORKSPACE, &prefix)?;
-        let mut entries = Vec::new();
-        for (key, _) in rows {
-            if key.len() <= 16 {
-                continue;
-            }
-            let code = std::str::from_utf8(&key[16..]).unwrap_or("").to_string();
-            if let Some(e) = self.store.get::<Entry>(cf::ENTRIES, code.as_bytes())? {
-                if !e.is_deleted() && !self.is_archived(&code)? {
-                    entries.push(e);
-                }
-            }
-        }
-        entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-        Ok(entries)
+        list_entries(&self.store, workspace_id)
     }
 
     pub fn set_labeling(
@@ -326,29 +311,8 @@ impl EntryService {
         let labeling = Labeling::new(entry_code.to_string(), label_name.to_string(), lv, actor);
         let before = self
             .store
-            .get::<Labeling>(cf::LABELINGS, &keys::labeling_key(entry_code, label_name))?
-            .map(|l: Labeling| serde_json::to_string(&l).unwrap_or_default());
-        let after = serde_json::to_string(&labeling).unwrap_or_default();
-        let audit = AuditLog::new(
-            AuditAction::LabelingSet,
-            actor,
-            "labeling",
-            entry_code,
-            Some(entry.workspace_id),
-            before,
-            Some(after),
-        );
-        let mut ops = audit_ops(&audit)?;
-        ops.push(BatchOp::put(
-            cf::LABELINGS,
-            keys::labeling_key(entry_code, label_name),
-            &labeling,
-        )?);
-        ops.push(BatchOp::put(
-            cf::LABELINGS_BY_WORKSPACE,
-            keys::labeling_by_workspace_key(entry.workspace_id, entry_code, label_name),
-            &labeling,
-        )?);
+            .get::<Labeling>(cf::LABELINGS, &keys::labeling_key(entry_code, label_name))?;
+        let ops = labeling_set_ops(entry.workspace_id, &labeling, actor, before.as_ref())?;
         self.store.write_batch(ops)?;
         if let Ok(Some(e)) = self.get(entry_code) {
             self.reindex(&e);
@@ -401,29 +365,8 @@ impl EntryService {
                     Labeling::new(entry.code.clone(), name.clone(), lv.clone(), actor);
                 let before = self
                     .store
-                    .get::<Labeling>(cf::LABELINGS, &keys::labeling_key(&entry.code, name))?
-                    .map(|l: Labeling| serde_json::to_string(&l).unwrap_or_default());
-                let after = serde_json::to_string(&labeling).unwrap_or_default();
-                let audit = AuditLog::new(
-                    AuditAction::LabelingSet,
-                    actor,
-                    "labeling",
-                    &entry.code,
-                    Some(ws_id),
-                    before,
-                    Some(after),
-                );
-                ops.extend(audit_ops(&audit)?);
-                ops.push(BatchOp::put(
-                    cf::LABELINGS,
-                    keys::labeling_key(&entry.code, name),
-                    &labeling,
-                )?);
-                ops.push(BatchOp::put(
-                    cf::LABELINGS_BY_WORKSPACE,
-                    keys::labeling_by_workspace_key(ws_id, &entry.code, name),
-                    &labeling,
-                )?);
+                    .get::<Labeling>(cf::LABELINGS, &keys::labeling_key(&entry.code, name))?;
+                ops.extend(labeling_set_ops(ws_id, &labeling, actor, before.as_ref())?);
             }
         }
         let written = entries.len() * resolved.len();
@@ -443,26 +386,17 @@ impl EntryService {
         label_name: &str,
     ) -> Result<(), AppError> {
         let entry = self.get(entry_code)?.ok_or(AppError::NotFound)?;
-        let key = keys::labeling_key(entry_code, label_name);
         let before = self
             .store
-            .get::<Labeling>(cf::LABELINGS, &key)?
-            .map(|l: Labeling| serde_json::to_string(&l).unwrap_or_default());
-        let audit = AuditLog::new(
-            AuditAction::LabelingRemoved,
-            actor,
-            "labeling",
+            .get::<Labeling>(cf::LABELINGS, &keys::labeling_key(entry_code, label_name))?;
+        let ops = labeling_ops(
+            entry.workspace_id,
             entry_code,
-            Some(entry.workspace_id),
-            before,
+            label_name,
             None,
-        );
-        let mut ops = audit_ops(&audit)?;
-        ops.push(BatchOp::delete(cf::LABELINGS, key));
-        ops.push(BatchOp::delete(
-            cf::LABELINGS_BY_WORKSPACE,
-            keys::labeling_by_workspace_key(entry.workspace_id, entry_code, label_name),
-        ));
+            actor,
+            before.as_ref(),
+        )?;
         self.store.write_batch(ops)?;
         if let Ok(Some(e)) = self.get(entry_code) {
             self.reindex(&e);
@@ -634,6 +568,99 @@ impl EntryService {
         }
         Ok(QueryResult { items, total, label_names })
     }
+}
+
+/// 工作空间内的「在视图内」条目：不含已删除，也不含已归档。
+/// 抽成自由函数是为了让 `RuleEngine` 的目标圈定与视图列表口径完全一致——
+/// 规则引擎不能依赖 `EntryService`（会形成循环依赖）。
+pub fn list_entries(store: &DocStore, workspace_id: Ulid) -> Result<Vec<Entry>, AppError> {
+    let prefix = workspace_id.to_bytes();
+    let rows = store.scan_prefix(cf::ENTRIES_BY_WORKSPACE, &prefix)?;
+    let mut entries = Vec::new();
+    for (key, _) in rows {
+        if key.len() <= 16 {
+            continue;
+        }
+        let code = std::str::from_utf8(&key[16..]).unwrap_or("").to_string();
+        if let Some(e) = store.get::<Entry>(cf::ENTRIES, code.as_bytes())? {
+            let archived = store.get_raw(cf::ENTRIES_ARCHIVED, code.as_bytes())?.is_some();
+            if !e.is_deleted() && !archived {
+                entries.push(e);
+            }
+        }
+    }
+    entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    Ok(entries)
+}
+
+/// 构造「写 / 删一个标签」的全套 ops：Labeling 两条（主键 + 工作空间索引）+ 一条标签审计。
+/// `before` 由调用方给定：`EntryService` 从库里读，`RuleEngine` 从内存后置状态读——
+/// 引擎的写入尚未提交，读库拿到的是前像。
+pub fn labeling_ops(
+    ws: Ulid,
+    code: &str,
+    label_name: &str,
+    value: Option<&LabelValue>,
+    actor: Ulid,
+    before: Option<&Labeling>,
+) -> Result<Vec<BatchOp>, AppError> {
+    match value {
+        Some(lv) => labeling_set_ops(
+            ws,
+            &Labeling::new(code.to_string(), label_name.to_string(), lv.clone(), actor),
+            actor,
+            before,
+        ),
+        None => {
+            let audit = AuditLog::new(
+                AuditAction::LabelingRemoved,
+                actor,
+                "labeling",
+                code,
+                Some(ws),
+                before.map(|l| serde_json::to_string(l).unwrap_or_default()),
+                None,
+            );
+            let mut ops = audit_ops(&audit)?;
+            ops.push(BatchOp::delete(cf::LABELINGS, keys::labeling_key(code, label_name)));
+            ops.push(BatchOp::delete(
+                cf::LABELINGS_BY_WORKSPACE,
+                keys::labeling_by_workspace_key(ws, code, label_name),
+            ));
+            Ok(ops)
+        }
+    }
+}
+
+/// 写入路径的 ops：接收已构造好的 `Labeling`，调用方返回给上层的就是落库的那个对象，
+/// 审计快照也因此与返回值逐字节一致（若在内部另构造一份，`set_at` 会差几微秒）。
+fn labeling_set_ops(
+    ws: Ulid,
+    labeling: &Labeling,
+    actor: Ulid,
+    before: Option<&Labeling>,
+) -> Result<Vec<BatchOp>, AppError> {
+    let audit = AuditLog::new(
+        AuditAction::LabelingSet,
+        actor,
+        "labeling",
+        &labeling.entry_code,
+        Some(ws),
+        before.map(|l| serde_json::to_string(l).unwrap_or_default()),
+        Some(serde_json::to_string(labeling).unwrap_or_default()),
+    );
+    let mut ops = audit_ops(&audit)?;
+    ops.push(BatchOp::put(
+        cf::LABELINGS,
+        keys::labeling_key(&labeling.entry_code, &labeling.label_name),
+        labeling,
+    )?);
+    ops.push(BatchOp::put(
+        cf::LABELINGS_BY_WORKSPACE,
+        keys::labeling_by_workspace_key(ws, &labeling.entry_code, &labeling.label_name),
+        labeling,
+    )?);
+    Ok(ops)
 }
 
 /// 归档审计快照：条目本身不变，只是补上/清掉 archived_at，便于前端 diff 出

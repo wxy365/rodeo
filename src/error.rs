@@ -33,6 +33,8 @@ pub enum AppError {
     AiNotConfigured,
     #[error("{0}")]
     Ai(String),
+    #[error("{0}")]
+    RuleFailed(String),
 }
 
 impl AppError {
@@ -53,6 +55,7 @@ impl AppError {
             AppError::Internal(_) => "INTERNAL",
             AppError::AiNotConfigured => "AI_NOT_CONFIGURED",
             AppError::Ai(_) => "AI_ERROR",
+            AppError::RuleFailed(_) => "RULE_FAILED",
         }
     }
 }
