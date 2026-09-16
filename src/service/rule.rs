@@ -460,9 +460,6 @@ impl RuleEngine {
                 fired.push((ri, matched));
             }
 
-            if staged.is_empty() {
-                break;
-            }
             // 同层同 (entry, label)：后者覆盖前者；与层初值相同的丢弃（级联的安全阀）。
             let collapsed = collapse(&overlay, &staged);
 
@@ -1406,6 +1403,55 @@ mod tests {
             let writes = after["writes"].as_array().expect("writes 是数组");
             assert_eq!(writes.len(), 1, "算过一条写入就要记一条: {after}");
             assert_eq!(writes[0]["applied"], serde_json::json!(false), "被去重丢弃的写入记 applied=false");
+            std::fs::remove_dir_all(&dir).ok();
+        }
+
+        /// 命中但一条写入都没落下（$old 遇上新增）：审计不能缺席，只是 `writes` 为空。
+        /// 这条路径上 `staged` 是空的，引擎必须走到审计之后才 break。
+        #[test]
+        fn skipped_write_still_audits_with_empty_writes() {
+            let (dir, store, ws, actor) = setup();
+            let entry = EntryService::new(store.clone()).create(actor, ws, "任务").unwrap();
+            RuleService::new(store.clone())
+                .create(
+                    actor,
+                    ws,
+                    "记录旧状态",
+                    true,
+                    r#"$label = "Status""#,
+                    true,
+                    None,
+                    vec![LabelWrite {
+                        label_name: "FinishedAt".into(),
+                        op: WriteOp::Set,
+                        value: Some(ValueSource::Old),
+                    }],
+                )
+                .unwrap();
+            // 新增 Status 时 $old 无值，动作整体跳过，`staged` 为空。
+            apply(&store, ws, &[StagedWrite {
+                entry_code: entry.code.clone(),
+                label_name: "Status".into(),
+                value: Some(LabelValue::Enum("Finished".into())),
+                actor,
+            }]);
+            let audits = crate::service::AuditService::new(store.clone()).list(ws, 100).unwrap();
+            let applied = audits
+                .iter()
+                .find(|a| a.action == AuditAction::RuleApplied)
+                .expect("命中过就该有一条 RuleApplied");
+            let after: serde_json::Value =
+                serde_json::from_str(applied.after.as_deref().unwrap_or("null")).unwrap();
+            assert_eq!(after["level"], serde_json::json!(1), "命中发生在第 1 层");
+            assert_eq!(
+                after["triggers"].as_array().map(Vec::len),
+                Some(1),
+                "审计要记下命中的事件: {after}"
+            );
+            assert!(
+                after["writes"].as_array().is_some_and(|w| w.is_empty()),
+                "写入全被跳过时 writes 应为空数组: {after}"
+            );
             std::fs::remove_dir_all(&dir).ok();
         }
 
