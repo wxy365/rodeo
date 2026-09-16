@@ -10,12 +10,14 @@ use crate::domain::{
 };
 use crate::error::AppError;
 use crate::service::audit::audit_ops;
+use crate::service::rule::{RuleEngine, StagedWrite};
 use crate::service::search::{SearchIndex, TEXT_CANDIDATE_LIMIT};
 use crate::storage::{cf, keys, BatchOp, DocStore};
 
 pub struct EntryService {
     store: Arc<DocStore>,
     search: Option<Arc<SearchIndex>>,
+    rules: RuleEngine,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -47,11 +49,13 @@ pub struct QueryResult {
 
 impl EntryService {
     pub fn new(store: Arc<DocStore>) -> Self {
-        Self { store, search: None }
+        let rules = RuleEngine::new(store.clone());
+        Self { store, search: None, rules }
     }
 
     pub fn with_search(store: Arc<DocStore>, search: Arc<SearchIndex>) -> Self {
-        Self { store, search: Some(search) }
+        let rules = RuleEngine::new(store.clone());
+        Self { store, search: Some(search), rules }
     }
 
     fn reindex(&self, entry: &Entry) {
@@ -312,10 +316,28 @@ impl EntryService {
         let before = self
             .store
             .get::<Labeling>(cf::LABELINGS, &keys::labeling_key(entry_code, label_name))?;
-        let ops = labeling_set_ops(entry.workspace_id, &labeling, actor, before.as_ref())?;
+        let mut ops = labeling_set_ops(entry.workspace_id, &labeling, actor, before.as_ref())?;
+        // plan 必须在提交前算：引擎从库里取前像，用户写入先落库的话它就看不到变更了。
+        let staged = StagedWrite {
+            entry_code: entry_code.to_string(),
+            label_name: label_name.to_string(),
+            value: Some(labeling.value.clone()),
+            actor,
+        };
+        let plan = self.rules.plan(entry.workspace_id, std::slice::from_ref(&staged))?;
+        let mut affected = vec![entry_code.to_string()];
+        if let Some(p) = plan {
+            affected.extend(p.affected);
+            // 规则动作与用户写入拼成同一批：任一步失败整体回滚，不留半成品。
+            ops.extend(p.ops);
+        }
         self.store.write_batch(ops)?;
-        if let Ok(Some(e)) = self.get(entry_code) {
-            self.reindex(&e);
+        affected.sort();
+        affected.dedup();
+        for code in &affected {
+            if let Ok(Some(e)) = self.get(code) {
+                self.reindex(&e);
+            }
         }
         Ok(labeling)
     }
@@ -370,9 +392,28 @@ impl EntryService {
             }
         }
         let written = entries.len() * resolved.len();
+        let staged: Vec<StagedWrite> = entries
+            .iter()
+            .flat_map(|e| {
+                resolved.iter().map(move |(name, lv)| StagedWrite {
+                    entry_code: e.code.clone(),
+                    label_name: name.clone(),
+                    value: Some(lv.clone()),
+                    actor,
+                })
+            })
+            .collect();
+        let plan = self.rules.plan(ws_id, &staged)?;
+        let mut affected: Vec<String> = entries.iter().map(|e| e.code.clone()).collect();
+        if let Some(p) = plan {
+            affected.extend(p.affected);
+            ops.extend(p.ops);
+        }
         self.store.write_batch(ops)?;
-        for entry in &entries {
-            if let Ok(Some(e)) = self.get(&entry.code) {
+        affected.sort();
+        affected.dedup();
+        for code in &affected {
+            if let Ok(Some(e)) = self.get(code) {
                 self.reindex(&e);
             }
         }
@@ -389,7 +430,7 @@ impl EntryService {
         let before = self
             .store
             .get::<Labeling>(cf::LABELINGS, &keys::labeling_key(entry_code, label_name))?;
-        let ops = labeling_ops(
+        let mut ops = labeling_ops(
             entry.workspace_id,
             entry_code,
             label_name,
@@ -397,9 +438,25 @@ impl EntryService {
             actor,
             before.as_ref(),
         )?;
+        let staged = StagedWrite {
+            entry_code: entry_code.to_string(),
+            label_name: label_name.to_string(),
+            value: None,
+            actor,
+        };
+        let plan = self.rules.plan(entry.workspace_id, std::slice::from_ref(&staged))?;
+        let mut affected = vec![entry_code.to_string()];
+        if let Some(p) = plan {
+            affected.extend(p.affected);
+            ops.extend(p.ops);
+        }
         self.store.write_batch(ops)?;
-        if let Ok(Some(e)) = self.get(entry_code) {
-            self.reindex(&e);
+        affected.sort();
+        affected.dedup();
+        for code in &affected {
+            if let Ok(Some(e)) = self.get(code) {
+                self.reindex(&e);
+            }
         }
         Ok(())
     }
