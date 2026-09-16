@@ -204,7 +204,8 @@ impl AiClient {
 fn parse_completion(text: &str) -> Result<String, AppError> {
     let v: serde_json::Value = serde_json::from_str(text)
         .map_err(|_| AppError::Ai("模型响应不是合法 JSON".to_string()))?;
-    if let Some(msg) = v.get("error").and_then(error_message) {
+    if let Some(err) = v.get("error").filter(|e| !e.is_null()) {
+        let msg = error_message(err).unwrap_or_else(|| "模型返回错误".to_string());
         return Err(AppError::Ai(msg));
     }
     let content = v
@@ -225,6 +226,7 @@ fn error_message(err: &serde_json::Value) -> Option<String> {
         .and_then(|m| m.as_str())
         .map(str::to_string)
         .or_else(|| err.as_str().map(str::to_string))
+        .filter(|m| !m.trim().is_empty())
 }
 
 /// 从错误响应体里尽量抠出可读信息；抠不出就退回原文截断。

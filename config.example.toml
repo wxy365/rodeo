@@ -18,6 +18,7 @@ data_dir = "./data"
 
 [ai]
 # 兼容 Chat Completions 协议的服务（OpenAI 官方 / 自建网关 / vLLM / one-api / DeepSeek / 通义）。
+# TLS 走 rustls + webpki-roots 内置根证书：自建网关若用私有/企业 CA 签证书会校验失败，且没有配置项可关。
 base_url = "https://api.openai.com/v1"
 # api_key 或 model 留空即视为未启用：生成总结时返回「服务端未配置 AI 模型」。
 api_key = ""
