@@ -604,6 +604,7 @@ impl EntryService {
                     text_hit: &text_ok,
                     account_of: &account_of,
                     label_of: &label_of,
+                    event: None,
                 };
                 query.evaluate(e, labels, &env)
             })

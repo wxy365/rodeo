@@ -3,6 +3,7 @@ pub mod audit;
 pub mod auth;
 pub mod entry;
 pub mod label;
+pub mod rule;
 pub mod search;
 pub mod view;
 pub mod workspace;
@@ -18,6 +19,7 @@ pub use audit::AuditService;
 pub use auth::{AuthContext, AuthService};
 pub use entry::EntryService;
 pub use label::LabelService;
+pub use rule::RuleService;
 pub use search::SearchIndex;
 pub use view::ViewService;
 pub use workspace::WorkspaceService;
@@ -34,6 +36,7 @@ pub struct Services {
     pub search: Arc<SearchIndex>,
     pub view: ViewService,
     pub ai: AiService,
+    pub rule: RuleService,
 }
 
 impl Services {
@@ -47,6 +50,7 @@ impl Services {
             audit: AuditService::new(store.clone()),
             view: ViewService::new(store.clone()),
             ai: AiService::new(store.clone()),
+            rule: RuleService::new(store.clone()),
             search,
             store,
             config,

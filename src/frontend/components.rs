@@ -192,6 +192,10 @@ pub fn action_label(action: &str) -> &'static str {
         "WorkspaceDeleted" => "删除工作空间",
         "WorkspaceRestored" => "恢复工作空间",
         "WorkspaceCreated" => "创建工作空间",
+        "RuleCreated" => "创建规则",
+        "RuleUpdated" => "更新规则",
+        "RuleDeleted" => "删除规则",
+        "RuleApplied" => "规则触发",
         _ => "变更",
     }
 }
