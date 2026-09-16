@@ -108,6 +108,19 @@ pub fn view_by_workspace_key(workspace_id: Ulid, id: Ulid) -> [u8; 32] {
     key
 }
 
+/// 规则主键：16 字节 ulid。
+pub fn rule_key(id: Ulid) -> [u8; 16] {
+    id.to_bytes()
+}
+
+/// (workspace_id, rule_id) 复合键，32 字节。
+pub fn rule_by_workspace_key(workspace_id: Ulid, id: Ulid) -> [u8; 32] {
+    let mut key = [0u8; 32];
+    key[..16].copy_from_slice(&workspace_id.to_bytes());
+    key[16..].copy_from_slice(&id.to_bytes());
+    key
+}
+
 /// (workspace_id, entry_code, label_name) 复合键，前缀扫描取整个 workspace 的打标。
 pub fn labeling_by_workspace_key(workspace_id: Ulid, code: &str, name: &str) -> Vec<u8> {
     let mut key = Vec::with_capacity(16 + code.len() + name.len());

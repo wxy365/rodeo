@@ -7,7 +7,7 @@ use crate::domain::Query;
 /// 视图以 bincode 落库，而条件里的 `serde_json::Value` 反序列化需要 `deserialize_any`，
 /// bincode 不支持——于是「带值的条件」写得进去、读不出来。
 /// 这里把内联的查询 AST 先编码成 JSON 字符串再交给 bincode：字符串两边都支持。
-mod query_json {
+pub(crate) mod query_json {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
     pub fn serialize<T, S>(value: &T, ser: S) -> Result<S::Ok, S::Error>
