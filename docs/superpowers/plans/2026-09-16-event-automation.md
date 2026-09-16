@@ -825,6 +825,7 @@ impl RuleService {
         }
         let (trigger, action) = self.build(
             ws,
+            name,
             trigger_expr,
             target_event_source,
             target_expr,
@@ -866,6 +867,7 @@ impl RuleService {
         let mut rule = self.get(id)?.ok_or(AppError::NotFound)?;
         let (trigger, action) = self.build(
             rule.workspace_id,
+            name,
             trigger_expr,
             target_event_source,
             target_expr,
@@ -917,11 +919,17 @@ impl RuleService {
     fn build(
         &self,
         ws: Ulid,
+        name: &str,
         trigger_expr: &str,
         target_event_source: bool,
         target_expr: Option<&str>,
         writes: Vec<LabelWrite>,
     ) -> Result<(Query, RuleAction), AppError> {
+        // 设计文档 §6.4 第 1 条：规则名非空。放在这里而不是 create/update 各自开头，
+        // 是为了让「保存时的全部校验」只有 build 这一个入口。
+        if name.trim().is_empty() {
+            return Err(AppError::InvalidQuery("规则名不能为空".to_string()));
+        }
         let schemas = self.schemas(ws)?;
         let trigger = Query::parse(trigger_expr)?;
         trigger.validate_for_rule(&schemas, true)?;
