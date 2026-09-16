@@ -4,6 +4,7 @@ use leptos::task::spawn_local;
 use leptos_router::hooks::{use_navigate, use_params_map};
 use serde_json::Value;
 
+use crate::frontend::ai_prompt_editor::{rows_from, rows_to_value, PromptRow, PromptRows};
 use crate::frontend::components::{
     action_label, audit_change, display_enum_value, logged_out, role_label, short_time,
     value_type_label,
@@ -11,12 +12,13 @@ use crate::frontend::components::{
 use crate::frontend::graphql_client::{
     audit_logs, create_label_schema, delete_workspace, invite_member, invites, label_attrs,
     label_schemas, members, my_role, remove_member, restore_workspace, revoke_invite,
-    transfer_owner, update_label_schema, update_member_role, update_view, update_workspace, views,
-    workspace_by_slug, AuditLog, Invite, LabelSchema, Member, View, Workspace,
+    transfer_owner, update_label_schema, update_member_role, update_view, update_workspace,
+    update_workspace_ai_config, views, workspace_ai_config, workspace_by_slug, AuditLog, Invite,
+    LabelSchema, Member, View, Workspace,
 };
 use crate::frontend::use_auth;
 use crate::frontend::icons::{
-    ic_add, ic_back, ic_close, ic_history, ic_profile, ic_setting, ic_share, ic_tag,
+    ic_add, ic_back, ic_close, ic_comment, ic_history, ic_profile, ic_setting, ic_share, ic_tag,
 };
 
 fn is_builtin(schema: &LabelSchema) -> bool {
@@ -76,6 +78,15 @@ pub fn WorkspaceSettings() -> impl IntoView {
     // 邀请成员表单
     let invite_email = RwSignal::new(String::new());
     let invite_role = RwSignal::new(String::from("worker"));
+
+    // ---- AI 总结配置 ----
+    // 打开标签页时才拉数据，和「已归档」弹窗一个路数。
+    let ai_scenarios = RwSignal::new(Vec::<PromptRow>::new());
+    let ai_tones = RwSignal::new(Vec::<PromptRow>::new());
+    let ai_loading = RwSignal::new(false);
+    let ai_busy = RwSignal::new(false);
+    let ai_msg = RwSignal::new(None::<String>);
+    let ai_error = RwSignal::new(None::<String>);
 
     Effect::new_sync(move |_| {
         let s = slug();
@@ -204,6 +215,43 @@ pub fn WorkspaceSettings() -> impl IntoView {
         data.get()
             .and_then(|r| r.ok())
             .map(|(w, _, _, _, _, _, _)| w.id.clone())
+    };
+
+    let load_ai = move |ws_id: String| {
+        ai_loading.set(true);
+        ai_error.set(None);
+        spawn_local(async move {
+            match workspace_ai_config(&ws_id).await {
+                Ok(cfg) => {
+                    ai_scenarios.set(rows_from(&cfg.scenarios));
+                    ai_tones.set(rows_from(&cfg.tones));
+                }
+                Err(e) => ai_error.set(Some(e)),
+            }
+            ai_loading.set(false);
+        });
+    };
+
+    let save_ai = move |ev: SubmitEvent| {
+        ev.prevent_default();
+        let Some(ws_id) = ws_id_of() else { return };
+        let scenarios = Value::Array(rows_to_value(&ai_scenarios));
+        let tones = Value::Array(rows_to_value(&ai_tones));
+        ai_busy.set(true);
+        ai_error.set(None);
+        ai_msg.set(None);
+        spawn_local(async move {
+            match update_workspace_ai_config(&ws_id, &scenarios, &tones).await {
+                Ok(cfg) => {
+                    // 回填服务端落库后的结果：空行被丢掉、名称被 trim，界面应与库内一致。
+                    ai_scenarios.set(rows_from(&cfg.scenarios));
+                    ai_tones.set(rows_from(&cfg.tones));
+                    ai_msg.set(Some("已保存".to_string()));
+                }
+                Err(e) => ai_error.set(Some(e)),
+            }
+            ai_busy.set(false);
+        });
     };
 
     let do_invite = move |ev: SubmitEvent| {
@@ -362,6 +410,15 @@ pub fn WorkspaceSettings() -> impl IntoView {
                     </div>
                     <div class="it" class:on=move || tab.get() == "labels" on:click=move |_| tab.set("labels".into())>
                         {ic_tag()}"标签定义"
+                    </div>
+                    <div class="it" class:on=move || tab.get() == "ai"
+                        on:click=move |_| {
+                            tab.set("ai".into());
+                            if let Some(ws_id) = ws_id_of() {
+                                load_ai(ws_id);
+                            }
+                        }>
+                        {ic_comment()}"AI 总结"
                     </div>
                     <div class="it" class:on=move || tab.get() == "views" on:click=move |_| tab.set("views".into())>
                         {ic_share()}"视图共享"
@@ -527,6 +584,45 @@ pub fn WorkspaceSettings() -> impl IntoView {
                                         </tbody>
                                     </table>
                                     <div class="mut">"同一 Entry 对同一 Schema 仅一条 Labeling，更新即 upsert；变更自动记录操作人与时间。"</div>
+                                }.into_any()
+                            } else if cur_tab == "ai" {
+                                view! {
+                                    <h2>"AI 总结"</h2>
+                                    <p class="mut">"生成总结时可选「场景」与「语气」；两项都是工作空间内可维护的「名称 + 提示词」。生成总结会把提示词追加到内置模板之后。"</p>
+                                    <p class="mut">"服务端的模型与密钥在 config.toml 的 [ai] 段配置，不在本页。"</p>
+                                    {move || ai_loading.get().then(|| view! {
+                                        <p class="mut">"正在读取场景与语气…"</p>
+                                    })}
+                                    {move || ai_error.get().map(|e| view! { <p class="error">{e}</p> })}
+                                    {move || ai_msg.get().map(|m| view! { <p class="mut">{m}</p> })}
+                                    {if can_manage {
+                                        view! {
+                                            <form class="stack" on:submit=save_ai>
+                                                <h3 style="margin-top:18px">"场景"</h3>
+                                                <PromptRows rows=ai_scenarios placeholder="场景名称，如「迭代复盘」".to_string() />
+                                                <h3 style="margin-top:18px">"语气"</h3>
+                                                <PromptRows rows=ai_tones placeholder="语气名称，如「简洁」".to_string() />
+                                                <button class="btn pri" type="submit" disabled=move || ai_busy.get()
+                                                    style="align-self:flex-start">
+                                                    {move || if ai_busy.get() { "保存中…" } else { "保存" }}
+                                                </button>
+                                            </form>
+                                        }.into_any()
+                                    } else {
+                                        view! {
+                                            <div class="stack">
+                                                <h3>"场景"</h3>
+                                                {move || ai_scenarios.get().into_iter().map(|r| view! {
+                                                    <div class="mut">{r.name.get()}</div>
+                                                }).collect::<Vec<_>>()}
+                                                <h3>"语气"</h3>
+                                                {move || ai_tones.get().into_iter().map(|r| view! {
+                                                    <div class="mut">{r.name.get()}</div>
+                                                }).collect::<Vec<_>>()}
+                                                <p class="mut">"仅 Maintainer 及以上可修改"</p>
+                                            </div>
+                                        }.into_any()
+                                    }}
                                 }.into_any()
                             } else if cur_tab == "audit" {
                                 view! {
