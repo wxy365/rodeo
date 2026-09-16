@@ -11,8 +11,9 @@ use crate::frontend::components::{
 use crate::frontend::graphql_client::{
     archive_entry, archived_entries, create_entry, create_view, delete_entry, delete_view, entry,
     format_view_query, get_sidebar_collapsed, label_schemas, parse_view_query, query_entries,
-    set_labeling, set_labelings, set_sidebar_collapsed, unarchive_entry, update_entry, update_view,
-    views, workspace_by_slug, AccountBrief, Entry, Labeling, LabelSchema, View, Workspace,
+    set_labeling, set_labelings, set_sidebar_collapsed, summarize_entries, unarchive_entry,
+    update_entry, update_view, views, workspace_ai_config, workspace_by_slug, AccountBrief, Entry,
+    Labeling, LabelSchema, NamedPrompt, View, Workspace,
 };
 use crate::frontend::icons::{
     ic_add, ic_back, ic_check, ic_close, ic_copy, ic_folder, ic_full, ic_help, ic_search,
@@ -170,6 +171,18 @@ pub fn WorkspaceMain() -> impl IntoView {
     let batch_labels = RwSignal::new(Vec::<DraftLabel>::new());
     let batch_error = RwSignal::new(None::<String>);
     let batch_busy = RwSignal::new(false);
+
+    // ---- AI 总结 ----
+    // 场景 / 语气下拉数据在打开弹窗时才拉，和「已归档」弹窗一个路数：
+    // 没打开过的用户不该为这个功能付一次请求。
+    let show_ai = RwSignal::new(false);
+    let ai_loading = RwSignal::new(false);
+    let ai_scenarios = RwSignal::new(Vec::<NamedPrompt>::new());
+    let ai_tones = RwSignal::new(Vec::<NamedPrompt>::new());
+    let ai_scenario = RwSignal::new(String::new());
+    let ai_tone = RwSignal::new(String::new());
+    let ai_busy = RwSignal::new(false);
+    let ai_error = RwSignal::new(None::<String>);
 
     // ---- 归档 ----
     // 已归档条目：打开「已归档」弹窗时拉取，恢复一条后就地移除，不整表重拉。
@@ -519,6 +532,66 @@ pub fn WorkspaceMain() -> impl IntoView {
                 Err(e) => {
                     batch_busy.set(false);
                     batch_error.set(Some(e));
+                }
+            }
+        });
+    };
+
+    let open_ai = move |_| {
+        show_ai.set(true);
+        ai_error.set(None);
+        ai_scenario.set(String::new());
+        ai_tone.set(String::new());
+        let Some(ws_id) = data.get_untracked().and_then(|r| r.ok()).map(|(w, _, _)| w.id) else {
+            return;
+        };
+        ai_loading.set(true);
+        spawn_local(async move {
+            match workspace_ai_config(&ws_id).await {
+                Ok(cfg) => {
+                    ai_scenarios.set(cfg.scenarios);
+                    ai_tones.set(cfg.tones);
+                }
+                Err(e) => ai_error.set(Some(e)),
+            }
+            ai_loading.set(false);
+        });
+    };
+
+    let apply_ai = move |_| {
+        let codes = batch_selected.get_untracked();
+        if codes.is_empty() {
+            return;
+        }
+        let Some(ws_id) = data.get_untracked().and_then(|r| r.ok()).map(|(w, _, _)| w.id) else {
+            return;
+        };
+        let scenario = ai_scenario.get_untracked();
+        let tone = ai_tone.get_untracked();
+        ai_busy.set(true);
+        ai_error.set(None);
+        spawn_local(async move {
+            let result = summarize_entries(
+                &ws_id,
+                &codes,
+                (!scenario.is_empty()).then_some(scenario.as_str()),
+                (!tone.is_empty()).then_some(tone.as_str()),
+            )
+            .await;
+            match result {
+                Ok(created) => {
+                    ai_busy.set(false);
+                    show_ai.set(false);
+                    batch_selected.set(Vec::new());
+                    // 生成的是新条目：直接选中并全屏打开，用户不必再去列表里翻。
+                    // 用 created.code 而不是等列表重查后再定位——列表分页位置不可预测。
+                    selected.set(created.code.clone());
+                    fullscreen.set(true);
+                    refresh.update(|n| *n += 1);
+                }
+                Err(e) => {
+                    ai_busy.set(false);
+                    ai_error.set(Some(e));
                 }
             }
         });
@@ -903,6 +976,8 @@ pub fn WorkspaceMain() -> impl IntoView {
                                     <div class="batchbar">
                                         <span class="mut">{format!("已选 {n} 项")}</span>
                                         <button class="btn pri sm" on:click=open_batch>"批量设置标签"</button>
+                                        <button class="btn sm" disabled=move || batch_busy.get() || ai_busy.get()
+                                            on:click=open_ai>"AI 总结"</button>
                                         <button class="btn sm" disabled=move || batch_busy.get()
                                             on:click=archive_selected>"归档"</button>
                                         <button class="btn sm" on:click=move |_| batch_selected.set(Vec::new())>
@@ -1020,6 +1095,62 @@ pub fn WorkspaceMain() -> impl IntoView {
                             <button class="btn" on:click=move |_| show_batch.set(false)>"取消"</button>
                             <button class="btn pri" disabled=move || batch_busy.get() on:click=apply_batch>
                                 "应用"
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            })}
+
+            {move || show_ai.get().then(|| view! {
+                <div class="dmodal" on:click=move |_| show_ai.set(false)>
+                    <div class="panel dmbox" style="max-width:520px" on:click=|ev| ev.stop_propagation()>
+                        <h3>"AI 总结"</h3>
+                        <p class="mut">{move || format!(
+                            "把选中的 {} 个条目交给模型，生成一条新条目并全屏打开。",
+                            batch_selected.get().len()
+                        )}</p>
+                        {move || if ai_loading.get() {
+                            view! { <p class="mut">"正在读取场景与语气…"</p> }.into_any()
+                        } else {
+                            let scenarios = ai_scenarios.get();
+                            let tones = ai_tones.get();
+                            let none_configured = scenarios.is_empty() && tones.is_empty();
+                            view! {
+                                <div class="stack">
+                                    {none_configured.then(|| view! {
+                                        <p class="mut">"尚未配置场景与语气；不指定也可以直接生成，配置入口在工作空间设置页。"</p>
+                                    })}
+                                    <label class="fld">
+                                        <span>"场景"</span>
+                                        <select class="inp" prop:value=move || ai_scenario.get()
+                                            on:change=move |ev| ai_scenario.set(event_target_value(&ev))>
+                                            <option value="">"（不指定）"</option>
+                                            {scenarios.into_iter().map(|p| {
+                                                let v = p.name.clone();
+                                                view! { <option value=v>{p.name}</option> }
+                                            }).collect::<Vec<_>>()}
+                                        </select>
+                                    </label>
+                                    <label class="fld">
+                                        <span>"语气"</span>
+                                        <select class="inp" prop:value=move || ai_tone.get()
+                                            on:change=move |ev| ai_tone.set(event_target_value(&ev))>
+                                            <option value="">"（不指定）"</option>
+                                            {tones.into_iter().map(|p| {
+                                                let v = p.name.clone();
+                                                view! { <option value=v>{p.name}</option> }
+                                            }).collect::<Vec<_>>()}
+                                        </select>
+                                    </label>
+                                </div>
+                            }.into_any()
+                        }}
+                        {move || ai_error.get().map(|e| view! { <p class="error">{e}</p> })}
+                        <div style="display:flex;gap:8px;justify-content:flex-end">
+                            <button class="btn" on:click=move |_| show_ai.set(false)>"取消"</button>
+                            <button class="btn pri" disabled=move || ai_busy.get() || ai_loading.get()
+                                on:click=apply_ai>
+                                {move || if ai_busy.get() { "生成中…" } else { "生成" }}
                             </button>
                         </div>
                     </div>
