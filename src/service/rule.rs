@@ -78,6 +78,7 @@ impl RuleService {
         }
         let (trigger, action) = self.build(
             ws,
+            name,
             trigger_expr,
             target_event_source,
             target_expr,
@@ -119,6 +120,7 @@ impl RuleService {
         let mut rule = self.get(id)?.ok_or(AppError::NotFound)?;
         let (trigger, action) = self.build(
             rule.workspace_id,
+            name,
             trigger_expr,
             target_event_source,
             target_expr,
@@ -170,11 +172,17 @@ impl RuleService {
     fn build(
         &self,
         ws: Ulid,
+        name: &str,
         trigger_expr: &str,
         target_event_source: bool,
         target_expr: Option<&str>,
         writes: Vec<LabelWrite>,
     ) -> Result<(Query, RuleAction), AppError> {
+        // 空名会让规则在列表和审计快照里无法辨认，且创建/更新两条路径都会落库，
+        // 放在这个唯一入口校验，两条路径自然一致。
+        if name.trim().is_empty() {
+            return Err(AppError::InvalidQuery("规则名不能为空".to_string()));
+        }
         let schemas = self.schemas(ws)?;
         let trigger = Query::parse(trigger_expr)?;
         trigger.validate_for_rule(&schemas, true)?;
@@ -248,8 +256,9 @@ impl RuleService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::rule::LabelEvent;
+    use crate::domain::rule::{LabelEvent, ValueSource, WriteOp};
     use crate::domain::{Entry, EvalEnv, LabelSchema, LabelValue, LabelValueType, Labeling, Query};
+    use crate::service::{label::LabelSchemaInput, LabelService};
     use ulid::Ulid;
 
     fn schema(name: &str, vt: LabelValueType) -> LabelSchema {
@@ -387,5 +396,71 @@ mod tests {
     fn unknown_event_field_is_rejected_with_readable_message() {
         let err = Query::parse("$nope = 1").unwrap_err();
         assert!(err.to_string().contains("nope"), "错误信息应指出未知字段: {err}");
+    }
+
+    #[test]
+    fn empty_name_is_rejected_on_create_and_update() {
+        // 服务测试要真落库，用临时目录起一个 DocStore（同 view/label 的测试）。
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("rodeo-rule-name-{}", Ulid::new()));
+        let dir = dir.to_string_lossy().into_owned();
+        let store = Arc::new(DocStore::open(&dir).unwrap());
+        let svc = RuleService::new(store.clone());
+        let actor = Ulid::new();
+        let ws = Ulid::new();
+        // 动作里的标签必须真实存在，否则会在名字之前的校验上先失败。
+        LabelService::new(store.clone())
+            .create_schema(
+                actor,
+                ws,
+                LabelSchemaInput {
+                    name: "Status".into(),
+                    title: "状态".into(),
+                    value_type: LabelValueType::Enum,
+                    enum_values: vec!["Open".into(), "Done".into()],
+                    multi: false,
+                    format: None,
+                    currency_symbol: None,
+                    unit: None,
+                    color: None,
+                    value_colors: vec![],
+                },
+            )
+            .unwrap();
+        let writes = || {
+            vec![LabelWrite {
+                label_name: "Status".into(),
+                op: WriteOp::Set,
+                value: Some(ValueSource::Literal(serde_json::json!("Done"))),
+            }]
+        };
+
+        for bad in ["", "   ", "\t\n"] {
+            let err = svc
+                .create(actor, ws, bad, true, r#"$new = "Done""#, true, None, writes())
+                .unwrap_err();
+            assert!(
+                matches!(err, AppError::InvalidQuery(_)),
+                "名字 {bad:?} 应被拒: {err}"
+            );
+        }
+        assert!(svc.list(ws).unwrap().is_empty(), "被拒的规则不得留下索引残留");
+
+        let rule = svc
+            .create(actor, ws, "  有效名  ", true, r#"$new = "Done""#, true, None, writes())
+            .unwrap();
+        assert_eq!(rule.name, "有效名", "合法名字应去除首尾空白后落库");
+
+        let err = svc
+            .update(actor, rule.id, "  ", true, r#"$new = "Done""#, true, None, writes())
+            .unwrap_err();
+        assert!(matches!(err, AppError::InvalidQuery(_)), "更新为空名应被拒: {err}");
+        assert_eq!(
+            svc.get(rule.id).unwrap().unwrap().name,
+            "有效名",
+            "被拒的更新不得改动已存库的规则"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
