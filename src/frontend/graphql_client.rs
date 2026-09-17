@@ -170,6 +170,22 @@ pub struct Labeling {
 
 #[derive(Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct Comment {
+    pub id: String,
+    pub entry_code: String,
+    pub body: String,
+    pub created_by: String,
+    pub updated_by: String,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default)]
+    pub created_by_account: Option<AccountBrief>,
+    #[serde(default)]
+    pub updated_by_account: Option<AccountBrief>,
+}
+
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LabelSchema {
     pub name: String,
     pub title: String,
@@ -215,6 +231,9 @@ pub struct AuditLog {
 const ENTRY_FIELDS: &str = "code title detail createdAt updatedAt createdBy updatedBy \
      createdByAccount { id name email } updatedByAccount { id name email } archivedAt \
      labels { labelName value }";
+
+const COMMENT_FIELDS: &str = "id entryCode body createdAt updatedAt createdBy updatedBy \
+     createdByAccount { id name email } updatedByAccount { id name email }";
 
 const LABEL_SCHEMA_FIELDS: &str =
     "name title valueType enumValues color valueColors multi format currencySymbol unit defaultValue";
@@ -484,6 +503,66 @@ pub async fn entry(code: &str) -> Result<Option<Entry>, String> {
         .get("entry")
         .cloned()
         .and_then(|v| serde_json::from_value(v).ok()))
+}
+
+pub async fn comments(entry_code: &str) -> Result<Vec<Comment>, String> {
+    let q = format!("query($c: String!) {{ comments(entryCode: $c) {{ {COMMENT_FIELDS} }} }}");
+    let data = graphql(&q, json!({ "c": entry_code })).await?;
+    serde_json::from_value(data.get("comments").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+/// 取一批条目的评论条数。服务端会跳过越权或不存在的条目。
+pub async fn comment_counts(entry_codes: &[String]) -> Result<Vec<(String, i32)>, String> {
+    let data = graphql(
+        "query($c: [String!]!) { commentCounts(entryCodes: $c) { entryCode count } }",
+        json!({ "c": entry_codes }),
+    )
+    .await?;
+    let list = data
+        .get("commentCounts")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    Ok(list
+        .into_iter()
+        .filter_map(|v| {
+            let code = v.get("entryCode")?.as_str()?.to_string();
+            let count = v.get("count")?.as_i64()? as i32;
+            Some((code, count))
+        })
+        .collect())
+}
+
+pub async fn create_comment(entry_code: &str, body: &str) -> Result<Comment, String> {
+    let q = format!(
+        "mutation($c: String!, $b: String!) {{ createComment(entryCode: $c, body: $b) {{ {COMMENT_FIELDS} }} }}"
+    );
+    let data = graphql(&q, json!({ "c": entry_code, "b": body })).await?;
+    serde_json::from_value(data.get("createComment").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+pub async fn update_comment(entry_code: &str, id: &str, body: &str) -> Result<Comment, String> {
+    let q = format!(
+        "mutation($c: String!, $i: ID!, $b: String!) {{ updateComment(entryCode: $c, id: $i, body: $b) {{ {COMMENT_FIELDS} }} }}"
+    );
+    let data = graphql(&q, json!({ "c": entry_code, "i": id, "b": body })).await?;
+    serde_json::from_value(data.get("updateComment").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+/// `id` 与 `entryCode` 必须成对给出：评论主键是 (entry_code, comment_id)。
+pub async fn delete_comment(entry_code: &str, id: &str) -> Result<bool, String> {
+    let data = graphql(
+        "mutation($c: String!, $i: ID!) { deleteComment(entryCode: $c, id: $i) }",
+        json!({ "c": entry_code, "i": id }),
+    )
+    .await?;
+    Ok(data
+        .get("deleteComment")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false))
 }
 
 pub async fn update_entry(

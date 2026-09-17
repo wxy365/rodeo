@@ -433,6 +433,20 @@ pub fn role_label(role: &str) -> String {
     }
 }
 
+/// 角色是否达到指定等级。与后端 `WorkspaceRole` 的声明顺序一致
+/// （owner > maintainer > worker > reader）。
+/// 后端 `as_str()` 返回小写，这里仍照 `role_label` 的做法归一化一次，
+/// 免得上游哪天改成大写时静默退化成 Reader。
+pub fn role_at_least(role: &str, min: &str) -> bool {
+    let rank = |r: &str| match r.to_ascii_lowercase().as_str() {
+        "owner" => 3,
+        "maintainer" => 2,
+        "worker" => 1,
+        _ => 0,
+    };
+    rank(role) >= rank(min)
+}
+
 /// 未登录（浏览器端无 token，或非浏览器环境一律视为未登录）。
 pub fn logged_out() -> bool {
     if cfg!(target_arch = "wasm32") {
