@@ -3,6 +3,12 @@
 //! 按 token **最长匹配**扫描布局串，未识别的字符原样输出（格式化）/ 逐字符匹配（解析）。
 //! 支持的 token：`2006` `06` `01` `1` `02` `2` `15` `03` `04` `05`
 //! `Jan` `January` `Mon` `Monday` `PM` `pm`。
+//!
+//! 对外（标签定义里存的 `format`、配置界面展示的串）一律用**常规表示法**
+//! （`YYYY-MM-DD`、`HH:mm:ss`），Go 布局只在本模块内部作为解析/格式化的实现细节。
+//! 转换发生在边界：`to_go` 入、`to_pattern` 出。历史数据里可能存着 Go 布局
+//! （任何含 ASCII 数字的串都按 Go 布局对待），由 `resolve` / `display_pattern`
+//! 兼容读取。
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct YmdHms {
@@ -17,6 +23,155 @@ pub struct YmdHms {
 pub const DATE_LAYOUT: &str = "2006-01-02";
 pub const TIME_LAYOUT: &str = "15:04:05";
 pub const DATETIME_LAYOUT: &str = "2006-01-02 15:04:05";
+
+pub const DATE_PATTERN: &str = "YYYY-MM-DD";
+pub const TIME_PATTERN: &str = "HH:mm:ss";
+pub const DATETIME_PATTERN: &str = "YYYY-MM-DD HH:mm:ss";
+
+/// 常规模式 token → Go 布局 token。顺序即最长匹配优先级，
+/// 同一首字符下长 token 必须排在短 token 之前（`MMM` 在 `MM` 在 `M` 之前）。
+const PATTERN_TOKENS: &[(&str, &str)] = &[
+    ("YYYY", "2006"),
+    ("MMMM", "January"),
+    ("dddd", "Monday"),
+    ("MMM", "Jan"),
+    ("ddd", "Mon"),
+    ("YY", "06"),
+    ("MM", "01"),
+    ("DD", "02"),
+    ("HH", "15"),
+    ("hh", "03"),
+    ("mm", "04"),
+    ("ss", "05"),
+    ("M", "1"),
+    ("D", "2"),
+    ("A", "PM"),
+    ("a", "pm"),
+];
+
+/// Go 布局 token → 常规模式 token，同样按最长匹配优先。
+const LAYOUT_TOKENS: &[(&str, &str)] = &[
+    ("January", "MMMM"),
+    ("Monday", "dddd"),
+    ("2006", "YYYY"),
+    ("Jan", "MMM"),
+    ("Mon", "ddd"),
+    ("06", "YY"),
+    ("01", "MM"),
+    ("02", "DD"),
+    ("15", "HH"),
+    ("03", "hh"),
+    ("04", "mm"),
+    ("05", "ss"),
+    ("PM", "A"),
+    ("pm", "a"),
+    ("1", "M"),
+    ("2", "D"),
+];
+
+/// 取 `value_type` 的默认 Go 布局（后端 `default_layout` 的字符串版，供 wasm 端共用）。
+pub fn default_go(value_type: &str) -> &'static str {
+    match value_type {
+        "date" => DATE_LAYOUT,
+        "time" => TIME_LAYOUT,
+        _ => DATETIME_LAYOUT,
+    }
+}
+
+/// 取 `value_type` 的默认常规模式。
+pub fn default_pattern(value_type: &str) -> &'static str {
+    match value_type {
+        "date" => DATE_PATTERN,
+        "time" => TIME_PATTERN,
+        _ => DATETIME_PATTERN,
+    }
+}
+
+/// 时间型标签配置界面里的常用格式候选（下拉框）。
+pub fn presets(value_type: &str) -> &'static [&'static str] {
+    match value_type {
+        "date" => &[
+            "YYYY-MM-DD",
+            "YYYY/MM/DD",
+            "YYYYMMDD",
+            "YYYY年MM月DD日",
+            "MM/DD/YYYY",
+        ],
+        "time" => &["HH:mm:ss", "HH:mm", "HHmmss"],
+        _ => &[
+            "YYYY-MM-DD HH:mm:ss",
+            "YYYY-MM-DD HH:mm",
+            "YYYYMMDD HHmmss",
+            "YYYY/MM/DD HH:mm:ss",
+            "YYYY年MM月DD日 HH:mm:ss",
+        ],
+    }
+}
+
+/// 常规模式 → Go 布局。出现未识别的字母视为笔误返回 `None`
+/// （否则 `YYYY/MM/DD at HH:mm` 里的 `at` 会被静默当成字面量）；
+/// 一个 token 都没匹配到同样返回 `None`。
+pub fn to_go(pattern: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut rest = pattern;
+    let mut hit = false;
+    while !rest.is_empty() {
+        if let Some((tok, go)) = PATTERN_TOKENS.iter().find(|(t, _)| rest.starts_with(t)) {
+            out.push_str(go);
+            rest = &rest[tok.len()..];
+            hit = true;
+        } else {
+            let c = rest.chars().next().unwrap();
+            if c.is_alphabetic() {
+                return None;
+            }
+            out.push(c);
+            rest = &rest[c.len_utf8()..];
+        }
+    }
+    hit.then_some(out)
+}
+
+/// Go 布局 → 常规模式（展示历史数据用；非 token 的字符原样保留）。
+pub fn to_pattern(layout: &str) -> String {
+    let mut out = String::new();
+    let mut rest = layout;
+    while !rest.is_empty() {
+        if let Some((tok, pat)) = LAYOUT_TOKENS.iter().find(|(t, _)| rest.starts_with(t)) {
+            out.push_str(pat);
+            rest = &rest[tok.len()..];
+        } else {
+            let c = rest.chars().next().unwrap();
+            out.push(c);
+            rest = &rest[c.len_utf8()..];
+        }
+    }
+    out
+}
+
+/// 库里的 `format` → 交给 `parse` / `format` 的 Go 布局。
+/// 空 → `default_layout`；含 ASCII 数字 → 历史 Go 布局原样使用；
+/// 否则按常规模式转换，转换失败退回默认（schema 写入时已校验过，正常到不了这里）。
+pub fn resolve(stored: Option<&str>, default_layout: &str) -> String {
+    let Some(s) = stored.map(str::trim).filter(|s| !s.is_empty()) else {
+        return default_layout.to_string();
+    };
+    if s.bytes().any(|b| b.is_ascii_digit()) {
+        return s.to_string();
+    }
+    to_go(s).unwrap_or_else(|| default_layout.to_string())
+}
+
+/// 库里的 `format` → 配置界面展示的常规模式；空则给该类型的默认模式。
+pub fn display_pattern(stored: Option<&str>, default_pattern: &str) -> String {
+    let Some(s) = stored.map(str::trim).filter(|s| !s.is_empty()) else {
+        return default_pattern.to_string();
+    };
+    if s.bytes().any(|b| b.is_ascii_digit()) {
+        return to_pattern(s);
+    }
+    s.to_string()
+}
 
 #[derive(Clone, Copy, PartialEq)]
 enum Tok {

@@ -607,7 +607,8 @@ select:focus {
     flex: 1;
     min-height: 0;
     display: grid;
-    grid-template-columns: 1fr 400px;
+    /* 480px 是 `.dmeta` 排出「每行 2 个元信息字段」的下限：再窄就掉回每行 1 个。 */
+    grid-template-columns: 1fr 480px;
     gap: 0;
     align-items: stretch;
     overflow: hidden;
@@ -968,6 +969,15 @@ tr:hover .rowact {
 }
 tr:hover .btn.rowact:disabled {
     opacity: 0.5;
+}
+
+/* 标签的属性列：格式 / 默认值等控件竖排 */
+.attrs {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    align-items: flex-start;
+    min-width: 200px;
 }
 
 /* 标签颜色编辑器 */

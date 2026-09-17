@@ -6,14 +6,14 @@ use leptos_router::hooks::{use_navigate, use_params_map};
 
 use crate::frontend::components::{
     display_enum_value, fmt_datetime, from_native, is_native_time_layout, label_chip_class,
-    logged_out, short_time, value_to_string,
+    logged_out, member_label, short_time, to_native, value_to_string, AccountPicker,
 };
 use crate::frontend::graphql_client::{
     archive_entry, archived_entries, create_entry, create_view, delete_entry, delete_view, entry,
-    format_view_query, get_sidebar_collapsed, label_schemas, parse_view_query, query_entries,
-    set_labeling, set_labelings, set_sidebar_collapsed, summarize_entries, unarchive_entry,
-    update_entry, update_view, views, workspace_ai_config, workspace_by_slug, AccountBrief, Entry,
-    Labeling, LabelSchema, NamedPrompt, View, Workspace,
+    format_view_query, get_sidebar_collapsed, label_schemas, members, parse_view_query,
+    query_entries, set_labeling, set_labelings, set_sidebar_collapsed, summarize_entries,
+    unarchive_entry, update_entry, update_view, views, workspace_ai_config, workspace_by_slug,
+    AccountBrief, Entry, Labeling, LabelSchema, Member, NamedPrompt, View, Workspace,
 };
 use crate::frontend::icons::{
     ic_add, ic_back, ic_check, ic_close, ic_copy, ic_folder, ic_full, ic_help, ic_search,
@@ -74,30 +74,68 @@ struct DraftLabel {
 }
 
 impl DraftLabel {
+    /// `preset=false`：一律空着等用户填（用户主动打标签时用）。
     fn from_schema(s: LabelSchema) -> Self {
+        Self::new(s, false)
+    }
+
+    /// `preset=true`：用标签定义的默认值预填（新建 Entry 的自动集用它）。
+    /// 没有默认值的值类型仍然留空——不填即「本次不写这个标签」。
+    fn from_schema_preset(s: LabelSchema) -> Self {
+        Self::new(s, true)
+    }
+
+    fn new(s: LabelSchema, preset: bool) -> Self {
+        let value_type = match s.value_type.as_str() {
+            "null" => "null",
+            "enum" => "enum",
+            "boolean" => "boolean",
+            "integer" => "integer",
+            "float" => "float",
+            "date" => "date",
+            "time" => "time",
+            "datetime" => "datetime",
+            "currency" => "currency",
+            "email" => "email",
+            "account" => "account",
+            _ => "string",
+        };
+        // 无值标签的默认值序列化出来就是 JSON null，与「没配」无从区分；
+        // 但自动集里的无值标签意图明确——「打上」，故按类型判定。
+        let default = if preset && value_type != "null" {
+            s.default_value.clone()
+        } else {
+            Value::Null
+        };
+        // 多选 Enum 的默认值是数组，填进 `many`；其余类型都能用字符串表达。
+        let (mut text, many, flag) = match &default {
+            Value::Null => {
+                // 自动集里的无值标签默认「打上」。
+                let flag = (preset && value_type == "null").then_some(true);
+                (String::new(), Vec::new(), flag)
+            }
+            Value::Bool(b) => (String::new(), Vec::new(), Some(*b)),
+            Value::Array(a) => (String::new(), a.iter().map(value_to_string).collect(), None),
+            other => (value_to_string(other), Vec::new(), None),
+        };
+        // 默认值是存储串，而原生控件只认浏览器格式，直接喂会被判非法而显示成空；
+        // 自定义布局走文本输入，保持存储串原样（与 `to_value` 的换算方向一致）。
+        if matches!(value_type, "date" | "time" | "datetime")
+            && is_native_time_layout(value_type, s.format.as_deref())
+        {
+            text = to_native(value_type, &text);
+        }
         Self {
             name: s.name,
             title: s.title,
-            value_type: match s.value_type.as_str() {
-                "null" => "null",
-                "enum" => "enum",
-                "boolean" => "boolean",
-                "integer" => "integer",
-                "float" => "float",
-                "date" => "date",
-                "time" => "time",
-                "datetime" => "datetime",
-                "currency" => "currency",
-                "email" => "email",
-                _ => "string",
-            },
+            value_type,
             // 先读 `multi` / `format`，再把 `enum_values` 移进信号。
             multi: s.multi,
             format: s.format,
             enum_values: RwSignal::new(s.enum_values),
-            text: RwSignal::new(String::new()),
-            many: RwSignal::new(Vec::new()),
-            flag: RwSignal::new(None),
+            text: RwSignal::new(text),
+            many: RwSignal::new(many),
+            flag: RwSignal::new(flag),
         }
     }
 
@@ -146,6 +184,17 @@ impl DraftLabel {
     }
 }
 
+/// 新建 Entry 时自动打上的标签集合：当前视图的列 ∪ 视图表达式里用到的标签。
+fn auto_label_names(columns: Vec<String>, query: &Value) -> Vec<String> {
+    let mut out = columns;
+    for name in query_eval::collect_label_names(query) {
+        if !out.iter().any(|n| *n == name) {
+            out.push(name);
+        }
+    }
+    out
+}
+
 #[component]
 pub fn WorkspaceMain() -> impl IntoView {
     let params = use_params_map();
@@ -155,6 +204,8 @@ pub fn WorkspaceMain() -> impl IntoView {
     let data: RwSignal<Option<Result<(Workspace, Vec<Entry>, Vec<LabelSchema>), String>>> =
         RwSignal::new(None);
     let schemas = RwSignal::new(Vec::<LabelSchema>::new());
+    // 成员表：Account 型标签的候选，以及表格里把账号 id 显示成姓名。
+    let ws_members = RwSignal::new(Vec::<Member>::new());
     let ws_name = RwSignal::new(String::new());
     let selected = RwSignal::new(String::new());
     let show_new = RwSignal::new(false);
@@ -429,7 +480,17 @@ pub fn WorkspaceMain() -> impl IntoView {
                 let ep = query_entries(&ws.id, &ast, &sort_field, sort_desc, page_now, page_size)
                     .await?;
                 let schema_list = label_schemas(&ws.id).await?;
-                Ok::<_, String>(Some((ws, ep.items, schema_list, ep.total, ep.label_names)))
+                // 成员表只在 Account 型标签或账号列出现时才用得上，但那是加载后的才知道的
+                // 信息，多一次请求换掉「打开详情才发现选不了人」的空窗。
+                let member_list = members(&ws.id).await.unwrap_or_default();
+                Ok::<_, String>(Some((
+                    ws,
+                    ep.items,
+                    schema_list,
+                    ep.total,
+                    ep.label_names,
+                    member_list,
+                )))
             }
             .await;
             // 只接受最新一次请求的结果，丢弃乱序返回的旧响应（翻页/排序并发时可能发生）。
@@ -439,9 +500,10 @@ pub fn WorkspaceMain() -> impl IntoView {
             match fetched {
                 // 工作空间不存在：整页留着只会让每个操作都报「尚未加载完成」，回列表重选。
                 Ok(None) => nav_missing("/workspaces", Default::default()),
-                Ok(Some((w, items, list, total, names))) => {
+                Ok(Some((w, items, list, total, names, member_list))) => {
                     ws_name.set(w.name.clone());
                     schemas.set(list.clone());
+                    ws_members.set(member_list);
                     total_signal.set(total);
                     view_label_names.set(names);
                     load_views(w.id.clone());
@@ -769,8 +831,24 @@ pub fn WorkspaceMain() -> impl IntoView {
                         <button class="btn pri" on:click=move |_| {
                             if !show_new.get_untracked() {
                                 // 打开时按当前标签 schema 重建待填行（新建与取消都重置）。
+                                // 视图列与视图表达式里用到的标签预填默认值：这两类标签
+                                // 是当前视图关心的，新条目本来就该带着它们。
+                                let auto = auto_label_names(
+                                    active_view.get_untracked().map(|v| v.columns).unwrap_or_default(),
+                                    &query_ast.get_untracked(),
+                                );
                                 new_labels.set(
-                                    schemas.get_untracked().into_iter().map(DraftLabel::from_schema).collect(),
+                                    schemas
+                                        .get_untracked()
+                                        .into_iter()
+                                        .map(|s| {
+                                            if auto.iter().any(|n| n == &s.name) {
+                                                DraftLabel::from_schema_preset(s)
+                                            } else {
+                                                DraftLabel::from_schema(s)
+                                            }
+                                        })
+                                        .collect(),
                                 );
                             }
                             show_new.set(!show_new.get_untracked());
@@ -953,7 +1031,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                     new_labels.set(Vec::new());
                                     show_new.set(false);
                                 }>"取消"</button>
-                                <LabelDraft rows=new_labels />
+                                <LabelDraft rows=new_labels members=ws_members />
                             </form>
                         }.into_any()
                     } else {
@@ -992,6 +1070,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 selected
                                 fullscreen
                                 batch_selected
+                                members=ws_members
                                 columns=Signal::derive(move || {
                                     active_view.get().map(|v| v.columns).unwrap_or_default()
                                 })
@@ -1056,7 +1135,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                             view! { <div></div> }.into_any()
                         } else {
                             view! {
-                                <EntryPanel code=selected slug=slug().to_string() schemas refresh />
+                                <EntryPanel code=selected slug=slug().to_string() schemas members=ws_members refresh />
                             }.into_any()
                         }}
                     </div>
@@ -1074,7 +1153,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                             </button>
                         </div>
                         <div class="fs-body">
-                            <EntryPanel code=selected slug=slug().to_string() schemas refresh />
+                            <EntryPanel code=selected slug=slug().to_string() schemas members=ws_members refresh />
                         </div>
                     </div>
                 }.into_any()
@@ -1089,7 +1168,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                         <p class="mut">{move || format!(
                             "写入选中的 {} 个条目；留空的标签不会改动。", batch_selected.get().len()
                         )}</p>
-                        <LabelDraft rows=batch_labels />
+                        <LabelDraft rows=batch_labels members=ws_members />
                         {move || batch_error.get().map(|e| view! { <p class="error">{e}</p> })}
                         <div style="display:flex;gap:8px;justify-content:flex-end">
                             <button class="btn" on:click=move |_| show_batch.set(false)>"取消"</button>
@@ -1518,6 +1597,8 @@ fn EntryTable(
     sort_desc: Signal<bool>,
     /// 当前视图的标题颜色规则 `[{query,color}]`；命中即给标题上色。
     title_colors: Signal<Value>,
+    /// 工作空间成员表：账号型标签列的 id → 姓名。
+    members: RwSignal<Vec<Member>>,
     on_sort: Callback<String>,
 ) -> impl IntoView {
     let cols = move || columns.get();
@@ -1605,6 +1686,8 @@ fn EntryTable(
                     }.into_any(),
                     Some(Ok((_ws, items, _))) => {
                         let sc = schemas.get();
+                        // 账号列展示用：把值里的 id 映射成成员姓名。
+                        let members = members.get();
                         items.iter().map(|e| {
                             let code = e.code.clone();
                             let code_for_class = e.code.clone();
@@ -1701,6 +1784,8 @@ fn EntryTable(
                                                     .is_some_and(|sch| sch.value_type == "enum");
                                                 let is_null = schema
                                                     .is_some_and(|sch| sch.value_type == "null");
+                                                let is_account = schema
+                                                    .is_some_and(|sch| sch.value_type == "account");
                                                 // 无值标签没有可展示的值，退而展示标签标题。
                                                 let text = if is_null {
                                                     schema
@@ -1712,6 +1797,14 @@ fn EntryTable(
                                                             }
                                                         })
                                                         .unwrap_or_else(|| name.clone())
+                                                } else if is_account {
+                                                    // 存的是账号 id，展示成姓名；成员已退出工作空间
+                                                    // 时退回 id，好过显示成空。
+                                                    members
+                                                        .iter()
+                                                        .find(|m| m.account_id == s)
+                                                        .map(member_label)
+                                                        .unwrap_or_else(|| s.clone())
                                                 } else {
                                                     display_enum_value(&s)
                                                 };
@@ -1762,6 +1855,7 @@ fn EntryPanel(
     code: RwSignal<String>,
     slug: String,
     schemas: RwSignal<Vec<LabelSchema>>,
+    members: RwSignal<Vec<Member>>,
     refresh: RwSignal<u32>,
 ) -> impl IntoView {
     let navigate = use_navigate();
@@ -1903,7 +1997,6 @@ fn EntryPanel(
                             let by = |a: &Option<AccountBrief>| a.as_ref().map(|x| x.name.clone()).unwrap_or_else(|| "—".to_string());
                             view! {
                                 <div class="dmeta">
-                                    <div><span class="mut">"编码"</span><span class="code">{e.code.clone()}</span></div>
                                     <div><span class="mut">"创建人"</span>{by(&e.created_by_account)}</div>
                                     <div><span class="mut">"创建时间"</span>{fmt_datetime(&e.created_at)}</div>
                                     <div><span class="mut">"更新人"</span>{by(&e.updated_by_account)}</div>
@@ -1933,7 +2026,7 @@ fn EntryPanel(
                                 }.into_any(),
                             }}
                         </div>
-                        <LabelEditor code=code schemas labels on_changed />
+                        <LabelEditor code=code schemas labels members on_changed />
                     </aside>
                 }
                 .into_any()
@@ -1945,7 +2038,7 @@ fn EntryPanel(
 /// 「新建 Entry」表单里的标签行：沿用 `LabelEditor` 的 chip 外观，但只写本地草稿，
 /// 等条目创建成功后再由 `create_submit` 逐个 upsert。
 #[component]
-fn LabelDraft(rows: RwSignal<Vec<DraftLabel>>) -> impl IntoView {
+fn LabelDraft(rows: RwSignal<Vec<DraftLabel>>, members: RwSignal<Vec<Member>>) -> impl IntoView {
     view! {
         <div class="lbledit">
             {move || {
@@ -2036,6 +2129,16 @@ fn LabelDraft(rows: RwSignal<Vec<DraftLabel>>) -> impl IntoView {
                                         <option value="true" selected=move || flag.get() == Some(true)>"是"</option>
                                         <option value="false" selected=move || flag.get() == Some(false)>"否"</option>
                                     </select>
+                                </div>
+                            }.into_any()
+                        } else if r.value_type == "account" {
+                            let sel = r.text;
+                            let picked = Callback::new(move |id: String| sel.set(id));
+                            view! {
+                                <div class="lblrow">
+                                    <span class="k">{ic_tag()}{title}</span>
+                                    <AccountPicker members=members.get() current=r.text.get()
+                                        on_pick=picked />
                                 </div>
                             }.into_any()
                         } else {

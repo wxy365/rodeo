@@ -1,6 +1,323 @@
 use leptos::prelude::*;
 use serde_json::Value;
 
+use crate::frontend::graphql_client::Member;
+
+/// 账号的展示名：优先姓名，缺失时退回邮箱。
+pub fn member_label(m: &Member) -> String {
+    if m.name.trim().is_empty() {
+        m.email.clone()
+    } else {
+        m.name.clone()
+    }
+}
+
+/// 账号选择器的候选列表上限：够用又不至于把弹层撑得比屏幕还高。
+const ACCOUNT_HITS: usize = 8;
+
+/// 账号选择器：只能从工作空间成员里挑，带按姓名 / 邮箱的搜索。
+///
+/// 值是账号 id（服务端按 id 校验成员身份），展示用姓名。选中即回调 `on_pick`，
+/// 由调用方决定是立即落库（LabelRow）还是只写本地草稿（新建 Entry）。
+#[component]
+pub fn AccountPicker(
+    /// 候选成员（当前工作空间成员表）。
+    members: Vec<Member>,
+    /// 已选账号 id，空串表示未设置；只用于展示。
+    current: String,
+    on_pick: Callback<String>,
+) -> impl IntoView {
+    let query = RwSignal::new(String::new());
+    let label = members
+        .iter()
+        .find(|m| m.account_id == current)
+        .map(member_label)
+        // 成员已被移出工作空间时仍要把 id 显示出来，而不是假装没设置过。
+        .unwrap_or_else(|| current.clone());
+    view! {
+        <div style="position:relative">
+            <input class="inp" style="width:150px" placeholder="搜索账号…" prop:value=query
+                on:input=move |ev| query.set(event_target_value(&ev)) />
+            {move || {
+                let q = query.get().trim().to_lowercase();
+                if q.is_empty() {
+                    return ().into_any();
+                }
+                let hits: Vec<Member> = members
+                    .iter()
+                    .filter(|m| {
+                        m.name.to_lowercase().contains(&q) || m.email.to_lowercase().contains(&q)
+                    })
+                    .take(ACCOUNT_HITS)
+                    .cloned()
+                    .collect();
+                if hits.is_empty() {
+                    return view! { <div class="lblhint"><div class="mut">"没有匹配的成员"</div></div> }
+                        .into_any();
+                }
+                view! {
+                    <div class="lblhint">
+                        {hits
+                            .into_iter()
+                            .map(|m| {
+                                let id = m.account_id.clone();
+                                view! {
+                                    <div class="lblhint-it" on:click=move |_| {
+                                        on_pick.run(id.clone());
+                                        query.set(String::new());
+                                    }>
+                                        <span>{member_label(&m)}</span>
+                                        <span class="mut">{m.email.clone()}</span>
+                                    </div>
+                                }
+                            })
+                            .collect::<Vec<_>>()}
+                    </div>
+                }
+                .into_any()
+            }}
+            <div style="font-size:12px">
+                {if current.is_empty() {
+                    view! { <span class="mut">"未设置"</span> }.into_any()
+                } else {
+                    view! { <span class="chip">{label.clone()}</span> }.into_any()
+                }}
+            </div>
+        </div>
+    }
+}
+
+/// 时间类型的展示格式：常用格式下拉框 + 「自定义…」逃生口。
+///
+/// 值一律是常规表示法（`YYYY-MM-DD`），不是 Go 布局；库里可能还存着历史 Go 布局，
+/// 这类值不在常用列表里，直接落进自定义输入态，用户可原样保存或改掉。
+#[component]
+pub fn FormatSelect(
+    /// date / time / datetime
+    value_type: String,
+    format: RwSignal<String>,
+    #[prop(optional)] disabled: bool,
+) -> impl IntoView {
+    let presets = crate::golayout::presets(&value_type);
+    let custom = RwSignal::new({
+        let cur = format.get_untracked();
+        !cur.is_empty() && !presets.iter().any(|p| *p == cur)
+    });
+    let vt_ph = value_type.clone();
+    // 「（默认）」选项把该类型的默认模式写在标签里：窄表格里比另起一行提示更省地方。
+    let default_opt = format!("（默认 {}）", crate::golayout::default_pattern(&value_type));
+    view! {
+        <div style="display:flex;gap:6px;align-items:center">
+            {move || {
+                // 每次重渲染都要一份新字符串，闭包才是 FnMut。
+                let default_opt = default_opt.clone();
+                if custom.get() {
+                    view! {
+                        <input class="inp" style="width:180px" disabled=disabled
+                            placeholder=crate::golayout::default_pattern(&vt_ph)
+                            prop:value=move || format.get()
+                            on:input=move |ev| format.set(event_target_value(&ev)) />
+                        <button class="btn sm" type="button" disabled=disabled on:click=move |_| {
+                            custom.set(false);
+                            format.set(String::new());
+                        }>"常用格式"</button>
+                    }
+                        .into_any()
+                } else {
+                    view! {
+                        <select class="inp" style="width:180px" disabled=disabled
+                            prop:value=move || format.get()
+                            on:change=move |ev| {
+                                let v = event_target_value(&ev);
+                                // 「自定义…」只切输入态，先不动格式值，把当前值留给用户改。
+                                if v == CUSTOM_FORMAT {
+                                    custom.set(true);
+                                } else {
+                                    format.set(v);
+                                }
+                            }>
+                            <option value="">{default_opt}</option>
+                            {presets
+                                .iter()
+                                .map(|p| {
+                                    let sel = move || format.get() == *p;
+                                    view! { <option value=*p selected=sel>{*p}</option> }
+                                })
+                                .collect::<Vec<_>>()}
+                            <option value=CUSTOM_FORMAT>"自定义…"</option>
+                        </select>
+                    }
+                        .into_any()
+                }
+            }}
+        </div>
+    }
+}
+
+/// 「自定义…」选项的哨兵值：常规表示法里只有字母和连字符，下划线开头的串撞不上。
+const CUSTOM_FORMAT: &str = "__custom__";
+
+/// 标签定义的值默认值输入：给 Entry 添加标签时预填这个值。
+///
+/// 状态用 JSON 表示，形状与条目打标时写库的 `LabelValue` 线上形态一致
+/// （枚举单值 / 字符串型 → String，多选 → Array，布尔 → Bool，数值 → Number，
+/// 时间 / 邮箱 → String），`Value::Null` 表示「没设默认值」。Null 型标签没有值可设，
+/// 它在新建 Entry 表单里靠「自动勾选」体现，故此处不渲染控件。
+#[component]
+pub fn DefaultValueInput(
+    value_type: String,
+    #[prop(optional)] multi: bool,
+    #[prop(optional)] enum_values: Vec<String>,
+    /// 时间类型的展示格式（常规表示法），空串表示该类型默认格式。
+    #[prop(optional)] format: String,
+    /// 账号型的候选成员。
+    #[prop(optional)] members: Vec<Member>,
+    value: RwSignal<Value>,
+    #[prop(optional)] disabled: bool,
+) -> impl IntoView {
+    let vt = value_type.clone();
+    let control = match vt.as_str() {
+        "null" => view! { <span class="mut">"—"</span> }.into_any(),
+        "boolean" => {
+            let cur = move || match value.get() {
+                Value::Bool(true) => "true".to_string(),
+                Value::Bool(false) => "false".to_string(),
+                _ => String::new(),
+            };
+            view! {
+                <select class="inp" style="width:110px" disabled=disabled prop:value=cur
+                    on:change=move |ev| {
+                        value
+                            .set(match event_target_value(&ev).as_str() {
+                                "true" => Value::Bool(true),
+                                "false" => Value::Bool(false),
+                                _ => Value::Null,
+                            });
+                    }>
+                    <option value="">"（未设置）"</option>
+                    <option value="true">"是"</option>
+                    <option value="false">"否"</option>
+                </select>
+            }
+                .into_any()
+        }
+        "enum" if multi => {
+            let cur = move || value_to_string(&value.get());
+            view! {
+                <input class="inp" style="width:180px" placeholder="逗号分隔，留空为不设置"
+                    disabled=disabled prop:value=cur
+                    on:input=move |ev| {
+                        let items: Vec<Value> = event_target_value(&ev)
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .map(Value::String)
+                            .collect();
+                        value
+                            .set(
+                                if items.is_empty() { Value::Null } else { Value::Array(items) },
+                            );
+                    } />
+            }
+                .into_any()
+        }
+        "enum" => {
+            let opts = enum_values.clone();
+            let cur = move || value_to_string(&value.get());
+            view! {
+                <select class="inp" style="width:150px" disabled=disabled prop:value=cur
+                    on:change=move |ev| {
+                        let v = event_target_value(&ev);
+                        value
+                            .set(if v.is_empty() { Value::Null } else { Value::String(v) });
+                    }>
+                    <option value="">"（未设置）"</option>
+                    {opts
+                        .into_iter()
+                        .map(|o| view! { <option value=o.clone()>{display_enum_value(&o)}</option> })
+                        .collect::<Vec<_>>()}
+                </select>
+            }
+                .into_any()
+        }
+        "integer" | "float" | "currency" => {
+            let vt_num = vt.clone();
+            let cur = move || match value.get() {
+                Value::Number(n) => n.to_string(),
+                _ => String::new(),
+            };
+            view! {
+                <input class="inp" style="width:110px" type="number" disabled=disabled
+                    prop:value=cur
+                    on:input=move |ev| {
+                        let v = event_target_value(&ev);
+                        if v.trim().is_empty() {
+                            value.set(Value::Null);
+                            return;
+                        }
+                        let parsed = if vt_num == "integer" {
+                            v.parse::<i64>().ok().map(|i| Value::Number(i.into()))
+                        } else {
+                            v.parse::<f64>()
+                                .ok()
+                                .and_then(serde_json::Number::from_f64)
+                                .map(Value::Number)
+                        };
+                        // 解析失败（如只输入了 「-」）保持原值，避免写入写不进去的东西。
+                        if let Some(n) = parsed {
+                            value.set(n);
+                        }
+                    } />
+            }
+                .into_any()
+        }
+        "date" | "time" | "datetime" => {
+            let vt_time = vt.clone();
+            let stored = Some(format.as_str());
+            let layout = crate::golayout::resolve(stored, crate::golayout::default_go(&vt));
+            let hint =
+                crate::golayout::display_pattern(stored, crate::golayout::default_pattern(&vt_time));
+            view! {
+                <input class="inp" style="width:180px" disabled=disabled placeholder=hint
+                    prop:value=move || value_to_string(&value.get())
+                    on:input=move |ev| {
+                        let v = event_target_value(&ev);
+                        if v.trim().is_empty() {
+                            value.set(Value::Null);
+                        } else if crate::golayout::parse(&layout, &v).is_some() {
+                            value.set(Value::String(v));
+                        }
+                    } />
+            }
+                .into_any()
+        }
+        "account" => {
+            let picked = Callback::new(move |id: String| value.set(Value::String(id)));
+            let current = move || value_to_string(&value.get());
+            view! {
+                <AccountPicker members=members.clone() current=current() on_pick=picked />
+            }
+                .into_any()
+        }
+        // string / email：纯文本，落库前服务端还会再校验一次。
+        _ => view! {
+            <input class="inp" style="width:180px" placeholder="留空为不设置" disabled=disabled
+                prop:value=move || value_to_string(&value.get())
+                on:input=move |ev| {
+                    let v = event_target_value(&ev);
+                    value.set(if v.is_empty() { Value::Null } else { Value::String(v) });
+                } />
+        }
+        .into_any(),
+    };
+    view! {
+        <div style="display:flex;gap:6px;align-items:center">
+            <span class="mut" style="white-space:nowrap">"默认值"</span>
+            {control}
+        </div>
+    }
+}
+
 /// 圆形头像，取首字符展示。
 #[component]
 pub fn Avatar(#[prop(into)] text: String, #[prop(optional)] large: bool) -> impl IntoView {
@@ -22,17 +339,24 @@ pub fn value_to_string(v: &Value) -> String {
     }
 }
 
-/// date / time / datetime 三类中，`format` 缺省或恰为默认 Go 布局时，原生 HTML
-/// 控件就能表达该值；只有自定义布局才需要退回文本输入。
+/// date / time / datetime 三类中，`format` 缺省或恰为默认格式时，原生 HTML
+/// 控件就能表达该值；只有自定义格式才需要退回文本输入。
 pub fn is_native_time_layout(vt: &str, format: Option<&str>) -> bool {
-    let layout = format.unwrap_or(match vt {
-        "date" => crate::golayout::DATE_LAYOUT,
-        "time" => crate::golayout::TIME_LAYOUT,
-        _ => crate::golayout::DATETIME_LAYOUT,
-    });
+    let layout = crate::golayout::resolve(format, crate::golayout::default_go(vt));
     layout == crate::golayout::DATE_LAYOUT
         || layout == crate::golayout::TIME_LAYOUT
         || layout == crate::golayout::DATETIME_LAYOUT
+}
+
+/// 存储串（Go 默认布局）→ 原生控件的值。
+///
+/// 原生 date / time / datetime-local 只认浏览器格式，喂存储串会被判定为非法值而显示成空。
+pub fn to_native(vt: &str, s: &str) -> String {
+    match vt {
+        "datetime" => s.replacen(' ', "T", 1).get(..16).unwrap_or(s).to_string(),
+        "time" => s.get(..5).unwrap_or(s).to_string(),
+        _ => s.to_string(),
+    }
 }
 
 /// 原生控件的值 → 存储串（Go 默认布局：时间类补齐秒、datetime 去 `T` 换空格）。
@@ -192,6 +516,10 @@ pub fn action_label(action: &str) -> &'static str {
         "WorkspaceDeleted" => "删除工作空间",
         "WorkspaceRestored" => "恢复工作空间",
         "WorkspaceCreated" => "创建工作空间",
+        "RuleCreated" => "创建规则",
+        "RuleUpdated" => "更新规则",
+        "RuleDeleted" => "删除规则",
+        "RuleApplied" => "规则触发",
         _ => "变更",
     }
 }
@@ -316,6 +644,7 @@ pub fn value_type_label(vt: &str) -> String {
         "datetime" => "日期时间",
         "currency" => "金额",
         "email" => "邮箱",
+        "account" => "账号",
         other => other,
     }
     .to_string()

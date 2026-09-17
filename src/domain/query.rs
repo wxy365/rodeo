@@ -4,7 +4,7 @@ use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
-use crate::domain::{Entry, LabelSchema, LabelValueType, Labeling};
+use crate::domain::{Entry, LabelEvent, LabelSchema, LabelValue, LabelValueType, Labeling};
 use crate::error::AppError;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -37,6 +37,10 @@ pub enum Field {
     Detail,
     CreatedBy,
     UpdatedBy,
+    // 追加在末尾：事件字段，仅规则触发条件可用
+    EventLabel, // $label
+    EventOld,   // $old
+    EventNew,   // $new
 }
 
 /// 内置元数据关键字（大小写不敏感）。供词法器与标签保留名校验共用。
@@ -102,7 +106,50 @@ impl Query {
         }
     }
 
+    pub fn contains_event_field(&self) -> bool {
+        match self {
+            Query::And(v) | Query::Or(v) => v.iter().any(Query::contains_event_field),
+            Query::Not(q) => q.contains_event_field(),
+            Query::Cond(c) => matches!(
+                c.field,
+                Field::EventLabel | Field::EventOld | Field::EventNew
+            ),
+        }
+    }
+
     pub fn validate(&self, schemas: &[LabelSchema]) -> Result<(), AppError> {
+        if self.contains_event_field() {
+            return Err(AppError::InvalidQuery(
+                "事件字段（$label / $old / $new）只能用在自动化规则的触发条件里".to_string(),
+            ));
+        }
+        self.validate_inner(schemas)
+    }
+
+    /// 规则专用校验：触发条件（`allow_event = true`）允许事件字段，
+    /// 动作目标（`false`）是对条目的过滤、不得引用事件。
+    /// 两者都禁止全文条件——事件场景没有 tantivy 命中集，目标过滤也不走全文检索，
+    /// `text` 恒为假，规则静默不触发比报错更糟。
+    pub fn validate_for_rule(
+        &self,
+        schemas: &[LabelSchema],
+        allow_event: bool,
+    ) -> Result<(), AppError> {
+        if !allow_event && self.contains_event_field() {
+            return Err(AppError::InvalidQuery(
+                "事件字段（$label / $old / $new）只能用在触发条件里".to_string(),
+            ));
+        }
+        if self.contains_text() {
+            return Err(AppError::InvalidQuery(
+                "自动化规则不支持全文条件（text）".to_string(),
+            ));
+        }
+        self.validate_inner(schemas)
+    }
+
+    /// 逐字段校验，不做过不过的准入判断（事件字段在这里视为已通过）。
+    fn validate_inner(&self, schemas: &[LabelSchema]) -> Result<(), AppError> {
         // 引擎只按 first_text_keyword 检索，多个不同全文关键词会得出错误结果。
         let mut kws = HashSet::new();
         collect_text_keywords(self, &mut kws);
@@ -112,8 +159,8 @@ impl Query {
             ));
         }
         match self {
-            Query::And(v) | Query::Or(v) => v.iter().try_for_each(|q| q.validate(schemas)),
-            Query::Not(q) => q.validate(schemas),
+            Query::And(v) | Query::Or(v) => v.iter().try_for_each(|q| q.validate_inner(schemas)),
+            Query::Not(q) => q.validate_inner(schemas),
             Query::Cond(c) => c.validate(schemas),
         }
     }
@@ -136,10 +183,20 @@ pub struct EvalEnv<'a> {
     pub account_of: &'a dyn Fn(Ulid) -> Option<(String, String)>,
     /// 标签名 → (值类型, 时间格式)；未知返回 None。时间型标签比较需要它。
     pub label_of: &'a dyn Fn(&str) -> Option<(LabelValueType, Option<String>)>,
+    /// 当前事件。视图查询为 None，此时事件字段恒为假。
+    pub event: Option<&'a LabelEvent>,
 }
 
 impl Condition {
     fn validate(&self, schemas: &[LabelSchema]) -> Result<(), AppError> {
+        // 事件字段的类型取决于运行时事件，保存时无可校验之处；
+        // 是否允许出现由 `Query::validate_for_rule` 统一把关。
+        if matches!(
+            self.field,
+            Field::EventLabel | Field::EventOld | Field::EventNew
+        ) {
+            return Ok(());
+        }
         match &self.field {
             // 文法 text := 'text' '~' scalar 只允许 Contains。
             Field::Text => {
@@ -219,11 +276,11 @@ impl Condition {
                     LabelValueType::Date | LabelValueType::Time | LabelValueType::DateTime => {
                         if let Some(v) = &self.value {
                             let s = v.as_str().unwrap_or("");
-                            let layout = schema
-                                .format
-                                .as_deref()
-                                .unwrap_or_else(|| crate::domain::label::default_layout(schema.value_type));
-                            if crate::golayout::parse(layout, s).is_none() {
+                            let layout = crate::domain::label::resolve_layout(
+                                schema.format.as_deref(),
+                                schema.value_type,
+                            );
+                            if crate::golayout::parse(&layout, s).is_none() {
                                 return Err(AppError::InvalidQuery(format!("时间格式无效: {s}")));
                             }
                         }
@@ -253,6 +310,8 @@ impl Condition {
                     _ => {}
                 }
             }
+            // 上面的早返回已经处理，这里只为让 match 穷尽。
+            Field::EventLabel | Field::EventOld | Field::EventNew => {}
         }
         Ok(())
     }
@@ -315,12 +374,10 @@ impl Condition {
                             self.op,
                             Op::Eq | Op::Ne | Op::Gt | Op::Ge | Op::Lt | Op::Le
                         ) {
-                            let layout = fmt
-                                .as_deref()
-                                .unwrap_or_else(|| crate::domain::label::default_layout(vt));
+                            let layout = crate::domain::label::resolve_layout(fmt.as_deref(), vt);
                             return cmp_time_layout(
                                 &l.value.to_json(),
-                                layout,
+                                &layout,
                                 self.op,
                                 self.value.as_ref(),
                             );
@@ -329,6 +386,40 @@ impl Condition {
                     cmp_value(&l.value.to_json(), self.op, self.value.as_ref())
                 }
             },
+            // 事件字段：无事件（视图查询）时恒假。校验已保证这种用法存不进库。
+            Field::EventLabel | Field::EventOld | Field::EventNew => {
+                let Some(ev) = env.event else { return false };
+                let got: Option<serde_json::Value> = match &self.field {
+                    Field::EventLabel => Some(serde_json::Value::String(ev.label_name.clone())),
+                    Field::EventOld => ev.old.as_ref().map(LabelValue::to_json),
+                    _ => ev.new.as_ref().map(LabelValue::to_json),
+                };
+                let Some(got) = got else {
+                    // 没有值：只有存在性判断能成立，其余比较一律为假。
+                    return matches!(self.op, Op::Absent);
+                };
+                if self.op == Op::Present {
+                    return true;
+                }
+                // 时间型比较要按被变更标签自己的布局解析，与 Field::Label 同构。
+                if matches!(self.field, Field::EventOld | Field::EventNew) {
+                    if let Some((vt, fmt)) = (env.label_of)(&ev.label_name) {
+                        if matches!(
+                            vt,
+                            LabelValueType::Date | LabelValueType::Time | LabelValueType::DateTime
+                        ) && matches!(
+                            self.op,
+                            Op::Eq | Op::Ne | Op::Gt | Op::Ge | Op::Lt | Op::Le
+                        ) {
+                            let layout = fmt
+                                .as_deref()
+                                .unwrap_or_else(|| crate::domain::label::default_layout(vt));
+                            return cmp_time_layout(&got, layout, self.op, self.value.as_ref());
+                        }
+                    }
+                }
+                cmp_value(&got, self.op, self.value.as_ref())
+            }
         }
     }
 }
@@ -414,6 +505,7 @@ fn type_label(vt: LabelValueType) -> &'static str {
         LabelValueType::DateTime => "日期时间",
         LabelValueType::Currency => "金额",
         LabelValueType::Email => "邮箱",
+        LabelValueType::Account => "账号",
     }
 }
 
@@ -429,6 +521,9 @@ pub fn canonical_name(f: &Field) -> &'static str {
         Field::UpdatedBy => "UpdatedBy",
         Field::UpdatedAt => "UpdatedAt",
         Field::Text => "text",
+        Field::EventLabel => "$label",
+        Field::EventOld => "$old",
+        Field::EventNew => "$new",
     }
 }
 
@@ -459,10 +554,12 @@ fn op_allowed(vt: LabelValueType, op: Op) -> bool {
         Date | Time | DateTime => {
             matches!(op, Op::Eq | Op::Ne | Op::Gt | Op::Ge | Op::Lt | Op::Le)
         }
+        // 账号按 id 比较，比较值就是账号 id：只有精确匹配有意义。
         String | Enum | Email => matches!(
             op,
             Op::Eq | Op::Ne | Op::Contains | Op::NotContains | Op::In | Op::NotIn
         ),
+        Account => matches!(op, Op::Eq | Op::Ne | Op::In | Op::NotIn),
     };
     existence || cmp
 }
@@ -630,6 +727,7 @@ enum Tok {
     Str(String),
     Num(f64),
     Bool(bool),
+    EventField(Field),
 }
 
 fn lex(input: &str) -> Result<Vec<Tok>, AppError> {
@@ -659,6 +757,23 @@ fn lex(input: &str) -> Result<Vec<Tok>, AppError> {
                 _ => { out.push(Tok::Bang); i += 1; }
             },
             '~' => { out.push(Tok::Tilde); i += 1; }
+            '$' => {
+                let start = i + 1;
+                let mut j = start;
+                while j < chars.len() && chars[j].is_ascii_alphabetic() {
+                    j += 1;
+                }
+                let word: String = chars[start..j].iter().collect();
+                match word.to_ascii_lowercase().as_str() {
+                    "label" => out.push(Tok::EventField(Field::EventLabel)),
+                    "old" => out.push(Tok::EventField(Field::EventOld)),
+                    "new" => out.push(Tok::EventField(Field::EventNew)),
+                    _ => {
+                        return Err(AppError::InvalidQuery(format!("未知事件字段: ${word}")))
+                    }
+                }
+                i = j;
+            }
             '"' | '\'' => {
                 let quote = c;
                 let mut s = String::new();
@@ -747,6 +862,7 @@ fn tok_label(t: Option<&Tok>) -> String {
         Some(Tok::In) => "in".to_string(),
         Some(Tok::Text) => "text".to_string(),
         Some(Tok::Builtin(f)) => canonical_name(f).to_string(),
+        Some(Tok::EventField(f)) => canonical_name(f).to_string(),
         Some(Tok::Ident(s)) => s.clone(),
         Some(Tok::Str(s)) => s.clone(),
         Some(Tok::Num(n)) => n.to_string(),
@@ -836,7 +952,9 @@ impl Parser {
                 let v = self.scalar()?;
                 Ok(Query::Cond(Condition { field: Field::Text, op, value: Some(v) }))
             }
-            Some(Tok::Builtin(_)) | Some(Tok::Ident(_)) => self.parse_condition(),
+            Some(Tok::Builtin(_)) | Some(Tok::Ident(_)) | Some(Tok::EventField(_)) => {
+                self.parse_condition()
+            }
             other => Err(AppError::InvalidQuery(format!(
                 "无法解析: {}",
                 tok_label(other)
@@ -886,6 +1004,7 @@ impl Parser {
     fn parse_condition(&mut self) -> Result<Query, AppError> {
         let field = match self.next() {
             Some(Tok::Builtin(f)) => f,
+            Some(Tok::EventField(f)) => f,
             Some(Tok::Ident(s)) => Field::Label(s),
             other => {
                 return Err(AppError::InvalidQuery(format!(
@@ -902,6 +1021,21 @@ impl Parser {
                 ));
             }
             // 标签名后不接运算符时是存在性判断：`Task` 等价于旧的 present(Task)。
+            if !matches!(
+                self.peek(),
+                Some(Tok::Eq | Tok::Ne | Tok::Gt | Tok::Ge | Tok::Lt | Tok::Le | Tok::Tilde | Tok::NotTilde | Tok::In | Tok::Not)
+            ) {
+                return Ok(Query::Cond(Condition { field, op: Op::Present, value: None }));
+            }
+        }
+        if matches!(field, Field::EventLabel | Field::EventOld | Field::EventNew) {
+            if self.peek() == Some(&Tok::LParen) {
+                return Err(AppError::InvalidQuery(
+                    "事件字段不支持 present()/absent()：字段名单独出现即表示「存在」，前缀 ! 表示「不存在」"
+                        .to_string(),
+                ));
+            }
+            // 事件字段单独出现同样是存在性判断：`$new` 即「有值」，`!$new` 即「无值」。
             if !matches!(
                 self.peek(),
                 Some(Tok::Eq | Tok::Ne | Tok::Gt | Tok::Ge | Tok::Lt | Tok::Le | Tok::Tilde | Tok::NotTilde | Tok::In | Tok::Not)
@@ -1086,7 +1220,7 @@ mod tests {
         let never = |_: &str| false;
         let no_acct = |_: Ulid| None;
         let no_label = |_: &str| None;
-        let env = EvalEnv { text_hit: &never, account_of: &no_acct, label_of: &no_label };
+        let env = EvalEnv { text_hit: &never, account_of: &no_acct, label_of: &no_label, event: None };
         assert!(Query::parse("Score = 7").unwrap().evaluate(&e, &labels, &env));
         assert!(!Query::parse("Score != 7").unwrap().evaluate(&e, &labels, &env));
     }
@@ -1120,7 +1254,7 @@ mod tests {
         let never = |_: &str| false;
         let no_acct = |_: Ulid| None;
         let no_label = |_: &str| None;
-        let env = EvalEnv { text_hit: &never, account_of: &no_acct, label_of: &no_label };
+        let env = EvalEnv { text_hit: &never, account_of: &no_acct, label_of: &no_label, event: None };
 
         let present = Query::parse("Task").unwrap();
         assert!(present.evaluate(&e, &labels, &env));
@@ -1155,7 +1289,7 @@ mod tests {
         let never = |_: &str| false;
         let no_acct = |_: Ulid| None;
         let no_label = |_: &str| None;
-        let env = EvalEnv { text_hit: &never, account_of: &no_acct, label_of: &no_label };
+        let env = EvalEnv { text_hit: &never, account_of: &no_acct, label_of: &no_label, event: None };
 
         let present = Query::Cond(Condition { field: Field::Label("Task".into()), op: Op::Present, value: None });
         assert!(present.evaluate(&e, &labels, &env));
@@ -1179,7 +1313,7 @@ mod tests {
         let never = |_: &str| false;
         let no_acct = |_: Ulid| None;
         let no_label = |_: &str| None;
-        let env = EvalEnv { text_hit: &never, account_of: &no_acct, label_of: &no_label };
+        let env = EvalEnv { text_hit: &never, account_of: &no_acct, label_of: &no_label, event: None };
         let cond = |name: &str, op: Op, v: serde_json::Value| Query::Cond(Condition {
             field: Field::Label(name.into()), op, value: Some(v),
         });
@@ -1197,7 +1331,7 @@ mod tests {
         let never = |_: &str| false;
         let no_acct = |_: Ulid| None;
         let no_label = |_: &str| None;
-        let env = EvalEnv { text_hit: &never, account_of: &no_acct, label_of: &no_label };
+        let env = EvalEnv { text_hit: &never, account_of: &no_acct, label_of: &no_label, event: None };
         let future = Query::Cond(Condition {
             field: Field::UpdatedAt, op: Op::Gt, value: Some(serde_json::json!("2099-01-01")),
         });
@@ -1217,8 +1351,8 @@ mod tests {
         let miss = |_: &str| false;
         let no_acct = |_: Ulid| None;
         let no_label = |_: &str| None;
-        let hit_env = EvalEnv { text_hit: &hit, account_of: &no_acct, label_of: &no_label };
-        let miss_env = EvalEnv { text_hit: &miss, account_of: &no_acct, label_of: &no_label };
+        let hit_env = EvalEnv { text_hit: &hit, account_of: &no_acct, label_of: &no_label, event: None };
+        let miss_env = EvalEnv { text_hit: &miss, account_of: &no_acct, label_of: &no_label, event: None };
         assert!(q.evaluate(&e, &[], &hit_env));
         assert!(!q.evaluate(&e, &[], &miss_env));
     }

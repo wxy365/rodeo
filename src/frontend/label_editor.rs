@@ -2,8 +2,11 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use serde_json::Value;
 
-use super::components::{display_enum_value, from_native, is_native_time_layout, value_to_string};
-use super::graphql_client::{remove_labeling, set_labeling, Labeling, LabelSchema};
+use super::components::{
+    display_enum_value, from_native, is_native_time_layout, to_native, value_to_string,
+    AccountPicker,
+};
+use super::graphql_client::{remove_labeling, set_labeling, Labeling, LabelSchema, Member};
 use super::icons::{ic_close, ic_tag};
 use super::query_eval::resolve_label_color;
 
@@ -20,6 +23,8 @@ pub fn LabelEditor(
     #[prop(into)] code: Signal<String>,
     schemas: RwSignal<Vec<LabelSchema>>,
     labels: RwSignal<Vec<Labeling>>,
+    /// 工作空间成员表：Account 型标签的值只从这里挑。
+    members: RwSignal<Vec<Member>>,
     on_changed: Callback<()>,
 ) -> impl IntoView {
     // 正在新增、还没落库的标签名（本地待定行）。
@@ -52,6 +57,7 @@ pub fn LabelEditor(
         <div class="lbledit">
             {move || {
                 let schemas_now = schemas.get();
+                let members_now = members.get();
                 labels
                     .get()
                     .into_iter()
@@ -64,13 +70,13 @@ pub fn LabelEditor(
                         let on_remove = remove_callback(apply, name);
                         view! {
                             <LabelRow title=title schema=schema value=Some(l.value) color=color
-                                on_set on_remove />
+                                members=members_now.clone() on_set on_remove />
                         }
                     })
                     .collect::<Vec<_>>()
             }}
             {move || {
-                // 待定行：选中但还没填值的新标签（无值标签不会走到这里）。
+                // 待定行：选中但还没填值的新标签（无值标签和有默认值的标签不会走到这里）。
                 pending
                     .get()
                     .map(|name| {
@@ -80,7 +86,7 @@ pub fn LabelEditor(
                         let cancel = Callback::new(move |_| pending.set(None));
                         view! {
                             <LabelRow title=title schema=schema value=None color=color
-                                on_set=set_callback(apply, name) on_remove=cancel />
+                                members=members.get() on_set=set_callback(apply, name) on_remove=cancel />
                         }
                     })
             }}
@@ -104,14 +110,18 @@ pub fn LabelEditor(
                         if v.is_empty() {
                             return;
                         }
-                        // 无值标签没有可填的东西，选中即视为「打上」。
-                        let is_valueless = schemas
-                            .get_untracked()
-                            .iter()
-                            .find(|s| s.name == v)
-                            .is_some_and(|s| s.value_type == "null");
-                        if is_valueless {
-                            apply.run((v, Some(Value::Null)));
+                        // 无值标签没有可填的东西，选中即视为「打上」；配了默认值的标签
+                        // 也用默认值直接落库，不必再让用户手填一遍。两者都没有才生成
+                        // 待定行，等用户填值。
+                        let schema = schemas.get_untracked().into_iter().find(|s| s.name == v);
+                        let valueless = schema.as_ref().is_some_and(|s| s.value_type == "null");
+                        // 标签值不会是 JSON null（Null 型走 valueless 分支），故可用 null 表示「没配」。
+                        let default = schema
+                            .as_ref()
+                            .map(|s| s.default_value.clone())
+                            .filter(|d| !d.is_null());
+                        if valueless || default.is_some() {
+                            apply.run((v, Some(default.unwrap_or(Value::Null))));
                         } else {
                             pending.set(Some(v));
                         }
@@ -166,6 +176,7 @@ fn LabelRow(
     schema: Option<LabelSchema>,
     value: Option<Value>,
     color: Option<String>,
+    members: Vec<Member>,
     on_set: Callback<Value>,
     on_remove: Callback<()>,
 ) -> impl IntoView {
@@ -270,14 +281,11 @@ fn LabelRow(
         // 日期 / 时间 / 日期时间：默认布局直接用原生控件；自定义布局退回文本 + 解析校验。
         Some(s) if matches!(s.value_type.as_str(), "date" | "time" | "datetime") => {
             let vt = s.value_type.clone();
-            let layout = s
-                .format
-                .clone()
-                .unwrap_or_else(|| match vt.as_str() {
-                    "date" => crate::golayout::DATE_LAYOUT.to_string(),
-                    "time" => crate::golayout::TIME_LAYOUT.to_string(),
-                    _ => crate::golayout::DATETIME_LAYOUT.to_string(),
-                });
+            // 库里存的是常规表示法，解析前先翻成 Go 布局（兼容历史数据）。
+            let layout = crate::golayout::resolve(
+                s.format.as_deref(),
+                crate::golayout::default_go(&vt),
+            );
             let native_ok = is_native_time_layout(&vt, s.format.as_deref());
             if !native_ok {
                 // 自定义布局：原生控件表达不了，退回文本输入；解析通过才落库。
@@ -343,6 +351,12 @@ fn LabelRow(
                 </div>
             }
             .into_any()
+        }
+        // 账号：只能从工作空间成员里挑（带搜索），选中即落库。
+        Some(s) if s.value_type == "account" => {
+            let picked = Callback::new(move |id: String| on_set.run(Value::String(id)));
+            view! { <AccountPicker members=members.clone() current=current.clone() on_pick=picked /> }
+                .into_any()
         }
         // 邮箱：文本输入，仅做「含 @」的提示性校验（真正的校验在服务端）；清空即移除标签。
         Some(s) if s.value_type == "email" => {
@@ -415,13 +429,3 @@ fn LabelRow(
         </div>
     }
 }
-
-/// 存储串（Go 默认布局）→ 原生控件的值。
-fn to_native(vt: &str, s: &str) -> String {
-    match vt {
-        "datetime" => s.replacen(' ', "T", 1).get(..16).unwrap_or(s).to_string(),
-        "time" => s.get(..5).unwrap_or(s).to_string(),
-        _ => s.to_string(),
-    }
-}
-

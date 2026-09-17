@@ -358,6 +358,7 @@ mod tests {
                     unit: None,
                     color: None,
                     value_colors: vec![],
+                    default_value: None,
                 },
             )
             .unwrap();

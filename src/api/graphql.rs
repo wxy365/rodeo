@@ -10,9 +10,10 @@ use axum::http::HeaderMap;
 use ulid::Ulid;
 
 use crate::domain::{
-    Account, AuditLog, Entry, Invite, LabelSchema, LabelValueType, Labeling, NamedPrompt,
-    Query as ViewQuery, SortField, SortSpec, TitleColorRule, ValueColor, View, Workspace,
-    WorkspaceAiConfig, WorkspaceMember, WorkspaceRole,
+    Account, ActionTarget, AuditLog, AutomationRule, Entry, Invite, LabelSchema, LabelValueType,
+    LabelWrite, Labeling, NamedPrompt, Query as ViewQuery, SortField, SortSpec, TitleColorRule,
+    ValueColor, ValueSource, View, Workspace, WorkspaceAiConfig, WorkspaceMember, WorkspaceRole,
+    WriteOp,
 };
 use crate::error::AppError;
 use crate::service::ai::derive_title;
@@ -92,12 +93,18 @@ pub struct GqlLabelSchema {
     format: Option<String>,
     currency_symbol: Option<String>,
     unit: Option<String>,
+    default_value: Json<serde_json::Value>,
 }
 
 impl From<LabelSchema> for GqlLabelSchema {
     fn from(s: LabelSchema) -> Self {
         let value_colors =
             serde_json::to_value(&s.value_colors).unwrap_or(serde_json::Value::Null);
+        let default_value = s
+            .default_value
+            .as_ref()
+            .map(|v| v.to_json())
+            .unwrap_or(serde_json::Value::Null);
         Self {
             name: s.name,
             title: s.title,
@@ -109,6 +116,7 @@ impl From<LabelSchema> for GqlLabelSchema {
             format: s.format,
             currency_symbol: s.currency_symbol,
             unit: s.unit,
+            default_value: Json(default_value),
         }
     }
 }
@@ -121,6 +129,8 @@ pub struct LabelSchemaAttrsInput {
     format: Option<String>,
     currency_symbol: Option<String>,
     unit: Option<String>,
+    /// 默认值：缺省或 `null` 表示没有默认值。
+    default_value: Option<Json<serde_json::Value>>,
 }
 
 impl LabelSchemaAttrsInput {
@@ -144,6 +154,7 @@ impl LabelSchemaAttrsInput {
             unit: self.unit,
             color,
             value_colors,
+            default_value: self.default_value.map(|j| j.0),
         }
     }
 }
@@ -421,6 +432,127 @@ impl GqlView {
             is_default,
         }
     }
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct GqlRuleWrite {
+    label_name: String,
+    op: String,
+    /// literal / now / new / old
+    value_kind: String,
+    value: Json<serde_json::Value>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct GqlAutomationRule {
+    id: ID,
+    name: String,
+    enabled: bool,
+    trigger_expr: String,
+    target_event_source: bool,
+    /// 目标为「事件源条目」时为空串。
+    target_expr: String,
+    writes: Vec<GqlRuleWrite>,
+    created_at: String,
+    updated_at: String,
+}
+
+// 逐字段手工映射：`trigger` / `ActionTarget::Query` / `ValueSource::Literal` 在领域侧套了
+// query_json / raw_json，整结构序列化会把它们变成转义后的 JSON 字符串而非对象。
+impl From<AutomationRule> for GqlAutomationRule {
+    fn from(r: AutomationRule) -> Self {
+        let trigger_expr = r.trigger.to_expr();
+        let (target_event_source, target_expr) = match &r.action.target {
+            ActionTarget::EventSource => (true, String::new()),
+            ActionTarget::Query(q) => (false, q.to_expr()),
+        };
+        let writes = r
+            .action
+            .writes
+            .iter()
+            .map(|w| {
+                let (kind, value) = match &w.value {
+                    Some(ValueSource::Literal(v)) => ("literal", v.clone()),
+                    Some(ValueSource::Now) => ("now", serde_json::Value::Null),
+                    Some(ValueSource::New) => ("new", serde_json::Value::Null),
+                    Some(ValueSource::Old) => ("old", serde_json::Value::Null),
+                    None => ("", serde_json::Value::Null),
+                };
+                GqlRuleWrite {
+                    label_name: w.label_name.clone(),
+                    op: match w.op {
+                        WriteOp::Set => "set".to_string(),
+                        WriteOp::Remove => "remove".to_string(),
+                    },
+                    value_kind: kind.to_string(),
+                    value: Json(value),
+                }
+            })
+            .collect();
+        Self {
+            id: r.id.to_string().into(),
+            name: r.name,
+            enabled: r.enabled,
+            trigger_expr,
+            target_event_source,
+            target_expr,
+            writes,
+            created_at: r.created_at.to_rfc3339(),
+            updated_at: r.updated_at.to_rfc3339(),
+        }
+    }
+}
+
+#[derive(async_graphql::InputObject)]
+pub struct RuleWriteInput {
+    label_name: String,
+    op: String,
+    /// literal / now / new / old
+    value_kind: String,
+    value: Option<Json<serde_json::Value>>,
+}
+
+/// 入参 → 领域写入。op / valueKind 的字符串在这里收敛成枚举，非法值给可读错误。
+fn to_rule_writes(inputs: Vec<RuleWriteInput>) -> GqlResult<Vec<LabelWrite>> {
+    let mut out = Vec::with_capacity(inputs.len());
+    for i in inputs {
+        let op = match i.op.as_str() {
+            "set" => WriteOp::Set,
+            "remove" => WriteOp::Remove,
+            other => {
+                return Err(AppError::InvalidQuery(format!("未知的标签操作: {other}")).into())
+            }
+        };
+        let value = match op {
+            WriteOp::Remove => None,
+            WriteOp::Set => {
+                let kind = match i.value_kind.as_str() {
+                    "literal" => {
+                        ValueSource::Literal(i.value.map(|j| j.0).unwrap_or(serde_json::Value::Null))
+                    }
+                    "now" => ValueSource::Now,
+                    "new" => ValueSource::New,
+                    "old" => ValueSource::Old,
+                    // 缺省即字面量：前端下拉未选时不该报错，值本身仍会被校验。
+                    "" => {
+                        ValueSource::Literal(i.value.map(|j| j.0).unwrap_or(serde_json::Value::Null))
+                    }
+                    other => {
+                        return Err(
+                            AppError::InvalidQuery(format!("未知的值来源: {other}")).into()
+                        )
+                    }
+                };
+                Some(kind)
+            }
+        };
+        out.push(LabelWrite {
+            label_name: i.label_name,
+            op,
+            value,
+        });
+    }
+    Ok(out)
 }
 
 #[derive(SimpleObject, Clone)]
@@ -712,6 +844,38 @@ impl Query {
         let query = ViewQuery::parse(&expr)?;
         query.validate(&gql.services.label.list_schemas(ws)?)?;
         Ok(Json(serde_json::to_value(&query).unwrap_or(serde_json::Value::Null)))
+    }
+
+    /// 规则列表：成员即可读。返回顺序即求值顺序（创建顺序）。
+    async fn automation_rules(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: ID,
+    ) -> GqlResult<Vec<GqlAutomationRule>> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let ws = parse_ulid(workspace_id.as_str())?;
+        gql.require_member(ws)?;
+        Ok(gql
+            .services
+            .rule
+            .list(ws)?
+            .into_iter()
+            .map(Into::into)
+            .collect())
+    }
+
+    /// 解析并按规则校验触发条件，供编辑器实时校验。
+    async fn parse_rule_trigger(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: ID,
+        expr: String,
+    ) -> GqlResult<Json<serde_json::Value>> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let ws = parse_ulid(workspace_id.as_str())?;
+        gql.require_member(ws)?;
+        let q = gql.services.rule.parse_trigger(ws, &expr)?;
+        Ok(Json(serde_json::to_value(&q).unwrap_or(serde_json::Value::Null)))
     }
 
     async fn format_view_query(
@@ -1261,6 +1425,77 @@ impl Mutation {
         };
         gql.require_role(existing.workspace_id, need)?;
         gql.services.view.delete(auth.account_id, view_id)?;
+        Ok(true)
+    }
+
+    /// 新建规则（Maintainer+）。返回落库后的规则，前端据此刷新列表。
+    #[allow(clippy::too_many_arguments)]
+    async fn create_automation_rule(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: ID,
+        name: String,
+        enabled: bool,
+        trigger_expr: String,
+        target_event_source: bool,
+        target_expr: Option<String>,
+        writes: Vec<RuleWriteInput>,
+    ) -> GqlResult<GqlAutomationRule> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let ws = parse_ulid(workspace_id.as_str())?;
+        gql.require_role(ws, WorkspaceRole::Maintainer)?;
+        let rule = gql.services.rule.create(
+            auth.account_id,
+            ws,
+            &name,
+            enabled,
+            &trigger_expr,
+            target_event_source,
+            target_expr.as_deref(),
+            to_rule_writes(writes)?,
+        )?;
+        Ok(rule.into())
+    }
+
+    /// 改名 / 启用 / 改条件须对规则所属工作空间有 Maintainer——不能凭一个 id 越界改别人的规则。
+    #[allow(clippy::too_many_arguments)]
+    async fn update_automation_rule(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+        name: String,
+        enabled: bool,
+        trigger_expr: String,
+        target_event_source: bool,
+        target_expr: Option<String>,
+        writes: Vec<RuleWriteInput>,
+    ) -> GqlResult<GqlAutomationRule> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let rule_id = parse_ulid(id.as_str())?;
+        let existing = gql.services.rule.get(rule_id)?.ok_or(AppError::NotFound)?;
+        gql.require_role(existing.workspace_id, WorkspaceRole::Maintainer)?;
+        let rule = gql.services.rule.update(
+            auth.account_id,
+            rule_id,
+            &name,
+            enabled,
+            &trigger_expr,
+            target_event_source,
+            target_expr.as_deref(),
+            to_rule_writes(writes)?,
+        )?;
+        Ok(rule.into())
+    }
+
+    async fn delete_automation_rule(&self, ctx: &Context<'_>, id: ID) -> GqlResult<bool> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let rule_id = parse_ulid(id.as_str())?;
+        let existing = gql.services.rule.get(rule_id)?.ok_or(AppError::NotFound)?;
+        gql.require_role(existing.workspace_id, WorkspaceRole::Maintainer)?;
+        gql.services.rule.delete(auth.account_id, rule_id)?;
         Ok(true)
     }
 

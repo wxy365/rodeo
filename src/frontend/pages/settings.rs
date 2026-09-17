@@ -5,9 +5,10 @@ use leptos_router::hooks::{use_navigate, use_params_map};
 use serde_json::Value;
 
 use crate::frontend::ai_prompt_editor::{rows_from, rows_to_value, PromptRow, PromptRows};
+use crate::frontend::automation_tab::AutomationTab;
 use crate::frontend::components::{
     action_label, audit_change, display_enum_value, logged_out, role_label, short_time,
-    value_type_label,
+    value_type_label, DefaultValueInput, FormatSelect,
 };
 use crate::frontend::graphql_client::{
     audit_logs, create_label_schema, delete_workspace, invite_member, invites, label_attrs,
@@ -23,6 +24,14 @@ use crate::frontend::icons::{
 
 fn is_builtin(schema: &LabelSchema) -> bool {
     schema.name == "Task" || schema.name == "Bug"
+}
+
+/// 「枚举值（逗号分隔）」输入框 → 可选值列表（去空白、丢空项）。
+fn enum_values_of(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 #[component]
@@ -74,6 +83,8 @@ pub fn WorkspaceSettings() -> impl IntoView {
     let new_format = RwSignal::new(String::new());
     let new_symbol = RwSignal::new(String::new());
     let new_unit = RwSignal::new(String::new());
+    // 值默认值：JSON，形状同条目打标的 LabelValue（Null 表示没设）。
+    let new_default = RwSignal::new(Value::Null);
 
     // 邀请成员表单
     let invite_email = RwSignal::new(String::new());
@@ -173,7 +184,7 @@ pub fn WorkspaceSettings() -> impl IntoView {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
-        // 服务端整体替换 attrs，必须传齐四个键（label_attrs 已保证）。
+        // 服务端整体替换 attrs，必须传齐全部键（label_attrs 已保证）。
         // 每个属性只在所属类型下组装：否则切类型时会把手滑填的值一起写进库
         //（如先填日期布局再改成金额），而列表里那类属性不展示，用户再也清不掉。
         // 按类型过滤而非在 on:change 里清信号，是为了保住用户切回原类型时已填的内容。
@@ -192,6 +203,8 @@ pub fn WorkspaceSettings() -> impl IntoView {
                 if is_time && !f.is_empty() { Some(f) } else { None },
                 if is_currency && !sy.is_empty() { Some(sy) } else { None },
                 if is_currency && !u.is_empty() { Some(u) } else { None },
+                // 默认值随类型走：切类型时已清空（见类型下拉框的 on:change）。
+                &new_default.get(),
             )
         };
         spawn_local(async move {
@@ -204,6 +217,7 @@ pub fn WorkspaceSettings() -> impl IntoView {
                     new_format.set(String::new());
                     new_symbol.set(String::new());
                     new_unit.set(String::new());
+                    new_default.set(Value::Null);
                     refresh.update(|x| *x += 1);
                 }
                 Err(e) => error.set(Some(e)),
@@ -423,6 +437,9 @@ pub fn WorkspaceSettings() -> impl IntoView {
                     <div class="it" class:on=move || tab.get() == "views" on:click=move |_| tab.set("views".into())>
                         {ic_share()}"视图共享"
                     </div>
+                    <div class="it" class:on=move || tab.get() == "automation" on:click=move |_| tab.set("automation".into())>
+                        {ic_history()}"自动化"
+                    </div>
                     <div class="it" class:on=move || tab.get() == "audit" on:click=move |_| tab.set("audit".into())>
                         {ic_history()}"审计日志"
                     </div>
@@ -524,7 +541,11 @@ pub fn WorkspaceSettings() -> impl IntoView {
                                             <form class="invite" on:submit=create>
                                                 <input class="inp" placeholder="名称（不可改，如 Priority）" prop:value=new_name on:input=move |ev| new_name.set(event_target_value(&ev)) />
                                                 <input class="inp" placeholder="显示名称" prop:value=new_title on:input=move |ev| new_title.set(event_target_value(&ev)) />
-                                                <select class="inp" style="width:120px" prop:value=new_type on:change=move |ev| new_type.set(event_target_value(&ev))>
+                                                <select class="inp" style="width:120px" prop:value=new_type on:change=move |ev| {
+                                                    new_type.set(event_target_value(&ev));
+                                                    // 默认值的形状随类型而变，切类型先清掉，免得把上一个类型的值写到新类型下。
+                                                    new_default.set(Value::Null);
+                                                }>
                                                     <option value="null">"Null（无值）"</option>
                                                     <option value="enum">"Enum"</option>
                                                     <option value="string">"String"</option>
@@ -536,12 +557,14 @@ pub fn WorkspaceSettings() -> impl IntoView {
                                                     <option value="datetime">"日期时间"</option>
                                                     <option value="currency">"金额"</option>
                                                     <option value="email">"邮箱"</option>
+                                                    <option value="account">"账号"</option>
                                                 </select>
-                                                <input class="inp" placeholder="枚举值（逗号分隔）" prop:value=new_enum on:input=move |ev| new_enum.set(event_target_value(&ev)) />
                                                 {move || {
                                                     let vt = new_type.get();
                                                     if vt == "enum" {
                                                         view! {
+                                                            <input class="inp" placeholder="枚举值（逗号分隔）" prop:value=new_enum
+                                                                on:input=move |ev| new_enum.set(event_target_value(&ev)) />
                                                             <label style="display:flex;align-items:center;gap:6px;white-space:nowrap">
                                                                 <input type="checkbox" prop:checked=move || new_multi.get()
                                                                     on:change=move |ev| new_multi.set(event_target_checked(&ev)) />
@@ -549,17 +572,7 @@ pub fn WorkspaceSettings() -> impl IntoView {
                                                             </label>
                                                         }.into_any()
                                                     } else if vt == "date" || vt == "time" || vt == "datetime" {
-                                                        // 占位用该类型自己的默认布局，而不是固定给日期时间的那个。
-                                                        let ph = match vt.as_str() {
-                                                            "date" => crate::golayout::DATE_LAYOUT,
-                                                            "time" => crate::golayout::TIME_LAYOUT,
-                                                            _ => crate::golayout::DATETIME_LAYOUT,
-                                                        };
-                                                        let ph_text = format!("展示格式（Go 布局，如 {ph}）");
-                                                        view! {
-                                                            <input class="inp" placeholder=ph_text prop:value=new_format
-                                                                on:input=move |ev| new_format.set(event_target_value(&ev)) />
-                                                        }.into_any()
+                                                        view! { <FormatSelect value_type=vt format=new_format /> }.into_any()
                                                     } else if vt == "currency" {
                                                         view! {
                                                             <input class="inp" style="width:100px" placeholder="符号（如 ¥）" prop:value=new_symbol
@@ -571,6 +584,20 @@ pub fn WorkspaceSettings() -> impl IntoView {
                                                         ().into_any()
                                                     }
                                                 }}
+                                                {move || {
+                                                    let mem = data
+                                                        .get()
+                                                        .and_then(|r| r.ok())
+                                                        .map(|(_, _, _, _, m, _, _)| m)
+                                                        .unwrap_or_default();
+                                                    view! {
+                                                        <DefaultValueInput value_type=new_type.get()
+                                                            multi=new_multi.get()
+                                                            enum_values=enum_values_of(&new_enum.get())
+                                                            format=new_format.get() members=mem
+                                                            value=new_default />
+                                                    }
+                                                }}
                                                 <button class="btn pri" type="submit">{ic_add()}"新建标签"</button>
                                             </form>
                                         }.into_any()
@@ -580,7 +607,7 @@ pub fn WorkspaceSettings() -> impl IntoView {
                                     <table class="tbl">
                                         <thead><tr><th>"name（不可改）"</th><th>"title"</th><th>"值类型"</th><th>"可选值 / 说明"</th><th>"属性"</th><th>"颜色"</th><th>"来源"</th><th style="width:80px"></th></tr></thead>
                                         <tbody>
-                                            {schemas.iter().map(|s| schema_row(s, can_manage, _ws.id.clone(), refresh, error)).collect::<Vec<_>>()}
+                                            {schemas.iter().map(|s| schema_row(s, can_manage, _ws.id.clone(), member_list.clone(), refresh, error)).collect::<Vec<_>>()}
                                         </tbody>
                                     </table>
                                     <div class="mut">"同一 Entry 对同一 Schema 仅一条 Labeling，更新即 upsert；变更自动记录操作人与时间。"</div>
@@ -623,6 +650,19 @@ pub fn WorkspaceSettings() -> impl IntoView {
                                             </div>
                                         }.into_any()
                                     }}
+                                }.into_any()
+                            } else if cur_tab == "automation" {
+                                // 规则自己加载，不进那个 7 元组；这里只派发工作空间 id 与标签定义。
+                                // 先克隆成独立值再 derive，避免把 `_ws` / `schemas` 整体 move 进闭包，
+                                // 与下方 labels / danger 分支对这些值的借用冲突。
+                                let ws_id_val = _ws.id.clone();
+                                let schemas_auto = schemas.clone();
+                                let ws_id_signal = Signal::derive(move || ws_id_val.clone());
+                                let schemas_signal = Signal::derive(move || schemas_auto.clone());
+                                let refresh_cb = Callback::new(move |_: ()| refresh.update(|x| *x += 1));
+                                view! {
+                                    <AutomationTab ws_id=ws_id_signal schemas=schemas_signal
+                                        can_manage=can_manage on_changed=refresh_cb />
                                 }.into_any()
                             } else if cur_tab == "audit" {
                                 view! {
@@ -906,6 +946,8 @@ fn schema_row(
     s: &LabelSchema,
     can_manage: bool,
     ws_id: String,
+    // 工作空间成员表：账号型标签的默认值要从这里挑。
+    members: Vec<Member>,
     refresh: RwSignal<u32>,
     error: RwSignal<Option<String>>,
 ) -> impl IntoView {
@@ -923,7 +965,10 @@ fn schema_row(
     let format_input = RwSignal::new(s.format.clone().unwrap_or_default());
     let symbol_input = RwSignal::new(s.currency_symbol.clone().unwrap_or_default());
     let unit_input = RwSignal::new(s.unit.clone().unwrap_or_default());
-
+    // 新增 / 改值都直接改这个信号，保存时随 attrs 一起落库。
+    let default_input = RwSignal::new(s.default_value.clone());
+    // 内置标签只放开显示名与颜色；枚举值、属性、默认值仍只读。
+    let can_edit_basic = can_manage;
     let editable = !builtin && can_manage;
     let is_numeric = value_type == "integer" || value_type == "float";
     let vc_enabled = is_numeric || value_type == "enum";
@@ -1040,9 +1085,7 @@ fn schema_row(
         <tr class="static">
             <td class="code">{name.clone()}</td>
             <td>
-                {if builtin {
-                    view! { <span>{s.title.clone()}</span> }.into_any()
-                } else if can_manage {
+                {if can_edit_basic {
                     view! {
                         <input class="inp" style="width:100%" prop:value=title_input on:input=move |ev| {
                             title_input.set(event_target_value(&ev));
@@ -1075,49 +1118,76 @@ fn schema_row(
             <td>
                 {if value_type == "enum" {
                     view! {
-                        <label style="display:flex;align-items:center;gap:6px;white-space:nowrap">
-                            <input type="checkbox" disabled=!editable prop:checked=move || multi_input.get()
-                                on:change=move |ev| {
-                                    multi_input.set(event_target_checked(&ev));
-                                    dirty.set(true);
-                                } />
-                            "多选"
-                        </label>
-                    }.into_any()
-                } else if value_type == "date" || value_type == "time" || value_type == "datetime" {
-                    // 窄单元格里放该类型自己的默认布局，省略「展示格式」的说明文字。
-                    let ph = match value_type.as_str() {
-                        "date" => crate::golayout::DATE_LAYOUT,
-                        "time" => crate::golayout::TIME_LAYOUT,
-                        _ => crate::golayout::DATETIME_LAYOUT,
-                    };
-                    view! {
-                        <input class="inp" style="width:100%" placeholder=ph disabled=!editable
-                            prop:value=move || format_input.get()
-                            on:input=move |ev| {
-                                format_input.set(event_target_value(&ev));
-                                dirty.set(true);
-                            } />
-                    }.into_any()
-                } else if value_type == "currency" {
-                    view! {
-                        <div style="display:flex;gap:6px">
-                            <input class="inp" style="width:80px" placeholder="符号" disabled=!editable
-                                prop:value=move || symbol_input.get()
-                                on:input=move |ev| {
-                                    symbol_input.set(event_target_value(&ev));
-                                    dirty.set(true);
-                                } />
-                            <input class="inp" style="width:80px" placeholder="单位" disabled=!editable
-                                prop:value=move || unit_input.get()
-                                on:input=move |ev| {
-                                    unit_input.set(event_target_value(&ev));
-                                    dirty.set(true);
-                                } />
+                        <div class="attrs">
+                            <label style="display:flex;align-items:center;gap:6px;white-space:nowrap">
+                                <input type="checkbox" disabled=!editable prop:checked=move || multi_input.get()
+                                    on:change=move |ev| {
+                                        multi_input.set(event_target_checked(&ev));
+                                        dirty.set(true);
+                                    } />
+                                "多选"
+                            </label>
+                            // 可选值边改边影响默认值的候选，故跟着 enum_input 重渲染。
+                            {move || view! {
+                                <DefaultValueInput value_type="enum".to_string()
+                                    multi=multi_input.get()
+                                    enum_values=enum_values_of(&enum_input.get())
+                                    value=default_input disabled=!editable />
+                            }}
                         </div>
                     }.into_any()
-                } else {
+                } else if value_type == "date" || value_type == "time" || value_type == "datetime" {
+                    let vt = value_type.clone();
+                    let vt2 = value_type.clone();
+                    view! {
+                        <div class="attrs">
+                            <FormatSelect value_type=vt format=format_input disabled=!editable />
+                            {move || view! {
+                                <DefaultValueInput value_type=vt2.clone()
+                                    format=format_input.get() value=default_input
+                                    disabled=!editable />
+                            }}
+                        </div>
+                    }
+                        .into_any()
+                } else if value_type == "currency" {
+                    let vt = value_type.clone();
+                    view! {
+                        <div class="attrs">
+                            <div style="display:flex;gap:6px">
+                                <input class="inp" style="width:80px" placeholder="符号" disabled=!editable
+                                    prop:value=move || symbol_input.get()
+                                    on:input=move |ev| {
+                                        symbol_input.set(event_target_value(&ev));
+                                        dirty.set(true);
+                                    } />
+                                <input class="inp" style="width:80px" placeholder="单位" disabled=!editable
+                                    prop:value=move || unit_input.get()
+                                    on:input=move |ev| {
+                                        unit_input.set(event_target_value(&ev));
+                                        dirty.set(true);
+                                    } />
+                            </div>
+                            <DefaultValueInput value_type=vt value=default_input disabled=!editable />
+                        </div>
+                    }
+                        .into_any()
+                } else if value_type == "null" {
+                    // 无值标签没有「值」可填：默认值的语义是「新建 Entry 时自动勾上」。
                     view! { <span class="mut">"—"</span> }.into_any()
+                } else {
+                    let vt = value_type.clone();
+                    let evals = enum_opts.clone();
+                    let mem = members.clone();
+                    // multi 会改控件形态（多选 Enum 用逗号分隔文本），故这里跟着信号重渲染。
+                    view! {
+                        {move || view! {
+                            <DefaultValueInput value_type=vt.clone() multi=multi_input.get()
+                                enum_values=evals.clone() members=mem.clone()
+                                value=default_input disabled=!editable />
+                        }}
+                    }
+                        .into_any()
                 }}
             </td>
             <td>
@@ -1126,7 +1196,7 @@ fn schema_row(
                         <input
                             type="color"
                             class="sw"
-                            disabled=!editable
+                            disabled=!can_edit_basic
                             prop:value=move || base_color.get().unwrap_or_else(|| "#3b82f6".to_string())
                             on:input=move |ev| {
                                 base_color.set(Some(event_target_value(&ev)));
@@ -1136,7 +1206,7 @@ fn schema_row(
                         <span class="code" style="font-size:11px">
                             {move || base_color.get().unwrap_or_else(|| "未设置".to_string())}
                         </span>
-                        <button class="vc-op" title="清除基础色" disabled=!editable on:click=move |_| {
+                        <button class="vc-op" title="清除基础色" disabled=!can_edit_basic on:click=move |_| {
                             base_color.set(None);
                             dirty.set(true);
                         }>"清除"</button>
@@ -1205,7 +1275,7 @@ fn schema_row(
                 }}
             </td>
             <td>
-                {if editable {
+                {if can_edit_basic {
                     let ws2 = ws_id.clone();
                     let nm = name.clone();
                     let vt_save = value_type.clone();
@@ -1229,6 +1299,7 @@ fn schema_row(
                                     (!f.is_empty()).then_some(f),
                                     (!sy.is_empty()).then_some(sy),
                                     (!u.is_empty()).then_some(u),
+                                    &default_input.get(),
                                 )
                             };
                             spawn_local(async move {

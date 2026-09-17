@@ -34,7 +34,12 @@ pub enum AuditAction {
     MemberJoined,
     InviteDeclined,
     InviteRevoked,
+    RuleCreated,
+    RuleUpdated,
+    RuleDeleted,
+    RuleApplied,
     // 追加在末尾：bincode 按变体序号编码，新变体只能往后加，否则存量审计日志会错位。
+    // 评论三个变体必须排在 Rule* 之后——Rule* 的序号已在 master 上落过数据。
     CommentCreated,
     CommentUpdated,
     CommentDeleted,

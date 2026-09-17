@@ -40,6 +40,10 @@ pub mod cf {
     /// 与 `WORKSPACES_DELETED` / `ENTRIES_ARCHIVED` 同理，用独立列族而不是给 `Workspace`
     /// 加字段——加字段会让存量工作空间反序列化失败。
     pub const WORKSPACE_AI: &str = "workspace_ai";
+    /// 自动化规则：rule id → `AutomationRule`（bincode）。
+    pub const AUTOMATION_RULES: &str = "automation_rules";
+    /// 工作空间下的规则索引：(workspace_id, rule_id) → 空值，供前缀扫描。
+    pub const AUTOMATION_RULES_BY_WORKSPACE: &str = "automation_rules_by_workspace";
     pub const COMMENTS: &str = "comments";
 }
 
@@ -67,6 +71,8 @@ const ALL_CFS: &[&str] = &[
     cf::DEFAULT_VIEWS,
     cf::LABELINGS_BY_WORKSPACE,
     cf::WORKSPACE_AI,
+    cf::AUTOMATION_RULES,
+    cf::AUTOMATION_RULES_BY_WORKSPACE,
     cf::COMMENTS,
 ];
 
