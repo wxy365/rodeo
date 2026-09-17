@@ -534,6 +534,9 @@ pub fn action_label(action: &str) -> &'static str {
         "RuleUpdated" => "更新规则",
         "RuleDeleted" => "删除规则",
         "RuleApplied" => "规则触发",
+        "CommentCreated" => "发表评论",
+        "CommentUpdated" => "编辑评论",
+        "CommentDeleted" => "删除评论",
         _ => "变更",
     }
 }

@@ -18,8 +18,8 @@ use crate::frontend::graphql_client::{
     AccountBrief, Entry, Labeling, LabelSchema, Member, NamedPrompt, View, Workspace,
 };
 use crate::frontend::icons::{
-    ic_add, ic_back, ic_check, ic_close, ic_copy, ic_folder, ic_full, ic_help, ic_search,
-    ic_setting, ic_share, ic_tag,
+    ic_add, ic_back, ic_check, ic_close, ic_comment, ic_copy, ic_folder, ic_full, ic_help,
+    ic_search, ic_setting, ic_share, ic_tag,
 };
 use crate::frontend::label_editor::LabelEditor;
 use crate::frontend::query_eval;
@@ -1641,6 +1641,23 @@ fn EntryTable(
             .unwrap_or_default()
     };
 
+    // 当前页的评论计数。只取屏幕上这几行的 code——服务端按 code 逐个前缀扫描，
+    // 不需要工作空间级的评论索引列族。
+    let counts = RwSignal::new(std::collections::HashMap::<String, i32>::new());
+    Effect::new(move |_| {
+        let codes = visible_codes();
+        if codes.is_empty() || logged_out() {
+            return;
+        }
+        if cfg!(target_arch = "wasm32") {
+            spawn_local(async move {
+                if let Ok(list) = crate::frontend::graphql_client::comment_counts(&codes).await {
+                    counts.set(list.into_iter().collect());
+                }
+            });
+        }
+    });
+
     view! {
         <table class="tbl">
             <thead>
@@ -1705,6 +1722,7 @@ fn EntryTable(
                             let code_for_copy = e.code.clone();
                             let code_for_check = e.code.clone();
                             let code_for_check_change = e.code.clone();
+                            let code_for_badge = e.code.clone();
                             // 复制成功后的短暂打勾反馈，逐行独立。
                             let copied = RwSignal::new(false);
                             let labels = e.labels.clone();
@@ -1770,7 +1788,16 @@ fn EntryTable(
                                     ) {
                                         Some(c) => format!("color:{c}"),
                                         None => String::new(),
-                                    }>{title_text.clone()}</td>
+                                    }>{title_text.clone()}{counts
+                                        .get()
+                                        .get(&code_for_badge)
+                                        .copied()
+                                        .filter(|n| *n > 0)
+                                        .map(|n| view! {
+                                            <span class="c-badge" title="评论条数">
+                                                {ic_comment()}{n}
+                                            </span>
+                                        })}</td>
                                     {names.iter().map(|name| {
                                         let lv = labels.iter()
                                             .find(|l| &l.label_name == name)
