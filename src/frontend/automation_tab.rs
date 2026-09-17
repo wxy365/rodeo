@@ -28,13 +28,23 @@ impl DraftWrite {
         }
     }
 
-    fn to_input(&self) -> Value {
+    /// `value_type` 是目标标签的声明类型，只有它决定字面量怎么编码。
+    /// 若按「文本像不像 JSON」去猜，string 标签里填 `3` 会被发成数字而被服务端
+    /// 按类型拒收（`LabelValue::from_json` 对 String 只认 `as_str`），用户只能
+    /// 加引号绕开。
+    /// 数值型都按字面解析——currency 也是（服务端对它 `as_f64`），漏掉它会让金额
+    /// 字面量被发成字符串而整条规则写入失败。
+    fn to_input(&self, value_type: Option<&str>) -> Value {
         let kind = self.value_kind.get_untracked();
         let raw = self.value.get_untracked();
-        // 字面量：纯数字 / true / false / null 按 JSON 解析，其余当字符串。
         // 其它来源（now/new/old）没有可填的值，value 一律传 null。
         let value = if kind == "literal" {
-            serde_json::from_str::<Value>(&raw).unwrap_or(Value::String(raw))
+            match value_type {
+                Some("integer" | "float" | "boolean" | "currency") => {
+                    serde_json::from_str::<Value>(&raw).unwrap_or(Value::String(raw))
+                }
+                _ => Value::String(raw),
+            }
         } else {
             Value::Null
         };
@@ -178,7 +188,15 @@ pub fn AutomationTab(
         let writes: Vec<Value> = f_writes
             .get_untracked()
             .iter()
-            .map(|w| w.to_input())
+            .map(|w| {
+                let name = w.label_name.get_untracked();
+                let vt = schemas
+                    .get_untracked()
+                    .into_iter()
+                    .find(|s| s.name == name)
+                    .map(|s| s.value_type);
+                w.to_input(vt.as_deref())
+            })
             .collect();
         let writes = Value::Array(writes);
         let target = f_target.get_untracked();
