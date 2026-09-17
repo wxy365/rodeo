@@ -799,6 +799,7 @@ mod tests {
             format: None,
             currency_symbol: None,
             unit: None,
+            default_value: None,
         }
     }
 
@@ -949,6 +950,7 @@ mod tests {
                     unit: None,
                     color: None,
                     value_colors: vec![],
+                    default_value: None,
                 },
             )
             .unwrap();

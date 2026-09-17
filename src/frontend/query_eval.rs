@@ -516,6 +516,7 @@ mod tests {
             value_colors: json!(null),
             multi: false,
             format: format.map(str::to_string),
+            default_value: json!(null),
             currency_symbol: None,
             unit: None,
         }

@@ -4,3 +4,6 @@
 node_modules
 /config.toml
 .DS_Store
+/graphify-out
+/.superpowers
+/.codegraph
