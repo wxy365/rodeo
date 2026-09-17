@@ -67,7 +67,7 @@ impl EntryService {
             if let Err(e) = search.remove_entry(&entry.code) {
                 tracing::warn!("移除检索索引失败 {}: {e}", entry.code);
             }
-        } else if let Err(e) = search.index_entry(entry, &labels) {
+        } else if let Err(e) = search.index_entry(entry, &labels, "") {
             tracing::warn!("更新检索索引失败 {}: {e}", entry.code);
         }
     }

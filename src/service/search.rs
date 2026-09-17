@@ -21,6 +21,9 @@ const TOKENIZER: &str = "cjk";
 /// 承载 Entry Code 的可检索副本；`f_code` 是未分词的 STRING 字段，只能精确匹配，
 /// 供删除/取回用，检索需要走这里的分词字段。
 const CODE_TEXT_FIELD: &str = "entry_code_text";
+/// 评论正文的检索副本。单开一个字段而不是拼进 `content`，
+/// 是为了不让标题/详情/评论混在一起影响相关度。
+const COMMENTS_FIELD: &str = "comments";
 
 fn srch_err<E: std::fmt::Display>(e: E) -> AppError {
     AppError::Storage(format!("检索索引错误: {e}"))
@@ -51,6 +54,20 @@ pub fn strip_rich_text(detail: &str) -> String {
     d.to_string()
 }
 
+/// 把一条条目的全部评论正文抽成纯文本，供检索索引拼接。
+pub fn comments_text(store: &DocStore, entry_code: &str) -> Result<String, AppError> {
+    let mut out = String::new();
+    for (_, v) in store.scan_prefix(cf::COMMENTS, entry_code.as_bytes())? {
+        let c: crate::domain::Comment = bincode::deserialize(&v)?;
+        let t = strip_rich_text(&c.body);
+        if !t.trim().is_empty() {
+            out.push_str(&t);
+            out.push('\n');
+        }
+    }
+    Ok(out)
+}
+
 pub struct SearchIndex {
     index: Index,
     writer: Mutex<IndexWriter>,
@@ -61,6 +78,7 @@ pub struct SearchIndex {
     f_content: Field,
     f_labels: Field,
     f_code_text: Field,
+    f_comments: Field,
 }
 
 impl SearchIndex {
@@ -79,12 +97,16 @@ impl SearchIndex {
         let f_content = text(&mut b, "content");
         let f_labels = text(&mut b, "labels");
         let f_code_text = text(&mut b, CODE_TEXT_FIELD);
+        let f_comments = text(&mut b, COMMENTS_FIELD);
         let schema = b.build();
 
         let index = match Index::open_in_dir(dir) {
-            // 旧索引缺少 code 检索字段：删掉重建。索引是纯派生物，
+            // 旧索引缺少 code 或评论检索字段：删掉重建。索引是纯派生物，
             // 启动时的 `backfill` 会从 RocksDB 重新灌满。
-            Ok(existing) if existing.schema().get_field(CODE_TEXT_FIELD).is_err() => {
+            Ok(existing)
+                if existing.schema().get_field(CODE_TEXT_FIELD).is_err()
+                    || existing.schema().get_field(COMMENTS_FIELD).is_err() =>
+            {
                 drop(existing);
                 std::fs::remove_dir_all(dir).map_err(srch_err)?;
                 // create_in_dir 要求父目录存在，重建刚被删掉的目录。
@@ -111,6 +133,7 @@ impl SearchIndex {
             f_content,
             f_labels,
             f_code_text,
+            f_comments,
         })
     }
 
@@ -120,6 +143,7 @@ impl SearchIndex {
         writer: &IndexWriter,
         entry: &Entry,
         labels: &[Labeling],
+        comments: &str,
     ) -> Result<(), AppError> {
         let label_text = labels
             .iter()
@@ -144,17 +168,23 @@ impl SearchIndex {
                 self.f_content => strip_rich_text(&entry.detail),
                 self.f_labels => label_text,
                 self.f_code_text => entry.code.clone(),
+                self.f_comments => comments.to_string(),
             ))
             .map_err(srch_err)?;
         Ok(())
     }
 
-    pub fn index_entry(&self, entry: &Entry, labels: &[Labeling]) -> Result<(), AppError> {
+    pub fn index_entry(
+        &self,
+        entry: &Entry,
+        labels: &[Labeling],
+        comments: &str,
+    ) -> Result<(), AppError> {
         let mut writer = self
             .writer
             .lock()
             .map_err(|_| AppError::Internal("索引写锁中毒".into()))?;
-        self.add_entry_doc(&writer, entry, labels)?;
+        self.add_entry_doc(&writer, entry, labels, comments)?;
         writer.commit().map_err(srch_err)?;
         drop(writer);
         self.reader.reload().map_err(srch_err)?;
@@ -180,7 +210,13 @@ impl SearchIndex {
         }
         let parser = QueryParser::for_index(
             &self.index,
-            vec![self.f_title, self.f_content, self.f_labels, self.f_code_text],
+            vec![
+                self.f_title,
+                self.f_content,
+                self.f_labels,
+                self.f_code_text,
+                self.f_comments,
+            ],
         );
         let parsed = parser.parse_query(keyword).map_err(srch_err)?;
         let ws_query = TermQuery::new(
@@ -235,7 +271,8 @@ impl SearchIndex {
                 .into_iter()
                 .map(|(_, lv)| bincode::deserialize::<Labeling>(&lv))
                 .collect::<Result<Vec<_>, _>>()?;
-            self.add_entry_doc(&writer, &entry, &labels)?;
+            let comments = comments_text(store, &entry.code)?;
+            self.add_entry_doc(&writer, &entry, &labels, &comments)?;
             count += 1;
         }
         writer.commit().map_err(srch_err)?;
@@ -273,13 +310,16 @@ mod tests {
         let ws = Ulid::new();
         let mut e = Entry::new(ws, "找回密码失败".to_string(), Ulid::new());
         e.detail = r#"{"ops":[{"insert":"用户反馈邮箱收不到验证码"}]}"#.to_string();
-        idx.index_entry(&e, &[]).unwrap();
+        idx.index_entry(&e, &[], "评论区补充：验证码有过期时间").unwrap();
 
         let hits = idx.search(ws, "密码", 10).unwrap();
         assert_eq!(hits, vec![e.code.clone()], "中文子串必须命中");
 
         let hits = idx.search(ws, "验证码", 10).unwrap();
         assert_eq!(hits, vec![e.code.clone()], "详情正文必须可检索");
+
+        let hits = idx.search(ws, "过期时间", 10).unwrap();
+        assert_eq!(hits, vec![e.code.clone()], "评论正文必须可检索");
         drop(idx);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -291,7 +331,7 @@ mod tests {
         let ws = Ulid::new();
         let mut e = Entry::new(ws, "无关标题".to_string(), Ulid::new());
         e.code = "RD-kM3vB7dR".to_string();
-        idx.index_entry(&e, &[]).unwrap();
+        idx.index_entry(&e, &[], "").unwrap();
 
         // 整段 Code 与其中一段子串都应命中。
         assert_eq!(idx.search(ws, "RD-kM3vB7dR", 10).unwrap(), vec![e.code.clone()]);
@@ -324,7 +364,7 @@ mod tests {
         assert_eq!(idx.num_docs(), 0, "旧索引应被重建");
         let ws = Ulid::new();
         let e = Entry::new(ws, "重建后".to_string(), Ulid::new());
-        idx.index_entry(&e, &[]).unwrap();
+        idx.index_entry(&e, &[], "").unwrap();
         assert_eq!(idx.search(ws, e.code.as_str(), 10).unwrap(), vec![e.code.clone()]);
         drop(idx);
         std::fs::remove_dir_all(&dir).ok();
@@ -338,8 +378,8 @@ mod tests {
         let ws_b = Ulid::new();
         let ea = Entry::new(ws_a, "共享词".to_string(), Ulid::new());
         let eb = Entry::new(ws_b, "共享词".to_string(), Ulid::new());
-        idx.index_entry(&ea, &[]).unwrap();
-        idx.index_entry(&eb, &[]).unwrap();
+        idx.index_entry(&ea, &[], "").unwrap();
+        idx.index_entry(&eb, &[], "").unwrap();
 
         assert_eq!(idx.search(ws_a, "共享", 10).unwrap(), vec![ea.code.clone()]);
 
@@ -356,7 +396,7 @@ mod tests {
         let ws = Ulid::new();
         let e = Entry::new(ws, "t".to_string(), Ulid::new());
         let l = Labeling::new(e.code.clone(), "Owner".to_string(), LabelValue::Enum("陈晨".to_string()), Ulid::new());
-        idx.index_entry(&e, &[l]).unwrap();
+        idx.index_entry(&e, &[l], "").unwrap();
         assert_eq!(idx.search(ws, "陈晨", 10).unwrap(), vec![e.code.clone()]);
         drop(idx);
         std::fs::remove_dir_all(&dir).ok();
