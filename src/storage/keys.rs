@@ -58,6 +58,16 @@ pub fn labeling_key(code: &str, name: &str) -> Vec<u8> {
     key
 }
 
+/// (entry_code, comment_id) 复合键，16 + 16 字节。
+/// `comment_id` 是 ULID，字节序即时间序，因此按 entry_code 前缀扫描
+/// 天然得到按发表时间升序的评论列表，不需要额外的排序字段。
+pub fn comment_key(entry_code: &str, comment_id: Ulid) -> Vec<u8> {
+    let mut key = Vec::with_capacity(entry_code.len() + 16);
+    key.extend_from_slice(entry_code.as_bytes());
+    key.extend_from_slice(&comment_id.to_bytes());
+    key
+}
+
 /// 审计主键：(时间倒序, id)。i64::MAX - millis 实现降序，前缀扫描最新在前。
 pub fn audit_log_key(at: DateTime<Utc>, id: Ulid) -> Vec<u8> {
     let mut key = Vec::with_capacity(24);

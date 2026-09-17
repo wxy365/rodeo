@@ -40,6 +40,7 @@ pub mod cf {
     /// 与 `WORKSPACES_DELETED` / `ENTRIES_ARCHIVED` 同理，用独立列族而不是给 `Workspace`
     /// 加字段——加字段会让存量工作空间反序列化失败。
     pub const WORKSPACE_AI: &str = "workspace_ai";
+    pub const COMMENTS: &str = "comments";
 }
 
 const ALL_CFS: &[&str] = &[
@@ -66,6 +67,7 @@ const ALL_CFS: &[&str] = &[
     cf::DEFAULT_VIEWS,
     cf::LABELINGS_BY_WORKSPACE,
     cf::WORKSPACE_AI,
+    cf::COMMENTS,
 ];
 
 /// 单个批量写操作：文档/索引/审计统一原子写入。
