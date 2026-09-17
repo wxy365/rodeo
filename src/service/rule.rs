@@ -358,6 +358,7 @@ fn no_text_hit(_: &str) -> bool {
     false
 }
 
+#[derive(Clone)]
 pub struct RuleEngine {
     store: Arc<DocStore>,
 }

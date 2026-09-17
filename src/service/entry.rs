@@ -14,6 +14,8 @@ use crate::service::rule::{RuleEngine, StagedWrite};
 use crate::service::search::{SearchIndex, TEXT_CANDIDATE_LIMIT};
 use crate::storage::{cf, keys, BatchOp, DocStore};
 
+/// 字段全是 `Arc`，克隆只是复制几个指针，供 `CommentService` 持有同一份实例。
+#[derive(Clone)]
 pub struct EntryService {
     store: Arc<DocStore>,
     search: Option<Arc<SearchIndex>>,
@@ -61,13 +63,16 @@ impl EntryService {
     fn reindex(&self, entry: &Entry) {
         let Some(search) = &self.search else { return };
         let labels = self.labelings(&entry.code).unwrap_or_default();
+        // 评论正文也进检索：搜得到评论内容，但检索字段与标题/详情分开，不会互相干扰相关度。
+        let comments = crate::service::search::comments_text(&self.store, &entry.code)
+            .unwrap_or_default();
         // 归档与软删除一样，都让条目退出全文检索：归档条目不该再被搜索命中。
         let out_of_play = entry.is_deleted() || self.is_archived(&entry.code).unwrap_or(false);
         if out_of_play {
             if let Err(e) = search.remove_entry(&entry.code) {
                 tracing::warn!("移除检索索引失败 {}: {e}", entry.code);
             }
-        } else if let Err(e) = search.index_entry(entry, &labels, "") {
+        } else if let Err(e) = search.index_entry(entry, &labels, &comments) {
             tracing::warn!("更新检索索引失败 {}: {e}", entry.code);
         }
     }
@@ -125,6 +130,15 @@ impl EntryService {
 
     pub fn get(&self, code: &str) -> Result<Option<Entry>, AppError> {
         self.store.get(cf::ENTRIES, code.as_bytes())
+    }
+
+    /// 供评论服务在评论变更后重建该条目的检索文档——评论不属于 Entry 的字段，
+    /// 只能由外部触发这次重建。
+    pub fn reindex_by_code(&self, code: &str) -> Result<(), AppError> {
+        if let Some(entry) = self.get(code)? {
+            self.reindex(&entry);
+        }
+        Ok(())
     }
 
     /// 乐观并发更新：expected_updated_at 与当前 updated_at 不一致时返回 ConflictDetected。
