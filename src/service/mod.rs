@@ -1,6 +1,7 @@
 pub mod ai;
 pub mod audit;
 pub mod auth;
+pub mod comment;
 pub mod entry;
 pub mod label;
 pub mod rule;
@@ -17,6 +18,7 @@ use crate::storage::DocStore;
 pub use ai::{AiClient, AiService};
 pub use audit::AuditService;
 pub use auth::{AuthContext, AuthService};
+pub use comment::CommentService;
 pub use entry::EntryService;
 pub use label::LabelService;
 pub use rule::{RuleEngine, RuleService};
@@ -31,6 +33,7 @@ pub struct Services {
     pub auth: AuthService,
     pub workspace: WorkspaceService,
     pub entry: EntryService,
+    pub comment: CommentService,
     pub label: LabelService,
     pub audit: AuditService,
     pub search: Arc<SearchIndex>,
@@ -45,10 +48,14 @@ impl Services {
         let search = Arc::new(SearchIndex::open(&format!("{}/search", config.data_dir()))?);
         // 未配置就保持 None，启动阶段不做任何网络操作。
         let ai_client = AiClient::from_config(&config.ai)?;
+        let entry = EntryService::with_search(store.clone(), search.clone());
+        // 评论服务要与 EntryService 共用同一份实例：评论变更后要触发它的重索引。
+        let comment = CommentService::new(store.clone(), entry.clone());
         let services = Self {
             auth: AuthService::new(store.clone(), config.clone()),
             workspace: WorkspaceService::new(store.clone()),
-            entry: EntryService::with_search(store.clone(), search.clone()),
+            entry,
+            comment,
             label: LabelService::new(store.clone()),
             audit: AuditService::new(store.clone()),
             view: ViewService::new(store.clone()),
