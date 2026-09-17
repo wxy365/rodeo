@@ -323,6 +323,7 @@ impl EntryService {
             )?
             .ok_or(AppError::NotFound)?;
         let lv = LabelValue::from_json(value, &schema)?;
+        crate::service::label::check_account_member(&self.store, entry.workspace_id, &lv)?;
         let labeling = Labeling::new(entry_code.to_string(), label_name.to_string(), lv, actor);
         let before = self
             .store
@@ -391,7 +392,9 @@ impl EntryService {
                     &keys::label_schema_key(ws_id, name),
                 )?
                 .ok_or_else(|| AppError::InvalidQuery(format!("标签不存在: {name}")))?;
-            resolved.push((name.clone(), LabelValue::from_json(value, &schema)?));
+            let lv = LabelValue::from_json(value, &schema)?;
+            crate::service::label::check_account_member(&self.store, ws_id, &lv)?;
+            resolved.push((name.clone(), lv));
         }
 
         let mut ops = Vec::new();
@@ -1067,6 +1070,7 @@ mod tests {
                     unit: None,
                     color: None,
                     value_colors: vec![],
+                    default_value: None,
                 },
             )
             .unwrap();

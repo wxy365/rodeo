@@ -18,6 +18,8 @@ pub enum LabelValueType {
     DateTime,
     Currency,
     Email,
+    // 同上，只能追加
+    Account,
 }
 
 impl LabelValueType {
@@ -34,6 +36,7 @@ impl LabelValueType {
             LabelValueType::DateTime => "datetime",
             LabelValueType::Currency => "currency",
             LabelValueType::Email => "email",
+            LabelValueType::Account => "account",
         }
     }
 
@@ -50,6 +53,7 @@ impl LabelValueType {
             "datetime" => Some(LabelValueType::DateTime),
             "currency" => Some(LabelValueType::Currency),
             "email" => Some(LabelValueType::Email),
+            "account" => Some(LabelValueType::Account),
             _ => None,
         }
     }
@@ -71,6 +75,8 @@ pub enum LabelValue {
     DateTime(String),
     Currency(f64),
     Email(String),
+    // 追加，勿插入到上方
+    Account(String),
 }
 
 impl LabelValue {
@@ -131,11 +137,8 @@ impl LabelValue {
             }
             LabelValueType::Date | LabelValueType::Time | LabelValueType::DateTime => {
                 let s = value.as_str().ok_or(AppError::InvalidLabelValue)?;
-                let layout = schema
-                    .format
-                    .as_deref()
-                    .unwrap_or_else(|| default_layout(schema.value_type));
-                crate::golayout::parse(layout, s).ok_or(AppError::InvalidLabelValue)?;
+                let layout = resolve_layout(schema.format.as_deref(), schema.value_type);
+                crate::golayout::parse(&layout, s).ok_or(AppError::InvalidLabelValue)?;
                 Ok(match schema.value_type {
                     LabelValueType::Date => LabelValue::Date(s.to_string()),
                     LabelValueType::Time => LabelValue::Time(s.to_string()),
@@ -158,6 +161,12 @@ impl LabelValue {
                 }
                 Ok(LabelValue::Email(s.to_string()))
             }
+            // 只校验「是个账号 id」；「是不是本工作空间成员」需要读成员表，由服务层补。
+            LabelValueType::Account => {
+                let s = value.as_str().ok_or(AppError::InvalidLabelValue)?;
+                Ulid::from_string(s).map_err(|_| AppError::InvalidLabelValue)?;
+                Ok(LabelValue::Account(s.to_string()))
+            }
         }
     }
 
@@ -178,13 +187,22 @@ impl LabelValue {
             LabelValue::Date(s)
             | LabelValue::Time(s)
             | LabelValue::DateTime(s)
-            | LabelValue::Email(s) => serde_json::Value::String(s.clone()),
+            | LabelValue::Email(s)
+            | LabelValue::Account(s) => serde_json::Value::String(s.clone()),
             LabelValue::Currency(f) => serde_json::json!(f),
+        }
+    }
+
+    /// Account 值里的账号 id；其余类型返回 None。
+    pub fn account_of(&self) -> Option<Ulid> {
+        match self {
+            LabelValue::Account(s) => Ulid::from_string(s).ok(),
+            _ => None,
         }
     }
 }
 
-/// 时间型标签的默认展示布局（schema.format 缺省时使用）。
+/// 时间型标签的默认展示布局（schema.format 缺省时使用，Go 布局）。
 pub fn default_layout(vt: LabelValueType) -> &'static str {
     match vt {
         LabelValueType::Date => crate::golayout::DATE_LAYOUT,
@@ -192,6 +210,21 @@ pub fn default_layout(vt: LabelValueType) -> &'static str {
         LabelValueType::DateTime => crate::golayout::DATETIME_LAYOUT,
         _ => "",
     }
+}
+
+/// 时间型标签的默认展示格式（常规表示法，写进 schema.format 与配置界面）。
+pub fn default_pattern(vt: LabelValueType) -> &'static str {
+    match vt {
+        LabelValueType::Date => crate::golayout::DATE_PATTERN,
+        LabelValueType::Time => crate::golayout::TIME_PATTERN,
+        LabelValueType::DateTime => crate::golayout::DATETIME_PATTERN,
+        _ => "",
+    }
+}
+
+/// `schema.format`（常规表示法，兼容历史 Go 布局）→ 实际用于解析 / 格式化的 Go 布局。
+pub fn resolve_layout(format: Option<&str>, vt: LabelValueType) -> String {
+    crate::golayout::resolve(format, default_layout(vt))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -211,11 +244,16 @@ pub struct LabelSchema {
     #[serde(default)]
     pub multi: bool, // 仅 Enum 有效
     #[serde(default)]
-    pub format: Option<String>, // 时间型 = Go 布局；Currency 可留空
+    pub format: Option<String>, // 时间型 = 常规模式（如 YYYY-MM-DD HH:mm:ss）
     #[serde(default)]
     pub currency_symbol: Option<String>, // 缺省 ¥（仅展示用）
     #[serde(default)]
     pub unit: Option<String>, // 如「元」「万」（仅展示用）
+    // 同样只能追加
+    /// 给 Entry 打这个标签时预填的值；`None` 表示没有默认值。
+    /// 无值标签（Null）用 `Some(LabelValue::Null)` 表示「默认打上」。
+    #[serde(default)]
+    pub default_value: Option<LabelValue>,
 }
 
 /// 标签值到颜色的映射规则。用普通 struct 而非 tagged enum：`LabelSchema` 以 bincode
@@ -250,6 +288,7 @@ impl LabelSchema {
             format: None,
             currency_symbol: None,
             unit: None,
+            default_value: None,
         }
     }
 

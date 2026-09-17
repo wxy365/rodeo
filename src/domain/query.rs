@@ -219,11 +219,11 @@ impl Condition {
                     LabelValueType::Date | LabelValueType::Time | LabelValueType::DateTime => {
                         if let Some(v) = &self.value {
                             let s = v.as_str().unwrap_or("");
-                            let layout = schema
-                                .format
-                                .as_deref()
-                                .unwrap_or_else(|| crate::domain::label::default_layout(schema.value_type));
-                            if crate::golayout::parse(layout, s).is_none() {
+                            let layout = crate::domain::label::resolve_layout(
+                                schema.format.as_deref(),
+                                schema.value_type,
+                            );
+                            if crate::golayout::parse(&layout, s).is_none() {
                                 return Err(AppError::InvalidQuery(format!("时间格式无效: {s}")));
                             }
                         }
@@ -315,12 +315,10 @@ impl Condition {
                             self.op,
                             Op::Eq | Op::Ne | Op::Gt | Op::Ge | Op::Lt | Op::Le
                         ) {
-                            let layout = fmt
-                                .as_deref()
-                                .unwrap_or_else(|| crate::domain::label::default_layout(vt));
+                            let layout = crate::domain::label::resolve_layout(fmt.as_deref(), vt);
                             return cmp_time_layout(
                                 &l.value.to_json(),
-                                layout,
+                                &layout,
                                 self.op,
                                 self.value.as_ref(),
                             );
@@ -414,6 +412,7 @@ fn type_label(vt: LabelValueType) -> &'static str {
         LabelValueType::DateTime => "日期时间",
         LabelValueType::Currency => "金额",
         LabelValueType::Email => "邮箱",
+        LabelValueType::Account => "账号",
     }
 }
 
@@ -459,10 +458,12 @@ fn op_allowed(vt: LabelValueType, op: Op) -> bool {
         Date | Time | DateTime => {
             matches!(op, Op::Eq | Op::Ne | Op::Gt | Op::Ge | Op::Lt | Op::Le)
         }
+        // 账号按 id 比较，比较值就是账号 id：只有精确匹配有意义。
         String | Enum | Email => matches!(
             op,
             Op::Eq | Op::Ne | Op::Contains | Op::NotContains | Op::In | Op::NotIn
         ),
+        Account => matches!(op, Op::Eq | Op::Ne | Op::In | Op::NotIn),
     };
     existence || cmp
 }

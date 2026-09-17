@@ -4,8 +4,8 @@ use leptos_router::hooks::{use_navigate, use_params_map};
 
 use crate::frontend::components::{action_label, audit_change, fmt_datetime, logged_out, short_time};
 use crate::frontend::graphql_client::{
-    audit_logs, delete_entry, entry, label_schemas, update_entry, workspace_by_slug, AccountBrief,
-    AuditLog, Entry, Labeling, LabelSchema, Workspace,
+    audit_logs, delete_entry, entry, label_schemas, members, update_entry, workspace_by_slug,
+    AccountBrief, AuditLog, Entry, Labeling, LabelSchema, Member, Workspace,
 };
 use crate::frontend::icons::{
     ic_back, ic_check, ic_history, ic_share, ic_tag, ic_upload,
@@ -20,10 +20,12 @@ pub fn EntryFullScreen() -> impl IntoView {
     let code = move || params.get().get("code").unwrap_or_default();
     let navigate = use_navigate();
 
-    let data: RwSignal<Option<Result<(Workspace, Entry, Vec<LabelSchema>, Vec<AuditLog>), String>>> =
-        RwSignal::new(None);
+    let data: RwSignal<
+        Option<Result<(Workspace, Entry, Vec<LabelSchema>, Vec<AuditLog>, Vec<Member>), String>>,
+    > = RwSignal::new(None);
     let schemas = RwSignal::new(Vec::<LabelSchema>::new());
     let labels = RwSignal::new(Vec::<Labeling>::new());
+    let ws_members = RwSignal::new(Vec::<Member>::new());
     let title = RwSignal::new(String::new());
     let detail = RwSignal::new(String::new());
     let saved = RwSignal::new(false);
@@ -48,12 +50,15 @@ pub fn EntryFullScreen() -> impl IntoView {
                     let e = entry(&c).await?.ok_or("条目不存在".to_string())?;
                     let schema_list = label_schemas(&ws.id).await?;
                     let logs = audit_logs(&ws.id).await?;
-                    Ok::<_, String>((ws, e, schema_list, logs))
+                    // 成员表只为 Account 型标签的选择器服务，取不到就退化成空列表。
+                    let member_list = members(&ws.id).await.unwrap_or_default();
+                    Ok::<_, String>((ws, e, schema_list, logs, member_list))
                 }
                 .await;
-                if let Ok((_, ref e, ref list, _)) = result {
+                if let Ok((_, ref e, ref list, _, ref member_list)) = result {
                     schemas.set(list.clone());
                     labels.set(e.labels.clone());
+                    ws_members.set(member_list.clone());
                     if overwrite {
                         title.set(e.title.clone());
                         detail.set(e.detail.clone());
@@ -81,7 +86,7 @@ pub fn EntryFullScreen() -> impl IntoView {
 
     let save = move |_| {
         let c = code();
-        let Some(e) = data.get().and_then(|r| r.ok()).map(|(_, e, _, _)| e) else {
+        let Some(e) = data.get().and_then(|r| r.ok()).map(|(_, e, _, _, _)| e) else {
             return;
         };
         let expected = e.updated_at.clone();
@@ -92,7 +97,7 @@ pub fn EntryFullScreen() -> impl IntoView {
                 Ok(updated) => {
                     labels.set(updated.labels.clone());
                     data.update(|r| {
-                        if let Some(Ok((_, ref mut e, _, _))) = r {
+                        if let Some(Ok((_, ref mut e, _, _, _))) = r {
                             *e = updated;
                         }
                     });
@@ -145,11 +150,10 @@ pub fn EntryFullScreen() -> impl IntoView {
                 <button class="btn danger" on:click=del>"删除"</button>
             </div>
 
-            {move || data.get().and_then(|r| r.ok()).map(|(_, e, _, _)| {
+            {move || data.get().and_then(|r| r.ok()).map(|(_, e, _, _, _)| {
                 let by = |a: &Option<AccountBrief>| a.as_ref().map(|x| x.name.clone()).unwrap_or_else(|| "—".to_string());
                 view! {
                     <div class="dmeta">
-                        <div><span class="mut">"编码"</span><span class="code">{e.code.clone()}</span></div>
                         <div><span class="mut">"创建人"</span>{by(&e.created_by_account)}</div>
                         <div><span class="mut">"创建时间"</span>{fmt_datetime(&e.created_at)}</div>
                         <div><span class="mut">"更新人"</span>{by(&e.updated_by_account)}</div>
@@ -166,7 +170,7 @@ pub fn EntryFullScreen() -> impl IntoView {
             <div class="entry-layout">
                 <div class="panel" style="padding:0;overflow:hidden">
                     {move || match data.get() {
-                        Some(Ok((_ws, e, _, _))) => {
+                        Some(Ok((_ws, e, _, _, _))) => {
                             let initial = e.detail.clone();
                             view! {
                                 <TinyEditor initial on_change=on_editor_change />
@@ -183,7 +187,7 @@ pub fn EntryFullScreen() -> impl IntoView {
                 <aside class="panel entry-side">
                     <div>
                         <div class="grp-h">{ic_tag()}"标签（变更即保存）"</div>
-                        <LabelEditor code=Signal::derive(code) schemas labels on_changed />
+                        <LabelEditor code=Signal::derive(code) schemas labels members=ws_members on_changed />
                     </div>
 
                     <div>
@@ -196,7 +200,7 @@ pub fn EntryFullScreen() -> impl IntoView {
                         {move || {
                             let c = code();
                             match data.get() {
-                                Some(Ok((_, _, _, logs))) => {
+                                Some(Ok((_, _, _, logs, _))) => {
                                     let mine: Vec<AuditLog> = logs.into_iter().filter(|l| l.resource_id == c).collect();
                                     if mine.is_empty() {
                                         view! { <div class="mut">"暂无记录"</div> }.into_any()

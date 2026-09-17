@@ -3,7 +3,7 @@ use std::sync::Arc;
 use ulid::Ulid;
 
 use crate::domain::{
-    AuditAction, AuditLog, LabelSchema, LabelValueType, ValueColor, RESERVED_FIELDS,
+    AuditAction, AuditLog, LabelSchema, LabelValue, LabelValueType, ValueColor, RESERVED_FIELDS,
 };
 use crate::error::AppError;
 use crate::service::audit::audit_ops;
@@ -23,6 +23,8 @@ pub struct LabelSchemaInput {
     pub unit: Option<String>,
     pub color: Option<String>,
     pub value_colors: Vec<ValueColor>,
+    /// 默认值（原始 JSON）。`None` / `null` 表示没有默认值。
+    pub default_value: Option<serde_json::Value>,
 }
 
 /// 校验颜色字符串为 `#rrggbb` 形式（不引入 regex 依赖）。
@@ -76,7 +78,14 @@ fn validate_attrs(input: &LabelSchemaInput) -> Result<(), AppError> {
         input.value_type,
         LabelValueType::Date | LabelValueType::Time | LabelValueType::DateTime
     ) {
-        if let Some(layout) = input.format.as_deref() {
+        // 库里存的是常规表示法（`YYYY-MM-DD HH:mm:ss`），只有历史数据才可能是 Go 布局。
+        if let Some(raw) = input.format.as_deref() {
+            let layout = if raw.bytes().any(|b| b.is_ascii_digit()) {
+                raw.to_string()
+            } else {
+                crate::golayout::to_go(raw)
+                    .ok_or_else(|| AppError::InvalidQuery(format!("时间格式无效: {raw}")))?
+            };
             let probe = crate::golayout::YmdHms {
                 year: 2006,
                 month: 1,
@@ -85,14 +94,54 @@ fn validate_attrs(input: &LabelSchemaInput) -> Result<(), AppError> {
                 minute: 4,
                 second: 5,
             };
-            let rendered = crate::golayout::format(layout, probe);
+            let rendered = crate::golayout::format(&layout, probe);
             // 布局必须能往返：否则它既格式化不出东西，也解析不回来。
-            if crate::golayout::parse(layout, &rendered).is_none() {
-                return Err(AppError::InvalidQuery(format!("时间布局无效: {layout}")));
+            if crate::golayout::parse(&layout, &rendered).is_none() {
+                return Err(AppError::InvalidQuery(format!("时间格式无效: {raw}")));
             }
         }
     }
     Ok(())
+}
+
+/// Account 型标签的值必须是本工作空间的成员——否则打上去也没人认得。
+/// 非 Account 值直接放行。
+pub(crate) fn check_account_member(
+    store: &DocStore,
+    ws_id: Ulid,
+    lv: &LabelValue,
+) -> Result<(), AppError> {
+    let Some(account_id) = lv.account_of() else {
+        return Ok(());
+    };
+    let member = store.get::<crate::domain::WorkspaceMember>(
+        cf::WORKSPACE_MEMBERS,
+        &keys::member_key(ws_id, account_id),
+    )?;
+    if member.is_none() {
+        return Err(AppError::InvalidQuery(
+            "账号标签的值必须是该工作空间的成员".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// `format` 归一：去空白，空串即「未配置」（用该类型的默认格式）。
+fn normalize_format(format: Option<String>) -> Option<String> {
+    format
+        .map(|f| f.trim().to_string())
+        .filter(|f| !f.is_empty())
+}
+
+/// 原始 JSON → 默认值。`None` / `null` 表示没有默认值；给了值但按 schema 非法则报错。
+fn resolve_default(
+    raw: Option<serde_json::Value>,
+    schema: &LabelSchema,
+) -> Result<Option<LabelValue>, AppError> {
+    match raw {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(v) => Ok(Some(LabelValue::from_json(&v, schema)?)),
+    }
 }
 
 /// 自定义标签 schema CRUD。schema 以 workspace 内唯一的 name 作为稳定键，
@@ -129,8 +178,9 @@ impl LabelService {
         &self,
         actor: Ulid,
         ws_id: Ulid,
-        input: LabelSchemaInput,
+        mut input: LabelSchemaInput,
     ) -> Result<LabelSchema, AppError> {
+        input.format = normalize_format(input.format);
         let name = input.name.trim();
         if name.is_empty() {
             return Err(AppError::Internal("标签名称不能为空".to_string()));
@@ -145,7 +195,7 @@ impl LabelService {
             &input.color,
             &input.value_colors,
         )?;
-        let schema = LabelSchema::new(
+        let mut schema = LabelSchema::new(
             ws_id,
             name.to_string(),
             input.title.trim().to_string(),
@@ -159,6 +209,11 @@ impl LabelService {
             input.currency_symbol,
             input.unit,
         );
+        // 默认值按刚组装好的 schema 校验（枚举范围、时间格式、multi 都在其中）。
+        schema.default_value = resolve_default(input.default_value, &schema)?;
+        if let Some(dv) = &schema.default_value {
+            check_account_member(&self.store, ws_id, dv)?;
+        }
         let audit = AuditLog::new(
             AuditAction::LabelSchemaCreated,
             actor,
@@ -188,11 +243,19 @@ impl LabelService {
         let name = input.name.trim().to_string();
         let mut schema = self.get_schema(ws_id, &name)?.ok_or(AppError::NotFound)?;
         // 标签类型创建后固定：沿用库中已有类型，忽略传入值。
-        let mut check = LabelSchemaInput {
+        let check = LabelSchemaInput {
+            name: name.clone(),
+            title: input.title,
             value_type: schema.value_type,
-            ..input
+            enum_values: input.enum_values,
+            multi: input.multi,
+            format: normalize_format(input.format),
+            currency_symbol: input.currency_symbol,
+            unit: input.unit,
+            color: input.color,
+            value_colors: input.value_colors,
+            default_value: input.default_value,
         };
-        check.name = name.clone();
         validate_attrs(&check)?;
         validate_colors(
             schema.value_type,
@@ -209,6 +272,10 @@ impl LabelService {
         schema.format = check.format;
         schema.currency_symbol = check.currency_symbol;
         schema.unit = check.unit;
+        schema.default_value = resolve_default(check.default_value, &schema)?;
+        if let Some(dv) = &schema.default_value {
+            check_account_member(&self.store, ws_id, dv)?;
+        }
         let after = serde_json::to_string(&schema).unwrap_or_default();
         let audit = AuditLog::new(
             AuditAction::LabelSchemaUpdated,
@@ -264,6 +331,7 @@ mod tests {
                     unit: None,
                     color: None,
                     value_colors: vec![],
+                    default_value: None,
                 },
             )
             .unwrap();
@@ -286,6 +354,7 @@ mod tests {
                     unit: None,
                     color: None,
                     value_colors: vec![],
+                    default_value: None,
                 },
             )
             .unwrap_err();
@@ -307,6 +376,7 @@ mod tests {
                     unit: None,
                     color: None,
                     value_colors: vec![],
+                    default_value: None,
                 },
             )
             .unwrap_err();
@@ -328,6 +398,7 @@ mod tests {
                     unit: None,
                     color: None,
                     value_colors: vec![],
+                    default_value: None,
                 },
             )
             .unwrap_err();
@@ -353,6 +424,7 @@ mod tests {
                     unit: None,
                     color: None,
                     value_colors: vec![],
+                    default_value: None,
                 },
             )
             .unwrap();
@@ -393,6 +465,7 @@ mod tests {
                     unit: None,
                     color: None,
                     value_colors: vec![],
+                    default_value: None,
                 },
             )
             .is_err());
@@ -411,6 +484,7 @@ mod tests {
                     unit: None,
                     color: None,
                     value_colors: vec![],
+                    default_value: None,
                 },
             )
             .is_err());
@@ -430,6 +504,7 @@ mod tests {
                     unit: None,
                     color: None,
                     value_colors: vec![],
+                    default_value: None,
                 },
             )
             .unwrap();
@@ -467,6 +542,7 @@ mod tests {
                     unit: None,
                     color: None,
                     value_colors: vec![],
+                    default_value: None,
                 },
             )
             .unwrap_err();
@@ -514,6 +590,7 @@ mod tests {
                     unit: None,
                     color: None,
                     value_colors: vec![],
+                    default_value: None,
                 },
             )
             .unwrap();
@@ -538,6 +615,7 @@ mod tests {
                     unit: None,
                     color: None,
                     value_colors: vec![],
+                    default_value: None,
                 },
             )
             .is_err());

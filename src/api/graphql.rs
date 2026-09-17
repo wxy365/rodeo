@@ -92,12 +92,18 @@ pub struct GqlLabelSchema {
     format: Option<String>,
     currency_symbol: Option<String>,
     unit: Option<String>,
+    default_value: Json<serde_json::Value>,
 }
 
 impl From<LabelSchema> for GqlLabelSchema {
     fn from(s: LabelSchema) -> Self {
         let value_colors =
             serde_json::to_value(&s.value_colors).unwrap_or(serde_json::Value::Null);
+        let default_value = s
+            .default_value
+            .as_ref()
+            .map(|v| v.to_json())
+            .unwrap_or(serde_json::Value::Null);
         Self {
             name: s.name,
             title: s.title,
@@ -109,6 +115,7 @@ impl From<LabelSchema> for GqlLabelSchema {
             format: s.format,
             currency_symbol: s.currency_symbol,
             unit: s.unit,
+            default_value: Json(default_value),
         }
     }
 }
@@ -121,6 +128,8 @@ pub struct LabelSchemaAttrsInput {
     format: Option<String>,
     currency_symbol: Option<String>,
     unit: Option<String>,
+    /// 默认值：缺省或 `null` 表示没有默认值。
+    default_value: Option<Json<serde_json::Value>>,
 }
 
 impl LabelSchemaAttrsInput {
@@ -144,6 +153,7 @@ impl LabelSchemaAttrsInput {
             unit: self.unit,
             color,
             value_colors,
+            default_value: self.default_value.map(|j| j.0),
         }
     }
 }

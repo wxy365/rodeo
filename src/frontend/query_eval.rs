@@ -121,17 +121,48 @@ fn eval_label(
                     if matches!(s.value_type.as_str(), "date" | "time" | "datetime")
                         && matches!(op, "eq" | "ne" | "gt" | "ge" | "lt" | "le")
                     {
-                        let layout = s
-                            .format
-                            .as_deref()
-                            .unwrap_or_else(|| default_layout(&s.value_type));
-                        return cmp_time_layout(&l.value, layout, op, want);
+                        let layout =
+                            crate::golayout::resolve(s.format.as_deref(), default_layout(&s.value_type));
+                        return cmp_time_layout(&l.value, &layout, op, want);
                     }
                 }
                 cmp_value(&l.value, op, want)
             }
             None => false,
         },
+    }
+}
+
+/// 收集查询 AST 里用到「带值比较」的标签名（去重，保持出现顺序）。
+///
+/// present / absent 也计入：新建条目自动打标时，表达式里提到的标签都该带上，
+/// 况且 absent 型条件在新建条目上没有默认值也只是不写，不会污染数据。
+pub fn collect_label_names(query: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_labels(query, &mut out);
+    out
+}
+
+fn collect_labels(query: &Value, out: &mut Vec<String>) {
+    if let Some(list) = query.get("and").or_else(|| query.get("or")).and_then(Value::as_array) {
+        for q in list {
+            collect_labels(q, out);
+        }
+        return;
+    }
+    if let Some(inner) = query.get("not") {
+        collect_labels(inner, out);
+        return;
+    }
+    if let Some(name) = query
+        .get("cond")
+        .and_then(|c| c.get("field"))
+        .and_then(|f| f.get("label"))
+        .and_then(Value::as_str)
+    {
+        if !out.iter().any(|x| x == name) {
+            out.push(name.to_string());
+        }
     }
 }
 

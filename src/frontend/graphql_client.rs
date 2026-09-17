@@ -181,9 +181,12 @@ pub struct LabelSchema {
     /// 值类型之外附加的属性。`multi` 允许多值（数组）。
     #[serde(default)]
     pub multi: bool,
-    /// 时间 / 日期型标签的布局（Go layout）。
+    /// 时间 / 日期型标签的展示格式（常规表示法，如 `YYYY-MM-DD HH:mm:ss`）。
     #[serde(default)]
     pub format: Option<String>,
+    /// 打这个标签时预填的值；JSON `null` 表示没有默认值。
+    #[serde(default)]
+    pub default_value: Value,
     /// 金额型标签的货币符号。
     #[serde(default)]
     pub currency_symbol: Option<String>,
@@ -214,23 +217,25 @@ const ENTRY_FIELDS: &str = "code title detail createdAt updatedAt createdBy upda
      labels { labelName value }";
 
 const LABEL_SCHEMA_FIELDS: &str =
-    "name title valueType enumValues color valueColors multi format currencySymbol unit";
+    "name title valueType enumValues color valueColors multi format currencySymbol unit defaultValue";
 
 /// 组装 `LabelSchemaAttrsInput`（camelCase）。
 ///
-/// 服务端 update 是「整体替换」，所以调用方必须始终传齐四个键——
+/// 服务端 update 是「整体替换」，所以调用方必须始终传齐所有键——
 /// 这里用 Option → null 也保留键位，不会把未改的属性抹掉。
 pub fn label_attrs(
     multi: bool,
     format: Option<&str>,
     currency_symbol: Option<&str>,
     unit: Option<&str>,
+    default_value: &Value,
 ) -> Value {
     json!({
         "multi": multi,
         "format": format,
         "currencySymbol": currency_symbol,
         "unit": unit,
+        "defaultValue": default_value,
     })
 }
 
