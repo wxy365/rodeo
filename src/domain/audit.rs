@@ -34,6 +34,10 @@ pub enum AuditAction {
     MemberJoined,
     InviteDeclined,
     InviteRevoked,
+    RuleCreated,
+    RuleUpdated,
+    RuleDeleted,
+    RuleApplied,
 }
 
 /// 审计日志。before/after 为 JSON 字符串（序列化后的快照）。

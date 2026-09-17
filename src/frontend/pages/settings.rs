@@ -5,6 +5,7 @@ use leptos_router::hooks::{use_navigate, use_params_map};
 use serde_json::Value;
 
 use crate::frontend::ai_prompt_editor::{rows_from, rows_to_value, PromptRow, PromptRows};
+use crate::frontend::automation_tab::AutomationTab;
 use crate::frontend::components::{
     action_label, audit_change, display_enum_value, logged_out, role_label, short_time,
     value_type_label, DefaultValueInput, FormatSelect,
@@ -436,6 +437,9 @@ pub fn WorkspaceSettings() -> impl IntoView {
                     <div class="it" class:on=move || tab.get() == "views" on:click=move |_| tab.set("views".into())>
                         {ic_share()}"视图共享"
                     </div>
+                    <div class="it" class:on=move || tab.get() == "automation" on:click=move |_| tab.set("automation".into())>
+                        {ic_history()}"自动化"
+                    </div>
                     <div class="it" class:on=move || tab.get() == "audit" on:click=move |_| tab.set("audit".into())>
                         {ic_history()}"审计日志"
                     </div>
@@ -646,6 +650,19 @@ pub fn WorkspaceSettings() -> impl IntoView {
                                             </div>
                                         }.into_any()
                                     }}
+                                }.into_any()
+                            } else if cur_tab == "automation" {
+                                // 规则自己加载，不进那个 7 元组；这里只派发工作空间 id 与标签定义。
+                                // 先克隆成独立值再 derive，避免把 `_ws` / `schemas` 整体 move 进闭包，
+                                // 与下方 labels / danger 分支对这些值的借用冲突。
+                                let ws_id_val = _ws.id.clone();
+                                let schemas_auto = schemas.clone();
+                                let ws_id_signal = Signal::derive(move || ws_id_val.clone());
+                                let schemas_signal = Signal::derive(move || schemas_auto.clone());
+                                let refresh_cb = Callback::new(move |_: ()| refresh.update(|x| *x += 1));
+                                view! {
+                                    <AutomationTab ws_id=ws_id_signal schemas=schemas_signal
+                                        can_manage=can_manage on_changed=refresh_cb />
                                 }.into_any()
                             } else if cur_tab == "audit" {
                                 view! {

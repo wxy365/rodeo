@@ -1,4 +1,5 @@
 pub mod ai_prompt_editor;
+pub mod automation_tab;
 pub mod components;
 pub mod graphql_client;
 pub mod icons;

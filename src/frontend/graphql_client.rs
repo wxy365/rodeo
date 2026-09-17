@@ -926,6 +926,111 @@ pub async fn format_view_query(workspace_id: &str, query: &Value) -> Result<Stri
         .to_string())
 }
 
+// ---------- 自动化规则（AutomationRule） ----------
+
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuleWrite {
+    pub label_name: String,
+    pub op: String,
+    pub value_kind: String,
+    pub value: Value,
+}
+
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AutomationRule {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+    pub trigger_expr: String,
+    pub target_event_source: bool,
+    pub target_expr: String,
+    pub writes: Vec<RuleWrite>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+const RULE_FIELDS: &str = "id name enabled triggerExpr targetEventSource targetExpr \
+     writes { labelName op valueKind value } createdAt updatedAt";
+
+pub async fn automation_rules(workspace_id: &str) -> Result<Vec<AutomationRule>, String> {
+    let q = format!("query($id: ID!) {{ automationRules(workspaceId: $id) {{ {RULE_FIELDS} }} }}");
+    let data = graphql(&q, json!({ "id": workspace_id })).await?;
+    serde_json::from_value(data.get("automationRules").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+pub async fn parse_rule_trigger(workspace_id: &str, expr: &str) -> Result<Value, String> {
+    let data = graphql(
+        "query($id: ID!, $e: String!) { parseRuleTrigger(workspaceId: $id, expr: $e) }",
+        json!({ "id": workspace_id, "e": expr }),
+    )
+    .await?;
+    Ok(data.get("parseRuleTrigger").cloned().unwrap_or(Value::Null))
+}
+
+/// `writes` 是 `[{labelName, op, valueKind, value}]`。
+pub async fn create_automation_rule(
+    workspace_id: &str,
+    name: &str,
+    enabled: bool,
+    trigger_expr: &str,
+    target_event_source: bool,
+    target_expr: Option<&str>,
+    writes: &Value,
+) -> Result<AutomationRule, String> {
+    let q = format!(
+        "mutation($id: ID!, $n: String!, $e: Boolean!, $t: String!, $tes: Boolean!, $te: String, $w: [RuleWriteInput!]!) {{ \
+         createAutomationRule(workspaceId: $id, name: $n, enabled: $e, triggerExpr: $t, \
+         targetEventSource: $tes, targetExpr: $te, writes: $w) {{ {RULE_FIELDS} }} }}"
+    );
+    let data = graphql(
+        &q,
+        json!({ "id": workspace_id, "n": name, "e": enabled, "t": trigger_expr,
+                "tes": target_event_source, "te": target_expr, "w": writes }),
+    )
+    .await?;
+    serde_json::from_value(data.get("createAutomationRule").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+pub async fn update_automation_rule(
+    id: &str,
+    name: &str,
+    enabled: bool,
+    trigger_expr: &str,
+    target_event_source: bool,
+    target_expr: Option<&str>,
+    writes: &Value,
+) -> Result<AutomationRule, String> {
+    let q = format!(
+        "mutation($id: ID!, $n: String!, $e: Boolean!, $t: String!, $tes: Boolean!, $te: String, $w: [RuleWriteInput!]!) {{ \
+         updateAutomationRule(id: $id, name: $n, enabled: $e, triggerExpr: $t, \
+         targetEventSource: $tes, targetExpr: $te, writes: $w) {{ {RULE_FIELDS} }} }}"
+    );
+    let data = graphql(
+        &q,
+        json!({ "id": id, "n": name, "e": enabled, "t": trigger_expr,
+                "tes": target_event_source, "te": target_expr, "w": writes }),
+    )
+    .await?;
+    serde_json::from_value(data.get("updateAutomationRule").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+pub async fn delete_automation_rule(id: &str) -> Result<bool, String> {
+    let data = graphql(
+        "mutation($id: ID!) { deleteAutomationRule(id: $id) }",
+        json!({ "id": id }),
+    )
+    .await?;
+    Ok(data
+        .get("deleteAutomationRule")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false))
+}
+
 #[cfg(test)]
 mod tests {
     use super::Workspace;

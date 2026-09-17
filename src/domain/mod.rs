@@ -4,6 +4,7 @@ pub mod audit;
 pub mod entry;
 pub mod label;
 pub mod query;
+pub mod rule;
 pub mod view;
 pub mod workspace;
 
@@ -16,5 +17,6 @@ pub use label::{
     LabelValueType, Labeling, ValueColor,
 };
 pub use query::{Condition, EvalEnv, Field, Op, Query, RESERVED_FIELDS};
+pub use rule::{ActionTarget, AutomationRule, LabelEvent, LabelWrite, RuleAction, ValueSource, WriteOp};
 pub use view::{SortField, SortSpec, TitleColorRule, View};
 pub use workspace::{Invite, Workspace, WorkspaceMember, WorkspaceRole};
