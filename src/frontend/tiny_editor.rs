@@ -126,3 +126,38 @@ fn mount_editor<N: wasm_bindgen::JsCast>(
     let _ = Reflect::set(&node_js, &JsValue::from_str("__rodeo_editor"), &editor);
     let _ = Reflect::set(&node_js, &JsValue::from_str("__rodeo_onchange"), &closure_js);
 }
+
+/// 把 Delta JSON 渲染成 HTML。非 wasm 目标或桥接未加载时返回空串
+/// （与 `TinyEditor` 一样，渲染只发生在浏览器里）。
+pub fn delta_to_html(delta: &str) -> String {
+    #[cfg(target_arch = "wasm32")]
+    {
+        use js_sys::{Array, Function, Reflect};
+        use wasm_bindgen::{JsCast, JsValue};
+
+        if delta.trim().is_empty() {
+            return String::new();
+        }
+        let global = js_sys::global();
+        let Ok(bridge) = Reflect::get(&global, &JsValue::from_str("__rodeo_tiny_editor__")) else {
+            return String::new();
+        };
+        let Some(to_html) = Reflect::get(&bridge, &JsValue::from_str("toHtml"))
+            .ok()
+            .and_then(|f| f.dyn_into::<Function>().ok())
+        else {
+            return String::new();
+        };
+        let args = Array::new();
+        args.push(&JsValue::from_str(delta));
+        Reflect::apply(&to_html, &bridge, args.as_ref())
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_default()
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = delta;
+        String::new()
+    }
+}
