@@ -10,7 +10,8 @@ use axum::http::HeaderMap;
 use ulid::Ulid;
 
 use crate::domain::{
-    Account, ActionTarget, AuditLog, AutomationRule, Entry, Invite, LabelSchema, LabelValueType,
+    Account, ActionTarget, AuditLog, AutomationRule, Comment, Entry, Invite, LabelSchema,
+    LabelValueType,
     LabelWrite, Labeling, NamedPrompt, Query as ViewQuery, SortField, SortSpec, TitleColorRule,
     ValueColor, ValueSource, View, Workspace, WorkspaceAiConfig, WorkspaceMember, WorkspaceRole,
     WriteOp,
@@ -285,6 +286,43 @@ fn gql_entry(
         created_by_account,
         updated_by_account,
     ))
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct GqlComment {
+    id: ID,
+    entry_code: String,
+    body: String,
+    created_by: ID,
+    updated_by: ID,
+    created_at: String,
+    updated_at: String,
+    /// 作者 / 最后修改人账号；账号已删除则为 null。与 GqlEntry 同一套回填方式。
+    created_by_account: Option<GqlAccount>,
+    updated_by_account: Option<GqlAccount>,
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct GqlCommentCount {
+    entry_code: String,
+    count: i32,
+}
+
+/// 组装 GqlComment，顺带补上作者与最后修改人的账号。
+fn gql_comment(gql: &GraphqlContext, c: Comment) -> GqlResult<GqlComment> {
+    let created_by_account = gql.services.auth.find_by_id(c.created_by)?.map(Into::into);
+    let updated_by_account = gql.services.auth.find_by_id(c.updated_by)?.map(Into::into);
+    Ok(GqlComment {
+        id: c.id.to_string().into(),
+        entry_code: c.entry_code,
+        body: c.body,
+        created_by: c.created_by.to_string().into(),
+        updated_by: c.updated_by.to_string().into(),
+        created_at: c.created_at.to_rfc3339(),
+        updated_at: c.updated_at.to_rfc3339(),
+        created_by_account,
+        updated_by_account,
+    })
 }
 
 #[derive(SimpleObject, Clone)]
@@ -729,6 +767,56 @@ impl Query {
         gql.require_member(entry.workspace_id)?;
         let labels = gql.services.entry.labelings(&code)?;
         Ok(Some(gql_entry(gql, entry, labels)?))
+    }
+
+    /// 某条目的全部评论，按发表时间升序。成员即可读（与 labelSchemas 一致）。
+    async fn comments(
+        &self,
+        ctx: &Context<'_>,
+        entry_code: String,
+    ) -> GqlResult<Vec<GqlComment>> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let entry = gql
+            .services
+            .entry
+            .get(&entry_code)?
+            .ok_or(AppError::NotFound)?;
+        gql.require_member(entry.workspace_id)?;
+        gql.services
+            .comment
+            .list(&entry_code)?
+            .into_iter()
+            .map(|c| gql_comment(gql, c))
+            .collect()
+    }
+
+    /// 视图表格当前页的评论计数。越权或已删除的条目直接跳过——不泄露其存在性。
+    async fn comment_counts(
+        &self,
+        ctx: &Context<'_>,
+        entry_codes: Vec<String>,
+    ) -> GqlResult<Vec<GqlCommentCount>> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let mut out = Vec::with_capacity(entry_codes.len());
+        for code in entry_codes {
+            let Some(entry) = gql.services.entry.get(&code)? else {
+                continue;
+            };
+            if gql
+                .services
+                .workspace
+                .get_member(entry.workspace_id, auth.account_id)?
+                .is_none()
+            {
+                continue;
+            }
+            out.push(GqlCommentCount {
+                entry_code: code.clone(),
+                count: gql.services.comment.count(&code)? as i32,
+            });
+        }
+        Ok(out)
     }
 
     async fn audit_logs(
@@ -1236,6 +1324,78 @@ impl Mutation {
         let entry = gql.services.entry.get(&code)?.ok_or(AppError::NotFound)?;
         gql.require_role(entry.workspace_id, WorkspaceRole::Worker)?;
         gql.services.entry.soft_delete(auth.account_id, &code)?;
+        Ok(true)
+    }
+
+    /// 发表评论（Worker+）。同时推进条目的 updated_at。
+    async fn create_comment(
+        &self,
+        ctx: &Context<'_>,
+        entry_code: String,
+        body: String,
+    ) -> GqlResult<GqlComment> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let entry = gql
+            .services
+            .entry
+            .get(&entry_code)?
+            .ok_or(AppError::NotFound)?;
+        gql.require_role(entry.workspace_id, WorkspaceRole::Worker)?;
+        let c = gql
+            .services
+            .comment
+            .create(auth.account_id, &entry_code, &body)?;
+        gql_comment(gql, c)
+    }
+
+    /// 编辑评论（Worker+ 且作者本人）。
+    async fn update_comment(
+        &self,
+        ctx: &Context<'_>,
+        entry_code: String,
+        id: ID,
+        body: String,
+    ) -> GqlResult<GqlComment> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let entry = gql
+            .services
+            .entry
+            .get(&entry_code)?
+            .ok_or(AppError::NotFound)?;
+        gql.require_role(entry.workspace_id, WorkspaceRole::Worker)?;
+        let id = parse_ulid(id.as_str())?;
+        let c = gql
+            .services
+            .comment
+            .update(auth.account_id, &entry_code, id, &body)?;
+        gql_comment(gql, c)
+    }
+
+    /// 删除评论（作者本人，或 Maintainer+）。
+    async fn delete_comment(
+        &self,
+        ctx: &Context<'_>,
+        entry_code: String,
+        id: ID,
+    ) -> GqlResult<bool> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let entry = gql
+            .services
+            .entry
+            .get(&entry_code)?
+            .ok_or(AppError::NotFound)?;
+        gql.require_member(entry.workspace_id)?;
+        // 先看是不是 Maintainer+；不是也不立刻拒绝——作者本人仍可撤回自己的评论。
+        let can_moderate = gql
+            .require_role(entry.workspace_id, WorkspaceRole::Maintainer)
+            .is_ok();
+        let id = parse_ulid(id.as_str())?;
+        gql.services
+            .comment
+            .delete(auth.account_id, &entry_code, id, can_moderate)?;
         Ok(true)
     }
 
