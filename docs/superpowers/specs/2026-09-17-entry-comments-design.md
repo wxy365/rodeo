@@ -125,12 +125,14 @@ pub struct CommentService {
 ## 8. GraphQL（`src/api/graphql.rs`）
 
 ```graphql
-comments(entryCode: String!): [GqlComment!]!                   # Reader+
-commentCounts(entryCodes: [String!]!): [GqlCommentCount!]!     # Reader+
-createComment(entryCode: String!, body: String!): GqlComment!  # Worker+
-updateComment(id: ID!, body: String!): GqlComment!             # Worker+ 且作者本人
-deleteComment(id: ID!): Boolean!                               # 作者本人 或 Maintainer+
+comments(entryCode: String!): [GqlComment!]!                            # Reader+
+commentCounts(entryCodes: [String!]!): [GqlCommentCount!]!              # Reader+
+createComment(entryCode: String!, body: String!): GqlComment!           # Worker+
+updateComment(entryCode: String!, id: ID!, body: String!): GqlComment!  # Worker+ 且作者本人
+deleteComment(entryCode: String!, id: ID!): Boolean!                    # 作者本人 或 Maintainer+
 ```
+
+`updateComment` / `deleteComment` 必须同时收 `entryCode`：`COMMENTS` 的键是 `entry_code + comment_id`，单凭 `id` 定位不到记录（要另建反向索引列族才能做到，为这点收益不值得）。前端调用的地方本来就知道当前条目的 code。
 
 - `GqlComment { id entryCode body createdAt updatedAt createdBy updatedBy createdByAccount updatedByAccount }`，账号信息沿用 `GqlEntry` 的回填方式（`AccountBrief`），前端才好显示头像与姓名。
 - `GqlCommentCount { entryCode count }`。
@@ -155,13 +157,13 @@ deleteComment(id: ID!): Boolean!                               # 作者本人 �
 
 ### 9.3 挂载点
 
-- 全屏详情页 `src/frontend/pages/entry.rs`：`entry-side` 内「标签」之后、「附件」之前，新增一组「评论 (N)」。
+- 全屏详情页 `src/frontend/pages/entry.rs`：`entry-side` 内「标签」之后、「附件」之前，新增一组「评论（N）」。
 - 侧栏详情面板 `src/frontend/pages/workspace_main.rs::EntryPanel`：`<LabelEditor/>` 之后新增同一组。
 - 评论发表后需触发既有的刷新路径（全屏页 `on_changed`、侧栏 `refresh.update`），否则表格的「更新时间」列会停在旧值。
 
 ### 9.4 评论条数
 
-- 详情面板：分组标题显示 `评论 (N)`，`N` 直接取已加载列表长度，零额外请求。
+- 详情面板：分组标题显示 `评论（N）`，`N` 直接取已加载列表长度，零额外请求。
 - 视图表格：标题单元格内加一个「气泡图标 + 数字」的小徽标，数据来自 `commentCounts`，只为当前页的 code 取一次。不改动列配置（`ColumnPicker`）体系。
 
 ### 9.5 样式
