@@ -1,9 +1,11 @@
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+
 use leptos_router::components::A;
 use leptos_router::hooks::{use_navigate, use_params_map};
 
+use crate::frontend::comment_list::CommentList;
 use crate::frontend::components::{
     display_enum_value, fmt_datetime, from_native, is_native_time_layout, label_chip_class,
     logged_out, member_label, short_time, to_native, value_to_string, AccountPicker,
@@ -206,6 +208,13 @@ pub fn WorkspaceMain() -> impl IntoView {
     let schemas = RwSignal::new(Vec::<LabelSchema>::new());
     // 成员表：Account 型标签的候选，以及表格里把账号 id 显示成姓名。
     let ws_members = RwSignal::new(Vec::<Member>::new());
+    // 评论组件查角色用；与 data 同源，避免多打一次 workspace 请求。
+    let ws_id = Signal::derive(move || {
+        data.get()
+            .and_then(|r| r.ok())
+            .map(|(w, _, _)| w.id)
+            .unwrap_or_default()
+    });
     let ws_name = RwSignal::new(String::new());
     let selected = RwSignal::new(String::new());
     let show_new = RwSignal::new(false);
@@ -1135,7 +1144,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                             view! { <div></div> }.into_any()
                         } else {
                             view! {
-                                <EntryPanel code=selected slug=slug().to_string() schemas members=ws_members refresh />
+                                <EntryPanel code=selected slug=slug().to_string() workspace_id=ws_id schemas members=ws_members refresh />
                             }.into_any()
                         }}
                     </div>
@@ -1153,7 +1162,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                             </button>
                         </div>
                         <div class="fs-body">
-                            <EntryPanel code=selected slug=slug().to_string() schemas members=ws_members refresh />
+                            <EntryPanel code=selected slug=slug().to_string() workspace_id=ws_id schemas members=ws_members refresh />
                         </div>
                     </div>
                 }.into_any()
@@ -1854,6 +1863,7 @@ fn EntryTable(
 fn EntryPanel(
     code: RwSignal<String>,
     slug: String,
+    workspace_id: Signal<String>,
     schemas: RwSignal<Vec<LabelSchema>>,
     members: RwSignal<Vec<Member>>,
     refresh: RwSignal<u32>,
@@ -2027,6 +2037,11 @@ fn EntryPanel(
                             }}
                         </div>
                         <LabelEditor code=code schemas labels members on_changed />
+                        <CommentList
+                            code=Signal::derive(move || code.get())
+                            workspace_id=workspace_id
+                            on_changed=on_changed
+                        />
                     </aside>
                 }
                 .into_any()

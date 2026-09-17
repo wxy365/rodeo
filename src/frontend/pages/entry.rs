@@ -2,6 +2,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::hooks::{use_navigate, use_params_map};
 
+use crate::frontend::comment_list::CommentList;
 use crate::frontend::components::{action_label, audit_change, fmt_datetime, logged_out, short_time};
 use crate::frontend::graphql_client::{
     audit_logs, delete_entry, entry, label_schemas, members, update_entry, workspace_by_slug,
@@ -68,6 +69,14 @@ pub fn EntryFullScreen() -> impl IntoView {
             });
         }
     };
+
+    // 评论组件要按工作空间查当前用户角色；data 里的 workspace 是唯一来源。
+    let ws_id = Signal::derive(move || {
+        data.get()
+            .and_then(|r| r.ok())
+            .map(|(w, _, _, _, _)| w.id)
+            .unwrap_or_default()
+    });
 
     let nav_redirect = navigate.clone();
     Effect::new_sync(move |_| {
@@ -188,6 +197,14 @@ pub fn EntryFullScreen() -> impl IntoView {
                     <div>
                         <div class="grp-h">{ic_tag()}"标签（变更即保存）"</div>
                         <LabelEditor code=Signal::derive(code) schemas labels members=ws_members on_changed />
+                    </div>
+
+                    <div>
+                        <CommentList
+                            code=Signal::derive(code)
+                            workspace_id=ws_id
+                            on_changed=on_changed
+                        />
                     </div>
 
                     <div>
