@@ -7,12 +7,31 @@
 //   - style.css         ← https://unpkg.com/@opentiny/fluent-editor@<ver>/style.css
 import FluentEditor from './fluent-editor.mjs';
 
+// 附属节点（工具栏/浮层）→ 宿主编辑器容器。
+// 只按容器清理是不够的：Leptos 重挂载会换一个新容器，旧容器上的工具栏就成了
+// 孤儿——它留在仍然存活的父节点里层层堆叠，并挡住下面的按钮（评论「保存」按钮
+// 被残留工具栏盖住过）。用这张表记下每个附属节点属于谁，就能认出孤儿。
+const auxOwners = new Map();
+
+// 清掉宿主已离开文档的附属节点。当前页面上活着的编辑器不受影响。
+function sweepOrphans() {
+  for (const [node, host] of auxOwners) {
+    if (!host.isConnected) {
+      node.remove();
+      auxOwners.delete(node);
+    }
+  }
+}
+
 // 只清理本容器上一次留下的工具栏/浮层。Quill 的 snow 主题把工具栏插成容器的
 // 前一个兄弟节点，容器卸载时不会被一并带走；早先这里按类名全局清理，但页面上
 // 同时存在详情编辑器与评论编辑器之后，全局清理会抹掉另一个编辑器的工具栏。
 function cleanupAux(el) {
   if (el.__rodeo_aux) {
-    el.__rodeo_aux.forEach((n) => n.remove());
+    el.__rodeo_aux.forEach((n) => {
+      auxOwners.delete(n);
+      n.remove();
+    });
     el.__rodeo_aux = [];
   }
   // 浮层（ql-tooltip）可能被挂到 body 上，只扫 body 的直接子节点，
@@ -50,6 +69,7 @@ window.__rodeo_tiny_editor__ = {
   // 创建编辑器实例。deltaJson 为已归一化的 Quill Delta JSON 字符串（可为空串）。
   create(el, deltaJson) {
     cleanupAux(el);
+    sweepOrphans();
     // 再清空容器，避免复用节点时叠加旧内容。
     el.innerHTML = '';
     // 记下这次新建过程中新增的兄弟节点（工具栏/浮层），供下次创建时精确清理。
@@ -69,6 +89,7 @@ window.__rodeo_tiny_editor__ = {
       },
     });
     el.__rodeo_aux = Array.from(el.parentNode.children).filter((n) => !before.has(n));
+    el.__rodeo_aux.forEach((n) => auxOwners.set(n, el));
     blockImages(el);
 
     if (deltaJson) {
@@ -78,6 +99,10 @@ window.__rodeo_tiny_editor__ = {
         // 非法 Delta 时忽略，编辑器保持空内容。
       }
     }
+
+    // 同一次响应式更新里可能还有别处的编辑器被卸载，卸载与新建的先后顺序
+    // 由 Leptos 决定。等这次更新彻底落定后再扫一遍，漏网的孤儿也一并清掉。
+    setTimeout(sweepOrphans, 0);
 
     return editor;
   },
