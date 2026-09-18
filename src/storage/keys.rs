@@ -68,6 +68,15 @@ pub fn comment_key(entry_code: &str, comment_id: Ulid) -> Vec<u8> {
     key
 }
 
+/// (entry_code, attachment_id) 复合键。`attachment_id` 是 ULID，字节序即时间序，
+/// 因此按 entry_code 前缀扫描天然得到按上传时间升序的附件列表——与 `comment_key` 同构。
+pub fn attachment_by_entry_key(entry_code: &str, attachment_id: Ulid) -> Vec<u8> {
+    let mut key = Vec::with_capacity(entry_code.len() + 16);
+    key.extend_from_slice(entry_code.as_bytes());
+    key.extend_from_slice(&attachment_id.to_bytes());
+    key
+}
+
 /// 审计主键：(时间倒序, id)。i64::MAX - millis 实现降序，前缀扫描最新在前。
 pub fn audit_log_key(at: DateTime<Utc>, id: Ulid) -> Vec<u8> {
     let mut key = Vec::with_capacity(24);
@@ -105,7 +114,7 @@ pub fn view_key(id: Ulid) -> [u8; 16] {
     id.to_bytes()
 }
 
-/// 默认视图指针：每个 workspace 一条，键即 workspace_id（16 字节），值为 view_id 的 16 字节。
+/// 基础视图指针：每个 workspace 一条，键即 workspace_id（16 字节），值为 view_id 的 16 字节。
 pub fn default_view_key(workspace_id: Ulid) -> [u8; 16] {
     workspace_id.to_bytes()
 }

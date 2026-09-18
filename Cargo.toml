@@ -19,9 +19,18 @@ console_error_panic_hook = { version = "0.1", optional = true }
 wasm-bindgen = { version = "0.2", optional = true }
 
 # 服务端（ssr 特性启用）
-axum = { version = "0.8", optional = true }
+# http2 显式开启：ALPN 协商出 h2 之后必须真的有人会讲 h2。axum-server 会经由 hyper
+# 把该特性统一打开，但那是隐式的传递结果，显式声明才与「宣传了 h2」这个承诺相称。
+axum = { version = "0.8", features = ["http2"], optional = true }
+# HTTPS 由应用自己终结。不启用它的 tls-rustls 特性——那会拉进 rustls/aws-lc-rs，
+# 与仓库里既有的 ring provider 并存；而 axum-server 内部用 ServerConfig::builder()，
+# 双 provider 会直接 panic。no-provider 让它沿用已有的 ring。
+axum-server = { version = "0.8", default-features = false, features = ["tls-rustls-no-provider"], optional = true }
+# 把 crypto provider 钉死成 ring：rustls 只有在恰好启用一个 provider 时
+# ServerConfig::builder() 才不 panic，不能让这件事取决于 reqwest 的特性选择。
+rustls = { version = "0.23", default-features = false, features = ["ring"], optional = true }
 leptos_axum = { version = "0.8", optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "fs", "io-util"], optional = true }
 rocksdb = { version = "0.22", optional = true }
 async-graphql = { version = "7", optional = true }
 async-graphql-axum = { version = "7", optional = true }
@@ -60,6 +69,8 @@ hydrate = [
 ]
 ssr = [
     "dep:axum",
+    "dep:axum-server",
+    "dep:rustls",
     "dep:tokio",
     "dep:leptos_axum",
     "dep:rocksdb",
@@ -94,6 +105,8 @@ panic = "abort"
 
 [package.metadata.leptos]
 output-name = "rodeo"
+# 内容哈希：避免 watch 重建后浏览器拿旧 glue 配新 wasm，wasm 实例化失败、页面卡死在 SSR 占位。
+hash-files = true
 site-root = "target/site"
 site-pkg-dir = "pkg"
 style-file = "style/main.css"

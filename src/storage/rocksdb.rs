@@ -25,7 +25,7 @@ pub mod cf {
     pub const ENTRIES_BY_WORKSPACE: &str = "entries_by_workspace";
     /// 归档标记：entry code → 归档时间（RFC3339）。与软删除同理，用独立 CF 而不是给
     /// Entry 加字段，避免 bincode 结构变更导致存量条目读不出来。归档不删除数据，
-    /// 只是把条目移出默认视图，可随时取消归档。
+    /// 只是把条目移出基础视图，可随时取消归档。
     pub const ENTRIES_ARCHIVED: &str = "entries_archived";
     pub const LABEL_SCHEMAS: &str = "label_schemas";
     pub const LABELINGS: &str = "labelings";
@@ -45,6 +45,11 @@ pub mod cf {
     /// 工作空间下的规则索引：(workspace_id, rule_id) → 空值，供前缀扫描。
     pub const AUTOMATION_RULES_BY_WORKSPACE: &str = "automation_rules_by_workspace";
     pub const COMMENTS: &str = "comments";
+    /// 附件主键：`attachment_id`（ULID 16 字节）→ `Attachment`（bincode）。
+    /// 用 id 单键而非 (entry_code, id)，因为下载路由手里只有 id，必须能直取。
+    pub const ATTACHMENTS: &str = "attachments";
+    /// 附件索引：(entry_code, attachment_id) → 空值，供按条目前缀扫描。
+    pub const ATTACHMENTS_BY_ENTRY: &str = "attachments_by_entry";
 }
 
 const ALL_CFS: &[&str] = &[
@@ -74,6 +79,8 @@ const ALL_CFS: &[&str] = &[
     cf::AUTOMATION_RULES,
     cf::AUTOMATION_RULES_BY_WORKSPACE,
     cf::COMMENTS,
+    cf::ATTACHMENTS,
+    cf::ATTACHMENTS_BY_ENTRY,
 ];
 
 /// 单个批量写操作：文档/索引/审计统一原子写入。
