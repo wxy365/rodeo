@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use chrono::Utc;
+use tokio::io::AsyncWriteExt;
 use ulid::Ulid;
 
 use crate::domain::{Attachment, AuditAction, AuditLog};
@@ -86,7 +87,13 @@ impl AttachmentService {
         tokio::io::copy(&mut src, &mut dst)
             .await
             .map_err(|e| AppError::Storage(e.to_string()))?;
-        drop(dst);
+        // `copy` 在读完源文件后就不再碰 writer，而 `tokio::fs::File` 的
+        // 尾块写入由 spawn_blocking 承载，其错误只在下次 `poll_write`/`poll_flush`
+        // 才浮现。因此必须显式 flush：它既等待在途写入完成，又返回其错误
+        // （tokio::fs::file.rs 的 `last_write_err` / `Operation::Write` 路径）。
+        // 少了这一步，ENOSPC/EIO 之类的尾块失败会被当成成功，元数据里的 size
+        // 来自源文件、与实际落盘字节数不符，下游读到截断内容还以为是成功。
+        dst.flush().await.map_err(|e| AppError::Storage(e.to_string()))?;
 
         // 上传是条目上的活动：推进 updated_at，让条目回到「按更新时间倒序」最前。
         // 与 `CommentService::create` 同一取舍——正在编辑详情的人保存时会撞乐观并发冲突。
