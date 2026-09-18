@@ -6,6 +6,7 @@ async fn main() {
     use std::sync::Arc;
 
     use axum::routing::{get, post};
+    use axum::extract::DefaultBodyLimit;
     use axum::{Extension, Router};
     use leptos::prelude::*;
     use leptos_axum::{generate_route_list, LeptosRoutes};
@@ -42,7 +43,10 @@ async fn main() {
     let routes = generate_route_list(App);
 
     let app = Router::new()
-        .route("/api/graphql", post(graphql_handler))
+        .route(
+            "/api/graphql",
+            post(graphql_handler).layer(DefaultBodyLimit::max(52 * 1024 * 1024)),
+        )
         .route("/api/health", get(|| async { "ok" }))
         .leptos_routes(&leptos_options, routes, {
             let leptos_options = leptos_options.clone();
@@ -52,9 +56,29 @@ async fn main() {
         .layer(Extension(app_state))
         .with_state(leptos_options);
 
-    tracing::info!("listening on http://{addr}");
-    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-    axum::serve(listener, app.into_make_service()).await.unwrap();
+    match config.tls() {
+        Some(tls) => {
+            let rustls_config =
+                axum_server::tls_rustls::RustlsConfig::from_pem_file(&tls.cert_path, &tls.key_path)
+                    .await
+                    .unwrap_or_else(|e| {
+                        panic!(
+                            "加载 TLS 证书失败 (cert={}, key={}): {e}",
+                            tls.cert_path, tls.key_path
+                        )
+                    });
+            tracing::info!("listening on https://{addr}");
+            axum_server::bind_rustls(addr, rustls_config)
+                .serve(app.into_make_service())
+                .await
+                .unwrap();
+        }
+        None => {
+            tracing::info!("listening on http://{addr}");
+            let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+            axum::serve(listener, app.into_make_service()).await.unwrap();
+        }
+    }
 }
 
 #[cfg(not(feature = "ssr"))]

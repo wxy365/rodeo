@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use async_graphql::{
-    Context, EmptySubscription, ID, Json, Object, Result as GqlResult, Schema, SimpleObject,
+    Context, EmptySubscription, ID, Json, Object, Result as GqlResult, Schema, SimpleObject, Upload,
 };
 use async_graphql_axum::{GraphQLRequest, GraphQLResponse};
 use axum::extract::Extension;
@@ -10,8 +10,8 @@ use axum::http::HeaderMap;
 use ulid::Ulid;
 
 use crate::domain::{
-    Account, ActionTarget, AuditLog, AutomationRule, Comment, Entry, Invite, LabelSchema,
-    LabelValueType,
+    Account, ActionTarget, Attachment, AuditLog, AutomationRule, Comment, Entry, Invite,
+    LabelSchema, LabelValueType,
     LabelWrite, Labeling, NamedPrompt, Query as ViewQuery, SortField, SortSpec, TitleColorRule,
     ValueColor, ValueSource, View, Workspace, WorkspaceAiConfig, WorkspaceMember, WorkspaceRole,
     WriteOp,
@@ -326,6 +326,37 @@ fn gql_comment(gql: &GraphqlContext, c: Comment) -> GqlResult<GqlComment> {
 }
 
 #[derive(SimpleObject, Clone)]
+pub struct GqlAttachment {
+    id: ID,
+    entry_code: String,
+    filename: String,
+    content_type: String,
+    size: i32,
+    /// 由服务端拼死：下载路径只有一处定义，客户端不自己拼。
+    url: String,
+    created_at: String,
+    created_by: ID,
+    created_by_account: Option<GqlAccount>,
+}
+
+/// 组装 GqlAttachment，顺带补上上传者账号。
+fn gql_attachment(gql: &GraphqlContext, a: Attachment) -> GqlResult<GqlAttachment> {
+    let created_by_account = gql.services.auth.find_by_id(a.created_by)?.map(Into::into);
+    Ok(GqlAttachment {
+        id: a.id.to_string().into(),
+        entry_code: a.entry_code,
+        filename: a.filename,
+        content_type: a.content_type,
+        // GraphQL Int 是 32 位；上限 50MB 远在范围内。
+        size: a.size as i32,
+        url: format!("/api/attachments/{}", a.id),
+        created_at: a.created_at.to_rfc3339(),
+        created_by: a.created_by.to_string().into(),
+        created_by_account,
+    })
+}
+
+#[derive(SimpleObject, Clone)]
 pub struct GqlAuthResult {
     token: String,
     account: GqlAccount,
@@ -444,7 +475,7 @@ pub struct GqlView {
     updated_at: String,
     title_colors: Json<serde_json::Value>,
     entry_count: i32,
-    /// 是否为该工作空间的默认视图（不可删除、始终存在）。
+    /// 是否为该工作空间的基础视图（不可删除、始终存在）。
     is_default: bool,
 }
 
@@ -790,6 +821,27 @@ impl Query {
             .collect()
     }
 
+    /// 某条目的全部附件，按上传时间升序。成员即可读（与 `comments` 一致）。
+    async fn attachments(
+        &self,
+        ctx: &Context<'_>,
+        entry_code: String,
+    ) -> GqlResult<Vec<GqlAttachment>> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let entry = gql
+            .services
+            .entry
+            .get(&entry_code)?
+            .ok_or(AppError::NotFound)?;
+        gql.require_member(entry.workspace_id)?;
+        gql.services
+            .attachment
+            .list(&entry_code)?
+            .into_iter()
+            .map(|a| gql_attachment(gql, a))
+            .collect()
+    }
+
     /// 视图表格当前页的评论计数。越权或已删除的条目直接跳过——不泄露其存在性。
     async fn comment_counts(
         &self,
@@ -893,7 +945,7 @@ impl Query {
         let auth = gql.require_auth()?;
         let ws = parse_ulid(workspace_id.as_str())?;
         gql.require_member(ws)?;
-        // 默认视图可能还没建立（老工作空间），首次拉取时补上。
+        // 基础视图可能还没建立（老工作空间），首次拉取时补上。
         let def = gql.services.view.ensure_default(auth.account_id, ws)?.id;
         let mut out = Vec::new();
         for v in gql.services.view.list(auth.account_id, ws)? {
@@ -1399,7 +1451,70 @@ impl Mutation {
         Ok(true)
     }
 
-    /// 归档条目（Worker+）：移出默认视图与全文检索，数据保留，可取消归档。
+    /// 上传附件（Worker+）。multipart 由 async-graphql 的 `Upload` scalar 承载。
+    async fn upload_attachment(
+        &self,
+        ctx: &Context<'_>,
+        entry_code: String,
+        file: Upload,
+    ) -> GqlResult<GqlAttachment> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let entry = gql
+            .services
+            .entry
+            .get(&entry_code)?
+            .ok_or(AppError::NotFound)?;
+        gql.require_role(entry.workspace_id, WorkspaceRole::Worker)?;
+        // tempfile 特性开启时 content 是临时文件句柄，try_clone 取一份自有的，
+        // 这样 filename / content_type 还能从原值上读。
+        let value = file
+            .value(ctx)?
+            .try_clone()
+            .map_err(|e| AppError::Storage(e.to_string()))?;
+        let filename = value.filename.clone();
+        let content_type = value
+            .content_type
+            .clone()
+            .unwrap_or_else(|| "application/octet-stream".to_string());
+        let a = gql
+            .services
+            .attachment
+            .save(
+                auth.account_id,
+                &entry_code,
+                &filename,
+                &content_type,
+                value.content,
+            )
+            .await?;
+        gql_attachment(gql, a)
+    }
+
+    /// 删除附件（上传者本人，或 Maintainer+）。
+    async fn delete_attachment(&self, ctx: &Context<'_>, id: ID) -> GqlResult<bool> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let id = parse_ulid(id.as_str())?;
+        // 附件只带 workspace_id，先取出来才知道该问哪个工作空间的权限。
+        let attachment = gql
+            .services
+            .attachment
+            .get(id)?
+            .ok_or(AppError::NotFound)?;
+        gql.require_member(attachment.workspace_id)?;
+        // 先看是不是 Maintainer+；不是也不立刻拒绝——上传者本人仍可撤回自己的附件。
+        let can_moderate = gql
+            .require_role(attachment.workspace_id, WorkspaceRole::Maintainer)
+            .is_ok();
+        gql.services
+            .attachment
+            .delete(auth.account_id, id, can_moderate)
+            .await?;
+        Ok(true)
+    }
+
+    /// 归档条目（Worker+）：移出基础视图与全文检索，数据保留，可取消归档。
     async fn archive_entry(&self, ctx: &Context<'_>, code: String) -> GqlResult<bool> {
         let gql = ctx.data::<GraphqlContext>()?;
         let auth = gql.require_auth()?;
