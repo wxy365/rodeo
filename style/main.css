@@ -463,6 +463,12 @@ select:focus {
     font-size: 12px;
     color: var(--ink3);
 }
+/* 基础视图置顶且独立成项——不给它分组标题，靠这条分隔线与下方分组分开。
+   收起时分组标题本就隐藏，这条线同时补上了原先缺失的分隔。 */
+.wside .it.base {
+    margin-bottom: 10px;
+    border-bottom: 1px solid var(--line);
+}
 .wmain {
     display: flex;
     flex-direction: column;
@@ -631,23 +637,33 @@ select:focus {
     min-height: 0;
     overflow: auto;
 }
+/* 操作按钮独占一行贴右，标题落到下一行左对齐——不再与按钮抢横向空间。 */
 .dhead {
     display: flex;
-    align-items: center;
+    flex-direction: column;
     gap: 8px;
-    flex-wrap: wrap;
 }
-.dhead h3 {
+/* 标题平时是文字，点击才变成输入框（`input.inp` 复用全局样式）。 */
+.dhead h3.dtitle {
+    margin: 0;
     font-size: 16px;
     font-weight: 500;
-    flex: 1;
+    line-height: 1.4;
+    cursor: text;
+    overflow-wrap: anywhere;
 }
-/* 详情操作按钮贴右上角，避免沉到底部被拉成等宽大按钮。 */
+.dhead h3.dtitle:hover {
+    color: var(--blue);
+}
+.dhead input.dtitle {
+    font-size: 16px;
+    font-weight: 500;
+}
 .dacts {
     display: flex;
     align-items: center;
     gap: 6px;
-    margin-left: auto;
+    align-self: flex-end;
 }
 .dmeta { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
     gap: 4px 16px; padding: 8px 12px; font-size: 12px; }
@@ -807,11 +823,47 @@ select:focus {
     flex: 1;
     min-width: 240px;
 }
+/* 标题平时是文字，点击才变成输入框（`input.inp` 复用上面的样式）。 */
+.entry-top .entry-title {
+    flex: 1;
+    min-width: 240px;
+    margin: 0;
+    font-size: 17px;
+    font-weight: 600;
+    line-height: 1.4;
+    cursor: text;
+    overflow-wrap: anywhere;
+}
+.entry-top .entry-title:hover {
+    color: var(--blue);
+}
 .entry-layout {
     display: grid;
     grid-template-columns: 1fr 300px;
     gap: 16px;
     align-items: start;
+}
+/* 左栏：正文编辑器在上，评论在下。 */
+.entry-main {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    min-width: 0;
+}
+.entry-comments {
+    padding: 16px;
+}
+/* 详情页左栏直接就是编辑器，没有 `.editor` 包裹层，`.detail .editor` 的
+   保底高度够不着它；短正文时编辑器会只有一行高（实测 86px）。
+   容器只有 min-height、高度仍是不确定的，`.ql-editor` 的 `height: 100%`
+   解析不出来，所以要靠 flex 把它撑满，否则点空白处编辑不了。 */
+.entry-editor .tiny-editor {
+    min-height: 280px;
+    display: flex;
+    flex-direction: column;
+}
+.entry-editor .tiny-editor .ql-editor {
+    flex: 1 1 auto;
 }
 .entry-side {
     padding: 16px;
@@ -820,6 +872,10 @@ select:focus {
     gap: 16px;
     position: sticky;
     top: 16px;
+}
+/* 元信息块从整宽行搬进侧栏，去掉它自带的横向内边距，跟标签/审计左对齐。 */
+.entry-side .dmeta {
+    padding: 0;
 }
 .grp-h {
     font-size: 13px;
@@ -850,6 +906,9 @@ select:focus {
 }
 .att:hover .ibtn {
     opacity: 1;
+}
+.att a:hover {
+    text-decoration: underline;
 }
 .tl {
     font-size: 13px;
@@ -1154,14 +1213,10 @@ input[type="color"].sw:disabled {
 }
 
 /* ===== 富文本编辑器（tiny-editor / Quill snow） ===== */
-.tiny-editor .ql-container {
-    min-height: 220px;
+/* `.ql-container` 是加在 `.tiny-editor` 自身上的（同一个节点），不是它的子节点；
+   写成 `.tiny-editor .ql-container` 的后代选择器匹配不到任何东西。 */
+.tiny-editor {
     font-size: 14px;
-}
-.tiny-editor .ql-toolbar {
-    border-radius: 6px 6px 0 0;
-}
-.tiny-editor .ql-container {
     border-radius: 0 0 6px 6px;
 }
 
@@ -1282,58 +1337,25 @@ input[type="color"].sw:disabled {
     padding: 8px 0;
 }
 
-/* ===== 全屏详情浮层 ===== */
-.fullscreen {
-    position: fixed;
-    inset: 0;
-    z-index: 60;
-    background: var(--bg);
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    padding: 12px 16px;
-    overflow: hidden;
-}
-.fs-head {
-    flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding-bottom: 8px;
-    border-bottom: 1px solid var(--line);
-}
-.fs-head .mut {
-    margin-right: auto;
-}
-.fs-body {
-    flex: 1;
-    min-height: 0;
-    overflow: auto;
-    display: flex;
-    flex-direction: column;
-}
-.fs-body .detail {
-    flex: 1;
-    border-left: 0;
-    border-radius: 0;
-    overflow: auto;
-}
-/* 全屏下编辑区吃掉剩余高度，正文可滚动，而不是被压在 220px。 */
-.fs-body .editor {
+/*
+ * 详情编辑区吃掉剩余高度，但必须保底。
+ *
+ * `.editor` 带 `overflow: hidden`，flex 自动最小尺寸因此降为 0；而评论区
+ * `overflow: visible`，最小尺寸等于内容高度、挤不动。两侧一叠加，评论变多
+ * 时负空间全部由编辑器承担——侧栏面板实测被压到 2px。
+ * 给它一个保底高度，超高部分交给整个面板滚动。
+ */
+.detail .editor {
     flex: 1 1 auto;
-    min-height: 240px;
+    min-height: 280px;
     display: flex;
     flex-direction: column;
 }
-.fs-body .editor .tiny-editor {
+.detail .editor .tiny-editor {
     flex: 1 1 auto;
     min-height: 0;
     display: flex;
     flex-direction: column;
-}
-.fs-body .editor .tiny-editor .ql-container {
-    flex: 1 1 auto;
-    min-height: 200px;
 }
 
 /* ===== 评论 ===== */
@@ -1348,6 +1370,12 @@ input[type="color"].sw:disabled {
 .c-body p{margin:0 0 4px}
 .c-body img{max-width:100%}
 .c-edit-acts{display:flex;gap:6px;margin-top:6px}
+/* Quill 自带 `.ql-container{height:100%}`，而 `.c-edit` 的高度是 auto，
+   两者构成自引用：父框先按容器的固有高度（单行 86px）定下自身高度 182px，
+   容器再按 100% 撑到 182px，多出来的工具栏与「保存/取消」就被挤出父框；
+   `.c-item` 是 static 定位，后一条评论直接把它们盖住，保存按钮点不到。
+   把容器高度交回内容决定，父框随内容增长。 */
+.c-edit .tiny-editor{height:auto}
 .c-confirm{display:flex;align-items:center;gap:8px}
 .c-composer{display:flex;flex-direction:column;gap:6px}
 .c-badge{display:inline-flex;align-items:center;gap:3px;margin-left:6px;font-size:12px;color:var(--kimi-color-text-tertiary,#8f959e)}

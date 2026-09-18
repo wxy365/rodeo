@@ -1,7 +1,9 @@
+use leptos::html::Input;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::hooks::{use_navigate, use_params_map};
 
+use crate::frontend::attachment_list::AttachmentList;
 use crate::frontend::comment_list::CommentList;
 use crate::frontend::components::{action_label, audit_change, fmt_datetime, logged_out, short_time};
 use crate::frontend::graphql_client::{
@@ -9,7 +11,7 @@ use crate::frontend::graphql_client::{
     AccountBrief, AuditLog, Entry, Labeling, LabelSchema, Member, Workspace,
 };
 use crate::frontend::icons::{
-    ic_back, ic_check, ic_history, ic_share, ic_tag, ic_upload,
+    ic_back, ic_check, ic_history, ic_share, ic_tag,
 };
 use crate::frontend::label_editor::LabelEditor;
 use crate::frontend::tiny_editor::TinyEditor;
@@ -31,6 +33,9 @@ pub fn EntryFullScreen() -> impl IntoView {
     let detail = RwSignal::new(String::new());
     let saved = RwSignal::new(false);
     let error = RwSignal::new(None::<String>);
+    // 标题平时只读，点击才换成输入框；输入框挂载后由 Effect 补焦点。
+    let editing_title = RwSignal::new(false);
+    let title_ref: NodeRef<Input> = NodeRef::new();
 
     let load = move |overwrite: bool| {
         let s = slug();
@@ -93,6 +98,16 @@ pub fn EntryFullScreen() -> impl IntoView {
         saved.set(false);
     });
 
+    // 进入标题编辑态后把焦点交给输入框，否则用户还得再点一次。
+    #[cfg(target_arch = "wasm32")]
+    Effect::new(move |_| {
+        if editing_title.get() {
+            if let Some(el) = title_ref.get() {
+                let _ = el.focus();
+            }
+        }
+    });
+
     let save = move |_| {
         let c = code();
         let Some(e) = data.get().and_then(|r| r.ok()).map(|(_, e, _, _, _)| e) else {
@@ -145,10 +160,32 @@ pub fn EntryFullScreen() -> impl IntoView {
             <div class="panel entry-top">
                 <button class="btn" on:click=back>{ic_back()}"返回视图"</button>
                 <span class="code">{code}</span>
-                <input class="inp" prop:value=title on:input=move |ev| {
-                    title.set(event_target_value(&ev));
-                    saved.set(false);
-                } />
+                {move || if editing_title.get() {
+                    view! {
+                        <input class="inp entry-title-edit"
+                            node_ref=title_ref
+                            prop:value=title
+                            on:input=move |ev| {
+                                title.set(event_target_value(&ev));
+                                saved.set(false);
+                            }
+                            on:blur=move |_| editing_title.set(false)
+                            on:keydown=move |ev| {
+                                if ev.key() == "Enter" {
+                                    ev.prevent_default();
+                                    editing_title.set(false);
+                                }
+                            }
+                        />
+                    }.into_any()
+                } else {
+                    view! {
+                        <h1 class="entry-title"
+                            title="点击编辑标题"
+                            on:click=move |_| editing_title.set(true)
+                        >{move || title.get()}</h1>
+                    }.into_any()
+                }}
                 <button class="btn pri" on:click=save>"保存"</button>
                 {move || if saved.get() {
                     view! { <span class="chip c-done">{ic_check()}"已保存"</span> }.into_any()
@@ -159,57 +196,62 @@ pub fn EntryFullScreen() -> impl IntoView {
                 <button class="btn danger" on:click=del>"删除"</button>
             </div>
 
-            {move || data.get().and_then(|r| r.ok()).map(|(_, e, _, _, _)| {
-                let by = |a: &Option<AccountBrief>| a.as_ref().map(|x| x.name.clone()).unwrap_or_else(|| "—".to_string());
-                view! {
-                    <div class="dmeta">
-                        <div><span class="mut">"创建人"</span>{by(&e.created_by_account)}</div>
-                        <div><span class="mut">"创建时间"</span>{fmt_datetime(&e.created_at)}</div>
-                        <div><span class="mut">"更新人"</span>{by(&e.updated_by_account)}</div>
-                        <div><span class="mut">"更新时间"</span>{fmt_datetime(&e.updated_at)}</div>
-                        {e.archived_at.clone().map(|at| view! {
-                            <div><span class="mut">"归档时间"</span>{fmt_datetime(&at)}</div>
-                        })}
-                    </div>
-                }
-            })}
-
             {move || error.get().map(|e| view! { <div class="hint" style="margin-bottom:12px">{"⚠ "}{e}</div> })}
 
             <div class="entry-layout">
-                <div class="panel entry-editor" style="padding:0;overflow:hidden">
-                    {move || match data.get() {
-                        Some(Ok((_ws, e, _, _, _))) => {
-                            let initial = e.detail.clone();
-                            view! {
-                                <TinyEditor initial entry_code=Signal::derive(code) on_change=on_editor_change />
-                            }.into_any()
-                        }
-                        _ => view! {
-                            <div class="ebody" style="min-height:340px;padding:16px">
-                                <span class="mut">"加载中…"</span>
-                            </div>
-                        }.into_any(),
-                    }}
-                </div>
-
-                <aside class="panel entry-side">
-                    <div>
-                        <div class="grp-h">{ic_tag()}"标签（变更即保存）"</div>
-                        <LabelEditor code=Signal::derive(code) schemas labels members=ws_members on_changed />
+                <div class="entry-main">
+                    <div class="panel entry-editor" style="padding:0;overflow:hidden">
+                        {move || match data.get() {
+                            Some(Ok((_ws, e, _, _, _))) => {
+                                let initial = e.detail.clone();
+                                view! {
+                                    <TinyEditor initial entry_code=Signal::derive(code) on_change=on_editor_change />
+                                }.into_any()
+                            }
+                            _ => view! {
+                                <div class="ebody" style="min-height:340px;padding:16px">
+                                    <span class="mut">"加载中…"</span>
+                                </div>
+                            }.into_any(),
+                        }}
                     </div>
 
-                    <div>
+                    <div class="panel entry-comments">
                         <CommentList
                             code=Signal::derive(code)
                             workspace_id=ws_id
                             on_changed=on_changed
                         />
                     </div>
+                </div>
+
+                <aside class="panel entry-side">
+                    {move || data.get().and_then(|r| r.ok()).map(|(_, e, _, _, _)| {
+                        let by = |a: &Option<AccountBrief>| a.as_ref().map(|x| x.name.clone()).unwrap_or_else(|| "—".to_string());
+                        view! {
+                            <div class="dmeta">
+                                <div><span class="mut">"创建人"</span>{by(&e.created_by_account)}</div>
+                                <div><span class="mut">"创建时间"</span>{fmt_datetime(&e.created_at)}</div>
+                                <div><span class="mut">"更新人"</span>{by(&e.updated_by_account)}</div>
+                                <div><span class="mut">"更新时间"</span>{fmt_datetime(&e.updated_at)}</div>
+                                {e.archived_at.clone().map(|at| view! {
+                                    <div><span class="mut">"归档时间"</span>{fmt_datetime(&at)}</div>
+                                })}
+                            </div>
+                        }
+                    })}
 
                     <div>
-                        <div class="grp-h">{ic_upload()}"附件（≤ 50MB）"<span class="mut">"即将上线"</span></div>
-                        <div class="mut">"暂无附件"</div>
+                        <div class="grp-h">{ic_tag()}"标签（变更即保存）"</div>
+                        <LabelEditor code=Signal::derive(code) schemas labels members=ws_members on_changed />
+                    </div>
+
+                    <div>
+                        <AttachmentList
+                            code=Signal::derive(code)
+                            workspace_id=ws_id
+                            on_changed=on_changed
+                        />
                     </div>
 
                     <div>

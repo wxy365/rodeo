@@ -504,6 +504,21 @@ pub fn fmt_datetime(rfc: &str) -> String {
     }
 }
 
+/// 字节数 → 人类可读。附件行用它，免得把 5242880 这种数直给用户。
+pub fn human_size(bytes: i64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = 1024.0 * 1024.0;
+    let n = bytes.max(0);
+    let b = n as f64;
+    if b >= MB {
+        format!("{:.1} MB", b / MB)
+    } else if b >= KB {
+        format!("{:.0} KB", b / KB)
+    } else {
+        format!("{n} B")
+    }
+}
+
 /// 审计 action → 中文标签。
 pub fn action_label(action: &str) -> &'static str {
     match action {
@@ -537,6 +552,8 @@ pub fn action_label(action: &str) -> &'static str {
         "CommentCreated" => "发表评论",
         "CommentUpdated" => "编辑评论",
         "CommentDeleted" => "删除评论",
+        "AttachmentUploaded" => "上传附件",
+        "AttachmentDeleted" => "删除附件",
         _ => "变更",
     }
 }
