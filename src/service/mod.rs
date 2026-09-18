@@ -1,4 +1,5 @@
 pub mod ai;
+pub mod attachment;
 pub mod audit;
 pub mod auth;
 pub mod comment;
@@ -16,6 +17,7 @@ use crate::error::AppError;
 use crate::storage::DocStore;
 
 pub use ai::{AiClient, AiService};
+pub use attachment::AttachmentService;
 pub use audit::AuditService;
 pub use auth::{AuthContext, AuthService};
 pub use comment::CommentService;
@@ -34,6 +36,7 @@ pub struct Services {
     pub workspace: WorkspaceService,
     pub entry: EntryService,
     pub comment: CommentService,
+    pub attachment: AttachmentService,
     pub label: LabelService,
     pub audit: AuditService,
     pub search: Arc<SearchIndex>,
@@ -51,11 +54,14 @@ impl Services {
         let entry = EntryService::with_search(store.clone(), search.clone());
         // 评论服务要与 EntryService 共用同一份实例：评论变更后要触发它的重索引。
         let comment = CommentService::new(store.clone(), entry.clone());
+        // 附件服务同样要与 EntryService 共用同一份实例：上传后要推进条目更新时间并重索引。
+        let attachment = AttachmentService::new(store.clone(), entry.clone(), &config.data_dir());
         let services = Self {
             auth: AuthService::new(store.clone(), config.clone()),
             workspace: WorkspaceService::new(store.clone()),
             entry,
             comment,
+            attachment,
             label: LabelService::new(store.clone()),
             audit: AuditService::new(store.clone()),
             view: ViewService::new(store.clone()),
@@ -66,8 +72,11 @@ impl Services {
             store,
             config,
         };
+        // 先修标签定义：搜索与打标回填都按当前结构读数据，让它们看到一致的 schema。
+        services.label.repair_legacy_schemas()?;
         services.search.backfill(&services.store)?;
         services.entry.labelings_by_workspace_backfill(&services.store)?;
+        services.view.repair_default_view_name()?;
         Ok(services)
     }
 }
