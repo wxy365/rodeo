@@ -11,7 +11,7 @@ async fn main() {
     use leptos_axum::{generate_route_list, LeptosRoutes};
     use tower_http::limit::RequestBodyLimitLayer;
 
-    use rodeo::api::{build_schema, graphql_handler, AppState};
+    use rodeo::api::{build_schema, download_attachment, graphql_handler, AppState};
     use rodeo::app::*;
     use rodeo::config::Config;
     use rodeo::service::Services;
@@ -53,6 +53,7 @@ async fn main() {
             post(graphql_handler).layer(RequestBodyLimitLayer::new(GRAPHQL_BODY_LIMIT)),
         )
         .route("/api/health", get(|| async { "ok" }))
+        .route("/api/attachments/{id}", get(download_attachment))
         .leptos_routes(&leptos_options, routes, {
             let leptos_options = leptos_options.clone();
             move || shell(leptos_options.clone())
