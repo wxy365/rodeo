@@ -39,26 +39,56 @@ function cleanupAux(el) {
   document.querySelectorAll('body > .ql-tooltip').forEach((n) => n.remove());
 }
 
-// 正文不支持图片：Quill 默认把粘贴/拖入的图片转成 base64 embed，单条评论能到数 MB，
-// 且只读渲染会把 `data:` URI 原样输出。在编辑器自身的输入入口拦掉，工具栏本来就没有图片按钮。
-function blockImages(el) {
-  const hasImage = (dt) => {
+// 正文支持图片：不再是「拦截」，而是接手上传。粘贴/拖入的图片文件经 opts.upload
+// 上传后以 /api/attachments/<id> 的 URL 插入，而不是 Quill 默认的 base64 data URI
+// （后者会让单条内容涨到数 MB，且只读渲染会把 data: 原样输出）。
+// 仍在捕获阶段监听：Quill 的 clipboard 模块在冒泡阶段处理粘贴，要抢在它之前。
+function attachImageUpload(el, editor, opts) {
+  const imageFiles = (dt) => {
     const items = dt && dt.items;
-    if (!items) return false;
-    for (const it of Array.from(items)) {
-      if (it.kind === 'file' && (it.type || '').startsWith('image/')) return true;
-    }
-    return false;
+    if (!items) return [];
+    return Array.from(items)
+      .filter((it) => it.kind === 'file' && (it.type || '').startsWith('image/'))
+      .map((it) => it.getAsFile())
+      .filter(Boolean);
   };
   const guard = (e) => {
-    if (hasImage(e.clipboardData || e.dataTransfer)) {
-      e.preventDefault();
-      e.stopPropagation();
-    }
+    const files = imageFiles(e.clipboardData || e.dataTransfer);
+    if (!files.length) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (!opts || typeof opts.upload !== 'function') return;
+    uploadIntoEditor(editor, opts.upload, files);
   };
-  // 捕获阶段：Quill 的 clipboard 模块在冒泡阶段处理粘贴，这里要抢在它之前。
   el.addEventListener('paste', guard, true);
   el.addEventListener('drop', guard, true);
+}
+
+// 串行插入：每个文件上传完成后再动下一个，位置由前一个的结果决定，
+// 避免并发 await 让插入点互相错位。占位文本会在上传完成后被替换掉，
+// 且保存的是 getContents() 的结果，占位不会落库。
+async function uploadIntoEditor(editor, upload, files) {
+  const sel = editor.getSelection(true);
+  let index = sel ? sel.index : editor.getLength();
+  for (const file of files) {
+    const at = index;
+    const placeholder = '上传中…';
+    editor.insertText(at, placeholder, 'user');
+    index = at + placeholder.length;
+    try {
+      const url = await upload(file);
+      editor.deleteText(at, placeholder.length, 'user');
+      editor.insertEmbed(at, 'image', url, 'user');
+      index = at + 1;
+    } catch (err) {
+      editor.deleteText(at, placeholder.length, 'user');
+      const fail = '图片上传失败';
+      editor.insertText(at, fail, 'user');
+      index = at + fail.length;
+      console.warn('图片上传失败', err);
+    }
+    editor.setSelection(index, 0);
+  }
 }
 
 // 只读渲染复用同一个离屏实例；整页评论共用一个，与评论条数无关。
@@ -67,7 +97,8 @@ let renderEditor = null;
 
 window.__rodeo_tiny_editor__ = {
   // 创建编辑器实例。deltaJson 为已归一化的 Quill Delta JSON 字符串（可为空串）。
-  create(el, deltaJson) {
+  // opts.upload(file) -> Promise<string>：粘贴/拖入图片时的上传函数，返回可插入的 URL。
+  create(el, deltaJson, opts) {
     cleanupAux(el);
     sweepOrphans();
     // 再清空容器，避免复用节点时叠加旧内容。
@@ -90,7 +121,7 @@ window.__rodeo_tiny_editor__ = {
     });
     el.__rodeo_aux = Array.from(el.parentNode.children).filter((n) => !before.has(n));
     el.__rodeo_aux.forEach((n) => auxOwners.set(n, el));
-    blockImages(el);
+    attachImageUpload(el, editor, opts);
 
     if (deltaJson) {
       try {

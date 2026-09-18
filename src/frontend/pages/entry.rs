@@ -177,12 +177,12 @@ pub fn EntryFullScreen() -> impl IntoView {
             {move || error.get().map(|e| view! { <div class="hint" style="margin-bottom:12px">{"⚠ "}{e}</div> })}
 
             <div class="entry-layout">
-                <div class="panel" style="padding:0;overflow:hidden">
+                <div class="panel entry-editor" style="padding:0;overflow:hidden">
                     {move || match data.get() {
                         Some(Ok((_ws, e, _, _, _))) => {
                             let initial = e.detail.clone();
                             view! {
-                                <TinyEditor initial on_change=on_editor_change />
+                                <TinyEditor initial entry_code=Signal::derive(code) on_change=on_editor_change />
                             }.into_any()
                         }
                         _ => view! {

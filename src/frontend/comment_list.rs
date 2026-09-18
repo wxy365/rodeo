@@ -50,6 +50,12 @@ pub fn CommentList(
     let composer_ready = RwSignal::new(true);
 
     let load = move || {
+        // 组件可能已被卸载：双击行会先由第一次单击挂出侧栏，随即被全屏浮层替换，
+        // 而侧栏那次请求多半还没回来；此后读 `code` / `workspace_id` 会 panic。
+        // 卸载后结果也无处可放，直接丢弃。
+        if items.is_disposed() {
+            return;
+        }
         let c = code.get();
         let ws = workspace_id.get();
         if c.is_empty() || ws.is_empty() {
@@ -64,7 +70,8 @@ pub fn CommentList(
                     Ok::<_, String>((list, user, r))
                 }
                 .await;
-                if code.get_untracked() != c {
+                // 请求返回前组件也可能已经被卸载（同上），此时 `code` 已释放，读取会 panic。
+                if items.is_disposed() || code.get_untracked() != c {
                     return;
                 }
                 match r {
@@ -228,7 +235,7 @@ pub fn CommentList(
                                                     {if is_editing {
                                                         view! {
                                                             <div class="c-edit">
-                                                                <TinyEditor initial=body_for_editor on_change=on_edit_change />
+                                                                <TinyEditor initial=body_for_editor entry_code=code on_change=on_edit_change />
                                                                 <div class="c-edit-acts">
                                                                     <button class="btn pri sm" on:click={
                                                                         let sid = id_for_save.clone();
@@ -279,7 +286,7 @@ pub fn CommentList(
                     <div class="c-composer">
                         {move || if composer_ready.get() {
                             view! {
-                                <TinyEditor initial=String::new() on_change=on_composer_change />
+                                <TinyEditor initial=String::new() entry_code=code on_change=on_composer_change />
                             }.into_any()
                         } else {
                             view! { <div class="mut">"…"</div> }.into_any()

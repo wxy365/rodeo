@@ -287,6 +287,8 @@ pub fn WorkspaceMain() -> impl IntoView {
     let query_ast = RwSignal::new(serde_json::json!({ "and": [] }));
     // 已落库的视图基线 (query, sort_field, sort_desc)。与当前编辑态比较，无差异时
     // 「保存视图」置灰：既挡掉无效提交，也让保存成功有可见反馈（按钮重新变灰）。
+    // 基础视图没有这个按钮（它上面的过滤只作临时用途），但基线仍要维护——「视图配置」
+    // 保存后会用它重新对齐。
     let saved_baseline: RwSignal<(Value, String, bool)> =
         RwSignal::new((serde_json::json!({ "and": [] }), "updatedAt".to_string(), true));
     let expr_text = RwSignal::new(String::new());
@@ -418,11 +420,16 @@ pub fn WorkspaceMain() -> impl IntoView {
         query_ast.get() != q || v.sort.field != f || v.sort.desc != d
     };
 
-    // ---- 新建视图弹窗 ----
+    // ---- 新建 / 另存为视图弹窗 ----
     let show_view_dialog = RwSignal::new(false);
+    // 两个入口共用一个弹窗，标题与内容随入口变。
+    let view_dialog_saveas = RwSignal::new(false);
     let view_name_input = RwSignal::new(String::new());
     let view_shared_input = RwSignal::new(false);
     let view_columns_input = RwSignal::new(Vec::<String>::new()); // 选中展示为列的标签 name
+    // 要落库的条件与排序：「新建视图」给空条件，「另存为新视图」继承基础视图当前的临时过滤与排序。
+    let view_query_input = RwSignal::new(serde_json::json!({ "and": [] }));
+    let view_sort_input = RwSignal::new(("updatedAt".to_string(), true));
 
     // ---- 视图配置弹窗（重命名 + 列配置）----
     let show_config_dialog = RwSignal::new(false);
@@ -744,7 +751,7 @@ pub fn WorkspaceMain() -> impl IntoView {
             <div class="crumb">
                 {move || match active_view.get() {
                     Some(v) => format!("/{} · 视图「{}」", slug(), v.name),
-                    None => format!("/{} · 默认视图「全部内容」", slug()),
+                    None => format!("/{} · 基础视图「全部内容」", slug()),
                 }}
             </div>
             <div class=move || if sidebar_collapsed.get() { "ws-layout collapsed" } else { "ws-layout" }>
@@ -756,11 +763,16 @@ pub fn WorkspaceMain() -> impl IntoView {
                     collapsed=sidebar_collapsed
                     on_select=select_view
                     on_new=Callback::new(move |_| {
-                        view_name_input.set(String::new());
-                        view_columns_input.set(Vec::new());
-                        view_shared_input.set(false);
-                        dialog_error.set(None);
-                        show_view_dialog.set(true);
+                        batch(move || {
+                            view_dialog_saveas.set(false);
+                            view_query_input.set(serde_json::json!({ "and": [] }));
+                            view_sort_input.set(("updatedAt".to_string(), true));
+                            view_name_input.set(String::new());
+                            view_columns_input.set(Vec::new());
+                            view_shared_input.set(false);
+                            dialog_error.set(None);
+                            show_view_dialog.set(true);
+                        });
                     })
                     on_delete=delete_view_cb
                     on_archived=Callback::new(open_archived)
@@ -995,33 +1007,58 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 }
                             })}
                         </div>
-                        <button class="btn" style="margin-left:auto" disabled=move || !view_dirty()
-                            on:click=move |_| {
-                                let Some(v) = active_view.get() else { return };
-                                let ast = query_ast.get();
-                                let cols = v.columns.clone();
-                                let shared = v.is_shared;
-                                let id = v.id.clone();
-                                let name = v.name.clone();
-                                let field = v.sort.field.clone();
-                                let desc = v.sort.desc;
-                                let title_colors = v.title_colors.clone();
-                                spawn_local(async move {
-                                    match update_view(&id, &name, &ast, &field, desc, &cols, shared, &title_colors).await {
-                                        Ok(saved) => {
-                                            view_list.update(|l| {
-                                                if let Some(slot) = l.iter_mut().find(|x| x.id == saved.id) {
-                                                    *slot = saved.clone();
+                        {move || if active_view.get().is_some_and(|v| v.is_default) {
+                            // 基础视图上的过滤是临时态：不给「保存」，要留存只能另存为新视图。
+                            view! {
+                                <button class="btn" style="margin-left:auto"
+                                    on:click=move |_| {
+                                        let Some(v) = active_view.get() else { return };
+                                        let ast = query_ast.get_untracked();
+                                        let sort = (v.sort.field.clone(), v.sort.desc);
+                                        let cols = v.columns.clone();
+                                        dialog_error.set(None);
+                                        batch(move || {
+                                            view_dialog_saveas.set(true);
+                                            view_query_input.set(ast);
+                                            view_sort_input.set(sort);
+                                            view_name_input.set(String::new());
+                                            view_columns_input.set(cols);
+                                            view_shared_input.set(false);
+                                            show_view_dialog.set(true);
+                                        });
+                                    }>"另存为新视图"</button>
+                            }.into_any()
+                        } else {
+                            view! {
+                                <button class="btn" style="margin-left:auto" disabled=move || !view_dirty()
+                                    on:click=move |_| {
+                                        let Some(v) = active_view.get() else { return };
+                                        let ast = query_ast.get();
+                                        let cols = v.columns.clone();
+                                        let shared = v.is_shared;
+                                        let id = v.id.clone();
+                                        let name = v.name.clone();
+                                        let field = v.sort.field.clone();
+                                        let desc = v.sort.desc;
+                                        let title_colors = v.title_colors.clone();
+                                        spawn_local(async move {
+                                            match update_view(&id, &name, &ast, &field, desc, &cols, shared, &title_colors).await {
+                                                Ok(saved) => {
+                                                    view_list.update(|l| {
+                                                        if let Some(slot) = l.iter_mut().find(|x| x.id == saved.id) {
+                                                            *slot = saved.clone();
+                                                        }
+                                                    });
+                                                    active_view.set(Some(saved));
+                                                    saved_baseline.set((ast, field, desc));
+                                                    error.set(None);
                                                 }
-                                            });
-                                            active_view.set(Some(saved));
-                                            saved_baseline.set((ast, field, desc));
-                                            error.set(None);
-                                        }
-                                        Err(e) => error.set(Some(e)),
-                                    }
-                                });
-                            }>"保存视图"</button>
+                                                Err(e) => error.set(Some(e)),
+                                            }
+                                        });
+                                    }>"保存视图"</button>
+                            }.into_any()
+                        }}
                         <span class="mut">{move || {
                             let (field, desc) = active_view
                                 .get()
@@ -1325,9 +1362,22 @@ pub fn WorkspaceMain() -> impl IntoView {
                 view! {
                     <div class="dmodal">
                         <div class="panel dmbox">
-                            <h3>"新建视图"</h3>
+                            <h3>{move || if view_dialog_saveas.get() { "另存为新视图" } else { "新建视图" }}</h3>
                             <input class="inp" placeholder="视图名称" prop:value=view_name_input
                                 on:input=move |ev| view_name_input.set(event_target_value(&ev)) />
+                            {move || view_dialog_saveas.get().then(|| {
+                                // 另存为会把基础视图上那份临时过滤一并落库，得让用户看见落的是什么。
+                                let e = expr_text.get();
+                                view! {
+                                    <p class="mut" style="margin:0;font-size:12px">
+                                        {if e.trim().is_empty() {
+                                            "条件：全部内容".to_string()
+                                        } else {
+                                            format!("条件：{e}")
+                                        }}
+                                    </p>
+                                }
+                            })}
                             <div class="dfield">
                                 <span class="dlabel">"展示为列的标签"</span>
                                 <ColumnPicker schemas=schemas selected=view_columns_input />
@@ -1348,10 +1398,12 @@ pub fn WorkspaceMain() -> impl IntoView {
                                     let name = view_name_input.get();
                                     let shared = view_shared_input.get();
                                     let cols = view_columns_input.get();
+                                    let query = view_query_input.get_untracked();
+                                    let (sort_field, sort_desc) = view_sort_input.get_untracked();
                                     dialog_error.set(None);
                                     spawn_local(async move {
-                                        match create_view(&ws_id, &name, &serde_json::json!({"and": []}),
-                                            "updatedAt", true, &cols, shared, &serde_json::json!([])).await {
+                                        match create_view(&ws_id, &name, &query,
+                                            &sort_field, sort_desc, &cols, shared, &serde_json::json!([])).await {
                                             Ok(v) => {
                                                 view_list.update(|l| l.push(v.clone()));
                                                 set_active(Some(v));
@@ -1360,7 +1412,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                             Err(e) => dialog_error.set(Some(e)),
                                         }
                                     });
-                                }>"创建"</button>
+                                }>{move || if view_dialog_saveas.get() { "另存为" } else { "创建" }}</button>
                             </div>
                         </div>
                     </div>
@@ -1372,8 +1424,11 @@ pub fn WorkspaceMain() -> impl IntoView {
                     <div class="dmodal">
                         <div class="panel dmbox">
                             <h3>"视图配置"</h3>
-                            <input class="inp" placeholder="视图名称" prop:value=config_name_input
-                                on:input=move |ev| config_name_input.set(event_target_value(&ev)) />
+                            {move || (!active_view.get().is_some_and(|v| v.is_default)).then(|| view! {
+                                // 基础视图的名字是固定概念，不提供改名；服务端也会挡下。
+                                <input class="inp" placeholder="视图名称" prop:value=config_name_input
+                                    on:input=move |ev| config_name_input.set(event_target_value(&ev)) />
+                            })}
                             <div class="dfield">
                                 <span class="dlabel">"展示为列的标签"</span>
                                 <ColumnPicker schemas=schemas selected=config_columns_input />
@@ -1508,7 +1563,7 @@ fn WorkspaceSidebar(
     on_archived: Callback<()>,
 ) -> impl IntoView {
     let list = move || views.get();
-    // 默认视图单独置顶展示，不混进「我的 / 共享」两组。
+    // 基础视图单独置顶展示，不混进「我的 / 共享」两组。
     let default_view = move || list().into_iter().find(|v| v.is_default);
     let mine = move || {
         list()
@@ -1534,7 +1589,12 @@ fn WorkspaceSidebar(
         let click_id = id.clone();
         let del_id = id.clone();
         view! {
-            <div class=move || if is_active() { "it on" } else { "it" }
+            <div class=move || {
+                     let mut c = String::from("it");
+                     if is_default { c.push_str(" base"); }
+                     if is_active() { c.push_str(" on"); }
+                     c
+                 }
                  on:click=move |_| on_select.run(click_id.clone())>
                 {if is_default {
                     ic_tag().into_any()
@@ -1544,7 +1604,6 @@ fn WorkspaceSidebar(
                     ic_folder().into_any()
                 }}
                 <span class="lbl" style="flex:1">{name}</span>
-                {is_default.then(|| view! { <span class="chip dim" style="font-size:11px">"默认"</span> })}
                 <span class="n">{count}</span>
                 {(!is_default).then(|| view! {
                     <button class="ibtn" title="删除视图" on:click=move |ev| {
@@ -1567,7 +1626,6 @@ fn WorkspaceSidebar(
                     set_sidebar_collapsed(v);
                 }>{move || if collapsed.get() { "»" } else { "«" }}</button>
             </div>
-            <div class="grp">"默认视图"</div>
             {move || default_view().map(|v| row(v, true, true))}
             <div class="grp">"我的视图"</div>
             {move || mine().into_iter().map(|v| row(v, false, false)).collect::<Vec<_>>()}
@@ -2055,7 +2113,7 @@ fn EntryPanel(
                                 Some(Ok(e)) => {
                                     let initial = e.detail.clone();
                                     view! {
-                                        <TinyEditor initial on_change=on_editor_change />
+                                        <TinyEditor initial entry_code=Signal::derive(move || code.get()) on_change=on_editor_change />
                                     }.into_any()
                                 }
                                 _ => view! {

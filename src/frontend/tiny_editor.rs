@@ -9,12 +9,14 @@ use leptos::prelude::*;
 #[component]
 pub fn TinyEditor(
     #[prop(into)] initial: String,
+    /// 所属条目编码。粘贴图片时上传到这条目下；空串表示无归属时上传会失败。
+    entry_code: Signal<String>,
     on_change: Callback<String>,
 ) -> impl IntoView {
     let el: NodeRef<Div> = NodeRef::new();
     let delta = normalize_delta(&initial);
 
-    mount_when_ready(el, delta, on_change);
+    mount_when_ready(el, delta, entry_code, on_change);
 
     view! { <div node_ref=el class="tiny-editor"></div> }
 }
@@ -22,15 +24,20 @@ pub fn TinyEditor(
 /// 在节点挂载后初始化编辑器（仅 wasm；SSR 下为空操作）。
 /// 用 `NodeRef::on_load`（内部 `f.take()`）保证每个节点只挂载一次，
 /// 避免响应式 effect 在重渲染时重复 new 编辑器导致工具栏堆叠。
-fn mount_when_ready(el: NodeRef<Div>, delta: String, on_change: Callback<String>) {
+fn mount_when_ready(
+    el: NodeRef<Div>,
+    delta: String,
+    entry_code: Signal<String>,
+    on_change: Callback<String>,
+) {
     #[cfg(target_arch = "wasm32")]
     el.on_load(move |node| {
-        mount_editor(node, delta, on_change);
+        mount_editor(node, delta, entry_code, on_change);
     });
 
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let _ = (el, delta, on_change);
+        let _ = (el, delta, entry_code, on_change);
     }
 }
 
@@ -59,6 +66,7 @@ fn normalize_delta(detail: &str) -> String {
 fn mount_editor<N: wasm_bindgen::JsCast>(
     node: N,
     delta_json: String,
+    entry_code: Signal<String>,
     on_change: Callback<String>,
 ) {
     use js_sys::{Array, Function, Reflect};
@@ -86,9 +94,36 @@ fn mount_editor<N: wasm_bindgen::JsCast>(
         return;
     }
 
+    // 第三个参数：把异步上传包成 Promise 交给 glue.js。
+    // 闭包在「调用时」才读 entry_code，而不是挂载时快照——详情面板切换条目后
+    // 编辑器节点可能被复用，此时上传必须落在当前条目上。
+    let opts = js_sys::Object::new();
+    let upload_fn = {
+        let closure = Closure::wrap(Box::new(move |file: JsValue| -> JsValue {
+            let code = entry_code.get_untracked();
+            let fut = async move {
+                let file = file
+                    .dyn_into::<web_sys::File>()
+                    .map_err(|_| JsValue::from_str("粘贴的内容不是文件"))?;
+                match crate::frontend::graphql_client::upload_attachment(&code, &file).await {
+                    Ok(a) => Ok(JsValue::from_str(&a.url)),
+                    Err(e) => Err(JsValue::from_str(&e)),
+                }
+            };
+            wasm_bindgen_futures::future_to_promise(fut).into()
+        }) as Box<dyn FnMut(JsValue) -> JsValue>);
+        // into_js_value 会泄漏这个闭包，但也正因此它不会被回收；
+        // 再把引用挂到节点上，与 __rodeo_editor / __rodeo_onchange 同一套保活方式。
+        let js = closure.into_js_value();
+        let _ = Reflect::set(&node_js, &JsValue::from_str("__rodeo_upload"), &js);
+        js
+    };
+    let _ = Reflect::set(&opts, &JsValue::from_str("upload"), &upload_fn);
+
     let args = Array::new();
     args.push(&node_js);
     args.push(&JsValue::from_str(&delta_json));
+    args.push(&opts);
 
     let Some(editor) = Reflect::apply(&create, &bridge, args.as_ref()).ok() else {
         return;
