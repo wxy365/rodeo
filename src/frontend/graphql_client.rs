@@ -186,6 +186,25 @@ pub struct Comment {
 
 #[derive(Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct Attachment {
+    pub id: String,
+    pub entry_code: String,
+    pub filename: String,
+    pub content_type: String,
+    pub size: i64,
+    /// 服务端拼好的下载路径。客户端不要自己拼。
+    pub url: String,
+    pub created_at: String,
+    pub created_by: String,
+    #[serde(default)]
+    pub created_by_account: Option<AccountBrief>,
+}
+
+const ATTACHMENT_FIELDS: &str =
+    "id entryCode filename contentType size url createdAt createdBy createdByAccount { id email name }";
+
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LabelSchema {
     pub name: String,
     pub title: String,
@@ -565,6 +584,82 @@ pub async fn delete_comment(entry_code: &str, id: &str) -> Result<bool, String> 
         .unwrap_or(false))
 }
 
+pub async fn attachments(entry_code: &str) -> Result<Vec<Attachment>, String> {
+    let q =
+        format!("query($c: String!) {{ attachments(entryCode: $c) {{ {ATTACHMENT_FIELDS} }} }}");
+    let data = graphql(&q, json!({ "c": entry_code })).await?;
+    serde_json::from_value(data.get("attachments").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+pub async fn delete_attachment(id: &str) -> Result<bool, String> {
+    let data = graphql(
+        "mutation($i: ID!) { deleteAttachment(id: $i) }",
+        json!({ "i": id }),
+    )
+    .await?;
+    Ok(data
+        .get("deleteAttachment")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false))
+}
+
+/// 走 GraphQL multipart 上传。字段名 `operations` / `map` / `map` 里映射的键三者必须自洽
+/// （async-graphql 按 graphql-multipart-request-spec 解析）。
+/// 只在 wasm 下存在：`web_sys::File` 在非 wasm 目标不可用，调用点也是 wasm-only。
+#[cfg(target_arch = "wasm32")]
+pub async fn upload_attachment(
+    entry_code: &str,
+    file: &web_sys::File,
+) -> Result<Attachment, String> {
+    use wasm_bindgen::JsCast;
+
+    let operations = json!({
+        "query": format!(
+            "mutation($c: String!, $f: Upload!) {{ uploadAttachment(entryCode: $c, file: $f) {{ {ATTACHMENT_FIELDS} }} }}"
+        ),
+        "variables": { "c": entry_code, "f": null },
+    });
+    let map = json!({ "0": ["variables.f"] });
+
+    let fd = web_sys::FormData::new().map_err(|e| format!("{e:?}"))?;
+    fd.append_with_str("operations", &operations.to_string())
+        .map_err(|e| format!("{e:?}"))?;
+    fd.append_with_str("map", &map.to_string())
+        .map_err(|e| format!("{e:?}"))?;
+    fd.append_with_blob_and_filename("0", AsRef::<web_sys::Blob>::as_ref(file), &file.name())
+        .map_err(|e| format!("{e:?}"))?;
+
+    // 不手写 Content-Type：浏览器要自己补 multipart 的 boundary，手写会让服务端解析失败。
+    let mut req = gloo_net::http::Request::post("/api/graphql");
+    if let Some(token) = get_token() {
+        req = req.header("Authorization", &format!("Bearer {token}"));
+    }
+    let resp = req
+        .body(fd)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let json_val: Value = resp.json().await.map_err(|e| e.to_string())?;
+    if let Some(msg) = json_val
+        .get("errors")
+        .and_then(|e| e.as_array())
+        .and_then(|a| a.first())
+        .and_then(|e| e.get("message"))
+        .and_then(|m| m.as_str())
+    {
+        return Err(msg.to_string());
+    }
+    serde_json::from_value(
+        json_val
+            .pointer("/data/uploadAttachment")
+            .cloned()
+            .unwrap_or(Value::Null),
+    )
+    .map_err(|e| e.to_string())
+}
+
 pub async fn update_entry(
     code: &str,
     expected_updated_at: &str,
@@ -596,7 +691,7 @@ pub async fn delete_entry(code: &str) -> Result<bool, String> {
         .unwrap_or(false))
 }
 
-/// 归档条目：移出默认视图，数据保留。返回服务端确认。
+/// 归档条目：移出基础视图，数据保留。返回服务端确认。
 pub async fn archive_entry(code: &str) -> Result<bool, String> {
     let data = graphql(
         "mutation($c: String!) { archiveEntry(code: $c) }",
@@ -867,7 +962,7 @@ pub struct View {
     #[serde(default)]
     pub title_colors: Value,
     pub entry_count: i64,
-    /// 默认视图：始终存在、不可删除，列表中置顶。
+    /// 基础视图：始终存在、不可删除，列表中置顶。
     #[serde(default)]
     pub is_default: bool,
 }
