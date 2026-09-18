@@ -6,10 +6,10 @@ async fn main() {
     use std::sync::Arc;
 
     use axum::routing::{get, post};
-    use axum::extract::DefaultBodyLimit;
     use axum::{Extension, Router};
     use leptos::prelude::*;
     use leptos_axum::{generate_route_list, LeptosRoutes};
+    use tower_http::limit::RequestBodyLimitLayer;
 
     use rodeo::api::{build_schema, graphql_handler, AppState};
     use rodeo::app::*;
@@ -42,10 +42,15 @@ async fn main() {
     let leptos_options = conf.leptos_options;
     let routes = generate_route_list(App);
 
+    // 附件上限 50MB，服务层会返回「附件超过 50MB」的友好错误；这里放到 64MB，
+    // 给 multipart 边界与其余表单字段留出余量，别让 55MB 的验收请求先被 413 掉。
+    // 仍然只是一条路由上的硬上限，未鉴权客户端刷不出无限大的临时文件。
+    const GRAPHQL_BODY_LIMIT: usize = 64 * 1024 * 1024;
+
     let app = Router::new()
         .route(
             "/api/graphql",
-            post(graphql_handler).layer(DefaultBodyLimit::max(52 * 1024 * 1024)),
+            post(graphql_handler).layer(RequestBodyLimitLayer::new(GRAPHQL_BODY_LIMIT)),
         )
         .route("/api/health", get(|| async { "ok" }))
         .leptos_routes(&leptos_options, routes, {
