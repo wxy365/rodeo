@@ -51,7 +51,8 @@ impl ViewService {
         Ok(())
     }
 
-    /// 默认视图的 id：每个 workspace 一条指针，指向那个「始终存在、不可删除」的视图。
+    /// 基础视图的 id：每个 workspace 一条指针，指向那个「始终存在、不可删除」的视图。
+    /// 代码沿用 `default` 一词（`is_default` / `DEFAULT_VIEWS`），界面上一律叫「基础视图」。
     pub fn default_view_id(&self, ws: Ulid) -> Result<Option<Ulid>, AppError> {
         let key = keys::default_view_key(ws);
         match self.store.get_raw(cf::DEFAULT_VIEWS, &key)? {
@@ -62,15 +63,15 @@ impl ViewService {
         }
     }
 
-    /// 确保 workspace 有默认视图：不存在（或指针失效）就新建一个「包含全部条目」的默认视图。
-    /// 幂等——已有默认视图时直接返回，不产生多余的审计记录。
+    /// 确保 workspace 有基础视图：不存在（或指针失效）就新建一个「包含全部条目」的基础视图。
+    /// 幂等——已有基础视图时直接返回，不产生多余的审计记录。
     pub fn ensure_default(&self, actor: Ulid, ws: Ulid) -> Result<View, AppError> {
         if let Some(id) = self.default_view_id(ws)? {
             if let Some(v) = self.get(id)? {
                 return Ok(v);
             }
         }
-        let view = self.build(ws, "默认视图", Query::all(), SortSpec::default(), vec![], true, vec![], actor);
+        let view = self.build(ws, "基础视图", Query::all(), SortSpec::default(), vec![], true, vec![], actor);
         self.store.put(cf::VIEWS, &keys::view_key(view.id), &view)?;
         self.store.put_raw(
             cf::VIEWS_BY_WORKSPACE,
@@ -80,9 +81,36 @@ impl ViewService {
         self.store
             .put_raw(cf::DEFAULT_VIEWS, &keys::default_view_key(ws), &view.id.to_bytes())?;
         if let Err(e) = self.audit(actor, &view, AuditAction::ViewCreated, None) {
-            tracing::warn!("默认视图审计写入失败: {e}");
+            tracing::warn!("基础视图审计写入失败: {e}");
         }
         Ok(view)
+    }
+
+    /// 把存量基础视图的名字从「默认视图」改成「基础视图」。幂等——改完再扫不会命中。
+    /// 只动名字：名字是服务端播种的固定文案，没有用户意图在里面。
+    /// 返回修好的条数。
+    pub fn repair_default_view_name(&self) -> Result<usize, AppError> {
+        let mut ops = Vec::new();
+        for (key, value) in self.store.scan_prefix(cf::DEFAULT_VIEWS, b"")? {
+            if key.len() != 16 || value.len() != 16 {
+                continue;
+            }
+            let id = Ulid::from_bytes(value.as_slice().try_into().unwrap());
+            // 指针悬空（视图已被清掉）留给 ensure_default 补建，这里不碰。
+            let Some(mut view) = self.get(id)? else { continue };
+            if view.name != "默认视图" {
+                continue;
+            }
+            view.name = "基础视图".to_string();
+            view.updated_at = Utc::now();
+            ops.push(BatchOp::put(cf::VIEWS, keys::view_key(id).to_vec(), &view)?);
+        }
+        let repaired = ops.len();
+        if repaired > 0 {
+            self.store.write_batch(ops)?;
+            tracing::info!("修复 {repaired} 个基础视图的名称");
+        }
+        Ok(repaired)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -183,7 +211,7 @@ impl ViewService {
             }
         }
         out.sort_by(|a, b| a.name.cmp(&b.name));
-        // 默认视图永远置顶，方便用户一眼找到「全部内容」的入口。
+        // 基础视图永远置顶，方便用户一眼找到「全部内容」的入口。
         if let Some(def) = self.default_view_id(ws)? {
             if let Some(i) = out.iter().position(|v| v.id == def) {
                 let v = out.remove(i);
@@ -211,15 +239,22 @@ impl ViewService {
     ) -> Result<View, AppError> {
         let mut view = self.get(id)?.ok_or(AppError::NotFound)?;
         self.validate(view.workspace_id, name, &query, &columns, &title_colors)?;
-        // 默认视图必须对所有成员可见，否则他人列表里就少了这个入口。
         let is_default = self.default_view_id(view.workspace_id)? == Some(id);
         let before = serde_json::to_string(&view).unwrap_or_default();
-        view.name = name.trim().to_string();
-        view.query = query;
-        view.sort = sort;
-        view.columns = columns;
+        if is_default {
+            // 基础视图只认列与标题色：名字是固定概念，查询条件在它上面只作临时过滤
+            // （要留存请「另存为新视图」），排序同样是 ad-hoc 的——三者都不该被这次调用改写。
+            view.columns = columns;
+            view.title_colors = title_colors;
+        } else {
+            view.name = name.trim().to_string();
+            view.query = query;
+            view.sort = sort;
+            view.columns = columns;
+            view.title_colors = title_colors;
+        }
+        // 基础视图必须对所有成员可见，否则他人列表里就少了这个入口。
         view.is_shared = is_shared || is_default;
-        view.title_colors = title_colors;
         view.updated_at = Utc::now();
         let after = serde_json::to_string(&view).unwrap_or_default();
         let audit = AuditLog::new(
@@ -241,7 +276,7 @@ impl ViewService {
         let view = self.get(id)?.ok_or(AppError::NotFound)?;
         if self.default_view_id(view.workspace_id)? == Some(id) {
             return Err(AppError::InvalidQuery(
-                "默认视图不可删除；可改名或改标签表达式".to_string(),
+                "基础视图不可删除；需要留存的筛选请另存为新视图".to_string(),
             ));
         }
         let audit = AuditLog::new(
@@ -268,6 +303,7 @@ impl ViewService {
 mod tests {
     use super::*;
     use crate::domain::query::Query;
+    use crate::domain::SortField;
     use crate::service::WorkspaceService;
 
     fn temp_dir(name: &str) -> String {
@@ -404,34 +440,37 @@ mod tests {
 
         let (dir, _store, svc, ws, actor) = setup();
         let d = svc.ensure_default(actor, ws).unwrap();
-        assert_eq!(d.name, "默认视图");
-        assert!(d.is_shared, "默认视图对全员可见");
+        assert_eq!(d.name, "基础视图");
+        assert!(d.is_shared, "基础视图对全员可见");
 
         // 幂等：再次调用返回同一个视图，不重复创建。
         let again = svc.ensure_default(actor, ws).unwrap();
         assert_eq!(again.id, d.id);
 
-        // 新建普通视图后，默认视图仍在且置顶。
+        // 新建普通视图后，基础视图仍在且置顶。
         svc.create(actor, ws, "A-视图", Query::all(), SortSpec::default(), vec![], false, vec![])
             .unwrap();
         let list = svc.list(actor, ws).unwrap();
         assert_eq!(list.len(), 2);
-        assert_eq!(list[0].id, d.id, "默认视图置顶");
+        assert_eq!(list[0].id, d.id, "基础视图置顶");
 
         // 不可删除。
         assert!(svc.delete(actor, d.id).is_err());
 
-        // 可以给默认视图设置标签表达式；共享标志被强制保持。
+        // 基础视图只接受列配置：改名、改查询条件、改排序都被挡下。
         let q = Query::Cond(Condition {
             field: Field::Label("Task".into()),
             op: Op::Present,
             value: None,
         });
         let u = svc
-            .update(actor, d.id, "全部", q.clone(), SortSpec::default(), vec![], false, vec![])
+            .update(actor, d.id, "全部", q, SortSpec { field: SortField::Title, desc: false }, vec!["Task".into()], false, vec![])
             .unwrap();
         assert!(u.is_shared);
-        assert_eq!(svc.get(d.id).unwrap().unwrap().query, q);
+        assert_eq!(u.name, "基础视图", "基础视图不可改名");
+        assert_eq!(u.query, Query::all(), "基础视图恒为全部条目，过滤只在临时态");
+        assert_eq!(u.sort.field, SortField::UpdatedAt, "基础视图不可改排序");
+        assert_eq!(u.columns, vec!["Task"], "但列仍可配置");
         std::fs::remove_dir_all(&dir).ok();
     }
 

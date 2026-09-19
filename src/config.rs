@@ -22,6 +22,14 @@ pub struct ServerConfig {
     pub port: u16,
     #[serde(default = "default_base_url")]
     pub base_url: String,
+    pub tls: Option<TlsConfig>,
+}
+
+/// 存在即意味着以 HTTPS 启动；缺省则维持明文 HTTP。
+#[derive(Debug, Clone, Deserialize)]
+pub struct TlsConfig {
+    pub cert_path: String,
+    pub key_path: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -70,6 +78,7 @@ impl Default for ServerConfig {
             host: default_host(),
             port: default_port(),
             base_url: default_base_url(),
+            tls: None,
         }
     }
 }
@@ -145,6 +154,10 @@ impl Config {
 
     pub fn data_dir(&self) -> String {
         self.storage.data_dir.clone()
+    }
+
+    pub fn tls(&self) -> Option<&TlsConfig> {
+        self.server.tls.as_ref()
     }
 }
 

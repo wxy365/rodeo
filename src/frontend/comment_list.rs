@@ -50,9 +50,9 @@ pub fn CommentList(
     let composer_ready = RwSignal::new(true);
 
     let load = move || {
-        // 组件可能已被卸载：双击行会先由第一次单击挂出侧栏，随即被全屏浮层替换，
-        // 而侧栏那次请求多半还没回来；此后读 `code` / `workspace_id` 会 panic。
-        // 卸载后结果也无处可放，直接丢弃。
+        // 组件可能已被卸载：双击行会先由第一次单击挂出侧栏，随即跳转条目全屏页
+        // 卸下整个工作空间页，而侧栏那次请求多半还没回来；此后读 `code` /
+        // `workspace_id` 会 panic。卸载后结果也无处可放，直接丢弃。
         if items.is_disposed() {
             return;
         }
@@ -76,8 +76,17 @@ pub fn CommentList(
                 }
                 match r {
                     Ok((list, user, r)) => {
-                        my_id.set(user.map(|u| u.id).unwrap_or_default());
-                        role.set(r);
+                        // 只在真正变化时写入。这两项被「发表评论」子树读取，而本次刷新常由
+                        // 外部原因触发（粘贴图片上传成功后会推进 entry.updated_at，宿主随即
+                        // 重取条目，连带重跑本组件的 load）。无条件 set 会重建那个子树，把
+                        // 编辑器和刚插入的图片一起换掉——图片于是「粘贴后一闪就没」。
+                        let uid = user.map(|u| u.id).unwrap_or_default();
+                        if my_id.get_untracked() != uid {
+                            my_id.set(uid);
+                        }
+                        if role.get_untracked() != r {
+                            role.set(r);
+                        }
                         items.set(Some(Ok(list
                             .into_iter()
                             .map(|comment| CommentView {
@@ -235,7 +244,7 @@ pub fn CommentList(
                                                     {if is_editing {
                                                         view! {
                                                             <div class="c-edit">
-                                                                <TinyEditor initial=body_for_editor entry_code=code on_change=on_edit_change />
+                                                                <TinyEditor initial=body_for_editor entry_code=code on_change=on_edit_change on_uploaded=on_changed />
                                                                 <div class="c-edit-acts">
                                                                     <button class="btn pri sm" on:click={
                                                                         let sid = id_for_save.clone();
@@ -286,7 +295,7 @@ pub fn CommentList(
                     <div class="c-composer">
                         {move || if composer_ready.get() {
                             view! {
-                                <TinyEditor initial=String::new() entry_code=code on_change=on_composer_change />
+                                <TinyEditor initial=String::new() entry_code=code on_change=on_composer_change on_uploaded=on_changed />
                             }.into_any()
                         } else {
                             view! { <div class="mut">"…"</div> }.into_any()

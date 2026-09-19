@@ -205,7 +205,7 @@ pub fn EntryFullScreen() -> impl IntoView {
                             Some(Ok((_ws, e, _, _, _))) => {
                                 let initial = e.detail.clone();
                                 view! {
-                                    <TinyEditor initial entry_code=Signal::derive(code) on_change=on_editor_change />
+                                    <TinyEditor initial entry_code=Signal::derive(code) on_change=on_editor_change on_uploaded=on_changed />
                                 }.into_any()
                             }
                             _ => view! {
@@ -255,7 +255,7 @@ pub fn EntryFullScreen() -> impl IntoView {
                     </div>
 
                     <div>
-                        <div class="grp-h">{ic_history()}"审计历史"</div>
+                        <div class="grp-h">{ic_history()}"历史"</div>
                         {move || {
                             let c = code();
                             match data.get() {

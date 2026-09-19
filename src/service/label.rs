@@ -158,6 +158,37 @@ impl LabelService {
         Self { store }
     }
 
+    /// 修复 `default_value` 之前落库的标签定义。bincode 按位置编码，末尾新增的
+    /// `Option` 字段会让存量记录解码时直接读到 EOF——`#[serde(default)]` 拦不住这一步，
+    /// 因为解码器根本走不到「用默认值补上缺失字段」那一步。这些记录只缺末尾那一个
+    /// `None` 标签，补上即可原样读回；读回后按当前编码写回，此后所有读取路径都不再需要
+    /// 兼容分支。幂等：修完再扫不会命中。返回修好的条数。
+    pub fn repair_legacy_schemas(&self) -> Result<usize, AppError> {
+        let mut ops = Vec::new();
+        for (key, value) in self.store.scan_prefix(cf::LABEL_SCHEMAS, b"")? {
+            if bincode::deserialize::<LabelSchema>(&value).is_ok() {
+                continue;
+            }
+            let mut padded = value.clone();
+            padded.push(0);
+            // 补上之后仍读不出来，说明不是这一个字段的问题，原样留着交给读取路径报错。
+            if let Ok(schema) = bincode::deserialize::<LabelSchema>(&padded) {
+                ops.push(BatchOp::put(cf::LABEL_SCHEMAS, key, &schema)?);
+            } else {
+                tracing::warn!(
+                    "标签定义无法修复，保留原样: {}",
+                    String::from_utf8_lossy(&key)
+                );
+            }
+        }
+        let repaired = ops.len();
+        if repaired > 0 {
+            self.store.write_batch(ops)?;
+            tracing::info!("修复 {repaired} 条旧编码的标签定义");
+        }
+        Ok(repaired)
+    }
+
     pub fn list_schemas(&self, ws_id: Ulid) -> Result<Vec<LabelSchema>, AppError> {
         let prefix = ws_id.to_bytes();
         let rows = self.store.scan_prefix(cf::LABEL_SCHEMAS, &prefix)?;

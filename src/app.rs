@@ -1,6 +1,8 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use leptos_meta::{provide_meta_context, MetaTags, Script, Stylesheet, Title};
+use leptos_meta::{
+    provide_meta_context, HashedStylesheet, MetaTags, Script, Stylesheet, Title,
+};
 use leptos_router::components::{Route, Router, Routes};
 use leptos_router::{ParamSegment, StaticSegment};
 
@@ -17,6 +19,8 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
             <head>
                 <meta charset="utf-8"/>
                 <meta name="viewport" content="width=device-width, initial-scale=1"/>
+                // 主样式表走 cargo-leptos 的内容哈希；`Stylesheet` 不解析哈希，必须用这个。
+                <HashedStylesheet id="leptos" options=options.clone() />
                 <AutoReload options=options.clone() />
                 <HydrationScripts options />
                 <MetaTags/>
@@ -45,7 +49,6 @@ pub fn App() -> impl IntoView {
     });
 
     view! {
-        <Stylesheet id="leptos" href="/pkg/rodeo.css"/>
         <Stylesheet id="tiny-editor" href="/tiny-editor/style.css"/>
         <Script type_="module" src="/tiny-editor/glue.js"/>
         <Title text="Rodeo"/>

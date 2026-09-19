@@ -226,7 +226,7 @@ impl EntryService {
         Ok(Some(String::from_utf8_lossy(&raw).into_owned()))
     }
 
-    /// 归档：只写标记，条目与打标全部保留，只是移出默认视图与全文检索。幂等。
+    /// 归档：只写标记，条目与打标全部保留，只是移出基础视图与全文检索。幂等。
     /// 已删除的条目不可归档（回到 NotFound），因为删除是比归档更彻底的状态。
     pub fn archive(&self, actor: Ulid, code: &str) -> Result<(), AppError> {
         let entry = self.get(code)?.ok_or(AppError::NotFound)?;

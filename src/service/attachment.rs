@@ -104,7 +104,7 @@ impl AttachmentService {
             AuditAction::AttachmentUploaded,
             actor,
             "attachment",
-            // 用 entry_code 而非附件 id：entry 页的「审计历史」按
+            // 用 entry_code 而非附件 id：entry 页的「历史」按
             // resource_id == 条目 code 过滤，用附件 id 的话记录不会出现在任何地方。
             entry_code,
             Some(attachment.workspace_id),

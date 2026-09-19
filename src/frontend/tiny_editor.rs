@@ -12,11 +12,17 @@ pub fn TinyEditor(
     /// 所属条目编码。粘贴图片时上传到这条目下；空串表示无归属时上传会失败。
     entry_code: Signal<String>,
     on_change: Callback<String>,
+    /// 粘贴图片上传成功后调用。上传会推进条目的 `updated_at`（见
+    /// `AttachmentService::save`），宿主页面握着的乐观并发版本号随之作废，
+    /// 必须借这个回调重新取一次条目——否则紧接着的「保存」会被判成冲突，
+    /// 冲突处理会把编辑器连同刚插入的图片一起回滚掉。
+    /// 与页面上手动上传附件的路径（`AttachmentList` 的 `on_changed`）同一个补救。
+    on_uploaded: Callback<()>,
 ) -> impl IntoView {
     let el: NodeRef<Div> = NodeRef::new();
     let delta = normalize_delta(&initial);
 
-    mount_when_ready(el, delta, entry_code, on_change);
+    mount_when_ready(el, delta, entry_code, on_change, on_uploaded);
 
     view! { <div node_ref=el class="tiny-editor"></div> }
 }
@@ -29,15 +35,16 @@ fn mount_when_ready(
     delta: String,
     entry_code: Signal<String>,
     on_change: Callback<String>,
+    on_uploaded: Callback<()>,
 ) {
     #[cfg(target_arch = "wasm32")]
     el.on_load(move |node| {
-        mount_editor(node, delta, entry_code, on_change);
+        mount_editor(node, delta, entry_code, on_change, on_uploaded);
     });
 
     #[cfg(not(target_arch = "wasm32"))]
     {
-        let _ = (el, delta, entry_code, on_change);
+        let _ = (el, delta, entry_code, on_change, on_uploaded);
     }
 }
 
@@ -68,6 +75,7 @@ fn mount_editor<N: wasm_bindgen::JsCast>(
     delta_json: String,
     entry_code: Signal<String>,
     on_change: Callback<String>,
+    on_uploaded: Callback<()>,
 ) {
     use js_sys::{Array, Function, Reflect};
     use wasm_bindgen::{closure::Closure, JsCast, JsValue};
@@ -106,7 +114,11 @@ fn mount_editor<N: wasm_bindgen::JsCast>(
                     .dyn_into::<web_sys::File>()
                     .map_err(|_| JsValue::from_str("粘贴的内容不是文件"))?;
                 match crate::frontend::graphql_client::upload_attachment(&code, &file).await {
-                    Ok(a) => Ok(JsValue::from_str(&a.url)),
+                    Ok(a) => {
+                        // 上传推进了 entry.updated_at，宿主的版本号已经过期，先让它重新取一次。
+                        on_uploaded.run(());
+                        Ok(JsValue::from_str(&a.url))
+                    }
                     Err(e) => Err(JsValue::from_str(&e)),
                 }
             };

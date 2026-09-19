@@ -705,10 +705,7 @@ pub fn WorkspaceSettings() -> impl IntoView {
                                                 let id = v.id.clone();
                                                 view! {
                                                     <tr class="static">
-                                                        <td>
-                                                            {v.name.clone()}
-                                                            {is_default.then(|| view! { <span class="chip dim" style="font-size:11px;margin-left:6px">"默认"</span> })}
-                                                        </td>
+                                                        <td>{v.name.clone()}</td>
                                                         <td class="mut">{owner}</td>
                                                         <td class="mut">{v.entry_count}</td>
                                                         <td>
@@ -716,7 +713,7 @@ pub fn WorkspaceSettings() -> impl IntoView {
                                                                 <input type="checkbox" prop:checked=v.is_shared disabled=!can_manage || is_default
                                                                     on:change=move |ev| toggle_shared.run((id.clone(), event_target_checked(&ev))) />
                                                                 {if is_default {
-                                                                    view! { <span class="mut">"默认视图始终共享"</span> }.into_any()
+                                                                    view! { <span class="mut">"基础视图始终共享"</span> }.into_any()
                                                                 } else {
                                                                     ().into_any()
                                                                 }}

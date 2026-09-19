@@ -1,4 +1,5 @@
 use leptos::ev::SubmitEvent;
+use leptos::html::Input;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
@@ -259,29 +260,15 @@ pub fn WorkspaceMain() -> impl IntoView {
             sidebar_collapsed.set(get_sidebar_collapsed());
         }
     });
-    // 全屏详情浮层开关（浮层内复用 EntryPanel）。
-    let fullscreen = RwSignal::new(false);
-
-    // 全局 Esc：优先退出全屏浮层，否则关闭右侧详情面板。
+    // 全局 Esc：关闭右侧详情面板。
     if cfg!(target_arch = "wasm32") {
         let handle = window_event_listener(leptos::ev::keydown, move |ev| {
-            if ev.key() == "Escape" {
-                if fullscreen.get_untracked() {
-                    fullscreen.set(false);
-                } else if !selected.get_untracked().is_empty() {
-                    selected.set(String::new());
-                }
+            if ev.key() == "Escape" && !selected.get_untracked().is_empty() {
+                selected.set(String::new());
             }
         });
         on_cleanup(move || handle.remove());
     }
-
-    // 详情被关闭（selected 清空）时一并退出全屏，避免下次单击直接进入全屏浮层。
-    Effect::new_sync(move |_| {
-        if selected.get().is_empty() && fullscreen.get_untracked() {
-            fullscreen.set(false);
-        }
-    });
 
     // ---- 筛选查询状态 ----
     let query_ast = RwSignal::new(serde_json::json!({ "and": [] }));
@@ -567,6 +554,14 @@ pub fn WorkspaceMain() -> impl IntoView {
         });
     };
 
+    // 双击行 / AI 新建后进入条目全屏页，与详情面板的「全屏」按钮走同一条路由。
+    let nav_entry = use_navigate();
+    let open_entry = Callback::new(move |code: String| {
+        if !code.is_empty() {
+            nav_entry(&format!("/{}/entry/{}", slug(), code), Default::default());
+        }
+    });
+
     // 打开批量弹窗：每次按当前标签 schema 重建草稿，抵消上一次的残留。
     let open_batch = move |_| {
         batch_labels.set(
@@ -661,11 +656,10 @@ pub fn WorkspaceMain() -> impl IntoView {
                     ai_busy.set(false);
                     show_ai.set(false);
                     batch_selected.set(Vec::new());
-                    // 生成的是新条目：直接选中并全屏打开，用户不必再去列表里翻。
-                    // 用 created.code 而不是等列表重查后再定位——列表分页位置不可预测。
-                    selected.set(created.code.clone());
-                    fullscreen.set(true);
                     refresh.update(|n| *n += 1);
+                    // 生成的是新条目：直接进全屏页，用户不必再去列表里翻。
+                    // 用 created.code 而不是等列表重查后再定位——列表分页位置不可预测。
+                    open_entry.run(created.code);
                 }
                 Err(e) => {
                     ai_busy.set(false);
@@ -1087,7 +1081,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                     {move || error.get().map(|e| view! { <p class="error" style="padding:8px 16px">{e}</p> })}
 
                     <div class=move || {
-                        if selected.get().is_empty() || fullscreen.get() {
+                        if selected.get().is_empty() {
                             "view-body full".to_string()
                         } else {
                             "view-body".to_string()
@@ -1114,8 +1108,8 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 data
                                 schemas
                                 selected
-                                fullscreen
                                 batch_selected
+                                on_open=open_entry
                                 members=ws_members
                                 columns=Signal::derive(move || {
                                     active_view.get().map(|v| v.columns).unwrap_or_default()
@@ -1177,35 +1171,10 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 <span class="mut">{move || format!("共 {} 条", total_signal.get())}</span>
                             </div>
                         </div>
-                        {move || if fullscreen.get() {
-                            view! { <div></div> }.into_any()
-                        } else {
-                            view! {
-                                <EntryPanel code=selected slug=slug().to_string() workspace_id=ws_id schemas members=ws_members refresh />
-                            }.into_any()
-                        }}
+                        <EntryPanel code=selected slug=slug().to_string() workspace_id=ws_id schemas members=ws_members refresh />
                     </div>
                 </div>
             </div>
-
-            {move || if fullscreen.get() && !selected.get().is_empty() {
-                view! {
-                    <div class="fullscreen">
-                        <div class="fs-head">
-                            <b>"全屏详情"</b>
-                            <span class="mut">{move || selected.get()}</span>
-                            <button class="ibtn" title="关闭 (Esc)" on:click=move |_| fullscreen.set(false)>
-                                {ic_close()}
-                            </button>
-                        </div>
-                        <div class="fs-body">
-                            <EntryPanel code=selected slug=slug().to_string() workspace_id=ws_id schemas members=ws_members refresh />
-                        </div>
-                    </div>
-                }.into_any()
-            } else {
-                view! { <div></div> }.into_any()
-            }}
 
             {move || show_batch.get().then(|| view! {
                 <div class="dmodal" on:click=move |_| show_batch.set(false)>
@@ -1657,8 +1626,8 @@ fn EntryTable(
     selected: RwSignal<String>,
     /// 批量操作勾选的条目 code。与 `selected`（详情面板当前条目）互相独立。
     batch_selected: RwSignal<Vec<String>>,
-    /// 双击行时置 true，打开全屏详情浮层。
-    fullscreen: RwSignal<bool>,
+    /// 双击行时带上条目编码，由外层跳转到条目全屏页。
+    on_open: Callback<String>,
     columns: Signal<Vec<String>>,
     sort_field: Signal<String>,
     sort_desc: Signal<bool>,
@@ -1804,14 +1773,13 @@ fn EntryTable(
                                         }
                                     }
                                     on:dblclick=move |_| {
-                                        selected.set(code_for_dbl.clone());
-                                        fullscreen.set(true);
+                                        on_open.run(code_for_dbl.clone());
                                     }
                                 >
                                     <td class="pick">
                                         <input type="checkbox"
                                             prop:checked=move || batch_selected.get().contains(&code_for_check)
-                                            // 勾选不应触发「打开详情」（单击）或「全屏详情」（双击）。
+                                            // 勾选不应触发「打开详情」（单击）或「全屏页」（双击）。
                                             on:click=|ev| ev.stop_propagation()
                                             on:dblclick=|ev| ev.stop_propagation()
                                             on:change=move |ev| {
@@ -1943,7 +1911,7 @@ fn EntryTable(
     }
 }
 
-/// 右侧详情面板：只编辑详情与标签（标题在 Entry 全屏编辑），保存走乐观并发。
+/// 右侧详情面板：标题、详情与标签都可编辑，保存走乐观并发。
 #[component]
 fn EntryPanel(
     code: RwSignal<String>,
@@ -1956,8 +1924,12 @@ fn EntryPanel(
     let navigate = use_navigate();
     let data: RwSignal<Option<Result<Entry, String>>> = RwSignal::new(None);
     let labels = RwSignal::new(Vec::<Labeling>::new());
+    let title = RwSignal::new(String::new());
     let detail = RwSignal::new(String::new());
     let error = RwSignal::new(None::<String>);
+    // 标题平时只读，点击才换成输入框；输入框挂载后由 Effect 补焦点。
+    let editing_title = RwSignal::new(false);
+    let title_ref: NodeRef<Input> = NodeRef::new();
 
     // overwrite=true：清空编辑缓冲后全量填充（选中变化 / 并发冲突重载）。
     // overwrite=false：软重载，仅更新 data/labels，保留未保存的详情编辑。
@@ -1967,6 +1939,8 @@ fn EntryPanel(
             return;
         }
         if overwrite {
+            title.set(String::new());
+            editing_title.set(false);
             detail.set(String::new());
             labels.set(Vec::new());
             data.set(None);
@@ -1982,6 +1956,7 @@ fn EntryPanel(
                     Ok(Some(e)) => {
                         labels.set(e.labels.clone());
                         if overwrite {
+                            title.set(e.title.clone());
                             detail.set(e.detail.clone());
                         }
                         data.set(Some(Ok(e)));
@@ -2003,13 +1978,23 @@ fn EntryPanel(
     });
     let on_editor_change = Callback::new(move |d: String| detail.set(d));
 
+    // 进入标题编辑态后把焦点交给输入框，否则用户还得再点一次。
+    #[cfg(target_arch = "wasm32")]
+    Effect::new(move |_| {
+        if editing_title.get() {
+            if let Some(el) = title_ref.get() {
+                let _ = el.focus();
+            }
+        }
+    });
+
     let save = move |_| {
         let c = code.get();
         let Some(entry_now) = data.get().and_then(|r| r.ok()) else {
             return;
         };
         let expected = entry_now.updated_at.clone();
-        let t = entry_now.title.clone();
+        let t = title.get();
         let d = detail.get();
         spawn_local(async move {
             match update_entry(&c, &expected, &t, &d).await {
@@ -2077,9 +2062,6 @@ fn EntryPanel(
                     <aside class="detail">
                         {move || error.get().map(|e| view! { <div class="hint">{"⚠ "}{e}</div> })}
                         <div class="dhead">
-                            <span class="code">{move || code.get()}</span>
-                            <button class="ibtn" title="复制编码" on:click=move |_| copy_to_clipboard(&code.get_untracked())>{ic_copy()}</button>
-                            <h3>{move || data.get().and_then(|r| r.ok()).map(|e| e.title.clone()).unwrap_or_default()}</h3>
                             <div class="dacts">
                                 <button class="btn sm" on:click=open_full.clone()>{ic_full()}"全屏"</button>
                                 <button class="btn pri sm" on:click=save>"保存"</button>
@@ -2087,6 +2069,29 @@ fn EntryPanel(
                                 <button class="btn danger sm" on:click=del>"删除"</button>
                                 <button class="ibtn" title="关闭面板" on:click=close>{ic_close()}</button>
                             </div>
+                            {move || if editing_title.get() {
+                                view! {
+                                    <input class="inp dtitle"
+                                        node_ref=title_ref
+                                        prop:value=title
+                                        on:input=move |ev| title.set(event_target_value(&ev))
+                                        on:blur=move |_| editing_title.set(false)
+                                        on:keydown=move |ev| {
+                                            if ev.key() == "Enter" {
+                                                ev.prevent_default();
+                                                editing_title.set(false);
+                                            }
+                                        }
+                                    />
+                                }.into_any()
+                            } else {
+                                view! {
+                                    <h3 class="dtitle"
+                                        title="点击编辑标题"
+                                        on:click=move |_| editing_title.set(true)
+                                    >{move || title.get()}</h3>
+                                }.into_any()
+                            }}
                         </div>
                         {move || data.get().and_then(|r| r.ok()).map(|e| {
                             let by = |a: &Option<AccountBrief>| a.as_ref().map(|x| x.name.clone()).unwrap_or_else(|| "—".to_string());
@@ -2113,7 +2118,7 @@ fn EntryPanel(
                                 Some(Ok(e)) => {
                                     let initial = e.detail.clone();
                                     view! {
-                                        <TinyEditor initial entry_code=Signal::derive(move || code.get()) on_change=on_editor_change />
+                                        <TinyEditor initial entry_code=Signal::derive(move || code.get()) on_change=on_editor_change on_uploaded=on_changed />
                                     }.into_any()
                                 }
                                 _ => view! {
