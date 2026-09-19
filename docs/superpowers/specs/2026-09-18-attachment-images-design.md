@@ -138,7 +138,7 @@ pub async fn save(
 
 ### 5.4 审计
 
-`resource_type = "attachment"`，**`resource_id = entry_code`**。这不是笔误：entry 页的「审计历史」按 `resource_id == 条目 code` 过滤（`entry.rs`），用 attachment id 的话上传记录不会出现在任何地方。附件自身的 id 与文件名在 `after`/`before` 快照里（`serde_json` 序列化的 `Attachment`），照评论的写法。
+`resource_type = "attachment"`，**`resource_id = entry_code`**。这不是笔误：entry 页的「历史」按 `resource_id == 条目 code` 过滤（`entry.rs`），用 attachment id 的话上传记录不会出现在任何地方。附件自身的 id 与文件名在 `after`/`before` 快照里（`serde_json` 序列化的 `Attachment`），照评论的写法。
 
 ### 5.5 权限汇总
 
@@ -198,7 +198,7 @@ attachments(entryCode: String!): [GqlAttachment!]!                    # 成员�
 - **响应类型按白名单决定，绝不回声客户端上报的 `content_type`**：上报值来自上传方，回声它等于允许上传 `text/html` 后在应用同源下执行脚本（存储型 XSS）。
   - `image/png`、`image/jpeg`、`image/gif`、`image/webp`、`image/bmp`（按上报值归一化后比对）→ 原样 inline。
   - 其余一律 `application/octet-stream` + `Content-Disposition: attachment; filename*=UTF-8''<百分号编码的原始文件名>`。**SVG 明确不在 inline 白名单内**（可携带脚本）。
-- 一律附加 `X-Content-Type-Options: nosniff` 与 `Cache-Control: public, max-age=31536000, immutable`（ULID 决定内容不变，可长期缓存）。
+- 一律附加 `X-Content-Type-Options: nosniff` 与 `Cache-Control: private, max-age=31536000, immutable`（ULID 决定内容不变，可长期缓存；但该路由免鉴权且附件可被删除，故用 `private` 只让浏览器自身缓存，不邀请 CDN / 反向代理长期留存——否则删除后仍有一年窗口吐旧字节。**依据用户 2026-09-19 的决定，原稿的 `public` 改为 `private`**）。
 - 用 `axum::body::Body::from(Vec<u8>)` 构造响应，不引入 `tower-http` 的额外特性。
 
 ## 8. 前端
@@ -264,5 +264,5 @@ pub async fn upload_attachment(entry_code: &str, file: web_sys::File) -> Result<
 3. 手动上传一个 `.html`，再直连其 URL → `application/octet-stream` + `Content-Disposition: attachment`，内容不被当作 HTML 渲染。
 4. 上传超过 50MB 的文件 → 得到 GraphQL 错误而非 HTTP 413（反过来即说明 `DefaultBodyLimit` 没挂对）。
 5. 手动上传 / 删除走通；删除后文件从磁盘消失、列表不再出现。
-6. entry 页「审计历史」出现「上传附件」「删除附件」；条目「更新时间」在上传后前进。
+6. entry 页「历史」出现「上传附件」「删除附件」；条目「更新时间」在上传后前进。
 7. 用一个旧的 `./data` 副本启动 → 两个新列族自动补建，无迁移报错。

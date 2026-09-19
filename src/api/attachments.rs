@@ -70,10 +70,11 @@ pub async fn download_attachment(
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
-    // id 决定内容不变，可长期缓存。
+    // id 决定内容不变，可长期缓存；但路由免鉴权且附件可被删除，所以只让浏览器自己缓存
+    // （`private`），不邀请 CDN / 反向代理长期留存——否则删除后仍有一年窗口吐旧字节。
     headers.insert(
         header::CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=31536000, immutable"),
+        HeaderValue::from_static("private, max-age=31536000, immutable"),
     );
     resp
 }

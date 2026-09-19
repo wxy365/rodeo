@@ -612,8 +612,6 @@ pub async fn upload_attachment(
     entry_code: &str,
     file: &web_sys::File,
 ) -> Result<Attachment, String> {
-    use wasm_bindgen::JsCast;
-
     let operations = json!({
         "query": format!(
             "mutation($c: String!, $f: Upload!) {{ uploadAttachment(entryCode: $c, file: $f) {{ {ATTACHMENT_FIELDS} }} }}"
