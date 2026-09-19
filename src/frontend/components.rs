@@ -1,7 +1,8 @@
 use leptos::prelude::*;
 use serde_json::Value;
 
-use crate::frontend::graphql_client::Member;
+use crate::frontend::graphql_client::{AuditLog, Member};
+use crate::frontend::icons::{ic_check, ic_copy};
 
 /// 账号的展示名：优先姓名，缺失时退回邮箱。
 pub fn member_label(m: &Member) -> String {
@@ -682,6 +683,110 @@ pub fn value_type_label(vt: &str) -> String {
         other => other,
     }
     .to_string()
+}
+
+/// 复制文本到系统剪贴板。非 wasm 目标下为空实现，便于 `cargo check` 通过。
+#[cfg(target_arch = "wasm32")]
+pub fn copy_to_clipboard(text: &str) {
+    let Some(win) = leptos::web_sys::window() else {
+        return;
+    };
+    // 丢弃 Promise 不影响写入：它是已排入队列的异步任务。
+    let _ = win.navigator().clipboard().write_text(text);
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn copy_to_clipboard(_text: &str) {}
+
+/// 编码 + 复制按钮。复制成功后按钮短暂变成对勾。
+///
+/// 表格、详情面板、全屏页头三处同款，外观由 `.codecell` / `.code` / `.codecopy` 承载——
+/// 一并带上 `.code` 是为了在表格之外的场景也拿到等宽小字。
+#[component]
+pub fn CodeCopy(#[prop(into)] code: Signal<String>) -> impl IntoView {
+    let copied = RwSignal::new(false);
+    view! {
+        <span class="codecell code">
+            <span>{move || code.get()}</span>
+            <button class="ibtn codecopy" title="复制编码" on:click=move |_| {
+                copy_to_clipboard(&code.get_untracked());
+                copied.set(true);
+                set_timeout(
+                    move || copied.set(false),
+                    std::time::Duration::from_millis(1200),
+                );
+            }>
+                {move || if copied.get() {
+                    ic_check().into_any()
+                } else {
+                    ic_copy().into_any()
+                }}
+            </button>
+        </span>
+    }
+}
+
+/// 页签条：`tabs` 是 (键, 显示名) 列表，`active` 持有当前键。
+/// 只渲染与切换，显示什么内容由调用方按 `active` 自己分发。
+#[component]
+pub fn TabBar(
+    tabs: &'static [(&'static str, &'static str)],
+    active: RwSignal<String>,
+) -> impl IntoView {
+    view! {
+        <div class="dtabs">
+            {tabs
+                .iter()
+                .map(|(key, label)| {
+                    let for_class = *key;
+                    let for_click = *key;
+                    view! {
+                        <button
+                            class=move || if active.get() == for_class { "on" } else { "" }
+                            on:click=move |_| active.set(for_click.to_string())
+                        >{*label}</button>
+                    }
+                })
+                .collect::<Vec<_>>()}
+        </div>
+    }
+}
+
+/// 条目历史时间线：把工作空间的审计日志过滤到某条目后按时间倒序渲染。
+/// 详情的「历史」页签与全屏页共用——两处原本各写一遍，且都只做同一件事。
+#[component]
+pub fn AuditTimeline(logs: RwSignal<Vec<AuditLog>>, code: Signal<String>) -> impl IntoView {
+    view! {
+        {move || {
+            let c = code.get();
+            let mine: Vec<AuditLog> = logs
+                .get()
+                .into_iter()
+                .filter(|l| l.resource_id == c)
+                .collect();
+            if mine.is_empty() {
+                view! { <div class="mut">"暂无记录"</div> }.into_any()
+            } else {
+                view! {
+                    {mine
+                        .into_iter()
+                        .map(|l| {
+                            view! {
+                                <div class="tl">
+                                    <span class="t">{short_time(&l.at)}</span>
+                                    <span>{action_label(&l.action)}</span>
+                                    <span class="mut" style="font-size:12px">
+                                        {audit_change(l.before.as_deref(), l.after.as_deref())}
+                                    </span>
+                                </div>
+                            }
+                        })
+                        .collect::<Vec<_>>()}
+                }
+                .into_any()
+            }
+        }}
+    }
 }
 
 #[cfg(test)]
