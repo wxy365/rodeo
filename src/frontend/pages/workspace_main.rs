@@ -6,17 +6,20 @@ use leptos::task::spawn_local;
 use leptos_router::components::A;
 use leptos_router::hooks::{use_navigate, use_params_map};
 
+use crate::frontend::attachment_list::AttachmentList;
 use crate::frontend::comment_list::CommentList;
 use crate::frontend::components::{
     display_enum_value, fmt_datetime, from_native, is_native_time_layout, label_chip_class,
-    logged_out, member_label, short_time, to_native, value_to_string, AccountPicker,
+    logged_out, member_label, short_time, to_native, value_to_string, AccountPicker, AuditTimeline,
+    CodeCopy, TabBar,
 };
 use crate::frontend::graphql_client::{
-    archive_entry, archived_entries, create_entry, create_view, delete_entry, delete_view, entry,
-    format_view_query, get_sidebar_collapsed, label_schemas, members, parse_view_query,
-    query_entries, set_labeling, set_labelings, set_sidebar_collapsed, summarize_entries,
-    unarchive_entry, update_entry, update_view, views, workspace_ai_config, workspace_by_slug,
-    AccountBrief, Entry, Labeling, LabelSchema, Member, NamedPrompt, View, Workspace,
+    archive_entry, archived_entries, audit_logs, create_entry, create_view, delete_entry,
+    delete_view, entry, format_view_query, get_sidebar_collapsed, label_schemas, members,
+    parse_view_query, query_entries, set_labeling, set_labelings, set_sidebar_collapsed,
+    summarize_entries, unarchive_entry, update_entry, update_view, views, workspace_ai_config,
+    workspace_by_slug, AccountBrief, AuditLog, Entry, Labeling, LabelSchema, Member, NamedPrompt,
+    View, Workspace,
 };
 use crate::frontend::icons::{
     ic_add, ic_back, ic_close, ic_comment, ic_folder, ic_full, ic_help, ic_search, ic_setting,
@@ -1905,6 +1908,10 @@ fn EntryTable(
     }
 }
 
+/// 右侧详情面板的三个页签。
+const DETAIL_TABS: &[(&str, &str)] =
+    &[("detail", "详情"), ("attachments", "附件"), ("history", "历史")];
+
 /// 右侧详情面板：标题、详情与标签都可编辑，保存走乐观并发。
 #[component]
 fn EntryPanel(
@@ -1925,6 +1932,11 @@ fn EntryPanel(
     let editing_title = RwSignal::new(false);
     let title_ref: NodeRef<Input> = NodeRef::new();
 
+    // 当前页签：detail | attachments | history。
+    let tab = RwSignal::new("detail".to_string());
+    // 工作空间审计日志，进来时取一次；「历史」页签按当前 code 过滤。
+    let logs = RwSignal::new(Vec::<AuditLog>::new());
+
     // overwrite=true：清空编辑缓冲后全量填充（选中变化 / 并发冲突重载）。
     // overwrite=false：软重载，仅更新 data/labels，保留未保存的详情编辑。
     let load = move |overwrite: bool| {
@@ -1938,14 +1950,24 @@ fn EntryPanel(
             detail.set(String::new());
             labels.set(Vec::new());
             data.set(None);
+            tab.set("detail".to_string());
+            logs.set(Vec::new());
             error.set(None);
         }
+        let ws = workspace_id.get_untracked();
         if cfg!(target_arch = "wasm32") {
             spawn_local(async move {
                 let result = entry(&c).await;
+                // 审计日志取不到不该让整个面板失败：历史是附加信息，退化成一条记录都没有。
+                let audit = if ws.is_empty() {
+                    Vec::new()
+                } else {
+                    audit_logs(&ws).await.unwrap_or_default()
+                };
                 if code.get() != c {
                     return;
                 }
+                logs.set(audit);
                 match result {
                     Ok(Some(e)) => {
                         labels.set(e.labels.clone());
@@ -2086,6 +2108,14 @@ fn EntryPanel(
                                     >{move || title.get()}</h3>
                                 }.into_any()
                             }}
+                            {move || {
+                                let c = code.get();
+                                if c.is_empty() {
+                                    view! { <div></div> }.into_any()
+                                } else {
+                                    view! { <CodeCopy code=Signal::derive(move || c.clone()) /> }.into_any()
+                                }
+                            }}
                         </div>
                         {move || data.get().and_then(|r| r.ok()).map(|e| {
                             let by = |a: &Option<AccountBrief>| a.as_ref().map(|x| x.name.clone()).unwrap_or_else(|| "—".to_string());
@@ -2102,30 +2132,43 @@ fn EntryPanel(
                             }
                         })}
                         <div class="editing"><span class="dot"></span>"乐观并发 · 保存时检测冲突"</div>
-                        <div class="dtabs">
-                            <button class="on">"详情"</button>
-                            <button disabled>"附件"</button>
-                            <button disabled>"历史"</button>
-                        </div>
-                        <div class="editor">
-                            {move || match data.get() {
-                                Some(Ok(e)) => {
-                                    let initial = e.detail.clone();
-                                    view! {
-                                        <TinyEditor initial entry_code=Signal::derive(move || code.get()) on_change=on_editor_change on_uploaded=on_changed />
-                                    }.into_any()
-                                }
-                                _ => view! {
-                                    <div class="ebody"><span class="mut">"加载中…"</span></div>
-                                }.into_any(),
-                            }}
-                        </div>
-                        <LabelEditor code=code schemas labels members on_changed />
-                        <CommentList
-                            code=Signal::derive(move || code.get())
-                            workspace_id=workspace_id
-                            on_changed=on_changed
-                        />
+                        <TabBar tabs=DETAIL_TABS active=tab />
+                        {move || match tab.get().as_str() {
+                            "attachments" => view! {
+                                <AttachmentList
+                                    code=Signal::derive(move || code.get())
+                                    workspace_id=workspace_id
+                                    on_changed=on_changed
+                                />
+                            }.into_any(),
+                            "history" => view! {
+                                <AuditTimeline
+                                    logs=logs
+                                    code=Signal::derive(move || code.get())
+                                />
+                            }.into_any(),
+                            _ => view! {
+                                <div class="editor">
+                                    {match data.get() {
+                                        Some(Ok(e)) => {
+                                            let initial = e.detail.clone();
+                                            view! {
+                                                <TinyEditor initial entry_code=Signal::derive(move || code.get()) on_change=on_editor_change on_uploaded=on_changed />
+                                            }.into_any()
+                                        }
+                                        _ => view! {
+                                            <div class="ebody"><span class="mut">"加载中…"</span></div>
+                                        }.into_any(),
+                                    }}
+                                </div>
+                                <LabelEditor code=code schemas labels members on_changed />
+                                <CommentList
+                                    code=Signal::derive(move || code.get())
+                                    workspace_id=workspace_id
+                                    on_changed=on_changed
+                                />
+                            }.into_any(),
+                        }}
                     </aside>
                 }
                 .into_any()

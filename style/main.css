@@ -301,6 +301,10 @@ select:focus {
 .tbl tbody tr:hover .codecell .codecopy {
     opacity: 1;
 }
+/* 详情面板与全屏页头没有整行悬停，按钮得靠自身区域的悬停显形。 */
+.codecell:hover .codecopy {
+    opacity: 1;
+}
 .mut {
     color: var(--ink3);
     font-size: 12px;
