@@ -19,6 +19,11 @@ pub mod cf {
     /// 令牌版本：account id → u64 大端。登出时自增，使该账号所有已签发 JWT 立即失效。
     /// 与软删除同理，用独立 CF 而不是给 Account 加字段，避免 bincode 结构变更。
     pub const ACCOUNT_TOKEN_VERSION: &str = "account_token_version";
+    /// 账号状态：account id → 1 字节（1 = 冻结，2 = 注销）。**键缺席即正常**，
+    /// 所以存量账号不需要回填。与 `WORKSPACES_DELETED` / `ACCOUNT_TOKEN_VERSION` 同理，
+    /// 用独立 CF 而不是给 Account 加字段。用单值而不是「冻结」「注销」两个独立标记：
+    /// 两个标记允许「既冻结又注销」这种无意义状态，单值在构造上排除它。
+    pub const ACCOUNT_STATUS: &str = "account_status";
     pub const WORKSPACES: &str = "workspaces";
     pub const WORKSPACES_SLUG_IDX: &str = "workspaces_slug_idx";
     /// 软删除标记：workspace id → 删除时间（RFC3339）。单独一个 CF 而不是给 Workspace

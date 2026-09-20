@@ -57,6 +57,9 @@ pub fn Login() -> impl IntoView {
                 Ok((token, user)) => {
                     set_token(&token);
                     auth.user.set(Some(user));
+                    // 登录成功，失效提示就此翻篇；否则这个位会一直留着，用户下次
+                    // 主动来登录页还会看到一句莫名其妙的「登录已失效」。
+                    auth.session_lost.set(false);
                     navigate("/workspaces", Default::default());
                 }
                 Err(e) => {
@@ -83,6 +86,9 @@ pub fn Login() -> impl IntoView {
                 }}
                 <input class="inp" type="email" placeholder="邮箱" prop:value=email on:input=move |ev| email.set(event_target_value(&ev)) />
                 <input class="inp" type="password" placeholder="密码（至少 8 位，含大小写和数字）" prop:value=password on:input=move |ev| password.set(event_target_value(&ev)) />
+                {move || auth.session_lost.get().then(|| view! {
+                    <p class="error">"登录已失效，请重新登录"</p>
+                })}
                 {move || error.get().map(|e| view! { <p class="error">{e}</p> })}
                 {move || (!ready.get()).then(|| view! {
                     <p class="mut" style="text-align:center">"正在加载客户端资源，加载完成后即可登录…"</p>

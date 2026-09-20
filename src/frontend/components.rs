@@ -1,8 +1,11 @@
 use leptos::prelude::*;
+use leptos::task::spawn_local;
+use leptos_router::hooks::use_navigate;
 use serde_json::Value;
 
-use crate::frontend::graphql_client::{AuditLog, Member};
-use crate::frontend::icons::{ic_check, ic_copy};
+use crate::frontend::graphql_client::{logout, AuditLog, Member};
+use crate::frontend::icons::{ic_check, ic_copy, ic_logout, ic_profile};
+use crate::frontend::use_auth;
 
 /// 账号的展示名：优先姓名，缺失时退回邮箱。
 pub fn member_label(m: &Member) -> String {
@@ -325,6 +328,49 @@ pub fn Avatar(#[prop(into)] text: String, #[prop(optional)] large: bool) -> impl
     let cls = if large { "av lg" } else { "av" };
     let ch = text.chars().next().unwrap_or('?').to_string();
     view! { <span class=cls>{ch}</span> }
+}
+
+/// 右上角的用户头像 + 悬停菜单：`个人信息` 与 `退出`。
+///
+/// 登出逻辑（清本地令牌 → 回登录页 → 通知服务端吊销）就住在这里，两个页面共用一份。
+/// 各页若再抄一份，改登出流程时必然会漏掉一处。
+///
+/// 菜单展开靠 CSS 的 `:hover` 与 `:focus-within` 两条：只用 `:hover` 的话键盘用户
+/// 永远打不开这个菜单。
+#[component]
+pub fn AvatarMenu() -> impl IntoView {
+    let auth = use_auth();
+    let navigate = use_navigate();
+
+    let nav_profile = navigate.clone();
+    let go_profile = move |_| nav_profile("/account", Default::default());
+
+    let nav_logout = navigate.clone();
+    let do_logout = move |_| {
+        auth.user.set(None);
+        nav_logout("/login", Default::default());
+        spawn_local(async move {
+            logout().await;
+        });
+    };
+
+    // `Avatar` 的 `text` 是 `String`（带 `#[prop(into)]`），不是信号，所以这里用一个
+    // 响应式闭包重新构造它，而不是把一个 `Signal` 传进去。
+    view! {
+        <div class="avatar-menu">
+            {move || {
+                let u = auth.user.get();
+                let text = u
+                    .map(|u| if u.name.trim().is_empty() { u.email } else { u.name })
+                    .unwrap_or_default();
+                view! { <Avatar text=text /> }
+            }}
+            <div class="avatar-drop">
+                <button class="mi" on:click=go_profile>{ic_profile()}"个人信息"</button>
+                <button class="mi" on:click=do_logout>{ic_logout()}"退出"</button>
+            </div>
+        </div>
+    }
 }
 
 /// 标签值 → 展示字符串。

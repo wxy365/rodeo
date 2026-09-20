@@ -11,7 +11,7 @@ use crate::frontend::comment_list::CommentList;
 use crate::frontend::components::{
     display_enum_value, fmt_datetime, from_native, is_native_time_layout, label_chip_class,
     logged_out, member_label, short_time, to_native, value_to_string, AccountPicker, AuditTimeline,
-    CodeCopy, TabBar,
+    AvatarMenu, CodeCopy, TabBar,
 };
 use crate::frontend::graphql_client::{
     archive_entry, archived_entries, audit_logs, create_entry, create_view, delete_entry,
@@ -28,6 +28,7 @@ use crate::frontend::icons::{
 use crate::frontend::label_editor::LabelEditor;
 use crate::frontend::query_eval;
 use crate::frontend::tiny_editor::TinyEditor;
+use crate::frontend::use_auth;
 use crate::frontend::view_filter::with_text;
 use serde_json::Value;
 
@@ -206,6 +207,7 @@ pub fn WorkspaceMain() -> impl IntoView {
     let params = use_params_map();
     let slug = move || params.get().get("slug").unwrap_or_default();
     let navigate = use_navigate();
+    let auth = use_auth();
     let refresh = RwSignal::new(0u32);
     let data: RwSignal<Option<Result<(Workspace, Vec<Entry>, Vec<LabelSchema>), String>>> =
         RwSignal::new(None);
@@ -458,7 +460,9 @@ pub fn WorkspaceMain() -> impl IntoView {
         if !cfg!(target_arch = "wasm32") {
             return;
         }
-        if logged_out() {
+        // 令牌已被服务端判死时同样回登录页：`logged_out()` 只看本地有没有令牌，
+        // 死令牌在启动期被清掉之前它是看不出来的。
+        if logged_out() || auth.session_lost.get() {
             navigate("/login", Default::default());
             return;
         }
@@ -750,6 +754,8 @@ pub fn WorkspaceMain() -> impl IntoView {
                     Some(v) => format!("/{} · 视图「{}」", slug(), v.name),
                     None => format!("/{} · 基础视图「全部内容」", slug()),
                 }}
+                // 本页没有 appbar，右上角就落在面包屑这一行的右端。
+                <span class="crumb-right"><AvatarMenu /></span>
             </div>
             <div class=move || if sidebar_collapsed.get() { "ws-layout collapsed" } else { "ws-layout" }>
                 <WorkspaceSidebar

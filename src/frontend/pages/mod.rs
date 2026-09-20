@@ -1,3 +1,4 @@
+mod account;
 mod admin;
 mod entry;
 mod login;
@@ -5,6 +6,7 @@ mod settings;
 mod workspace_main;
 mod workspaces;
 
+pub use account::Account;
 pub use admin::Admin;
 pub use entry::EntryFullScreen;
 pub use login::Login;

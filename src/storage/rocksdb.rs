@@ -10,6 +10,7 @@ const ALL_CFS: &[&str] = &[
     cf::ACCOUNTS,
     cf::ACCOUNTS_EMAIL_IDX,
     cf::ACCOUNT_TOKEN_VERSION,
+    cf::ACCOUNT_STATUS,
     cf::WORKSPACES,
     cf::WORKSPACES_SLUG_IDX,
     cf::WORKSPACES_DELETED,

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
 use crate::config::Config;
-use crate::domain::Account;
+use crate::domain::{Account, AccountStatus};
 use crate::error::AppError;
 use crate::storage::{cf, DocStore};
 
@@ -98,8 +98,43 @@ impl AuthService {
         if !verify_password(password, &account.password_hash)? {
             return Err(AppError::InvalidCredentials);
         }
+        // 状态检查必须在密码校验**之后**：先密码后状态，才不会变成
+        // 「这个邮箱存在且已被冻结」的探测口。
+        match self.status(account.id)? {
+            AccountStatus::Active => {}
+            AccountStatus::Frozen => {
+                return Err(AppError::InvalidQuery(
+                    "账号已被冻结，请联系系统管理员".to_string(),
+                ))
+            }
+            // 注销账号对外与「密码错」不可区分，免得成为邮箱存在性探针。
+            AccountStatus::Deactivated => return Err(AppError::InvalidCredentials),
+        }
         let token = self.sign_token(account.id)?;
         Ok((account, token))
+    }
+
+    /// 改密：验过旧密码才写新哈希。**不**碰令牌版本——「要不要顺带踢掉其他设备」
+    /// 是调用方的策略（GraphQL 层吊销后会为当前设备重签一张），存储层不替它决定。
+    pub fn change_password(
+        &self,
+        account_id: Ulid,
+        old_password: &str,
+        new_password: &str,
+    ) -> Result<Account, AppError> {
+        let mut account = self.find_by_id(account_id)?.ok_or(AppError::NotFound)?;
+        if !verify_password(old_password, &account.password_hash)? {
+            return Err(AppError::InvalidQuery("当前密码不正确".to_string()));
+        }
+        validate_password(new_password)?;
+        if new_password == old_password {
+            return Err(AppError::InvalidQuery(
+                "新密码不能与当前密码相同".to_string(),
+            ));
+        }
+        account.password_hash = hash_password(new_password)?;
+        self.store.put(cf::ACCOUNTS, &account.id.to_bytes(), &account)?;
+        Ok(account)
     }
 
     pub fn find_by_email(&self, email: &str) -> Result<Option<Account>, AppError> {
@@ -114,6 +149,68 @@ impl AuthService {
 
     pub fn find_by_id(&self, id: Ulid) -> Result<Option<Account>, AppError> {
         self.store.get(cf::ACCOUNTS, &id.to_bytes())
+    }
+
+    /// 当前状态；CF 中无记录视为 [`AccountStatus::Active`]。
+    pub fn status(&self, id: Ulid) -> Result<AccountStatus, AppError> {
+        Ok(self
+            .store
+            .get_raw(cf::ACCOUNT_STATUS, &id.to_bytes())?
+            .and_then(|raw| raw.first().copied())
+            .map(AccountStatus::from_byte)
+            .unwrap_or(AccountStatus::Active))
+    }
+
+    /// 冻结 / 解冻 / 注销。
+    ///
+    /// 冻结与注销都附带 [`Self::revoke_tokens`]：推进令牌版本后，该账号已签发的
+    /// JWT 在下一次 `verify_token` 时就因版本不符而失效——所以 `verify_token`
+    /// 不必为此增加一次状态查询，热路径上一行都不改。
+    ///
+    /// 注销另删邮箱索引，使该地址可被重新注册。**注销是终态**：把已注销账号设回
+    /// `Active` 会被拒。只靠前端隐藏按钮不够——直接调 API 就能绕过去，而那时邮箱
+    /// 索引并不会恢复，于是得到一个「状态正常、却永远登不进去」的死账号。
+    pub fn set_status(
+        &self,
+        id: Ulid,
+        status: AccountStatus,
+    ) -> Result<Account, AppError> {
+        let account = self.find_by_id(id)?.ok_or(AppError::NotFound)?;
+        if status == AccountStatus::Active && self.status(id)? == AccountStatus::Deactivated {
+            return Err(AppError::InvalidQuery("已注销的账号无法恢复".to_string()));
+        }
+        match status.to_byte() {
+            // 解冻不 revoke：旧令牌早在冻结那一次就已经死了，版本已推进过。
+            None => self.store.delete(cf::ACCOUNT_STATUS, &id.to_bytes())?,
+            Some(b) => self
+                .store
+                .put_raw(cf::ACCOUNT_STATUS, &id.to_bytes(), &[b])?,
+        }
+        if status != AccountStatus::Active {
+            self.revoke_tokens(id)?;
+        }
+        if status == AccountStatus::Deactivated {
+            self.store
+                .delete(cf::ACCOUNTS_EMAIL_IDX, account.email.as_bytes())?;
+        }
+        Ok(account)
+    }
+
+    /// 全部账号及其状态。扫 `ACCOUNTS` 全表，按账号数计复杂度——账号量级下足够，
+    /// 故不做分页。
+    ///
+    /// 排序在内存里做（按创建时间升序）：RocksDB 的键是 ULID 字节，ULID 本身按时间
+    /// 有序，所以扫描结果已经基本有序；仍显式排一次，免得依赖「ULID 单调」这个
+    /// 别处的实现细节。
+    pub fn list_all(&self) -> Result<Vec<(Account, AccountStatus)>, AppError> {
+        let mut out = Vec::new();
+        for (_key, value) in self.store.scan_prefix(cf::ACCOUNTS, b"")? {
+            let account: Account = bincode::deserialize(&value)?;
+            let status = self.status(account.id)?;
+            out.push((account, status));
+        }
+        out.sort_by_key(|(a, _)| a.created_at);
+        Ok(out)
     }
 
     pub fn sign_token(&self, account_id: Ulid) -> Result<String, AppError> {

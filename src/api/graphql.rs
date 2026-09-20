@@ -10,8 +10,8 @@ use axum::http::HeaderMap;
 use ulid::Ulid;
 
 use crate::domain::{
-    Account, ActionTarget, Attachment, AuditLog, AutomationRule, Comment, Entry, Invite,
-    LabelSchema, LabelValueType,
+    Account, AccountStatus, ActionTarget, Attachment, AuditLog, AutomationRule, Comment, Entry,
+    Invite, LabelSchema, LabelValueType,
     LabelWrite, Labeling, NamedPrompt, Query as ViewQuery, SortField, SortSpec, TitleColorRule,
     ValueColor, ValueSource, View, Workspace, WorkspaceAiConfig, WorkspaceMember, WorkspaceRole,
     WriteOp, ATTACHMENT_URL_PREFIX,
@@ -49,6 +49,51 @@ impl From<Account> for GqlAccount {
 pub struct GqlCreatedAccount {
     account: GqlAccount,
     initial_password: String,
+}
+
+/// 账号管理列表里的一个账号。
+///
+/// 单独一个类型，而不是给 `GqlAccount` 加字段：`GqlAccount` 的 `From<Account>`
+/// 是不会失败的转换，却拿不到状态（状态在另一个列族里，只有服务层知道）；
+/// 硬塞进去就得把这个 `From` 改成带状态参数的构造函数，`me` / `login` /
+/// `register` / `createAccount` 四处都会跟着变，还会把「冻结/注销」泄漏进
+/// 登录响应。这个投影只在 `require_admin` 后面出现。
+#[derive(SimpleObject, Clone)]
+pub struct GqlAdminAccount {
+    id: ID,
+    email: String,
+    name: String,
+    is_admin: bool,
+    /// `"active"` / `"frozen"` / `"deactivated"`。
+    status: String,
+    /// RFC3339。
+    created_at: String,
+    /// 是否配置里 `auth.builtin.admin_email` 指定的那个账号。前端据此把它的
+    /// 「冻结 / 注销」按钮禁掉并说明原因——否则那两个按钮点了必然失败，
+    /// 摆在那里只会让人一次次去点。这个投影只在 `require_admin` 后面出现，
+    /// 所以它不构成新的信息暴露。
+    is_builtin: bool,
+}
+
+impl GqlAdminAccount {
+    fn new(a: Account, status: AccountStatus, builtin_email: &str) -> Self {
+        let is_builtin = a.email == builtin_email;
+        Self {
+            id: a.id.to_string().into(),
+            email: a.email,
+            name: a.name,
+            is_admin: a.is_admin,
+            status: status.as_str().to_string(),
+            created_at: a.created_at.to_rfc3339(),
+            is_builtin,
+        }
+    }
+}
+
+/// 配置里指定的内置管理员邮箱，小写去空格——与 `AuthService` 里 `normalize_email`
+/// 的落地形态一致，这样才比得中库里存的那个账号。
+fn builtin_admin_email(gql: &GraphqlContext) -> String {
+    gql.services.config.auth.builtin.admin_email.trim().to_lowercase()
 }
 
 /// 免登录可见的服务端开关，供登录页决定是否展示注册入口。
@@ -760,6 +805,20 @@ impl Query {
         Ok(gql.services.auth.find_by_id(auth.account_id)?.map(Into::into))
     }
 
+    /// 账号管理列表，仅系统管理员可见。
+    async fn accounts(&self, ctx: &Context<'_>) -> GqlResult<Vec<GqlAdminAccount>> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        gql.require_admin()?;
+        let builtin = builtin_admin_email(gql);
+        Ok(gql
+            .services
+            .auth
+            .list_all()?
+            .into_iter()
+            .map(|(a, s)| GqlAdminAccount::new(a, s, &builtin))
+            .collect())
+    }
+
     /// 免登录：登录页据此渲染注册入口。
     async fn server_config(&self, ctx: &Context<'_>) -> GqlResult<GqlServerConfig> {
         let gql = ctx.data::<GraphqlContext>()?;
@@ -1159,9 +1218,71 @@ impl Mutation {
         })
     }
 
+    /// 冻结 / 解冻 / 注销账号，仅系统管理员。一个 mutation 覆盖三个动作：它们本质是
+    /// 同一个写操作（改状态 + 推进令牌版本 + 注销时释放邮箱），拆成三个会有三份重复
+    /// 的守卫，还容易在某条路径上漏掉 `revoke_tokens`——那正是「冻结了却没踢下线」
+    /// 这类 bug 的来源。
+    async fn set_account_status(
+        &self,
+        ctx: &Context<'_>,
+        account_id: ID,
+        status: String,
+    ) -> GqlResult<GqlAdminAccount> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let admin = gql.require_admin()?;
+        let Some(status) = AccountStatus::parse(&status) else {
+            return Err(AppError::InvalidQuery("未知的账号状态".to_string()).into());
+        };
+        let target_id = Ulid::from_string(&account_id.0)
+            .map_err(|_| AppError::InvalidQuery("账号 ID 格式非法".to_string()))?;
+
+        // 保护一：不能对自己操作。否则管理员一点就把自己锁在门外。
+        if target_id == admin.account_id {
+            return Err(AppError::InvalidQuery("不能对自己的账号执行该操作".to_string()).into());
+        }
+        // 保护二：内置管理员（配置里 auth.builtin.admin_email 指定的那个账号）不可冻结、
+        // 不可注销。注销会释放邮箱索引，而启动引导 `bootstrap_admin` 只按邮箱找账号——
+        // 找不到就建，于是下次重启会照配置再建一个同邮箱的新账号，密码就是配置文件里
+        // 那个。冻结的风险是另一个：它若是唯一的管理员，就再没人能解冻它。
+        // 这道守卫要拿配置跟目标账号的邮箱比对，而配置不在服务层，故放在这里。
+        let builtin = builtin_admin_email(gql);
+        let target = gql.services.auth.find_by_id(target_id)?.ok_or(AppError::NotFound)?;
+        if status != AccountStatus::Active && target.email == builtin {
+            return Err(
+                AppError::InvalidQuery("内置管理员账号不能冻结或注销".to_string()).into(),
+            );
+        }
+
+        let account = gql.services.auth.set_status(target_id, status)?;
+        let updated_status = gql.services.auth.status(target_id)?;
+        Ok(GqlAdminAccount::new(account, updated_status, &builtin))
+    }
+
     async fn login(&self, ctx: &Context<'_>, email: String, password: String) -> GqlResult<GqlAuthResult> {
         let gql = ctx.data::<GraphqlContext>()?;
         let (account, token) = gql.services.auth.login(&email, &password)?;
+        Ok(GqlAuthResult {
+            token,
+            account: account.into(),
+        })
+    }
+
+    /// 改密。成功后吊销该账号**所有**已签发令牌，再为当前设备重签一张：
+    /// 其他设备被迫重新登录（密码换过，旧会话不该续命），本设备拿着新令牌无感续用。
+    async fn change_password(
+        &self,
+        ctx: &Context<'_>,
+        old_password: String,
+        new_password: String,
+    ) -> GqlResult<GqlAuthResult> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let account = gql
+            .services
+            .auth
+            .change_password(auth.account_id, &old_password, &new_password)?;
+        gql.services.auth.revoke_tokens(auth.account_id)?;
+        let token = gql.services.auth.sign_token(auth.account_id)?;
         Ok(GqlAuthResult {
             token,
             account: account.into(),

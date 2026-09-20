@@ -309,6 +309,50 @@ pub async fn logout() {
     clear_token();
 }
 
+/// 账号管理列表里的一个账号。
+///
+/// `rename_all` 必需：请求的是 `isAdmin` / `createdAt`，少了它 `is_admin` 会因
+/// 「字段缺失」整条反序列化失败——与 `CreatedAccount` 上踩过的是同一个坑。
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminAccount {
+    pub id: String,
+    pub email: String,
+    pub name: String,
+    pub is_admin: bool,
+    /// `"active"` / `"frozen"` / `"deactivated"`。
+    pub status: String,
+    pub created_at: String,
+    /// 配置里 `auth.builtin.admin_email` 指定的那个账号。它的「冻结 / 注销」按钮
+    /// 要禁用——服务端也会拒，但摆一个点了必然失败的按钮只会让人白点。
+    pub is_builtin: bool,
+}
+
+pub async fn accounts() -> Result<Vec<AdminAccount>, String> {
+    let data = graphql(
+        "query { accounts { id email name isAdmin status createdAt isBuiltin } }",
+        json!({}),
+    )
+    .await?;
+    serde_json::from_value(data.get("accounts").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+/// 冻结 / 解冻 / 注销。`status` 取 `"active"` / `"frozen"` / `"deactivated"`。
+pub async fn set_account_status(
+    account_id: &str,
+    status: &str,
+) -> Result<AdminAccount, String> {
+    let data = graphql(
+        "mutation($id: ID!, $s: String!) { \
+         setAccountStatus(accountId: $id, status: $s) { id email name isAdmin status createdAt isBuiltin } }",
+        json!({ "id": account_id, "s": status }),
+    )
+    .await?;
+    serde_json::from_value(data.get("setAccountStatus").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
 pub async fn login(email: &str, password: &str) -> Result<(String, User), String> {
     let data = graphql(
         "mutation($e: String!, $p: String!) { login(email: $e, password: $p) { token account { id email name isAdmin } } }",
@@ -341,6 +385,28 @@ pub async fn register(email: &str, name: &str, password: &str) -> Result<(String
     let account: User = serde_json::from_value(r.get("account").cloned().unwrap_or(Value::Null))
         .map_err(|e| e.to_string())?;
     Ok((token, account))
+}
+
+/// 改密。服务端在成功后会吊销旧令牌并回一张新的，所以这里必须**立刻**把本地那张
+/// 换成响应里的新令牌——晚一步，下一个请求就带着已吊销的旧令牌 401。
+/// 返回换新后的账号信息（供调用方刷新 `auth.user`）。
+pub async fn change_password(old_password: &str, new_password: &str) -> Result<User, String> {
+    let data = graphql(
+        "mutation($o: String!, $n: String!) { changePassword(oldPassword: $o, newPassword: $n) { token account { id email name isAdmin } } }",
+        json!({ "o": old_password, "n": new_password }),
+    )
+    .await?;
+    let r = data.get("changePassword").ok_or("改密响应缺失")?;
+    let token = r
+        .get("token")
+        .and_then(|v| v.as_str())
+        .ok_or("token 缺失")?
+        .to_string();
+    // 先解析再落盘：解析失败就报错退出，别把本地令牌换成一张解析不出账号的。
+    let account: User = serde_json::from_value(r.get("account").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())?;
+    set_token(&token);
+    Ok(account)
 }
 
 /// 管理员建号的结果。`initial_password` 只在这一次响应里出现，服务端只留 Argon2 哈希。

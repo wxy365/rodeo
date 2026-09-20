@@ -3,10 +3,10 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::hooks::use_navigate;
 
-use crate::frontend::components::{role_chip_class, role_label, short_time, Avatar};
+use crate::frontend::components::{role_chip_class, role_label, short_time, AvatarMenu};
 use crate::frontend::graphql_client::{
-    accept_invite, create_workspace, decline_invite, logout, my_invites, restore_workspace,
-    workspaces, Invite, WorkspaceItem,
+    accept_invite, create_workspace, decline_invite, my_invites, restore_workspace, workspaces,
+    Invite, WorkspaceItem,
 };
 use crate::frontend::icons::{ic_add, ic_folder, ic_history, ic_search};
 use crate::frontend::use_auth;
@@ -31,7 +31,9 @@ pub fn WorkspaceList() -> impl IntoView {
         if !cfg!(target_arch = "wasm32") {
             return;
         }
-        if logged_out() {
+        // 令牌已被服务端判死时同样回登录页：`logged_out()` 只看本地有没有令牌，
+        // 死令牌在启动期被清掉之前它是看不出来的。
+        if logged_out() || auth.session_lost.get() {
             nav_effect("/login", Default::default());
             return;
         }
@@ -96,14 +98,10 @@ pub fn WorkspaceList() -> impl IntoView {
         });
     };
 
-    let nav_logout = navigate.clone();
     let nav_grid = navigate.clone();
     let nav_trash = navigate.clone();
-    let do_logout = move |_| {
-        auth.user.set(None);
-        nav_logout("/login", Default::default());
-        spawn_local(logout());
-    };
+    let nav_admin = navigate.clone();
+    let go_admin = move |_| nav_admin("/admin", Default::default());
 
     view! {
         <div class="page">
@@ -114,14 +112,13 @@ pub fn WorkspaceList() -> impl IntoView {
                     <input placeholder="全文检索：标题 / 详情 / 标签值（即将上线）" disabled />
                 </label>
                 <span style="margin-left:auto" class="online">
-                    {move || {
-                        let display = auth.user.get().map(|u| {
-                            if u.name.is_empty() { u.email.clone() } else { u.name.clone() }
-                        }).unwrap_or_default();
-                        view! { <Avatar text=display /> }
-                    }}
+                    // 「账号管理」只对系统管理员出现，紧挨头像左边。头像菜单里那两项
+                    // （个人信息 / 退出）人人都有，所以不放在同一个组件里。
+                    {move || auth.user.get().filter(|u| u.is_admin).map(|_| view! {
+                        <button class="btn" on:click=go_admin.clone()>"账号管理"</button>
+                    })}
+                    <AvatarMenu />
                 </span>
-                <button class="btn" on:click=do_logout>"退出"</button>
             </div>
 
             <div style="display:flex;align-items:center;margin-bottom:16px">

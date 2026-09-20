@@ -6,9 +6,9 @@ use leptos_meta::{
 use leptos_router::components::{Route, Router, Routes};
 use leptos_router::{ParamSegment, StaticSegment};
 
-use crate::frontend::graphql_client::{get_token, me};
+use crate::frontend::graphql_client::{clear_token, get_token, me};
 use crate::frontend::pages::{
-    Admin, EntryFullScreen, Home, Login, WorkspaceList, WorkspaceMain, WorkspaceSettings,
+    Account, Admin, EntryFullScreen, Home, Login, WorkspaceList, WorkspaceMain, WorkspaceSettings,
 };
 use crate::frontend::provide_auth;
 
@@ -38,14 +38,26 @@ pub fn App() -> impl IntoView {
     let auth = provide_auth();
 
     // 应用挂载时若已登录（有 token）则拉取当前账号，供头像/昵称展示。
+    //
+    // `me` 返回 null 有两种来路：请求没带令牌，或令牌没通过校验（过期、已吊销）。这里的前提
+    // 正是本地有令牌，所以拿到 null 只可能是后者——那张令牌已经死了，必须就地清掉并标记会话
+    // 失效。否则 `/account`、`/admin` 会永远停在「加载中…」：它们只看得到 `user` 是 None，
+    // 分不清「还在问」和「没有会话」。
     Effect::new_sync(move |_| {
-        if cfg!(target_arch = "wasm32") && get_token().is_some() && auth.user.get().is_none() {
-            spawn_local(async move {
-                if let Ok(Some(u)) = me().await {
-                    auth.user.set(Some(u));
-                }
-            });
+        if !cfg!(target_arch = "wasm32") || get_token().is_none() || auth.user.get().is_some() {
+            return;
         }
+        spawn_local(async move {
+            match me().await {
+                Ok(Some(u)) => auth.user.set(Some(u)),
+                Ok(None) => {
+                    clear_token();
+                    auth.session_lost.set(true);
+                }
+                // 网络或服务端故障：身份其实未知，继续显示「加载中…」好过谎报「登录已失效」。
+                Err(_) => {}
+            }
+        });
     });
 
     view! {
@@ -59,6 +71,7 @@ pub fn App() -> impl IntoView {
                     <Route path=StaticSegment("login") view=Login/>
                     <Route path=StaticSegment("workspaces") view=WorkspaceList/>
                     <Route path=StaticSegment("admin") view=Admin/>
+                    <Route path=StaticSegment("account") view=Account/>
                     <Route path=(ParamSegment("slug"), StaticSegment("settings")) view=WorkspaceSettings/>
                     <Route path=(ParamSegment("slug"), StaticSegment("entry"), ParamSegment("code")) view=EntryFullScreen/>
                     <Route path=ParamSegment("slug") view=WorkspaceMain/>

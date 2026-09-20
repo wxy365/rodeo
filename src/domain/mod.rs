@@ -10,7 +10,7 @@ pub mod rule;
 pub mod view;
 pub mod workspace;
 
-pub use account::Account;
+pub use account::{Account, AccountStatus};
 pub use ai::{NamedPrompt, WorkspaceAiConfig};
 pub use audit::{AuditAction, AuditLog};
 pub use attachment::{Attachment, ATTACHMENT_URL_PREFIX};

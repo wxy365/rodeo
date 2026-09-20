@@ -150,3 +150,16 @@ pub fn ic_more() -> impl IntoView {
         </svg>
     }
 }
+
+/// 退出：左侧一扇开口的门 + 一道向外去的箭头。
+/// 与 `ic_link` 同理，这几笔靠描边成形，故在 path 上显式写 `fill="none"`——
+/// 它比继承自 `svg.ic` 的 `fill: currentColor` 优先，否则笔画之间会被填成实心块。
+pub fn ic_logout() -> impl IntoView {
+    view! {
+        <svg class="ic" viewBox="0 0 24 24">
+            <path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M9.5 4.5h-3A2.5 2.5 0 0 0 4 7v10a2.5 2.5 0 0 0 2.5 2.5h3"/>
+            <path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M15.5 8.5 19 12l-3.5 3.5"/>
+            <path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M19 12H9.5"/>
+        </svg>
+    }
+}

@@ -15,6 +15,7 @@ use crate::frontend::icons::{
 };
 use crate::frontend::label_editor::LabelEditor;
 use crate::frontend::tiny_editor::TinyEditor;
+use crate::frontend::use_auth;
 
 // 全屏页侧栏的两个页签。标签编辑不在这里——它常驻在页签上方。
 const SIDE_TABS: &[(&str, &str)] = &[("attachments", "附件"), ("history", "历史")];
@@ -25,6 +26,7 @@ pub fn EntryFullScreen() -> impl IntoView {
     let slug = move || params.get().get("slug").unwrap_or_default();
     let code = move || params.get().get("code").unwrap_or_default();
     let navigate = use_navigate();
+    let auth = use_auth();
 
     let data: RwSignal<
         Option<Result<(Workspace, Entry, Vec<LabelSchema>, Vec<AuditLog>, Vec<Member>), String>>,
@@ -94,7 +96,7 @@ pub fn EntryFullScreen() -> impl IntoView {
 
     let nav_redirect = navigate.clone();
     Effect::new_sync(move |_| {
-        if cfg!(target_arch = "wasm32") && logged_out() {
+        if cfg!(target_arch = "wasm32") && (logged_out() || auth.session_lost.get()) {
             nav_redirect("/login", Default::default());
             return;
         }
