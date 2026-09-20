@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
-use rand_core::OsRng;
+use rand_core::{OsRng, RngCore};
 use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
@@ -39,19 +39,39 @@ impl AuthService {
         Self { store, config }
     }
 
-    pub fn register(
+    /// 自助注册。受 `allow_registration` 限制——这个开关管的是「陌生人能否自己注册」，
+    /// 与「管理员能否建号」是两件事，后者见 [`Self::create_by_admin`]。
+    pub fn register(&self, email: &str, name: &str, password: &str) -> Result<Account, AppError> {
+        if !self.config.auth.builtin.allow_registration {
+            return Err(AppError::InvalidQuery(
+                "已关闭开放注册，请联系系统管理员创建账号".to_string(),
+            ));
+        }
+        self.create(email, name, password, false)
+    }
+
+    /// 管理员建号：**不受** `allow_registration` 限制。调用方负责鉴权
+    /// （GraphQL 侧走 `require_admin`；`bootstrap_admin` 是启动期的引导路径）。
+    ///
+    /// 旧签名让这两种调用者共用一个 `is_admin` 参数，结果关闭自助注册后管理员连
+    /// 普通账号都建不出来。开关与建号权限从此各管各的。
+    pub fn create_by_admin(
         &self,
         email: &str,
         name: &str,
         password: &str,
         is_admin: bool,
     ) -> Result<Account, AppError> {
-        // 关闭开放注册后仅允许管理员引导/管理员建号（bootstrap_admin 以 is_admin = true 走此路径）。
-        if !self.config.auth.builtin.allow_registration && !is_admin {
-            return Err(AppError::InvalidQuery(
-                "已关闭开放注册，请联系系统管理员创建账号".to_string(),
-            ));
-        }
+        self.create(email, name, password, is_admin)
+    }
+
+    fn create(
+        &self,
+        email: &str,
+        name: &str,
+        password: &str,
+        is_admin: bool,
+    ) -> Result<Account, AppError> {
         let email = normalize_email(email)?;
         validate_password(password)?;
         if self
@@ -153,7 +173,7 @@ impl AuthService {
         if self.find_by_email(&email)?.is_some() {
             return Ok(());
         }
-        self.register(
+        self.create_by_admin(
             &email,
             "Administrator",
             &self.config.auth.builtin.admin_password,
@@ -189,6 +209,43 @@ fn hash_password(password: &str) -> Result<String, AppError> {
     Ok(hash)
 }
 
+/// 初始密码的字母表。刻意去掉 `I l O 0 1` 这些易混字符——它是要被管理员抄写或口述
+/// 分发出去的，不是给程序读的。
+const PW_ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+const PW_UPPER: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ";
+const PW_LOWER: &[u8] = b"abcdefghijkmnopqrstuvwxyz";
+const PW_DIGIT: &[u8] = b"23456789";
+
+/// 生成初始密码：16 位，且**构造上**保证含大写、小写、数字各至少一个
+/// （先按字母表取满 16 位，再让前三位分别取自三个类别，最后把整体打乱）。
+///
+/// 为什么不是「随机取满再拿 `validate_password` 校验、不合格就重摇」：那样有极小概率
+/// 摇出一个被自己拒绝的密码，管理员会收到一条莫名其妙的「密码强度不足」。让它在构造上
+/// 不可能发生，比摇完再补救干净。
+///
+/// 熵：13 位取自 57 字符表 + 3 位受类别约束，约 88 bit。够用。
+pub fn generate_initial_password() -> String {
+    let mut rng = OsRng;
+    let mut buf = [0u8; 16];
+    for b in buf.iter_mut() {
+        *b = PW_ALPHABET[pick(&mut rng, PW_ALPHABET.len())];
+    }
+    buf[0] = PW_UPPER[pick(&mut rng, PW_UPPER.len())];
+    buf[1] = PW_LOWER[pick(&mut rng, PW_LOWER.len())];
+    buf[2] = PW_DIGIT[pick(&mut rng, PW_DIGIT.len())];
+    // 打散上面那三个固定位置，免得「第 1 位永远是大写」成为可预判的结构。
+    for i in (1..buf.len()).rev() {
+        let j = pick(&mut rng, i + 1);
+        buf.swap(i, j);
+    }
+    String::from_utf8(buf.to_vec()).expect("字母表全是 ASCII")
+}
+
+/// `OsRng` 取一个 `[0, n)` 的下标。`n` 很小（≤ 57），取模偏差在 2^32 量级下可忽略。
+fn pick(rng: &mut impl RngCore, n: usize) -> usize {
+    (rng.next_u32() as usize) % n
+}
+
 fn verify_password(password: &str, hash: &str) -> Result<bool, AppError> {
     let parsed = PasswordHash::new(hash)?;
     Ok(Argon2::default()
@@ -214,9 +271,9 @@ mod tests {
         cfg.auth.builtin.allow_registration = false;
         let auth = AuthService::new(store.clone(), Arc::new(cfg));
 
-        assert!(auth.register("user@x.io", "User", "Passw0rd!", false).is_err());
-        // 管理员引导不受开关限制，否则关闭注册后连管理员都建不出来。
-        assert!(auth.register("admin@x.io", "Admin", "Passw0rd!", true).is_ok());
+        assert!(auth.register("user@x.io", "User", "Passw0rd!").is_err());
+        // 管理员建号不受开关限制，否则关闭注册后连管理员都建不出来。
+        assert!(auth.create_by_admin("admin@x.io", "Admin", "Passw0rd!", true).is_ok());
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -227,7 +284,7 @@ mod tests {
         let store = Arc::new(DocStore::open(&dir).unwrap());
         let auth = AuthService::new(store.clone(), Arc::new(Config::default()));
 
-        assert!(auth.register("user@x.io", "User", "Passw0rd!", false).is_ok());
+        assert!(auth.register("user@x.io", "User", "Passw0rd!").is_ok());
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -237,7 +294,7 @@ mod tests {
         let dir = temp_dir("logout");
         let store = Arc::new(DocStore::open(&dir).unwrap());
         let auth = AuthService::new(store, Arc::new(Config::default()));
-        auth.register("u@x.io", "U", "Passw0rd!", false).unwrap();
+        auth.register("u@x.io", "U", "Passw0rd!").unwrap();
         let id = auth.find_by_email("u@x.io").unwrap().unwrap().id;
 
         let (_, token) = auth.login("u@x.io", "Passw0rd!").unwrap();

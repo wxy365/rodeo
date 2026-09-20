@@ -20,6 +20,7 @@ use crate::error::AppError;
 use crate::service::ai::derive_title;
 use crate::service::entry::PageInput as EntryPageInput;
 use crate::service::{AuthContext, Services};
+use crate::service::auth::generate_initial_password;
 
 // ---------- GraphQL 类型映射 ----------
 
@@ -40,6 +41,14 @@ impl From<Account> for GqlAccount {
             is_admin: a.is_admin,
         }
     }
+}
+
+/// 管理员建号的结果。初始密码只存在于这一次响应里——服务端只存 Argon2 哈希，
+/// 没有明文可再取——所以前端必须当场展示并可复制。
+#[derive(SimpleObject, Clone)]
+pub struct GqlCreatedAccount {
+    account: GqlAccount,
+    initial_password: String,
 }
 
 /// 免登录可见的服务端开关，供登录页决定是否展示注册入口。
@@ -717,6 +726,23 @@ impl GraphqlContext {
             .ok_or(AppError::Forbidden)?;
         Ok(())
     }
+
+    /// 系统管理员专属。判据是账号上的 `is_admin` 标记，而不是拿邮箱去比
+    /// `Config.auth.builtin.admin_email`——邮箱是可变配置，标记才是身份。
+    /// `bootstrap_admin` 是唯一把该标记置 true 的地方，因此
+    /// `is_admin == true` 恰好等价于 spec 里说的「配置文件中指定的管理员账号」。
+    fn require_admin(&self) -> GqlResult<AuthContext> {
+        let auth = self.require_auth()?;
+        let account = self
+            .services
+            .auth
+            .find_by_id(auth.account_id)?
+            .ok_or(AppError::Unauthorized)?;
+        if !account.is_admin {
+            return Err(AppError::Forbidden.into());
+        }
+        Ok(auth)
+    }
 }
 
 // ---------- Query ----------
@@ -1097,11 +1123,38 @@ impl Mutation {
         password: String,
     ) -> GqlResult<GqlAuthResult> {
         let gql = ctx.data::<GraphqlContext>()?;
-        let account = gql.services.auth.register(&email, &name, &password, false)?;
+        let account = gql.services.auth.register(&email, &name, &password)?;
         let token = gql.services.auth.sign_token(account.id)?;
         Ok(GqlAuthResult {
             token,
             account: account.into(),
+        })
+    }
+
+    /// 系统管理员建号，返回初始密码用于分发。
+    /// `password` 留空则由服务端生成一个必然满足强度规则的随机密码。
+    async fn create_account(
+        &self,
+        ctx: &Context<'_>,
+        email: String,
+        name: String,
+        #[graphql(default)] is_admin: bool,
+        #[graphql(default)] password: Option<String>,
+    ) -> GqlResult<GqlCreatedAccount> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        gql.require_admin()?;
+        let initial_password = match password {
+            Some(p) if !p.trim().is_empty() => p,
+            _ => generate_initial_password(),
+        };
+        // 走 create_by_admin：自助注册开关不该拦住管理员建号。
+        let account =
+            gql.services
+                .auth
+                .create_by_admin(&email, &name, &initial_password, is_admin)?;
+        Ok(GqlCreatedAccount {
+            account: account.into(),
+            initial_password,
         })
     }
 
