@@ -97,6 +97,11 @@ pub struct User {
     pub id: String,
     pub email: String,
     pub name: String,
+    /// 系统管理员标记。`#[serde(default)]` 是必需的：`login` / `register` 的查询里
+    /// 若没选 `isAdmin`，字段缺失会整条反序列化失败，而缺省 false 恰好与
+    /// 「这个账号不是管理员」在语义上一致。
+    #[serde(default)]
+    pub is_admin: bool,
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -280,7 +285,7 @@ pub fn label_attrs(
 // ---------- 类型化查询/变更 ----------
 
 pub async fn me() -> Result<Option<User>, String> {
-    let data = graphql("query { me { id email name } }", json!({})).await?;
+    let data = graphql("query { me { id email name isAdmin } }", json!({})).await?;
     Ok(data
         .get("me")
         .cloned()
@@ -306,7 +311,7 @@ pub async fn logout() {
 
 pub async fn login(email: &str, password: &str) -> Result<(String, User), String> {
     let data = graphql(
-        "mutation($e: String!, $p: String!) { login(email: $e, password: $p) { token account { id email name } } }",
+        "mutation($e: String!, $p: String!) { login(email: $e, password: $p) { token account { id email name isAdmin } } }",
         json!({ "e": email, "p": password }),
     )
     .await?;
@@ -323,7 +328,7 @@ pub async fn login(email: &str, password: &str) -> Result<(String, User), String
 
 pub async fn register(email: &str, name: &str, password: &str) -> Result<(String, User), String> {
     let data = graphql(
-        "mutation($e: String!, $n: String!, $p: String!) { register(email: $e, name: $n, password: $p) { token account { id email name } } }",
+        "mutation($e: String!, $n: String!, $p: String!) { register(email: $e, name: $n, password: $p) { token account { id email name isAdmin } } }",
         json!({ "e": email, "n": name, "p": password }),
     )
     .await?;
@@ -336,6 +341,35 @@ pub async fn register(email: &str, name: &str, password: &str) -> Result<(String
     let account: User = serde_json::from_value(r.get("account").cloned().unwrap_or(Value::Null))
         .map_err(|e| e.to_string())?;
     Ok((token, account))
+}
+
+/// 管理员建号的结果。`initial_password` 只在这一次响应里出现，服务端只留 Argon2 哈希。
+///
+/// `rename_all` 必需：查询里请求的是 `initialPassword`，少了它 `initial_password`
+/// 会因「字段缺失」整条反序列化失败，建号成功却报错。
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreatedAccount {
+    pub account: User,
+    pub initial_password: String,
+}
+
+/// 管理员建号。`password` 传 `None` 则由服务端生成初始密码。
+pub async fn create_account(
+    email: &str,
+    name: &str,
+    is_admin: bool,
+    password: Option<&str>,
+) -> Result<CreatedAccount, String> {
+    let data = graphql(
+        "mutation($e: String!, $n: String!, $a: Boolean!, $p: String) { \
+         createAccount(email: $e, name: $n, isAdmin: $a, password: $p) { \
+         account { id email name isAdmin } initialPassword } }",
+        json!({ "e": email, "n": name, "a": is_admin, "p": password }),
+    )
+    .await?;
+    serde_json::from_value(data.get("createAccount").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
 }
 
 pub async fn workspaces() -> Result<Vec<WorkspaceItem>, String> {
