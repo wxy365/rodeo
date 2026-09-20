@@ -1,61 +1,10 @@
+//! RocksDB 后端实现。列族创建、迭代器、WriteBatch 只在这个文件里出现。
+
 use rocksdb::{DBCompactionStyle, Direction, IteratorMode, Options, WriteBatch, DB};
-use serde::{de::DeserializeOwned, Serialize};
 
 use crate::error::AppError;
 
-pub mod cf {
-    pub const ACCOUNTS: &str = "accounts";
-    pub const ACCOUNTS_EMAIL_IDX: &str = "accounts_email_idx";
-    /// 令牌版本：account id → u64 大端。登出时自增，使该账号所有已签发 JWT 立即失效。
-    /// 与软删除同理，用独立 CF 而不是给 Account 加字段，避免 bincode 结构变更。
-    pub const ACCOUNT_TOKEN_VERSION: &str = "account_token_version";
-    pub const WORKSPACES: &str = "workspaces";
-    pub const WORKSPACES_SLUG_IDX: &str = "workspaces_slug_idx";
-    /// 软删除标记：workspace id → 删除时间（RFC3339）。单独一个 CF 而不是给 Workspace
-    /// 加字段，避免 bincode 结构变更导致存量工作空间读不出来。
-    pub const WORKSPACES_DELETED: &str = "workspaces_deleted";
-    pub const WORKSPACE_MEMBERS: &str = "workspace_members";
-    pub const WORKSPACE_MEMBERS_BY_ACCOUNT: &str = "workspace_members_by_account";
-    /// 待接受的邀请：(workspace_id, account_id) → `Invite`。接受之前不写成员关系，
-    /// 所以「邀请中」和「已是成员」是两套互不干扰的记录，`Invite` 也就不需要 status 字段。
-    pub const INVITES: &str = "invites";
-    /// 反向索引：(account_id, workspace_id) → 空值，供「我收到的邀请」前缀扫描。
-    pub const INVITES_BY_ACCOUNT: &str = "invites_by_account";
-    pub const ENTRIES: &str = "entries";
-    pub const ENTRIES_BY_WORKSPACE: &str = "entries_by_workspace";
-    /// 归档标记：entry code → 归档时间（RFC3339）。与软删除同理，用独立 CF 而不是给
-    /// Entry 加字段，避免 bincode 结构变更导致存量条目读不出来。归档不删除数据，
-    /// 只是把条目移出基础视图，可随时取消归档。
-    pub const ENTRIES_ARCHIVED: &str = "entries_archived";
-    pub const LABEL_SCHEMAS: &str = "label_schemas";
-    pub const LABELINGS: &str = "labelings";
-    pub const AUDIT_LOGS: &str = "audit_logs";
-    pub const AUDIT_LOGS_BY_RESOURCE: &str = "audit_logs_by_resource";
-    pub const AUDIT_LOGS_BY_WORKSPACE: &str = "audit_logs_by_workspace";
-    pub const VIEWS: &str = "views";
-    pub const VIEWS_BY_WORKSPACE: &str = "views_by_workspace";
-    pub const DEFAULT_VIEWS: &str = "default_views";
-    pub const LABELINGS_BY_WORKSPACE: &str = "labelings_by_workspace";
-    /// 工作空间级 AI 配置：workspace id → `WorkspaceAiConfig`（bincode）。
-    /// 与 `WORKSPACES_DELETED` / `ENTRIES_ARCHIVED` 同理，用独立列族而不是给 `Workspace`
-    /// 加字段——加字段会让存量工作空间反序列化失败。
-    pub const WORKSPACE_AI: &str = "workspace_ai";
-    /// 自动化规则：rule id → `AutomationRule`（bincode）。
-    pub const AUTOMATION_RULES: &str = "automation_rules";
-    /// 工作空间下的规则索引：(workspace_id, rule_id) → 空值，供前缀扫描。
-    pub const AUTOMATION_RULES_BY_WORKSPACE: &str = "automation_rules_by_workspace";
-    pub const COMMENTS: &str = "comments";
-    /// 附件主键：`attachment_id`（ULID 16 字节）→ `Attachment`（bincode）。
-    /// 用 id 单键而非 (entry_code, id)，因为下载路由手里只有 id，必须能直取。
-    pub const ATTACHMENTS: &str = "attachments";
-    /// 附件索引：(entry_code, attachment_id) → 空值，供按条目前缀扫描。
-    pub const ATTACHMENTS_BY_ENTRY: &str = "attachments_by_entry";
-    /// 内联图片标记：`attachment_id`（ULID 16 字节）→ 空值。
-    /// 编辑器里粘贴上传的图片仍是附件（要下载、要按角色删），但不属于「附件」这一栏，
-    /// 所以不进附件列表。不给 `Attachment` 加字段是因为那是 bincode 结构变更，
-    /// 存量附件会读不出来——与 `ENTRIES_ARCHIVED` / `WORKSPACES_DELETED` 同一套取舍。
-    pub const INLINE_ATTACHMENTS: &str = "inline_attachments";
-}
+use super::doc::{cf, BatchOp};
 
 const ALL_CFS: &[&str] = &[
     cf::ACCOUNTS,
@@ -89,36 +38,12 @@ const ALL_CFS: &[&str] = &[
     cf::INLINE_ATTACHMENTS,
 ];
 
-/// 单个批量写操作：文档/索引/审计统一原子写入。
-pub enum BatchOp {
-    Put { cf: &'static str, key: Vec<u8>, value: Vec<u8> },
-    Delete { cf: &'static str, key: Vec<u8> },
-}
-
-impl BatchOp {
-    pub fn put<T: Serialize>(cf: &'static str, key: Vec<u8>, value: &T) -> Result<Self, AppError> {
-        Ok(BatchOp::Put {
-            cf,
-            key,
-            value: bincode::serialize(value)?,
-        })
-    }
-
-    pub fn put_raw(cf: &'static str, key: Vec<u8>, value: Vec<u8>) -> Self {
-        BatchOp::Put { cf, key, value }
-    }
-
-    pub fn delete(cf: &'static str, key: Vec<u8>) -> Self {
-        BatchOp::Delete { cf, key }
-    }
-}
-
 /// RocksDB 文档存储：每个 CF 存一类文档（bincode 序列化）或二级索引（裸字节）。
-pub struct DocStore {
+pub(crate) struct RocksDoc {
     db: DB,
 }
 
-impl DocStore {
+impl RocksDoc {
     pub fn open(path: &str) -> Result<Self, AppError> {
         std::fs::create_dir_all(path).map_err(|e| AppError::Storage(e.to_string()))?;
         let mut opts = Options::default();
@@ -133,20 +58,6 @@ impl DocStore {
         self.db
             .cf_handle(name)
             .ok_or_else(|| AppError::Storage(format!("缺失 column family: {name}")))
-    }
-
-    /// 以 bincode 序列化写入文档。
-    pub fn put<T: Serialize>(&self, cf: &str, key: &[u8], value: &T) -> Result<(), AppError> {
-        let bytes = bincode::serialize(value)?;
-        self.put_raw(cf, key, &bytes)
-    }
-
-    /// 读取并反序列化文档。
-    pub fn get<T: DeserializeOwned>(&self, cf: &str, key: &[u8]) -> Result<Option<T>, AppError> {
-        match self.get_raw(cf, key)? {
-            Some(bytes) => Ok(Some(bincode::deserialize(&bytes)?)),
-            None => Ok(None),
-        }
     }
 
     pub fn put_raw(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<(), AppError> {
@@ -181,10 +92,6 @@ impl DocStore {
         self.db.delete_cf(h, key).map_err(Into::into)
     }
 
-    pub fn exists(&self, cf: &str, key: &[u8]) -> Result<bool, AppError> {
-        Ok(self.get_raw(cf, key)?.is_some())
-    }
-
     /// 原子写入跨多个 CF 的批量操作（文档变更 + 二级索引 + 审计日志一次落盘）。
     pub fn write_batch(&self, ops: Vec<BatchOp>) -> Result<(), AppError> {
         let mut batch = WriteBatch::default();
@@ -207,7 +114,7 @@ impl DocStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::keys;
+    use crate::storage::{cf, keys, DocStore};
     use chrono::{TimeZone, Utc};
 
     fn temp_dir(name: &str) -> String {
