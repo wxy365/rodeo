@@ -56,8 +56,61 @@ pub struct BuiltinAuthConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct StorageConfig {
+    /// 本地根目录。即使文档与附件都改用外部后端，它仍承载 tantivy 全文索引
+    /// （`{data_dir}/search`），所以四种组合下都必需。
     #[serde(default = "default_data_dir")]
     pub data_dir: String,
+    #[serde(default)]
+    pub doc: DocConfig,
+    #[serde(default)]
+    pub blob: BlobConfig,
+}
+
+/// 文档与索引元数据的后端。`rocksdb` 是轻量默认（单机、零外部依赖）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DocBackend {
+    Rocksdb,
+    Postgres,
+}
+
+/// 附件文件本体的后端。`local` 落 `{data_dir}/attachments`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BlobBackend {
+    Local,
+    Rustfs,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DocConfig {
+    /// 用枚举承载而不是字符串：后端名拼错时在解析配置阶段就报错，
+    /// 而不是启动到一半、拿到一个空后端才炸。
+    #[serde(default = "default_doc_backend")]
+    pub backend: DocBackend,
+    /// `backend = "postgres"` 时必填，形如 `postgres://user:pass@host:5432/rodeo`。
+    #[serde(default)]
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BlobConfig {
+    #[serde(default = "default_blob_backend")]
+    pub backend: BlobBackend,
+    /// S3 兼容端点，形如 `http://127.0.0.1:9000`（RustFS / MinIO / 任何 S3 实现）。
+    #[serde(default)]
+    pub endpoint: String,
+    #[serde(default)]
+    pub bucket: String,
+    #[serde(default)]
+    pub access_key: String,
+    #[serde(default)]
+    pub secret_key: String,
+    #[serde(default = "default_region")]
+    pub region: String,
+    /// 允许 `http://` 明文端点。内网自建 RustFS 通常没有证书，公网端点应保持 false。
+    #[serde(default)]
+    pub allow_http: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -108,6 +161,28 @@ impl Default for StorageConfig {
     fn default() -> Self {
         Self {
             data_dir: default_data_dir(),
+            doc: DocConfig::default(),
+            blob: BlobConfig::default(),
+        }
+    }
+}
+
+impl Default for DocConfig {
+    fn default() -> Self {
+        Self { backend: default_doc_backend(), url: String::new() }
+    }
+}
+
+impl Default for BlobConfig {
+    fn default() -> Self {
+        Self {
+            backend: default_blob_backend(),
+            endpoint: String::new(),
+            bucket: String::new(),
+            access_key: String::new(),
+            secret_key: String::new(),
+            region: default_region(),
+            allow_http: false,
         }
     }
 }
@@ -187,6 +262,16 @@ fn default_admin_password() -> String {
 }
 fn default_data_dir() -> String {
     "./data".to_string()
+}
+/// 缺省组合即 spec 里的「rocksdb + 本地文件系统」：老配置一个字不改也能跑。
+fn default_doc_backend() -> DocBackend {
+    DocBackend::Rocksdb
+}
+fn default_blob_backend() -> BlobBackend {
+    BlobBackend::Local
+}
+fn default_region() -> String {
+    "us-east-1".to_string()
 }
 fn default_ai_base_url() -> String {
     "https://api.openai.com/v1".to_string()

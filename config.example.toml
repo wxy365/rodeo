@@ -1,7 +1,15 @@
 [server]
 host = "0.0.0.0"
 port = 3000
-base_url = "http://localhost:3000"
+base_url = "https://localhost:3000"
+
+# 取消注释即以 HTTPS 启动，ALPN 会协商到 HTTP/2；本节整体缺失则维持明文 HTTP。
+# 证书不进仓库（见 .gitignore 的 /certs）。本地自签：
+#   openssl req -x509 -newkey rsa:2048 -nodes -keyout certs/key.pem -out certs/cert.pem \
+#     -days 365 -subj "/CN=localhost" -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
+# [server.tls]
+# cert_path = "certs/cert.pem"
+# key_path = "certs/key.pem"
 
 [auth]
 jwt_secret = "change-me-to-a-random-secret"
@@ -14,7 +22,29 @@ admin_email = "admin@local"
 admin_password = "Admin12345"
 
 [storage]
+# 本地根目录。即使文档与附件都改用外部后端，它仍承载 tantivy 全文索引。
 data_dir = "./data"
+
+# 文档与索引元数据：rocksdb（默认，嵌入式）| postgres
+[storage.doc]
+backend = "rocksdb"
+# backend = "postgres" 时必填。走明文 TCP（本仓库全树禁 openssl），
+# 请把数据库放在内网，或由隧道 / 反向代理终结 TLS。
+# url = "postgres://rodeo:rodeo@127.0.0.1:5432/rodeo"
+
+# 附件文件本体：local（默认，落 {data_dir}/attachments）| rustfs
+[storage.blob]
+backend = "local"
+# backend = "rustfs" 时下面四项必填（endpoint / bucket / access_key / secret_key）。
+# 两个后端共用同一套对象键 {workspace_id}/{entry_code}/{id}_{文件名}，
+# 所以切换后端 = 把 {data_dir}/attachments 下的目录原样搬进桶里，没有迁移脚本。
+# endpoint = "http://127.0.0.1:9000"
+# bucket = "rodeo"
+# access_key = "rustfsadmin"
+# secret_key = "rustfsadmin"
+# region = "us-east-1"
+# 内网自建 RustFS 通常是明文 http，需要打开它；公网端点保持 false。
+# allow_http = true
 
 [ai]
 # 兼容 Chat Completions 协议的服务（OpenAI 官方 / 自建网关 / vLLM / one-api / DeepSeek / 通义）。
