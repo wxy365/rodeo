@@ -41,7 +41,7 @@ pub fn EntryFullScreen() -> impl IntoView {
     let title_ref: NodeRef<Input> = NodeRef::new();
     // 侧栏页签：attachments | history。
     let side_tab = RwSignal::new("attachments".to_string());
-    // 审计日志单独放一份，供 `AuditTimeline` 消费；`data` 里的那份仍留着给页面其它逻辑。
+    // 审计日志另存一份供 `AuditTimeline` 消费；`data` 元组里的那份无人读取，仅因元组结构固定而保留。
     let logs = RwSignal::new(Vec::<AuditLog>::new());
 
     let load = move |overwrite: bool| {

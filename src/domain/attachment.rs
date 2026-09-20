@@ -2,9 +2,12 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
-/// 附件下载路径前缀。下载路由、GraphQL 里的 `url` 字段、以及从正文里反解
-/// 「引用了哪些图片」三处都依赖它，所以只在这里定义一次。
+/// 附件 URL 前缀。GraphQL 里的 `url` 字段、以及从正文里反解「引用了哪些图片」两处
+/// 依赖它，所以只在这里定义一次。
 /// 编辑器内联图片在 Delta 正文里存的就是 `{前缀}{id}`。
+///
+/// 注意：下载路由并不引用本常量——`src/main.rs` 里的 `/api/attachments/{id}` 是另行
+/// 硬编码的字面量，改此前缀时必须手动同步那条路由。
 pub const ATTACHMENT_URL_PREFIX: &str = "/api/attachments/";
 
 /// Entry 附件。元数据进 RocksDB，文件本体落 `{data_dir}/attachments`。
