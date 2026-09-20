@@ -7,8 +7,10 @@
 
 use serde::{de::DeserializeOwned, Serialize};
 
+use crate::config::{DocBackend, StorageConfig};
 use crate::error::AppError;
 
+use super::pg::PgDoc;
 use super::rocksdb::RocksDoc;
 
 pub mod cf {
@@ -87,6 +89,7 @@ impl BatchOp {
 
 enum Backend {
     Rocks(RocksDoc),
+    Pg(PgDoc),
 }
 
 /// 文档存储统一门面。
@@ -99,6 +102,23 @@ impl DocStore {
     /// 既有测试都是 `DocStore::open(&dir)`，让它们一个字都不用改。
     pub fn open(path: &str) -> Result<Self, AppError> {
         Ok(Self { backend: Backend::Rocks(RocksDoc::open(path)?) })
+    }
+
+    /// 按配置选后端。四种组合由这里的两层 match 决定，服务层无感。
+    pub fn from_config(cfg: &StorageConfig) -> Result<Self, AppError> {
+        let backend = match cfg.doc.backend {
+            DocBackend::Rocksdb => Backend::Rocks(RocksDoc::open(&cfg.data_dir)?),
+            DocBackend::Postgres => {
+                let url = cfg.doc.url.trim();
+                if url.is_empty() {
+                    return Err(AppError::Storage(
+                        "storage.doc.backend = \"postgres\" 时必须配置 storage.doc.url".to_string(),
+                    ));
+                }
+                Backend::Pg(PgDoc::open(url)?)
+            }
+        };
+        Ok(Self { backend })
     }
 
     pub fn put<T: Serialize>(&self, cf: &str, key: &[u8], value: &T) -> Result<(), AppError> {
@@ -116,12 +136,14 @@ impl DocStore {
     pub fn put_raw(&self, cf: &str, key: &[u8], value: &[u8]) -> Result<(), AppError> {
         match &self.backend {
             Backend::Rocks(s) => s.put_raw(cf, key, value),
+            Backend::Pg(s) => s.put_raw(cf, key, value),
         }
     }
 
     pub fn get_raw(&self, cf: &str, key: &[u8]) -> Result<Option<Vec<u8>>, AppError> {
         match &self.backend {
             Backend::Rocks(s) => s.get_raw(cf, key),
+            Backend::Pg(s) => s.get_raw(cf, key),
         }
     }
 
@@ -129,12 +151,14 @@ impl DocStore {
     pub fn scan_prefix(&self, cf: &str, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, AppError> {
         match &self.backend {
             Backend::Rocks(s) => s.scan_prefix(cf, prefix),
+            Backend::Pg(s) => s.scan_prefix(cf, prefix),
         }
     }
 
     pub fn delete(&self, cf: &str, key: &[u8]) -> Result<(), AppError> {
         match &self.backend {
             Backend::Rocks(s) => s.delete(cf, key),
+            Backend::Pg(s) => s.delete(cf, key),
         }
     }
 
@@ -146,6 +170,7 @@ impl DocStore {
     pub fn write_batch(&self, ops: Vec<BatchOp>) -> Result<(), AppError> {
         match &self.backend {
             Backend::Rocks(s) => s.write_batch(ops),
+            Backend::Pg(s) => s.write_batch(ops),
         }
     }
 }

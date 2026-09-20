@@ -2,6 +2,7 @@
 //! 以及附件后端 [`BlobStore`]。RocksDB / PostgreSQL 的实现细节不出这个模块。
 
 mod doc;
+mod pg;
 mod rocksdb;
 
 pub mod keys;

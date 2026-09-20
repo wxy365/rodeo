@@ -28,7 +28,7 @@ async fn main() {
         .nth(1)
         .unwrap_or_else(|| "config.toml".to_string());
     let config = Arc::new(Config::load(&config_path).expect("加载配置失败"));
-    let store = Arc::new(DocStore::open(&config.data_dir()).expect("打开存储失败"));
+    let store = Arc::new(DocStore::from_config(&config.storage).expect("打开存储失败"));
     let services = Arc::new(Services::new(store.clone(), config.clone()).expect("初始化服务失败"));
     services.auth.bootstrap_admin().expect("初始化管理员失败");
 
