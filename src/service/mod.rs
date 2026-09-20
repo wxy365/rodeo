@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use crate::config::Config;
 use crate::error::AppError;
-use crate::storage::DocStore;
+use crate::storage::{BlobStore, DocStore};
 
 pub use ai::{AiClient, AiService};
 pub use attachment::AttachmentService;
@@ -55,7 +55,9 @@ impl Services {
         // 评论服务要与 EntryService 共用同一份实例：评论变更后要触发它的重索引。
         let comment = CommentService::new(store.clone(), entry.clone());
         // 附件服务同样要与 EntryService 共用同一份实例：上传后要推进条目更新时间并重索引。
-        let attachment = AttachmentService::new(store.clone(), entry.clone(), &config.data_dir());
+        // 附件后端在启动期就把根目录建好 / 客户端初始化好，配置写错在这里就暴露。
+        let blobs = BlobStore::from_config(&config.storage)?;
+        let attachment = AttachmentService::new(store.clone(), entry.clone(), blobs);
         let services = Self {
             auth: AuthService::new(store.clone(), config.clone()),
             workspace: WorkspaceService::new(store.clone()),

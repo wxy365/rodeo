@@ -1,15 +1,13 @@
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use chrono::Utc;
-use tokio::io::AsyncWriteExt;
 use ulid::Ulid;
 
 use crate::domain::{Attachment, AuditAction, AuditLog, ATTACHMENT_URL_PREFIX};
 use crate::error::AppError;
 use crate::service::audit::audit_ops;
 use crate::service::entry::EntryService;
-use crate::storage::{cf, keys, BatchOp, DocStore};
+use crate::storage::{cf, keys, BatchOp, BlobStore, DocStore};
 
 /// 单文件上限。与 UI 文案「附件（≤ 50MB）」一致。
 pub const MAX_ATTACHMENT_SIZE: u64 = 50 * 1024 * 1024;
@@ -19,30 +17,36 @@ pub struct AttachmentService {
     /// 单向依赖：上传是条目上的活动，要推进 Entry.updated_at 并重建检索文档。
     /// `EntryService` 不感知附件，因此不构成循环。
     entries: EntryService,
-    /// 文件落盘根目录 `{data_dir}/attachments`。
-    base_dir: PathBuf,
+    /// 附件本体。local 后端落 `{data_dir}/attachments`，rustfs 后端落桶。
+    blobs: BlobStore,
 }
 
 impl AttachmentService {
-    pub fn new(store: Arc<DocStore>, entries: EntryService, data_dir: &str) -> Self {
-        Self {
-            store,
-            entries,
-            base_dir: Path::new(data_dir).join("attachments"),
-        }
+    pub fn new(store: Arc<DocStore>, entries: EntryService, blobs: BlobStore) -> Self {
+        Self { store, entries, blobs }
     }
 
-    /// 相对 `base_dir` 的存储路径。前两段无需净化：`workspace_id` 是 ULID，
-    /// `entry_code` 是 16 位 base62 字母数字。唯一由客户端控制的段是文件名。
-    fn abs_path(&self, a: &Attachment) -> PathBuf {
-        self.base_dir
-            .join(a.workspace_id.to_string())
-            .join(&a.entry_code)
-            .join(format!("{}_{}", a.id, safe_name(&a.filename)))
+    /// 启动期探活附件后端，见 [`BlobStore::health_check`]。
+    pub async fn check_blob_store(&self) -> Result<(), AppError> {
+        self.blobs.health_check().await
     }
 
-    /// 落盘并写元数据。`content` 是 async-graphql 给的临时文件句柄，
-    /// 用 `tokio::io::copy` 流式写入，不整份读进内存。
+    /// 对象键。前两段无需净化：`workspace_id` 是 ULID，`entry_code` 是 16 位 base62
+    /// 字母数字。唯一由客户端控制的段是文件名，由 `safe_name` 兜住。
+    /// 键里带上前两段，是为了让「一个条目下的附件」能被前缀列举，也让本地后端的
+    /// 目录结构与历史版本逐字一致。
+    fn blob_key(a: &Attachment) -> String {
+        format!(
+            "{}/{}/{}_{}",
+            a.workspace_id,
+            a.entry_code,
+            a.id,
+            safe_name(&a.filename)
+        )
+    }
+
+    /// 落盘并写元数据。`content` 是 async-graphql 给的临时文件句柄，交给
+    /// [`BlobStore::put`] 写入（本地后端整块读入后落盘，见其注释）。
     pub async fn save(
         &self,
         actor: Ulid,
@@ -76,26 +80,8 @@ impl AttachmentService {
             size,
             actor,
         );
-        let abs = self.abs_path(&attachment);
-        if let Some(parent) = abs.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| AppError::Storage(e.to_string()))?;
-        }
-        let mut src = tokio::fs::File::from_std(content);
-        let mut dst = tokio::fs::File::create(&abs)
-            .await
-            .map_err(|e| AppError::Storage(e.to_string()))?;
-        tokio::io::copy(&mut src, &mut dst)
-            .await
-            .map_err(|e| AppError::Storage(e.to_string()))?;
-        // `copy` 在读完源文件后就不再碰 writer，而 `tokio::fs::File` 的
-        // 尾块写入由 spawn_blocking 承载，其错误只在下次 `poll_write`/`poll_flush`
-        // 才浮现。因此必须显式 flush：它既等待在途写入完成，又返回其错误
-        // （tokio::fs::file.rs 的 `last_write_err` / `Operation::Write` 路径）。
-        // 少了这一步，ENOSPC/EIO 之类的尾块失败会被当成成功，元数据里的 size
-        // 来自源文件、与实际落盘字节数不符，下游读到截断内容还以为是成功。
-        dst.flush().await.map_err(|e| AppError::Storage(e.to_string()))?;
+        let key = Self::blob_key(&attachment);
+        self.blobs.put(&key, content).await?;
 
         // 上传是条目上的活动：推进 updated_at，让条目回到「按更新时间倒序」最前。
         // 与 `CommentService::create` 同一取舍——正在编辑详情的人保存时会撞乐观并发冲突。
@@ -137,8 +123,8 @@ impl AttachmentService {
             &entry,
         )?);
         if let Err(e) = self.store.write_batch(ops) {
-            // 元数据没落库，磁盘上那份就是孤儿，尽力清掉再报错。
-            let _ = tokio::fs::remove_file(&abs).await;
+            // 元数据没落库，存储里那份就是孤儿，尽力清掉再报错。
+            let _ = self.blobs.delete(&key).await;
             return Err(e);
         }
         self.entries.reindex_by_code(entry_code)?;
@@ -213,18 +199,19 @@ impl AttachmentService {
             attachment.id.to_bytes().to_vec(),
         ));
         self.store.write_batch(ops)?;
-        // 元数据删成功之后才动文件。文件删失败只记日志不回滚——元数据是真相来源，
-        // 宁可留孤儿文件，也不要「DB 说还在但文件已经没了」这种更难查的不一致。
-        let abs = self.abs_path(attachment);
-        if let Err(e) = tokio::fs::remove_file(&abs).await {
-            tracing::warn!("删除附件文件失败 {}: {e}", abs.display());
+        // 元数据删成功之后才动文件。删文件失败只记日志不回滚——元数据是真相来源，
+        // 宁可留孤儿对象，也不要「DB 说还在但文件已经没了」这种更难查的不一致。
+        let key = Self::blob_key(attachment);
+        if let Err(e) = self.blobs.delete(&key).await {
+            tracing::warn!("删除附件对象失败 {key}: {e}");
         }
         Ok(())
     }
 
-    /// 读取附件内容，供下载路由。元数据在但文件不在（被外部删掉）→ `NotFound`。
+    /// 读取附件内容，供下载路由。元数据在但对象不在（被外部删掉）→ `NotFound`。
     pub async fn read(&self, attachment: &Attachment) -> Result<Vec<u8>, AppError> {
-        tokio::fs::read(self.abs_path(attachment))
+        self.blobs
+            .get(&Self::blob_key(attachment))
             .await
             .map_err(|_| AppError::NotFound)
     }
