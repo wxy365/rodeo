@@ -729,8 +729,9 @@ impl GraphqlContext {
 
     /// 系统管理员专属。判据是账号上的 `is_admin` 标记，而不是拿邮箱去比
     /// `Config.auth.builtin.admin_email`——邮箱是可变配置，标记才是身份。
-    /// `bootstrap_admin` 是唯一把该标记置 true 的地方，因此
-    /// `is_admin == true` 恰好等价于 spec 里说的「配置文件中指定的管理员账号」。
+    /// 该标记只有两条来路：启动期的 `bootstrap_admin`（读 `admin_email`）与
+    /// 管理员自己调 `createAccount(isAdmin: true)`。两条都源自配置里那个账号，
+    /// 所以 `is_admin == true` 仍然等价于 spec 说的「配置文件中指定的管理员账号」。
     fn require_admin(&self) -> GqlResult<AuthContext> {
         let auth = self.require_auth()?;
         let account = self
