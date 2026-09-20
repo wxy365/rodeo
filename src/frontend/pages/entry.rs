@@ -5,16 +5,19 @@ use leptos_router::hooks::{use_navigate, use_params_map};
 
 use crate::frontend::attachment_list::AttachmentList;
 use crate::frontend::comment_list::CommentList;
-use crate::frontend::components::{action_label, audit_change, fmt_datetime, logged_out, short_time};
+use crate::frontend::components::{fmt_datetime, logged_out, AuditTimeline, CodeCopy, TabBar};
 use crate::frontend::graphql_client::{
     audit_logs, delete_entry, entry, label_schemas, members, update_entry, workspace_by_slug,
     AccountBrief, AuditLog, Entry, Labeling, LabelSchema, Member, Workspace,
 };
 use crate::frontend::icons::{
-    ic_back, ic_check, ic_history, ic_share, ic_tag,
+    ic_back, ic_check, ic_share, ic_tag,
 };
 use crate::frontend::label_editor::LabelEditor;
 use crate::frontend::tiny_editor::TinyEditor;
+
+// 全屏页侧栏的两个页签。标签编辑不在这里——它常驻在页签上方。
+const SIDE_TABS: &[(&str, &str)] = &[("attachments", "附件"), ("history", "历史")];
 
 #[component]
 pub fn EntryFullScreen() -> impl IntoView {
@@ -36,6 +39,10 @@ pub fn EntryFullScreen() -> impl IntoView {
     // 标题平时只读，点击才换成输入框；输入框挂载后由 Effect 补焦点。
     let editing_title = RwSignal::new(false);
     let title_ref: NodeRef<Input> = NodeRef::new();
+    // 侧栏页签：attachments | history。
+    let side_tab = RwSignal::new("attachments".to_string());
+    // 审计日志单独放一份，供 `AuditTimeline` 消费；`data` 里的那份仍留着给页面其它逻辑。
+    let logs = RwSignal::new(Vec::<AuditLog>::new());
 
     let load = move |overwrite: bool| {
         let s = slug();
@@ -61,13 +68,15 @@ pub fn EntryFullScreen() -> impl IntoView {
                     Ok::<_, String>((ws, e, schema_list, logs, member_list))
                 }
                 .await;
-                if let Ok((_, ref e, ref list, _, ref member_list)) = result {
+                if let Ok((_, ref e, ref list, ref audit, ref member_list)) = result {
                     schemas.set(list.clone());
                     labels.set(e.labels.clone());
                     ws_members.set(member_list.clone());
+                    logs.set(audit.clone());
                     if overwrite {
                         title.set(e.title.clone());
                         detail.set(e.detail.clone());
+                        side_tab.set("attachments".to_string());
                     }
                 }
                 data.set(Some(result));
@@ -159,7 +168,7 @@ pub fn EntryFullScreen() -> impl IntoView {
         <div class="page">
             <div class="panel entry-top">
                 <button class="btn" on:click=back>{ic_back()}"返回视图"</button>
-                <span class="code">{code}</span>
+                <CodeCopy code=Signal::derive(code) />
                 {move || if editing_title.get() {
                     view! {
                         <input class="inp entry-title-edit"
@@ -247,38 +256,19 @@ pub fn EntryFullScreen() -> impl IntoView {
                     </div>
 
                     <div>
-                        <AttachmentList
-                            code=Signal::derive(code)
-                            workspace_id=ws_id
-                            on_changed=on_changed
-                        />
-                    </div>
-
-                    <div>
-                        <div class="grp-h">{ic_history()}"历史"</div>
-                        {move || {
-                            let c = code();
-                            match data.get() {
-                                Some(Ok((_, _, _, logs, _))) => {
-                                    let mine: Vec<AuditLog> = logs.into_iter().filter(|l| l.resource_id == c).collect();
-                                    if mine.is_empty() {
-                                        view! { <div class="mut">"暂无记录"</div> }.into_any()
-                                    } else {
-                                        view! {
-                                            {mine.iter().map(|l| view! {
-                                                <div class="tl">
-                                                    <span class="t">{short_time(&l.at)}</span>
-                                                    <span>{action_label(&l.action)}</span>
-                                                    <span class="mut" style="font-size:12px">
-                                                        {audit_change(l.before.as_deref(), l.after.as_deref())}
-                                                    </span>
-                                                </div>
-                                            }).collect::<Vec<_>>()}
-                                        }.into_any()
-                                    }
-                                }
-                                _ => view! { <div class="mut">"加载中…"</div> }.into_any(),
-                            }
+                        <TabBar tabs=SIDE_TABS active=side_tab />
+                        {move || if side_tab.get() == "history" {
+                            view! {
+                                <AuditTimeline logs=logs code=Signal::derive(code) />
+                            }.into_any()
+                        } else {
+                            view! {
+                                <AttachmentList
+                                    code=Signal::derive(code)
+                                    workspace_id=ws_id
+                                    on_changed=on_changed
+                                />
+                            }.into_any()
                         }}
                     </div>
                 </aside>
