@@ -72,12 +72,6 @@ impl From<postgres::Error> for AppError {
     }
 }
 
-impl From<r2d2::Error> for AppError {
-    fn from(e: r2d2::Error) -> Self {
-        AppError::Storage(e.to_string())
-    }
-}
-
 impl From<object_store::Error> for AppError {
     fn from(e: object_store::Error) -> Self {
         AppError::Storage(e.to_string())

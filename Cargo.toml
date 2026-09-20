@@ -32,12 +32,12 @@ rustls = { version = "0.23", default-features = false, features = ["ring"], opti
 leptos_axum = { version = "0.8", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "fs", "io-util"], optional = true }
 rocksdb = { version = "0.22", optional = true }
-# 文档存储的 PostgreSQL 后端。同步 API + 连接池：服务层全是同步方法，
-# 而当前运行时是 current_thread（rocksdb 也已经在上面阻塞调用），
-# 换成异步 sqlx 等于把 ~15k 行同步 CRUD 全改写成 async，收益配不上这个代价。
+# 文档存储的 PostgreSQL 后端。同步 API：服务层全是同步方法，而当前运行时是
+# current_thread（rocksdb 也已经在上面阻塞调用），换异步 sqlx 等于把 ~15k 行
+# 同步 CRUD 全改写成 async，收益配不上这个代价。同步 postgres 客户端每次调用
+# 都在它自己的 tokio Runtime 上 block_on，所以连接由 pg.rs 的专用 OS 线程独占
+# （见 src/storage/pg.rs 的线程模型注释），没有连接池。
 postgres = { version = "0.19", optional = true }
-r2d2 = { version = "0.8", optional = true }
-r2d2_postgres = { version = "0.18", optional = true }
 # 附件后端（本地文件系统 / RustFS）。`aws` 特性给的是 S3 协议客户端。
 # 版本必须停在 0.12：0.14 会经它引入 aws-lc-rs 和第二个 reqwest，
 # 于是 rustls 有了两个 crypto provider，而 axum-server 内部的
@@ -88,8 +88,6 @@ ssr = [
     "dep:leptos_axum",
     "dep:rocksdb",
     "dep:postgres",
-    "dep:r2d2",
-    "dep:r2d2_postgres",
     "dep:object_store",
     "dep:async-graphql",
     "dep:async-graphql-axum",
