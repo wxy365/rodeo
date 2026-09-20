@@ -1360,12 +1360,19 @@ impl Mutation {
         let auth = gql.require_auth()?;
         let entry = gql.services.entry.get(&code)?.ok_or(AppError::NotFound)?;
         gql.require_role(entry.workspace_id, WorkspaceRole::Worker)?;
+        // 记下旧正文：正文里被删掉的内联图片，文件也要跟着走。
+        let before_detail = entry.detail.clone();
         // 乐观并发：expectedUpdatedAt 与最新 updated_at 不一致时，服务层返回
         // ConflictDetected，其 GraphQL message 为「内容已被他人修改，请刷新后重试」。
         let updated = gql
             .services
             .entry
             .update(auth.account_id, &code, &expected_updated_at, &title, &detail)?;
+        // 回收放在更新成功之后：冲突或条目不存在时不该动任何附件。
+        gql.services
+            .attachment
+            .purge_unreferenced(auth.account_id, &code, &before_detail, &updated.detail)
+            .await?;
         let labels = gql.services.entry.labelings(&code)?;
         gql_entry(gql, updated, labels)
     }
@@ -1418,10 +1425,21 @@ impl Mutation {
             .ok_or(AppError::NotFound)?;
         gql.require_role(entry.workspace_id, WorkspaceRole::Worker)?;
         let id = parse_ulid(id.as_str())?;
+        // 评论正文里的内联图片同样按「旧有今无」回收。
+        let before_body = gql
+            .services
+            .comment
+            .get(&entry_code, id)?
+            .map(|c| c.body)
+            .unwrap_or_default();
         let c = gql
             .services
             .comment
             .update(auth.account_id, &entry_code, id, &body)?;
+        gql.services
+            .attachment
+            .purge_unreferenced(auth.account_id, &entry_code, &before_body, &c.body)
+            .await?;
         gql_comment(gql, c)
     }
 
@@ -1445,9 +1463,20 @@ impl Mutation {
             .require_role(entry.workspace_id, WorkspaceRole::Maintainer)
             .is_ok();
         let id = parse_ulid(id.as_str())?;
+        // 评论被删，它引用的内联图片也不该留在存储里。
+        let before_body = gql
+            .services
+            .comment
+            .get(&entry_code, id)?
+            .map(|c| c.body)
+            .unwrap_or_default();
         gql.services
             .comment
             .delete(auth.account_id, &entry_code, id, can_moderate)?;
+        gql.services
+            .attachment
+            .purge_unreferenced(auth.account_id, &entry_code, &before_body, "")
+            .await?;
         Ok(true)
     }
 

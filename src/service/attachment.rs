@@ -5,7 +5,7 @@ use chrono::Utc;
 use tokio::io::AsyncWriteExt;
 use ulid::Ulid;
 
-use crate::domain::{Attachment, AuditAction, AuditLog};
+use crate::domain::{Attachment, AuditAction, AuditLog, ATTACHMENT_URL_PREFIX};
 use crate::error::AppError;
 use crate::service::audit::audit_ops;
 use crate::service::entry::EntryService;
@@ -182,25 +182,40 @@ impl AttachmentService {
         if attachment.created_by != actor && !can_moderate {
             return Err(AppError::Forbidden);
         }
+        self.remove(actor, &attachment).await
+    }
+
+    /// 删除一条附件的元数据、索引、内联标记与文件，不判权限。
+    /// 用户主动删除（`delete`）与正文改写后的自动回收（`purge_unreferenced`）共用；
+    /// 后者没有「附件上传者」这个概念可用，权限在工作空间层已经判过。
+    async fn remove(&self, actor: Ulid, attachment: &Attachment) -> Result<(), AppError> {
         let audit = AuditLog::new(
             AuditAction::AttachmentDeleted,
             actor,
             "attachment",
             &attachment.entry_code,
             Some(attachment.workspace_id),
-            Some(serde_json::to_string(&attachment).unwrap_or_default()),
+            Some(serde_json::to_string(attachment).unwrap_or_default()),
             None,
         );
         let mut ops = audit_ops(&audit)?;
-        ops.push(BatchOp::delete(cf::ATTACHMENTS, id.to_bytes().to_vec()));
+        ops.push(BatchOp::delete(
+            cf::ATTACHMENTS,
+            attachment.id.to_bytes().to_vec(),
+        ));
         ops.push(BatchOp::delete(
             cf::ATTACHMENTS_BY_ENTRY,
-            keys::attachment_by_entry_key(&attachment.entry_code, id),
+            keys::attachment_by_entry_key(&attachment.entry_code, attachment.id),
+        ));
+        // 内联标记也要清掉：ULID 不会再被复用，但留着标记等于留一条只增不减的记录。
+        ops.push(BatchOp::delete(
+            cf::INLINE_ATTACHMENTS,
+            attachment.id.to_bytes().to_vec(),
         ));
         self.store.write_batch(ops)?;
         // 元数据删成功之后才动文件。文件删失败只记日志不回滚——元数据是真相来源，
         // 宁可留孤儿文件，也不要「DB 说还在但文件已经没了」这种更难查的不一致。
-        let abs = self.abs_path(&attachment);
+        let abs = self.abs_path(attachment);
         if let Err(e) = tokio::fs::remove_file(&abs).await {
             tracing::warn!("删除附件文件失败 {}: {e}", abs.display());
         }
@@ -212,6 +227,42 @@ impl AttachmentService {
         tokio::fs::read(self.abs_path(attachment))
             .await
             .map_err(|_| AppError::NotFound)
+    }
+
+    /// 正文重新保存后，把「原本被引用、现在不再被引用」的内联图片删掉。
+    ///
+    /// 只删带内联标记的附件：手动上传的附件即便正文里没有它的 URL 也不能动。
+    /// 只比对 `before` / `after` 两个已落库的快照，所以「粘贴后没保存就离开」的图片
+    /// 回收不到——这是刻意的取舍：改成「正文里没提到就删」会误删此刻还在编辑器里、
+    /// 尚未保存的图片，那比留下几个看不见的文件严重得多。
+    pub async fn purge_unreferenced(
+        &self,
+        actor: Ulid,
+        entry_code: &str,
+        before: &str,
+        after: &str,
+    ) -> Result<usize, AppError> {
+        let keep: std::collections::HashSet<Ulid> =
+            referenced_attachment_ids(after).into_iter().collect();
+        let mut removed = 0;
+        for id in referenced_attachment_ids(before) {
+            if keep.contains(&id) {
+                continue;
+            }
+            if !self.store.exists(cf::INLINE_ATTACHMENTS, &id.to_bytes())? {
+                continue;
+            }
+            let Some(attachment) = self.get(id)? else {
+                continue;
+            };
+            // 图片上传到它被粘贴时所在的那个条目；对不上说明是别的条目的引用。
+            if attachment.entry_code != entry_code {
+                continue;
+            }
+            self.remove(actor, &attachment).await?;
+            removed += 1;
+        }
+        Ok(removed)
     }
 }
 
@@ -234,4 +285,21 @@ fn safe_name(name: &str) -> String {
     } else {
         trimmed.to_string()
     }
+}
+
+/// 从 Delta 正文（或任意文本）里抽出内联图片引用的附件 id。
+/// 只认服务端拼的那个 URL 前缀；认不出来的片段跳过，不影响后续扫描。
+pub fn referenced_attachment_ids(body: &str) -> Vec<Ulid> {
+    let mut out = Vec::new();
+    let mut rest = body;
+    while let Some(i) = rest.find(ATTACHMENT_URL_PREFIX) {
+        let tail = &rest[i + ATTACHMENT_URL_PREFIX.len()..];
+        // ULID 的规范文本恒为 26 字符；`get` 落在非字符边界时返回 None，不会 panic。
+        if let Some(id) = tail.get(..26).and_then(|s| Ulid::from_string(s).ok()) {
+            out.push(id);
+        }
+        // `tail` 一定比 `rest` 短（前缀非空），循环必然收敛。
+        rest = tail;
+    }
+    out
 }
