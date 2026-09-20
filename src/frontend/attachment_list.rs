@@ -49,7 +49,7 @@ fn spawn_upload(
     }
     uploading.set(true);
     spawn_local(async move {
-        match upload_attachment(&code, &file).await {
+        match upload_attachment(&code, &file, false).await {
             Ok(_) => {
                 error.set(None);
                 reload.run(());

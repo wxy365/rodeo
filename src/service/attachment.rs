@@ -50,6 +50,8 @@ impl AttachmentService {
         filename: &str,
         content_type: &str,
         content: std::fs::File,
+        // 编辑器里粘贴/拖入的图片：仍写附件元数据，但不进附件列表。
+        inline: bool,
     ) -> Result<Attachment, AppError> {
         let mut entry = self.entries.get(entry_code)?.ok_or(AppError::NotFound)?;
         if entry.is_deleted() {
@@ -122,6 +124,13 @@ impl AttachmentService {
             keys::attachment_by_entry_key(entry_code, attachment.id),
             Vec::new(),
         ));
+        if inline {
+            ops.push(BatchOp::put_raw(
+                cf::INLINE_ATTACHMENTS,
+                attachment.id.to_bytes().to_vec(),
+                Vec::new(),
+            ));
+        }
         ops.push(BatchOp::put(
             cf::ENTRIES,
             entry_code.as_bytes().to_vec(),
@@ -153,6 +162,10 @@ impl AttachmentService {
             let Ok(arr) = <[u8; 16]>::try_from(id_bytes) else {
                 continue;
             };
+            // 编辑器贴进来的图片是正文的一部分，不是一条独立附件。
+            if self.store.exists(cf::INLINE_ATTACHMENTS, &arr)? {
+                continue;
+            }
             if let Some(a) = self.get(Ulid::from_bytes(arr))? {
                 out.push(a);
             }

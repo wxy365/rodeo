@@ -50,6 +50,11 @@ pub mod cf {
     pub const ATTACHMENTS: &str = "attachments";
     /// 附件索引：(entry_code, attachment_id) → 空值，供按条目前缀扫描。
     pub const ATTACHMENTS_BY_ENTRY: &str = "attachments_by_entry";
+    /// 内联图片标记：`attachment_id`（ULID 16 字节）→ 空值。
+    /// 编辑器里粘贴上传的图片仍是附件（要下载、要按角色删），但不属于「附件」这一栏，
+    /// 所以不进附件列表。不给 `Attachment` 加字段是因为那是 bincode 结构变更，
+    /// 存量附件会读不出来——与 `ENTRIES_ARCHIVED` / `WORKSPACES_DELETED` 同一套取舍。
+    pub const INLINE_ATTACHMENTS: &str = "inline_attachments";
 }
 
 const ALL_CFS: &[&str] = &[
@@ -81,6 +86,7 @@ const ALL_CFS: &[&str] = &[
     cf::COMMENTS,
     cf::ATTACHMENTS,
     cf::ATTACHMENTS_BY_ENTRY,
+    cf::INLINE_ATTACHMENTS,
 ];
 
 /// 单个批量写操作：文档/索引/审计统一原子写入。

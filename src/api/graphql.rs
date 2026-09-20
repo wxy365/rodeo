@@ -14,7 +14,7 @@ use crate::domain::{
     LabelSchema, LabelValueType,
     LabelWrite, Labeling, NamedPrompt, Query as ViewQuery, SortField, SortSpec, TitleColorRule,
     ValueColor, ValueSource, View, Workspace, WorkspaceAiConfig, WorkspaceMember, WorkspaceRole,
-    WriteOp,
+    WriteOp, ATTACHMENT_URL_PREFIX,
 };
 use crate::error::AppError;
 use crate::service::ai::derive_title;
@@ -349,7 +349,7 @@ fn gql_attachment(gql: &GraphqlContext, a: Attachment) -> GqlResult<GqlAttachmen
         content_type: a.content_type,
         // GraphQL Int 是 32 位；上限 50MB 远在范围内。
         size: a.size as i32,
-        url: format!("/api/attachments/{}", a.id),
+        url: format!("{ATTACHMENT_URL_PREFIX}{}", a.id),
         created_at: a.created_at.to_rfc3339(),
         created_by: a.created_by.to_string().into(),
         created_by_account,
@@ -1457,6 +1457,8 @@ impl Mutation {
         ctx: &Context<'_>,
         entry_code: String,
         file: Upload,
+        // 编辑器内联图片传 true：不进附件列表。省略即 false，等于一条独立附件。
+        inline: Option<bool>,
     ) -> GqlResult<GqlAttachment> {
         let gql = ctx.data::<GraphqlContext>()?;
         let auth = gql.require_auth()?;
@@ -1486,6 +1488,7 @@ impl Mutation {
                 &filename,
                 &content_type,
                 value.content,
+                inline.unwrap_or(false),
             )
             .await?;
         gql_attachment(gql, a)

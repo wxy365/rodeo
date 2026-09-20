@@ -611,12 +611,13 @@ pub async fn delete_attachment(id: &str) -> Result<bool, String> {
 pub async fn upload_attachment(
     entry_code: &str,
     file: &web_sys::File,
+    inline: bool,
 ) -> Result<Attachment, String> {
     let operations = json!({
         "query": format!(
-            "mutation($c: String!, $f: Upload!) {{ uploadAttachment(entryCode: $c, file: $f) {{ {ATTACHMENT_FIELDS} }} }}"
+            "mutation($c: String!, $f: Upload!, $in: Boolean!) {{ uploadAttachment(entryCode: $c, file: $f, inline: $in) {{ {ATTACHMENT_FIELDS} }} }}"
         ),
-        "variables": { "c": entry_code, "f": null },
+        "variables": { "c": entry_code, "f": null, "in": inline },
     });
     let map = json!({ "0": ["variables.f"] });
 

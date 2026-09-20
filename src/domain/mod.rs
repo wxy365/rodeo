@@ -13,7 +13,7 @@ pub mod workspace;
 pub use account::Account;
 pub use ai::{NamedPrompt, WorkspaceAiConfig};
 pub use audit::{AuditAction, AuditLog};
-pub use attachment::Attachment;
+pub use attachment::{Attachment, ATTACHMENT_URL_PREFIX};
 pub use comment::Comment;
 pub use entry::{generate_entry_code, Entry};
 pub use label::{
