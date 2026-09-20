@@ -19,8 +19,8 @@ use crate::frontend::graphql_client::{
     AccountBrief, Entry, Labeling, LabelSchema, Member, NamedPrompt, View, Workspace,
 };
 use crate::frontend::icons::{
-    ic_add, ic_back, ic_check, ic_close, ic_comment, ic_copy, ic_folder, ic_full, ic_help,
-    ic_search, ic_setting, ic_share, ic_tag,
+    ic_add, ic_back, ic_close, ic_comment, ic_folder, ic_full, ic_help, ic_search, ic_setting,
+    ic_share, ic_tag,
 };
 use crate::frontend::label_editor::LabelEditor;
 use crate::frontend::query_eval;
@@ -1714,7 +1714,6 @@ fn EntryTable(
                             }
                         />
                     </th>
-                    <th>"Code"</th>
                     {sortable_th("title", "标题")}
                     {move || cols().iter().map(|name| {
                         let title = schemas.get().into_iter()
@@ -1723,6 +1722,7 @@ fn EntryTable(
                             .unwrap_or_else(|| name.clone());
                         view! { <th>{title}</th> }
                     }).collect::<Vec<_>>()}
+                    <th>"创建人"</th>
                     {sortable_th("updatedAt", "更新时间")}
                 </tr>
             </thead>
@@ -1742,16 +1742,12 @@ fn EntryTable(
                         // 账号列展示用：把值里的 id 映射成成员姓名。
                         let members = members.get();
                         items.iter().map(|e| {
-                            let code = e.code.clone();
                             let code_for_class = e.code.clone();
                             let code_for_click = e.code.clone();
                             let code_for_dbl = e.code.clone();
-                            let code_for_copy = e.code.clone();
                             let code_for_check = e.code.clone();
                             let code_for_check_change = e.code.clone();
                             let code_for_badge = e.code.clone();
-                            // 复制成功后的短暂打勾反馈，逐行独立。
-                            let copied = RwSignal::new(false);
                             let labels = e.labels.clone();
                             let names = cols();
                             // 标题着色：整行 Entry 克隆进响应式闭包，规则变化即刻重算。
@@ -1759,6 +1755,19 @@ fn EntryTable(
                             // 时间型标签的比较需要 schema（布局），随规则闭包一起克隆。
                             let schemas_for_color = sc.clone();
                             let title_text = e.title.clone();
+                            // 创建人展示：优先服务端回填的账号，其次在工作空间成员表里找名字，
+                            // 账号已删除或已退出工作空间时退回 id，好过显示成空。
+                            let creator = e
+                                .created_by_account
+                                .as_ref()
+                                .map(|a| a.name.clone())
+                                .or_else(|| {
+                                    members
+                                        .iter()
+                                        .find(|m| m.account_id == e.created_by)
+                                        .map(member_label)
+                                })
+                                .unwrap_or_else(|| "—".to_string());
                             view! {
                                 <tr
                                     class=move || if selected.get() == code_for_class { "sel".to_string() } else { String::new() }
@@ -1791,22 +1800,6 @@ fn EntryTable(
                                                 }
                                             }
                                         />
-                                    </td>
-                                    <td class="code">
-                                        <span class="codecell">
-                                            <span>{code.clone()}</span>
-                                            <button class="ibtn codecopy" title="复制编码" on:click=move |ev| {
-                                                ev.stop_propagation();
-                                                copy_to_clipboard(&code_for_copy);
-                                                copied.set(true);
-                                                set_timeout(
-                                                    move || copied.set(false),
-                                                    std::time::Duration::from_millis(1200),
-                                                );
-                                            }>
-                                                {move || if copied.get() { ic_check().into_any() } else { ic_copy().into_any() }}
-                                            </button>
-                                        </span>
                                     </td>
                                     <td style=move || match query_eval::title_color(
                                         &title_colors.get(), &entry_for_color, &entry_for_color.labels,
@@ -1900,6 +1893,7 @@ fn EntryTable(
                                             }
                                         }
                                     }).collect::<Vec<_>>()}
+                                    <td class="mut">{creator}</td>
                                     <td class="mut">{short_time(&e.updated_at)}</td>
                                 </tr>
                             }
@@ -2406,16 +2400,3 @@ fn detect_time_picker(
 fn label_fragment(text: &str) -> Option<&str> {
     text.rfind('/').map(|i| &text[i + 1..])
 }
-
-/// 复制文本到系统剪贴板。非 wasm 目标下为空实现，便于 `cargo check` 通过。
-#[cfg(target_arch = "wasm32")]
-fn copy_to_clipboard(text: &str) {
-    let Some(win) = leptos::web_sys::window() else {
-        return;
-    };
-    // 丢弃 Promise 不影响写入：它是已排入队列的异步任务。
-    let _ = win.navigator().clipboard().write_text(text);
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn copy_to_clipboard(_text: &str) {}
