@@ -11,7 +11,7 @@
 | HTTP 框架 | Axum 0.8+ | Leptos 服务端集成，Tokio 原生，生态成熟 |
 | API 协议 | GraphQL (async-graphql 7+) | 强类型 schema，按需查询，嵌套关联，自文档化 |
 | 实时通信 | Axum WebSocket + tokio::broadcast | 轻量级双向通信，独立于 GraphQL |
-| 文档存储 | RocksDB 9+ (自定义 DocStore) | 嵌入式，LSM-tree 高写吞吐，Column Family 分集合 |
+| 文档存储 | RocksDB 9+ (自定义 DocStore)；可选 PostgreSQL 16+（同一 DocStore 门面的另一个后端，列族模型落成 kv 表） | 嵌入式，LSM-tree 高写吞吐，Column Family 分集合 |
 | 全文检索 | Tantivy 0.22+ | 嵌入式，Rust 原生，性能接近 Lucene |
 | 富文本编辑 | @opentiny/tiny-editor | 轻量级 Web Component，wasm-bindgen FFI 集成 |
 | 样式 | Tailwind CSS 4+ | 原子化 CSS，Leptos 原生 class 支持 |
@@ -197,6 +197,8 @@ rodeo/
 | `audit_logs_by_resource` | `(resource_type, resource_id, timestamp DESC)` | 按资源查审计 |
 | `sessions` | `session_id` | 会话数据 |
 
+上表的列族与键是**后端的逻辑模型**，不是 RocksDB 独有的物理结构。两个文档后端实现的是同一套模型：RocksDB 后端把每个 CF 落成一个真实的 Column Family；PostgreSQL 后端把它们原样存进一张 `kv(cf, key, value)` 表——`cf` 即列族名，`key` / `value` 即字节串各占一列。`(cf, key)` 的主键（btree）同时就是前缀扫描所需的有序索引：`cf` 等值 + `key` 范围 + `ORDER BY key` 全由它满足，`scan_prefix` 的「按 key 升序、在第一个不匹配处收尾」因此逐字保留。**这不是关系建模，是同一个 K/V 模型的两个实现**；代价是 PostgreSQL 里无法直接用 SQL 查业务字段、也没有外键约束。
+
 ### 4.2 文档序列化
 
 所有文档使用 **bincode** 序列化（Rust 原生，零开销，比 JSON 紧凑 3-5x）。索引值使用 UTF-8 字符串键以便前缀扫描。
@@ -218,6 +220,8 @@ fn update_entry(&self, entry: &Entry, audit: &AuditLog) -> Result<()> {
     Ok(())
 }
 ```
+
+`DocStore::write_batch` 接收的 `BatchOp` 批量写在两个后端语义一致：RocksDB 后端用 `WriteBatch` 一次落盘，PostgreSQL 后端把它映射为**单事务**（同一键先删后写也按语句顺序生效），因此跨列族的「文档 + 二级索引 + 审计日志」要么全成、要么全不成。
 
 ### 4.4 Entry Code 生成
 
@@ -597,56 +601,52 @@ async fn auth_middleware(
 
 ### 9.1 存储接口
 
+附件文件本体走 `BlobStore` 门面，底层是一个 `Box<dyn ObjectStore>`（`object_store` crate 的 trait
+本身就是为动态派发设计的），本地与 S3 两个后端因此共用同一条代码路径：
+
 ```rust
-#[async_trait]
-pub trait FileStorage: Send + Sync {
-    async fn save(&self, path: &str, content: Bytes) -> Result<()>;
-    async fn read(&self, path: &str) -> Result<impl Stream<Item = Result<Bytes>>>;
-    async fn delete(&self, path: &str) -> Result<()>;
-    async fn exists(&self, path: &str) -> Result<bool>;
+pub struct BlobStore {
+    store: Box<DynObjectStore>,
+    /// 本地后端在构造期已确保根目录存在，探活只对远端后端有意义。
+    kind: BlobBackend,
+}
+
+impl BlobStore {
+    pub fn from_config(cfg: &StorageConfig) -> Result<Self, AppError>;
+    /// 启动探活：一次 `list_with_delimiter`（ListObjects）。任何错误——含 `NotFound`——都判为失败：
+    /// `object_store` 把 HTTP 404 一律映射成 `NotFound`，而「桶不存在」返回的也是 404，
+    /// 与「探针对象不存在」不可区分，所以这里的 NotFound 必须当失败。
+    pub async fn health_check(&self) -> Result<(), AppError>;
+    /// 从 async-graphql 给的临时文件句柄整块读入后上传（上限 50MB）。
+    pub async fn put(&self, key: &str, content: std::fs::File) -> Result<(), AppError>;
+    pub async fn get(&self, key: &str) -> Result<Vec<u8>, AppError>;
+    pub async fn delete(&self, key: &str) -> Result<(), AppError>;
 }
 ```
 
-### 9.2 本地存储实现
+### 9.2 两个后端
 
-```rust
-pub struct LocalStorage {
-    base_dir: PathBuf,
-}
+| 维度 | 本地文件系统（默认） | RustFS / S3 兼容对象存储 |
+|------|----------------------|--------------------------|
+| 实现 | `object_store::local::LocalFileSystem` | `object_store::aws::AmazonS3Builder`（path-style，兼容 RustFS / MinIO） |
+| Cargo 特性 | `object_store` 的 `fs` | `object_store` 的 `aws` |
+| 落点 | 根目录 `{data_dir}/attachments` | `storage.blob.endpoint` 指向端点上、`storage.blob.bucket` 桶内 |
+| 对象键 | `{workspace_id}/{entry_code}/{id}_{safe_name}` | 同左（两端逐字相同） |
+| 迁移 | 目录布局与历史版本逐字一致，切到本后端时已有附件一个字都不用搬 | 把 `{data_dir}/attachments` 下的目录 `rclone copy` / `mc mirror` 进桶即可，无需迁移脚本 |
+| 启动探活 | 构造期 `create_dir_all` 根目录，`health_check` 直接返回 Ok | `list_with_delimiter` 探针；端点 / 桶 / 密钥配错在启动期就带着原因失败 |
 
-#[async_trait]
-impl FileStorage for LocalStorage {
-    async fn save(&self, path: &str, content: Bytes) -> Result<()> {
-        let full_path = self.base_dir.join(path);
-        tokio::fs::create_dir_all(full_path.parent().unwrap()).await?;
-        tokio::fs::write(&full_path, content).await?;
-        Ok(())
-    }
-    // ... read, delete, exists
-}
-```
-
-文件路径格式：`attachments/{workspace_id}/{entry_code}/{attachment_id}_{filename}`
+`object_store` 固定 0.12（`default-features = false`，只开 `fs`/`aws`，不开 TLS 特性，维持 rustls 单 provider 不变式）。附件元数据仍存文档后端，本节只描述文件本体。
 
 ### 9.3 附件上传
 
-GraphQL multipart 上传通过 `async-graphql-axum` 的 `Upload` scalar 实现：
+GraphQL multipart 上传通过 `async-graphql-axum` 的 `Upload` scalar 实现；服务层把上传的临时文件整块读入后交给 `BlobStore::put`：
 
 ```rust
-async fn upload_attachment(
-    ctx: &Context,
-    entry_code: String,
-    file: Upload,
-) -> Result<Attachment> {
-    ctx.require_role(WorkspaceRole::Worker)?;
-    let entry = ctx.services.entry.get(&entry_code).await?;
-    let upload = file.value(ctx)?;
-    let attachment = Attachment::new(&entry_code, &upload.filename, &upload.content_type, upload.content.len());
-    let path = format!("attachments/{}/{}/{}_{}", entry.workspace_id, entry_code, attachment.id, upload.filename);
-    ctx.storage.save(&path, upload.content).await?;
-    ctx.services.attachment.save(&attachment).await?;
-    Ok(attachment)
-}
+// AttachmentService::save 节选
+let attachment = Attachment::new(entry_code, entry.workspace_id, filename, content_type, size, actor);
+let key = format!("{}/{}/{}_{}", attachment.workspace_id, attachment.entry_code, attachment.id, safe_name(&attachment.filename));
+self.blobs.put(&key, content).await?;   // 本地后端落 {data_dir}/attachments/<key>，rustfs 后端 PUT 到桶
+// 随后把 Attachment 元数据、attachments_by_entry 索引与审计日志放进同一个 write_batch
 ```
 
 ## 10. 权限校验
@@ -781,22 +781,42 @@ token_url = "https://github.com/login/oauth/access_token"
 userinfo_url = "https://api.github.com/user"
 
 [storage]
+# 四个组合都用它：tantivy 全文索引始终是本地嵌入式索引（落 {data_dir}/search），
+# 所以 data_dir 在四种组合下都不可省。
 data_dir = "./data"
-rocksdb_cache_size_mb = 256
 
-[search]
-index_dir = "./data/search_index"
-reconcile_interval_secs = 300
+# 文档与索引元数据：rocksdb（默认，嵌入式）| postgres
+[storage.doc]
+backend = "rocksdb"
+# backend = "postgres" 时必填。走明文 TCP（本仓库全树禁 openssl / native-tls），
+# 请把数据库放在内网，或由隧道 / 反向代理终结 TLS。
+# url = "postgres://rodeo:rodeo@127.0.0.1:5432/rodeo"
 
-[attachment]
-max_size_mb = 50
-storage = "local"  # "local" | "s3"
-
-[attachment.s3]
-# bucket = ""
-# region = ""
-# endpoint = ""
+# 附件文件本体：local（默认，落 {data_dir}/attachments）| rustfs
+[storage.blob]
+backend = "local"
+# backend = "rustfs" 时下面四项必填（endpoint / bucket / access_key / secret_key）。
+# 两个后端共用同一套对象键 {workspace_id}/{entry_code}/{id}_{文件名}，
+# 所以切换后端 = 把 {data_dir}/attachments 下的目录原样搬进桶里，没有迁移脚本。
+# endpoint = "http://127.0.0.1:9000"
+# bucket = "rodeo"
+# access_key = "rustfsadmin"
+# secret_key = "rustfsadmin"
+# region = "us-east-1"
+# 内网自建 RustFS 通常是明文 http，需要打开它；公网端点保持 false。
+# allow_http = true
 ```
+
+`storage.doc.backend` 与 `storage.blob.backend` 相互独立，故共四种组合：
+
+| # | `storage.doc.backend` | `storage.blob.backend` | 说明 |
+| --- | --- | --- | --- |
+| 1 | `rocksdb` | `local` | 默认组合，单机零外部依赖，行为与历史版本一致 |
+| 2 | `postgres` | `rustfs` | 文档与附件都外置 |
+| 3 | `rocksdb` | `rustfs` | 文档嵌入式、附件进桶；`data_dir` 下不产生 `attachments/` |
+| 4 | `postgres` | `local` | 文档外置、附件落本地文件系统 |
+
+四种组合下 `data_dir` 都必需（tantivy 全文索引始终是本地嵌入式，落在 `{data_dir}/search`）。
 
 ## 13. 构建与部署
 
@@ -817,14 +837,16 @@ cargo leptos build --release
 ```bash
 # 单二进制部署
 ./rodeo --config config.toml
-# 自动在 {data_dir} 下创建 RocksDB、Tantivy 索引、附件目录
+# 默认组合（rocksdb + local）自动在 {data_dir} 下创建 RocksDB、Tantivy 索引、附件目录
 # 首次启动自动初始化内置标签和管理员账号
 ```
+
+按 §12 的四种组合部署：默认组合仍是单个二进制、零外部服务；文档走 PostgreSQL 时需先建好库（`kv` 表由启动期幂等 `CREATE TABLE IF NOT EXISTS` 建出），附件走 RustFS 时需先建好桶，且启动期会对桶做一次 ListObjects 探活。无论哪种组合，`data_dir` 都必需（tantivy 索引始终本地）。PostgreSQL 连接串走**明文 TCP**（`NoTls`，见 §9 与「已知取舍」），部署时请置于内网，或由隧道 / 反向代理终结 TLS。
 
 ### 13.3 系统要求
 
 - Linux x86_64 / aarch64（主要）, macOS（开发）
-- 无外部运行时依赖（无 JVM、无 Node、无 MongoDB）
+- 默认组合无外部运行时依赖（无 JVM、无 Node、无 MongoDB）；选 PostgreSQL / RustFS 组合时需自备数据库与 S3 兼容对象存储
 - 推荐内存：2GB+（RocksDB cache + Tantivy reader）
 
 ## 14. 关键依赖版本
