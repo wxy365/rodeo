@@ -527,6 +527,16 @@ impl GqlInvite {
     }
 }
 
+/// 标题颜色规则的**线上**形态：`query` 是嵌套对象，与 `GqlView.query` 同一形状。
+/// 领域侧的 `TitleColorRule` 给 `query` 套了 `query_json`（bincode 要字符串），
+/// 直接复用它收发会让写侧索要字符串、读侧发出字符串，两头都错。
+/// 这里不带适配器——serde_json 支持 `deserialize_any`，`Query` 自身的 serde 够用。
+#[derive(serde::Deserialize)]
+struct TitleColorRuleWire {
+    query: ViewQuery,
+    color: String,
+}
+
 #[derive(SimpleObject, Clone)]
 #[graphql(rename_fields = "camelCase")]
 pub struct GqlSortSpec {
@@ -563,8 +573,19 @@ impl GqlView {
     fn new(v: View, entry_count: i32, is_default: bool) -> Self {
         let query = serde_json::to_value(&v.query).unwrap_or(serde_json::Value::Null);
         let query_expr = v.query.to_expr();
-        let title_colors =
-            serde_json::to_value(&v.title_colors).unwrap_or(serde_json::Value::Null);
+        // 手写投影：整结构序列化会把 TitleColorRule.query 变成转义过的 JSON 字符串。
+        let title_colors = serde_json::Value::Array(
+            v.title_colors
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "query": serde_json::to_value(&r.query)
+                            .unwrap_or(serde_json::Value::Null),
+                        "color": r.color,
+                    })
+                })
+                .collect(),
+        );
         Self {
             id: v.id.to_string().into(),
             name: v.name,
@@ -1901,7 +1922,7 @@ impl Mutation {
         let q: ViewQuery = serde_json::from_value(query.0)
             .map_err(|e| AppError::InvalidQuery(format!("查询条件格式错误: {e}")))?;
         let sort = sort.map(|s| s.to_sort()).transpose()?.unwrap_or_default();
-        let title_colors: Vec<TitleColorRule> = parse_json_list(title_colors, "标题颜色规则")?;
+        let title_colors = parse_title_colors(title_colors)?;
         let v = gql.services.view.create(
             auth.account_id,
             ws,
@@ -1943,7 +1964,7 @@ impl Mutation {
         let q: ViewQuery = serde_json::from_value(query.0)
             .map_err(|e| AppError::InvalidQuery(format!("查询条件格式错误: {e}")))?;
         let sort = sort.map(|s| s.to_sort()).transpose()?.unwrap_or_default();
-        let title_colors: Vec<TitleColorRule> = parse_json_list(title_colors, "标题颜色规则")?;
+        let title_colors = parse_title_colors(title_colors)?;
         let v = gql.services.view.update(
             auth.account_id,
             view_id,
@@ -2256,4 +2277,20 @@ fn parse_json_list<T: serde::de::DeserializeOwned>(
         Some(Json(v)) => serde_json::from_value(v)
             .map_err(|e| AppError::InvalidQuery(format!("{what}格式错误: {e}")).into()),
     }
+}
+
+/// 解析标题颜色规则入参。与 `parse_json_list` 的区别只有一处：
+/// `Query` 手写投影而非走 `TitleColorRule` 的 `query_json` 适配器。
+/// `null` 与 `None` 都等价于空列表。
+fn parse_title_colors(value: Option<Json<serde_json::Value>>) -> GqlResult<Vec<TitleColorRule>> {
+    let Some(Json(v)) = value else { return Ok(Vec::new()) };
+    if v.is_null() {
+        return Ok(Vec::new());
+    }
+    let items: Vec<TitleColorRuleWire> = serde_json::from_value(v)
+        .map_err(|e| AppError::InvalidQuery(format!("标题颜色规则格式错误: {e}")))?;
+    Ok(items
+        .into_iter()
+        .map(|w| TitleColorRule { query: w.query, color: w.color })
+        .collect())
 }
