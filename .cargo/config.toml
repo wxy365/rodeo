@@ -1,0 +1,9 @@
+# 宿主侧交叉编译到 Linux x86_64（musl，静态链接）的配置。
+# 用法见 Makefile 的 build-linux-host；CC/CXX/AR 由该目标通过环境变量导出，
+# 因为 cc-rs 是在依赖包的目录里被调起的，那里的相对路径指向的是 cargo registry
+# 而非本仓库，只能用绝对路径。
+[target.x86_64-unknown-linux-musl]
+linker = "scripts/zig-linux-musl-cc"
+# rust-std 为 musl 目标自带了一份 crt（lib/self-contained/），与 zig 链接时提供的
+# musl crt 重复，ld 会报 duplicate symbol: _start_c。关掉前者，让 zig 全权提供 crt 与 libc。
+rustflags = ["-C", "link-self-contained=no"]

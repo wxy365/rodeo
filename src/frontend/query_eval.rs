@@ -10,27 +10,131 @@ use crate::frontend::graphql_client::{AccountBrief, Entry, LabelSchema, Labeling
 
 // ---------- 查询求值 ----------
 
+/// 继承推导出的标签：(标签名, 值, 来源标签名)。值为 `null` 表示只继承了 key——
+/// 只满足存在性判断，不参与值比较。求值只用到前两项，「来源」供界面标注用。
+pub type DerivedLabel = (String, Value, String);
+
 /// 对一行 `entry`（携带 `labels`）求值后端下发的 `Query` JSON。
 ///
 /// 支持 `{"and":[…]}` / `{"or":[…]}` / `{"not":{…}}` / `{"cond":{…}}`。
 /// `schemas` 用于时间型标签：按 schema 的布局解析成时刻再比较（与后端同构）。
 pub fn eval(query: &Value, entry: &Entry, labels: &[Labeling], schemas: &[LabelSchema]) -> bool {
-    if let Some(list) = query.get("and").and_then(Value::as_array) {
-        return list.iter().all(|q| eval(q, entry, labels, schemas));
+    // 与后端一致：只有表达式真的写了 `L4+` 才做推导，否则一次全空间扫描白算。
+    let derived = if uses_inherited_label(query) {
+        derive_inherited(schemas, labels)
+    } else {
+        Vec::new()
+    };
+    eval_inner(query, entry, labels, schemas, &derived)
+}
+
+/// 由直接打标推出全部继承 / 覆盖得来的标签。环安全：同一份 (标签, 值) 只走一次。
+/// 已有直接打标的标签名不出现在结果里——直接打上的值优先。
+///
+/// 边模型与后端一致：「继承」以声明方为源、「覆盖」以对方为源；
+/// 源值 `null` 表示不限定值（只要求持有该标签）。
+pub fn derive_inherited(schemas: &[LabelSchema], labels: &[Labeling]) -> Vec<DerivedLabel> {
+    // (源标签名, 源值限定) → 目标；来源即边的起点，界面据此说明「为什么会有这个标签」。
+    let mut edges: Vec<(&str, Option<&Value>, &str, Option<&Value>)> = Vec::new();
+    for s in schemas {
+        let Some(links) = s.links.as_array() else {
+            continue;
+        };
+        for l in links {
+            let Some(other) = l.get("other").and_then(Value::as_str) else {
+                continue;
+            };
+            let own = l.get("ownValue").filter(|v| !v.is_null());
+            let to = l.get("otherValue").filter(|v| !v.is_null());
+            if l.get("kind").and_then(Value::as_str) == Some("override") {
+                edges.push((other, to, s.name.as_str(), own));
+            } else {
+                edges.push((s.name.as_str(), own, other, to));
+            }
+        }
     }
-    if let Some(list) = query.get("or").and_then(Value::as_array) {
-        return list.iter().any(|q| eval(q, entry, labels, schemas));
+    if edges.is_empty() {
+        return Vec::new();
+    }
+    let direct_names: Vec<&str> = labels.iter().map(|l| l.label_name.as_str()).collect();
+    let mut seen: Vec<DerivedLabel> = Vec::new();
+    // (标签名, 值, 来源)
+    let mut queue: Vec<(String, Option<Value>, String)> = labels
+        .iter()
+        .map(|l| (l.label_name.clone(), Some(l.value.clone()), String::new()))
+        .collect();
+    while let Some((name, value, _)) = queue.pop() {
+        for (from, from_value, to, to_value) in &edges {
+            if *from != name {
+                continue;
+            }
+            // 值限定只认带值的持有：key 继承来的「无值」不能冒充某个具体值。
+            if let Some(want) = from_value {
+                if value.as_ref() != Some(*want) {
+                    continue;
+                }
+            }
+            let item: DerivedLabel = (
+                to.to_string(),
+                (*to_value).cloned().unwrap_or(Value::Null),
+                name.clone(),
+            );
+            if direct_names.contains(&item.0.as_str())
+                || seen.iter().any(|(n, v, _)| n == &item.0 && v == &item.1)
+            {
+                continue;
+            }
+            seen.push(item.clone());
+            queue.push((item.0.clone(), Some(item.1.clone()), item.2.clone()));
+        }
+    }
+    seen
+}
+
+/// 表达式里是否出现了 `L4+`（含继承的标签字段）。
+fn uses_inherited_label(query: &Value) -> bool {
+    if let Some(list) = query.get("and").or_else(|| query.get("or")).and_then(Value::as_array) {
+        return list.iter().any(uses_inherited_label);
     }
     if let Some(inner) = query.get("not") {
-        return !eval(inner, entry, labels, schemas);
+        return uses_inherited_label(inner);
+    }
+    query
+        .get("cond")
+        .and_then(|c| c.get("field"))
+        .and_then(|f| f.get("labelInherited"))
+        .is_some()
+}
+
+fn eval_inner(
+    query: &Value,
+    entry: &Entry,
+    labels: &[Labeling],
+    schemas: &[LabelSchema],
+    derived: &[DerivedLabel],
+) -> bool {
+    if let Some(list) = query.get("and").and_then(Value::as_array) {
+        return list.iter().all(|q| eval_inner(q, entry, labels, schemas, derived));
+    }
+    if let Some(list) = query.get("or").and_then(Value::as_array) {
+        return list.iter().any(|q| eval_inner(q, entry, labels, schemas, derived));
+    }
+    if let Some(inner) = query.get("not") {
+        return !eval_inner(inner, entry, labels, schemas, derived);
     }
     if let Some(cond) = query.get("cond") {
-        return eval_cond(cond, entry, labels, schemas);
+        return eval_cond(cond, entry, labels, schemas, derived);
     }
     false
 }
 
-fn eval_cond(cond: &Value, entry: &Entry, labels: &[Labeling], schemas: &[LabelSchema]) -> bool {
+fn eval_cond(
+    cond: &Value,
+    entry: &Entry,
+    labels: &[Labeling],
+    schemas: &[LabelSchema],
+    derived: &[DerivedLabel],
+) -> bool {
     let Some(field) = cond.get("field") else {
         return false;
     };
@@ -38,7 +142,10 @@ fn eval_cond(cond: &Value, entry: &Entry, labels: &[Labeling], schemas: &[LabelS
     let want = cond.get("value");
 
     if let Some(name) = field.get("label").and_then(Value::as_str) {
-        return eval_label(name, op, want, labels, schemas);
+        return eval_label(name, false, op, want, labels, schemas, derived);
+    }
+    if let Some(name) = field.get("labelInherited").and_then(Value::as_str) {
+        return eval_label(name, true, op, want, labels, schemas, derived);
     }
     match field.as_str() {
         Some("updatedAt") => cmp_time(&entry.updated_at, op, want),
@@ -102,19 +209,33 @@ fn cmp_account(acct: Option<&AccountBrief>, op: &str, want: Option<&Value>) -> b
     }
 }
 
+/// `inherited` 为真时（表达式写了 `L4+`），通过继承关系拿到的标签也算持有。
+/// 直接打标优先：同一个标签名既有直接值又有继承值时，用直接值。
 fn eval_label(
     name: &str,
+    inherited: bool,
     op: &str,
     want: Option<&Value>,
     labels: &[Labeling],
     schemas: &[LabelSchema],
+    derived: &[DerivedLabel],
 ) -> bool {
-    let found = labels.iter().find(|l| l.label_name == name);
+    let direct = labels.iter().find(|l| l.label_name == name);
+    // 继承来的值可能是 `null`（key 继承只承诺存在性）。存在性与值分开看：
+    // 有它就算 held，但比较运算拿不到值，一律返回假（与后端 `eval_label` 同构）。
+    let dv = derived
+        .iter()
+        .find(|(n, _, _)| n == name)
+        .map(|(_, v, _)| v)
+        .filter(|v| !v.is_null());
+    let held = direct.is_some() || (inherited && derived.iter().any(|(n, _, _)| n == name));
+    // 值的来源：直接打标的值优先；没有直接打标时用继承来的值。
+    let value = direct.map(|l| &l.value).or(if inherited { dv } else { None });
     match op {
-        "present" => found.is_some(),
-        "absent" => found.is_none(),
-        _ => match found {
-            Some(l) => {
+        "present" => held,
+        "absent" => !held,
+        _ => match value {
+            Some(v) => {
                 // 时间型标签按布局解析成时刻再比，避免默认 / 自定义布局下字符串比较出错。
                 // 与后端 `Condition::evaluate` 的 `Field::Label` 分支同构。
                 if let Some(s) = schemas.iter().find(|s| s.name == name) {
@@ -123,10 +244,10 @@ fn eval_label(
                     {
                         let layout =
                             crate::golayout::resolve(s.format.as_deref(), default_layout(&s.value_type));
-                        return cmp_time_layout(&l.value, &layout, op, want);
+                        return cmp_time_layout(v, &layout, op, want);
                     }
                 }
-                cmp_value(&l.value, op, want)
+                cmp_value(v, op, want)
             }
             None => false,
         },
@@ -157,7 +278,7 @@ fn collect_labels(query: &Value, out: &mut Vec<String>) {
     if let Some(name) = query
         .get("cond")
         .and_then(|c| c.get("field"))
-        .and_then(|f| f.get("label"))
+        .and_then(|f| f.get("label").or_else(|| f.get("labelInherited")))
         .and_then(Value::as_str)
     {
         if !out.iter().any(|x| x == name) {
@@ -519,6 +640,7 @@ mod tests {
             default_value: json!(null),
             currency_symbol: None,
             unit: None,
+            links: json!(null),
         }
     }
 

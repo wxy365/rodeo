@@ -44,8 +44,23 @@ async fn main() {
     });
 
     let conf = get_configuration(None).unwrap();
-    let addr = conf.leptos_options.site_addr;
     let leptos_options = conf.leptos_options;
+
+    // 绑定地址：LEPTOS_SITE_ADDR 优先——cargo leptos watch 靠它注入 dev 地址，也留给运维
+    // 临时覆盖；没设时（手工跑生产二进制）才轮到 config.toml 的 [server]。这是配置第一次
+    // 真正生效的地方，所以把来源一并打进日志，别再让它静默。
+    let (addr, addr_src) = match std::env::var("LEPTOS_SITE_ADDR") {
+        Ok(v) => (
+            v.parse()
+                .unwrap_or_else(|e| panic!("LEPTOS_SITE_ADDR 非法（{v}）: {e}")),
+            "LEPTOS_SITE_ADDR",
+        ),
+        Err(_) => (
+            config.bind_addr().unwrap_or_else(|e| panic!("{e}")),
+            "config.toml [server]",
+        ),
+    };
+
     let routes = generate_route_list(App);
 
     // 附件上限 50MB，服务层会返回「附件超过 50MB」的友好错误；这里放到 64MB，
@@ -79,14 +94,14 @@ async fn main() {
                             tls.cert_path, tls.key_path
                         )
                     });
-            tracing::info!("listening on https://{addr}");
+            tracing::info!("listening on https://{addr}（来源 {addr_src}）");
             axum_server::bind_rustls(addr, rustls_config)
                 .serve(app.into_make_service())
                 .await
                 .unwrap();
         }
         None => {
-            tracing::info!("listening on http://{addr}");
+            tracing::info!("listening on http://{addr}（来源 {addr_src}）");
             let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
             axum::serve(listener, app.into_make_service()).await.unwrap();
         }

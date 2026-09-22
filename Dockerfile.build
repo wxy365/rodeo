@@ -1,0 +1,67 @@
+# Linux x86_64 生产构建环境。只在构建期存在，不产出运行时镜像。
+#
+# 宿主侧的交叉编译另有其路：make build-linux-host 用 zig 充当 C/C++ 编译器与 libclang
+# 的头文件来源，不必在宿主准备 Linux sysroot。但它只出可执行文件，不含客户端 wasm 与
+# site/，且产物依赖 musl 而非 glibc。要完整、可复现的分发包，仍然走这个 Dockerfile。
+#
+# 基础镜像决定 glibc 下限：bookworm 是 2.36（Debian 12 / Ubuntu 24.04 起）。
+# 部署机更老就换成 rust:1-bullseye（glibc 2.31）。
+ARG RUST_IMAGE=rust:1-bookworm
+FROM ${RUST_IMAGE} AS builder
+
+# librocksdb-sys 用 bindgen 生成绑定，需要 libclang；cmake 给可能用它的 -sys crate 兜底。
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends clang libclang-dev cmake pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# 客户端始终编 wasm32-unknown-unknown，与服务端目标无关。
+RUN rustup target add wasm32-unknown-unknown
+
+# crates.io 与 static.rust-lang.org 都由 Fastly 承载，而 Fastly 的 IPv4 端点在部分网络下被限速
+# 到 ~3KB/s（IPv6 正常，但 Docker 容器默认没有 IPv6，Docker Desktop 的 gvisor 网络也开不出来）。
+# 结果是 cargo 下载卡在 "transfer too slow: transferred 0 bytes in 30s" 直到构建失败。
+# 换成 IPv4 可达的镜像即可；留空则仍用官方 registry。
+ARG CARGO_REGISTRY_MIRROR
+RUN if [ -n "${CARGO_REGISTRY_MIRROR}" ]; then \
+        printf '[source.crates-io]\nreplace-with = "mirror"\n[source.mirror]\nregistry = "sparse+%s"\n' \
+            "${CARGO_REGISTRY_MIRROR}" > /usr/local/cargo/config.toml ; \
+    fi
+
+# 版本与宿主 `cargo leptos --version` 对齐，避免本地与构建机行为分叉。
+ARG CARGO_LEPTOS_VERSION=0.3.7
+RUN cargo install cargo-leptos --version "${CARGO_LEPTOS_VERSION}" --locked
+
+WORKDIR /app
+COPY . .
+
+# cargo-leptos 除 cargo 之外还要从 GitHub Releases 取 wasm-bindgen 与 wasm-opt，而 GitHub 在这
+# 类网络下同样被限速（~2KB/s，11MB 的 wasm-bindgen 要下一个多小时）。宿主上的代理对 GitHub 有
+# ~1.2MB/s，这里只把它接到这一步，且只在给了值时才导出：
+#   - cargo 的 registry 走 NO_PROXY 排除的镜像直连（镜像本身很快，绕代理反而从 ~290KB/s 掉到 ~16KB/s）；
+#   - 代理是宿主上的，容器经 host.docker.internal 访问。
+# 两者留空即完全不设代理，直连 GitHub。工具会落在上面那条 cache mount 里，之后不再重下。
+ARG CARGO_DOWNLOAD_PROXY
+ARG CARGO_NO_PROXY
+
+# hash.txt 是 hash-files 模式下的必需产物：Leptos 在**运行期**读它（路径 =
+# 可执行文件的同级目录）才知道 site/pkg 里那些带内容哈希的文件名，缺了就回退成
+# /pkg/rodeo.js 这类不存在的裸名，前端资源全 404。cargo-leptos 把它写在
+# target/<profile>/ 下（与二进制同级），所以必须和 rodeo 一起拷出去。
+RUN --mount=type=cache,target=/app/target \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/root/.cache/cargo-leptos \
+    if [ -n "${CARGO_DOWNLOAD_PROXY}" ]; then \
+        export HTTP_PROXY="${CARGO_DOWNLOAD_PROXY}" \
+               HTTPS_PROXY="${CARGO_DOWNLOAD_PROXY}" \
+               NO_PROXY="${CARGO_NO_PROXY}" ; \
+    fi ; \
+    cargo leptos build --release \
+    && mkdir -p /out \
+    && cp target/release/rodeo /out/rodeo \
+    && cp target/release/hash.txt /out/hash.txt \
+    && cp -r target/site /out/site
+
+# `docker build --target dist --output type=local,dest=dist` 把这三个直接拷到宿主，
+# 不经过镜像层。
+FROM scratch AS dist
+COPY --from=builder /out/ /

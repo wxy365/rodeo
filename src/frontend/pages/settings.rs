@@ -19,7 +19,8 @@ use crate::frontend::graphql_client::{
 };
 use crate::frontend::use_auth;
 use crate::frontend::icons::{
-    ic_add, ic_back, ic_close, ic_comment, ic_history, ic_profile, ic_setting, ic_share, ic_tag,
+    ic_add, ic_back, ic_close, ic_comment, ic_history, ic_link, ic_profile, ic_setting, ic_share,
+    ic_tag,
 };
 
 fn is_builtin(schema: &LabelSchema) -> bool {
@@ -105,7 +106,7 @@ pub fn WorkspaceSettings() -> impl IntoView {
         if !cfg!(target_arch = "wasm32") {
             return;
         }
-        if logged_out() {
+        if logged_out() || auth.session_lost.get() {
             navigate("/login", Default::default());
             return;
         }
@@ -205,6 +206,8 @@ pub fn WorkspaceSettings() -> impl IntoView {
                 if is_currency && !u.is_empty() { Some(u) } else { None },
                 // 默认值随类型走：切类型时已清空（见类型下拉框的 on:change）。
                 &new_default.get(),
+                // 新建时没有关系可建：对方标签要先存在，故只能在建好之后于行内补。
+                &serde_json::json!([]),
             )
         };
         spawn_local(async move {
@@ -405,7 +408,7 @@ pub fn WorkspaceSettings() -> impl IntoView {
     });
 
     view! {
-        <div class="page">
+        <div class="page page-wide">
             <div class="crumb" style="display:flex;align-items:center;gap:8px">
                 <button class="btn sm" on:click=back>{ic_back()}"返回工作空间"</button>
                 <span>{move || format!("/{} · 设置（Maintainer 及以上）", slug())}</span>
@@ -605,9 +608,9 @@ pub fn WorkspaceSettings() -> impl IntoView {
                                         view! { <p class="mut">"仅 Maintainer 及以上可管理标签"</p> }.into_any()
                                     }}
                                     <table class="tbl">
-                                        <thead><tr><th>"name（不可改）"</th><th>"title"</th><th>"值类型"</th><th>"可选值 / 说明"</th><th>"属性"</th><th>"颜色"</th><th>"来源"</th><th style="width:80px"></th></tr></thead>
+                                        <thead><tr><th>"name（不可改）"</th><th>"title"</th><th>"值类型"</th><th>"可选值 / 说明"</th><th>"属性"</th><th>"颜色"</th><th style="width:56px">"关系"</th><th style="width:90px"></th></tr></thead>
                                         <tbody>
-                                            {schemas.iter().map(|s| schema_row(s, can_manage, _ws.id.clone(), member_list.clone(), refresh, error)).collect::<Vec<_>>()}
+                                            {schemas.iter().map(|s| schema_row(s, can_manage, _ws.id.clone(), member_list.clone(), schemas.clone(), refresh, error)).collect::<Vec<_>>()}
                                         </tbody>
                                     </table>
                                     <div class="mut">"同一 Entry 对同一 Schema 仅一条 Labeling，更新即 upsert；变更自动记录操作人与时间。"</div>
@@ -939,12 +942,264 @@ fn build_value_colors(rows: Vec<VcRow>, value_type: &str) -> Value {
     Value::Array(arr)
 }
 
+/// 关系编辑行状态（`RwSignal` 便于逐字段就地更新）。
+/// 与 `VcRow` 同一套路：行集合存在一个 `RwSignal<Vec<..>>` 里，行内字段各自可写。
+#[derive(Clone, Copy)]
+struct LinkRow {
+    id: usize,
+    /// `inherit` | `override`。
+    kind: RwSignal<String>,
+    /// 关系另一端的标签名。
+    other: RwSignal<String>,
+    /// 另一端的值（可空）。
+    other_value: RwSignal<String>,
+    /// 本标签的值（可空）。
+    own_value: RwSignal<String>,
+}
+
+/// 标签元信息：名称 / 值类型 / 枚举值 / 是否多值。
+/// 关系编辑器要据此决定值输入框的形态（枚举下拉、多值逗号分隔、无值标签不给输入框）。
+#[derive(Clone)]
+struct LabelMeta {
+    name: String,
+    value_type: String,
+    enum_values: Vec<String>,
+    multi: bool,
+}
+
+impl LabelMeta {
+    /// 值输入框该不该出现：无值标签的关系只能约束「有没有」，不能约束值。
+    fn has_value(&self) -> bool {
+        self.value_type != "null"
+    }
+}
+
+/// 编辑框文本 → 标签值 JSON（空为 null）。服务端会按目标标签的类型再校验一次。
+fn link_value_of(s: &str, meta: Option<&LabelMeta>) -> Value {
+    let t = s.trim();
+    if t.is_empty() {
+        return Value::Null;
+    }
+    match meta.map(|m| m.value_type.as_str()).unwrap_or("") {
+        "boolean" => match t {
+            "true" => Value::Bool(true),
+            "false" => Value::Bool(false),
+            _ => Value::String(t.to_string()),
+        },
+        "integer" | "float" | "currency" => num_value(t),
+        // 多值枚举存的是数组；单值枚举在界面上是下拉，到这里已经是合法枚举值。
+        "enum" if meta.is_some_and(|m| m.multi) => Value::Array(
+            t.split(',')
+                .map(|x| Value::String(x.trim().to_string()))
+                .filter(|x| x.as_str() != Some(""))
+                .collect(),
+        ),
+        _ => Value::String(t.to_string()),
+    }
+}
+
+/// 标签值 JSON → 编辑框文本（多值数组用逗号连接）。
+fn link_value_text(v: &Value) -> String {
+    match v {
+        Value::Null => String::new(),
+        Value::String(s) => s.clone(),
+        Value::Bool(b) => b.to_string(),
+        Value::Number(n) => fmt_num(n),
+        Value::Array(a) => a
+            .iter()
+            .map(link_value_text)
+            .collect::<Vec<_>>()
+            .join(","),
+        other => other.to_string(),
+    }
+}
+
+/// 在指定 owner 下新建一条关系行。
+///
+/// 关系行的信号必须挂在**行自己**的 owner 上：弹窗（`show_links` 为真时才渲染）随时会被
+/// 销毁，点「＋ 关系」新建的信号默认挂在弹窗作用域下，关窗即被 dispose，之后保存再读它们
+/// 就会 panic（「you tried to access a reactive value … it has already been disposed」）。
+fn new_link_row(
+    owner: Option<&Owner>,
+    id: usize,
+    kind: String,
+    other: String,
+    other_value: String,
+    own_value: String,
+) -> LinkRow {
+    let build = || LinkRow {
+        id,
+        kind: RwSignal::new(kind),
+        other: RwSignal::new(other),
+        other_value: RwSignal::new(other_value),
+        own_value: RwSignal::new(own_value),
+    };
+    match owner {
+        Some(o) => o.with(build),
+        None => build(),
+    }
+}
+
+/// 库里的关系 JSON → 编辑行。关弹窗时按库中数据重建，等于丢弃本次编辑。
+fn links_to_rows(links: &Value, owner: Option<&Owner>) -> Vec<LinkRow> {
+    links
+        .as_array()
+        .map(|a| a.as_slice())
+        .unwrap_or(&[])
+        .iter()
+        .enumerate()
+        .filter_map(|(i, l)| {
+            let other = l.get("other")?.as_str()?.to_string();
+            Some(new_link_row(
+                owner,
+                i,
+                l.get("kind")
+                    .and_then(|k| k.as_str())
+                    .unwrap_or("inherit")
+                    .to_string(),
+                other,
+                link_value_text(l.get("otherValue").unwrap_or(&Value::Null)),
+                link_value_text(l.get("ownValue").unwrap_or(&Value::Null)),
+            ))
+        })
+        .collect()
+}
+
+/// 关系行 → `[{kind,other,otherValue,ownValue}]` JSON。未选对方标签的行直接丢掉。
+/// 值跟着各自标签的类型走：无值标签（null）一侧留 null。
+fn build_links(rows: Vec<LinkRow>, metas: &[LabelMeta], own: Option<&LabelMeta>) -> Value {
+    let arr: Vec<Value> = rows
+        .into_iter()
+        .filter_map(|r| {
+            let other = r.other.get();
+            if other.is_empty() {
+                return None;
+            }
+            let other_meta = metas.iter().find(|m| m.name == other).filter(|m| m.has_value());
+            let own_meta = own.filter(|m| m.has_value());
+            Some(serde_json::json!({
+                "kind": r.kind.get(),
+                "other": other,
+                "otherValue": link_value_of(&r.other_value.get(), other_meta),
+                "ownValue": link_value_of(&r.own_value.get(), own_meta),
+            }))
+        })
+        .collect();
+    Value::Array(arr)
+}
+
+/// 单行关系编辑器：本标签 Key（只读）/ 本标签值 / 种类 / 目标标签 / 目标标签值 / 删除。
+/// 顺序照着「从本标签读向目标标签」排，与 `link_head` 的表头一一对应。
+fn link_row_view(
+    r: LinkRow,
+    metas: Vec<LabelMeta>,
+    own: LabelMeta,
+    rows: RwSignal<Vec<LinkRow>>,
+    editable: bool,
+    dirty: RwSignal<bool>,
+) -> impl IntoView {
+    let metas_for_other = metas.clone();
+    let own_has_value = own.has_value();
+    let own_name = own.name.clone();
+    view! {
+        <div class="link-grid">
+            // 本标签 Key 只读：标出这条关系是从哪条标签出去的。
+            <span class="code mut" title="本标签">{own_name}</span>
+            // 本标签的值：只在有值标签上出现，无值标签的关系只能约束「有没有」。
+            // 无值标签也要占住这一格，否则后面的控件会整体左移一列。
+            {if own_has_value {
+                value_input(r.own_value, own.clone(), "本标签值", editable, dirty).into_any()
+            } else {
+                view! { <span></span> }.into_any()
+            }}
+            <select class="inp" disabled=!editable
+                prop:value=move || r.kind.get()
+                on:change=move |ev| {
+                    r.kind.set(event_target_value(&ev));
+                    dirty.set(true);
+                }>
+                <option value="inherit">"继承"</option>
+                <option value="override">"覆盖"</option>
+            </select>
+            <select class="inp" disabled=!editable
+                prop:value=move || r.other.get()
+                on:change=move |ev| {
+                    r.other.set(event_target_value(&ev));
+                    // 换了目标标签，原有值多半不再合法，清掉免得带一个错值过去。
+                    r.other_value.set(String::new());
+                    dirty.set(true);
+                }>
+                <option value="">"（选择标签）"</option>
+                {metas_for_other.iter().map(|m| view! {
+                    <option value=m.name.clone()>{m.name.clone()}</option>
+                }).collect::<Vec<_>>()}
+            </select>
+            // 目标标签的值：随所选的标签重渲染，枚举标签给下拉。
+            {move || {
+                let cur = r.other.get();
+                match metas.iter().find(|m| m.name == cur).filter(|m| m.has_value()) {
+                    Some(m) => value_input(r.other_value, m.clone(), "目标标签值", editable, dirty).into_any(),
+                    None => view! { <span></span> }.into_any(),
+                }
+            }}
+            <button class="vc-op vc-del" title="删除" disabled=!editable on:click=move |_| {
+                dirty.set(true);
+                rows.update(|rows| rows.retain(|x| x.id != r.id));
+            }>"×"</button>
+        </div>
+    }
+}
+
+/// 关系里的一个值输入框：枚举给下拉，多值枚举与其余类型给文本框。
+/// 宽度交给 `.link-grid` 的列宽管，不写死，免得和表头对不齐。
+fn value_input(
+    sig: RwSignal<String>,
+    meta: LabelMeta,
+    placeholder: &'static str,
+    editable: bool,
+    dirty: RwSignal<bool>,
+) -> impl IntoView {
+    if meta.value_type == "enum" && !meta.multi {
+        view! {
+            <select class="inp" disabled=!editable
+                prop:value=move || sig.get()
+                on:change=move |ev| {
+                    sig.set(event_target_value(&ev));
+                    dirty.set(true);
+                }>
+                <option value="">"（可空）"</option>
+                {meta.enum_values.iter().cloned().map(|o| view! {
+                    <option value=o.clone()>{display_enum_value(&o)}</option>
+                }).collect::<Vec<_>>()}
+            </select>
+        }
+        .into_any()
+    } else {
+        let ph = if meta.value_type == "enum" && meta.multi {
+            "多值，逗号分隔"
+        } else {
+            placeholder
+        };
+        view! {
+            <input class="inp" placeholder=ph disabled=!editable
+                prop:value=move || sig.get()
+                on:input=move |ev| {
+                    sig.set(event_target_value(&ev));
+                    dirty.set(true);
+                } />
+        }
+        .into_any()
+    }
+}
+
 fn schema_row(
     s: &LabelSchema,
     can_manage: bool,
     ws_id: String,
     // 工作空间成员表：账号型标签的默认值要从这里挑。
     members: Vec<Member>,
+    // 全部标签定义：关系编辑器的对方标签候选取自这里（去掉自己）。
+    all: Vec<LabelSchema>,
     refresh: RwSignal<u32>,
     error: RwSignal<Option<String>>,
 ) -> impl IntoView {
@@ -1010,6 +1265,33 @@ fn schema_row(
     // 无未保存改动时「保存」置灰：保存成功后整行按服务端数据重建，按钮自动回到灰态，
     // 用户据此确认改动已落库。
     let dirty = RwSignal::new(false);
+    // 关系编辑器单独放在弹窗里：它一行有四个控件，塞进表格会把整行撑爆。
+    let show_links = RwSignal::new(false);
+
+    // 关系编辑：候选是同一工作空间里的其它标签（自己不能跟自己建关系）。
+    let self_meta = LabelMeta {
+        name: s.name.clone(),
+        value_type: value_type.clone(),
+        enum_values: s.enum_values.clone(),
+        multi: s.multi,
+    };
+    let metas: Vec<LabelMeta> = all
+        .iter()
+        .filter(|x| x.name != s.name)
+        .map(|x| LabelMeta {
+            name: x.name.clone(),
+            value_type: x.value_type.clone(),
+            enum_values: x.enum_values.clone(),
+            multi: x.multi,
+        })
+        .collect();
+    // 关系行的信号全挂在这个 owner 上——它是整行的，比弹窗活得久。理由见 new_link_row。
+    let link_owner = Owner::current();
+    // 库中的关系原样留一份：关弹窗时照它重建编辑行，等于丢弃本次编辑。
+    let links_seed = s.links.clone();
+    let init_links = links_to_rows(&links_seed, link_owner.as_ref());
+    let next_link_id = RwSignal::new(init_links.len());
+    let link_rows = RwSignal::new(init_links);
 
     let enum_opts = s.enum_values.clone();
     let enum_add = s.enum_values.clone();
@@ -1053,30 +1335,122 @@ fn schema_row(
         }
     };
 
-    let ops = move |r: VcRow| {
+    // 值色行末尾的操作键。`reorder` 只给数值区间开——数值区间是「从…到…」的列表，
+    // 顺序有意义；枚举行是按名字选中某个枚举值，顺序由可选值本身决定，排它没意义。
+    let ops = move |r: VcRow, reorder: bool| {
         view! {
-            <button class="vc-op" title="上移" disabled=!editable on:click=move |_| {
-                dirty.set(true);
-                vc_rows.update(|rows| {
-                    if let Some(i) = rows.iter().position(|x| x.id == r.id) {
-                        if i > 0 { rows.swap(i, i - 1); }
-                    }
-                });
-            }>"↑"</button>
-            <button class="vc-op" title="下移" disabled=!editable on:click=move |_| {
-                dirty.set(true);
-                vc_rows.update(|rows| {
-                    if let Some(i) = rows.iter().position(|x| x.id == r.id) {
-                        if i + 1 < rows.len() { rows.swap(i, i + 1); }
-                    }
-                });
-            }>"↓"</button>
+            {reorder.then(|| view! {
+                <button class="vc-op" title="上移" disabled=!editable on:click=move |_| {
+                    dirty.set(true);
+                    vc_rows.update(|rows| {
+                        if let Some(i) = rows.iter().position(|x| x.id == r.id) {
+                            if i > 0 { rows.swap(i, i - 1); }
+                        }
+                    });
+                }>"↑"</button>
+                <button class="vc-op" title="下移" disabled=!editable on:click=move |_| {
+                    dirty.set(true);
+                    vc_rows.update(|rows| {
+                        if let Some(i) = rows.iter().position(|x| x.id == r.id) {
+                            if i + 1 < rows.len() { rows.swap(i, i + 1); }
+                        }
+                    });
+                }>"↓"</button>
+            })}
             <button class="vc-op vc-del" title="删除" disabled=!editable on:click=move |_| {
                 dirty.set(true);
                 vc_rows.update(|rows| rows.retain(|x| x.id != r.id));
             }>"×"</button>
         }
     };
+
+    // 关弹窗＝丢弃本次编辑：编辑行按库中数据重建。只有「保存」才落库。
+    // Owner 是 Arc 句柄，clone 不会让行上的信号提前被清掉，故两个闭包各留一份。
+    let close_links = {
+        let owner = link_owner.clone();
+        move |_| {
+            let rows = links_to_rows(&links_seed, owner.as_ref());
+            next_link_id.set(rows.len());
+            link_rows.set(rows);
+            show_links.set(false);
+        }
+    };
+
+    let add_link = {
+        let owner = link_owner.clone();
+        move |_| {
+            dirty.set(true);
+            let id = next_link_id.get_untracked();
+            next_link_id.set(id + 1);
+            // 信号必须建在行自己的 owner 下：这里是在弹窗里点的，默认会挂到弹窗作用域上。
+            let row = new_link_row(
+                owner.as_ref(),
+                id,
+                "inherit".to_string(),
+                String::new(),
+                String::new(),
+                String::new(),
+            );
+            link_rows.update(|rows| rows.push(row));
+        }
+    };
+
+    // 整行标签定义的保存。表格行的「保存」和关系弹窗的「保存」共用这一条路径：
+    // 服务端 update 是整体替换，两处都得提交全部字段（含关系）。
+    // 参数是保存成功后的回调（关弹窗）；失败时留着弹窗并把错误显示在弹窗里。
+    let save: Callback<Option<Callback<()>>> = {
+        let metas_save = metas.clone();
+        let own_save = self_meta.clone();
+        let vt_save = value_type.clone();
+        let ws_save = ws_id.clone();
+        let name_save = name.clone();
+        Callback::new(move |after: Option<Callback<()>>| {
+            let evals: Vec<String> = enum_input
+                .get()
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            let t = title_input.get();
+            let clr = base_color.get();
+            let vcs = build_value_colors(vc_rows.get(), &vt_save);
+            let attrs = {
+                let fv = format_input.get();
+                let sv = symbol_input.get();
+                let uv = unit_input.get();
+                let f = fv.trim();
+                let sy = sv.trim();
+                let u = uv.trim();
+                label_attrs(
+                    multi_input.get(),
+                    (!f.is_empty()).then_some(f),
+                    (!sy.is_empty()).then_some(sy),
+                    (!u.is_empty()).then_some(u),
+                    &default_input.get(),
+                    &build_links(link_rows.get_untracked(), &metas_save, Some(&own_save)),
+                )
+            };
+            let ws = ws_save.clone();
+            let n = name_save.clone();
+            spawn_local(async move {
+                match update_label_schema(&ws, &n, &t, &evals, &attrs, clr.as_deref(), &vcs).await {
+                    Ok(_) => {
+                        error.set(None);
+                        if let Some(cb) = after {
+                            cb.run(());
+                        }
+                        refresh.update(|x| *x += 1);
+                    }
+                    // 失败不动数据：整行会按服务端数据重建，那会把用户刚填的东西抹掉。
+                    Err(e) => error.set(Some(e)),
+                }
+            });
+        })
+    };
+
+    // 保存成功后关弹窗。紧接着 refresh 也会整行重建，但那是异步的，
+    // 不先关掉的话，重建期间弹窗会压在新行上。
+    let close_saved = Callback::new(move |_: ()| show_links.set(false));
 
     view! {
         <tr class="static">
@@ -1231,7 +1605,7 @@ fn schema_row(
                                                             dirty.set(true);
                                                         } />
                                                     {swatch(r.color)}
-                                                    {ops(r)}
+                                                    {ops(r, true)}
                                                 </div>
                                             }.into_any()
                                         } else {
@@ -1250,7 +1624,7 @@ fn schema_row(
                                                         }).collect::<Vec<_>>()}
                                                     </select>
                                                     {swatch(r.color)}
-                                                    {ops(r)}
+                                                    {ops(r, false)}
                                                 </div>
                                             }.into_any()
                                         }
@@ -1264,48 +1638,83 @@ fn schema_row(
                     }}
                 </div>
             </td>
+            // 关系列：只有一个可点的图标。配置全在弹窗里做，保存也在弹窗里，
+            // 这列不放保存按钮。
             <td>
-                {if builtin {
-                    view! { <span class="chip dim">"内置"</span> }.into_any()
-                } else {
-                    view! { <span class="chip c-open">"自定义"</span> }.into_any()
-                }}
+                <button class="icbtn" on:click=move |_| show_links.set(true)
+                    title=move || {
+                        let n = link_rows.get().len();
+                        if n > 0 { format!("配置关系（已 {n} 条）") } else { "配置关系".to_string() }
+                    }>
+                    {ic_link()}
+                </button>
+                {let metas_dlg = metas.clone();
+                let own_dlg = self_meta.clone();
+                // 只读时图标照常在，点开仍能看关系，只是改不动。
+                move || show_links.get().then(|| {
+                    // then 的闭包只跑一次，外面那个却要能反复调用，所以它捕获的那些句柄
+                    // 只能借来 clone，不能整个搬出去——搬出去外面就成 FnOnce 了。
+                    let metas_rows = metas_dlg.clone();
+                    let own_rows = own_dlg.clone();
+                    let add = add_link.clone();
+                    let close_a = close_links.clone();
+                    let close_b = close_links.clone();
+                    view! {
+                        <div class="dmodal" on:click=close_a>
+                            <div class="panel dmbox" style="width:620px" on:click=|ev| ev.stop_propagation()>
+                                <h3>"关系（继承 / 覆盖）"</h3>
+                                <p class="mut">"继承：目标标签取到某个值时，本条跟着显示同一个值。覆盖：目标标签取到某个值时，本条改取另一个值。两侧的值都可留空，留空表示只约束「有没有值」。"</p>
+                                <div class="vc-list">
+                                    <div class="link-grid link-head">
+                                        <span>"本标签"</span>
+                                        <span>"本标签值"</span>
+                                        <span>"种类"</span>
+                                        <span>"目标标签"</span>
+                                        <span>"目标标签值"</span>
+                                        <span></span>
+                                    </div>
+                                    <For
+                                        each=move || link_rows.get()
+                                        key=|r| r.id
+                                        children=move |r: LinkRow| link_row_view(
+                                            r,
+                                            metas_rows.clone(),
+                                            own_rows.clone(),
+                                            link_rows,
+                                            editable,
+                                            dirty,
+                                        )
+                                    />
+                                    {editable.then(move || view! {
+                                        <button class="btn sm" on:click=add>"＋ 关系"</button>
+                                    })}
+                                    {move || link_rows.get().is_empty().then(|| {
+                                        view! { <span class="mut">"尚未配置关系。"</span> }
+                                    })}
+                                </div>
+                                {(!editable).then(|| view! {
+                                    <p class="mut">"内置标签或权限不足，关系只能查看。"</p>
+                                })}
+                                // 保存失败时错误显示在这里：遮罩盖住了页面顶部那条错误提示。
+                                {move || error.get().map(|e| view! { <p class="error">{e}</p> })}
+                                <div style="display:flex;gap:8px;justify-content:flex-end">
+                                    <button class="btn" on:click=close_b>
+                                        {move || if editable { "取消" } else { "关闭" }}
+                                    </button>
+                                    {editable.then(move || view! {
+                                        <button class="btn pri" disabled=move || !dirty.get()
+                                            on:click=move |_| save.run(Some(close_saved))>"保存"</button>
+                                    })}
+                                </div>
+                            </div>
+                        </div>
+                    }
+                })}
             </td>
             <td>
                 {if can_edit_basic {
-                    let ws2 = ws_id.clone();
-                    let nm = name.clone();
-                    let vt_save = value_type.clone();
                     view! {
-                        <button class="btn rowact" disabled=move || !dirty.get() on:click=move |_| {
-                            let evals: Vec<String> = enum_input.get().split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
-                            let t = title_input.get();
-                            let ws = ws2.clone();
-                            let n = nm.clone();
-                            let clr = base_color.get();
-                            let vcs = build_value_colors(vc_rows.get(), &vt_save);
-                            let attrs = {
-                                let fv = format_input.get();
-                                let sv = symbol_input.get();
-                                let uv = unit_input.get();
-                                let f = fv.trim();
-                                let sy = sv.trim();
-                                let u = uv.trim();
-                                label_attrs(
-                                    multi_input.get(),
-                                    (!f.is_empty()).then_some(f),
-                                    (!sy.is_empty()).then_some(sy),
-                                    (!u.is_empty()).then_some(u),
-                                    &default_input.get(),
-                                )
-                            };
-                            spawn_local(async move {
-                                if let Err(e) = update_label_schema(&ws, &n, &t, &evals, &attrs, clr.as_deref(), &vcs).await {
-                                    error.set(Some(e));
-                                }
-                                refresh.update(|x| *x += 1);
-                            });
-                        }>"保存"</button>
+                        <button class="btn rowact" disabled=move || !dirty.get() on:click=move |_| save.run(None)>"保存"</button>
                     }.into_any()
                 } else {
                     view! { <span></span> }.into_any()

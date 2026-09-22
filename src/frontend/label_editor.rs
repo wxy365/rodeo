@@ -8,7 +8,7 @@ use super::components::{
 };
 use super::graphql_client::{remove_labeling, set_labeling, Labeling, LabelSchema, Member};
 use super::icons::{ic_close, ic_tag};
-use super::query_eval::resolve_label_color;
+use super::query_eval::{derive_inherited, resolve_label_color};
 
 /// 标签编辑器（Entry 详情用）：只展示**这个条目已拥有**的标签，支持增 / 删 / 改。
 ///
@@ -135,6 +135,46 @@ pub fn LabelEditor(
                             })
                             .collect::<Vec<_>>()}
                     </select>
+                }
+                .into_any()
+            }}
+            {move || {
+                // 继承 / 覆盖得来的标签：只读展示，删不掉——它不是打在这一条上的，
+                // 要断掉得改标签定义里的关系。
+                let schemas_now = schemas.get();
+                let derived = derive_inherited(&schemas_now, &labels.get());
+                if derived.is_empty() {
+                    return ().into_any();
+                }
+                view! {
+                    <div class="inhgroup">
+                        <div class="hint">"以下标签由继承 / 覆盖关系得来，不能在这里移除"</div>
+                        {derived
+                            .into_iter()
+                            .map(|(name, value, src)| {
+                                let schema = schemas_now.iter().find(|s| s.name == name).cloned();
+                                let color = row_color(&schema, &value);
+                                let title = row_title(&schema, &name);
+                                let text = match &value {
+                                    Value::Null => title,
+                                    v => format!("{title}={}", value_to_string(v)),
+                                };
+                                let style = color
+                                    .map(|c| {
+                                        format!(
+                                            "border-color:{c};background:color-mix(in srgb, {c} 12%, transparent);color:{c}"
+                                        )
+                                    })
+                                    .unwrap_or_default();
+                                view! {
+                                    <div class="lblrow inh" style=style
+                                        title=format!("由「{src}」继承而来，未直接打在本条上")>
+                                        <span class="k">{ic_tag()}{text}</span>
+                                    </div>
+                                }
+                            })
+                            .collect::<Vec<_>>()}
+                    </div>
                 }
                 .into_any()
             }}

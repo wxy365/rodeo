@@ -99,11 +99,11 @@ pub struct CommentService {
 
 ## 6. 审计
 
-沿用 `LabelingSet` 的既有约定：`resource_type = "comment"`、`resource_id = <entry_code>`（评论 id 放在 before/after 快照里）。这样详情页按 `resource_id == code` 过滤的「审计历史」能直接显示评论记录。
+沿用 `LabelingSet` 的既有约定：`resource_type = "comment"`、`resource_id = <entry_code>`（评论 id 放在 before/after 快照里）。这样详情页按 `resource_id == code` 过滤的「历史」能直接显示评论记录。
 
 `AuditAction` 追加三个变体：`CommentCreated`、`CommentUpdated`、`CommentDeleted`。**必须追加在枚举末尾**——bincode 按变体序号编码，插在中间会让存量审计日志错位（`src/domain/audit.rs` 已有注释警告）。
 
-只写评论自身的审计，**不额外写 `EntryUpdated`**：一次发言产生两条记录会让审计历史噪音过大；`updated_at` 的推进已由评论记录的时间体现。
+只写评论自身的审计，**不额外写 `EntryUpdated`**：一次发言产生两条记录会让历史噪音过大；`updated_at` 的推进已由评论记录的时间体现。
 
 `src/frontend/components.rs` 的 `action_label` 配三个中文标签。
 
@@ -198,7 +198,7 @@ deleteComment(entryCode: String!, id: ID!): Boolean!                    # 作者
   4. Reader 账号看不到输入框与操作按钮；
   5. Worker 账号看不到他人评论的编辑按钮，Maintainer 能看到删除按钮；
   6. 全文检索能通过评论正文命中该条目；
-  7. 详情的「审计历史」出现评论记录；
+  7. 详情的「历史」出现评论记录；
   8. 视图表格的「更新时间」因发表评论而前移，评论徽标数字正确；
   9. **打开评论编辑框后，侧栏详情编辑器的工具栏仍然存在**（§7 那个 bug 的回归验证）；
   10. 控制台无 page error。

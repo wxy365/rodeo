@@ -1,9 +1,13 @@
 /target
+/dist
 /data
 /public/pkg
 node_modules
 /config.toml
+/certs
 .DS_Store
 /graphify-out
 /.superpowers
 /.codegraph
+/spec
+/docs

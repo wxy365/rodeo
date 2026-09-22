@@ -137,6 +137,31 @@ impl AuthService {
         Ok(account)
     }
 
+    /// 覆盖姓名与管理员标记。管理员改**别人**的账号走这里。
+    ///
+    /// 状态与密码不在此处，它们各有自己的守卫和副作用：状态走 [`Self::set_status`]
+    /// （附带吊销令牌、注销时释放邮箱索引），密码走 [`Self::change_password`]
+    /// （要验旧密码）。这里只是两个字段的覆盖写，所以不发令牌、不动邮箱索引。
+    ///
+    /// **不**吊销令牌：`is_admin` 根本不在 JWT 里，`require_admin` 每次现查账号，
+    /// 所以降权即刻生效，不必等旧令牌自然过期。
+    pub fn update_profile(
+        &self,
+        id: Ulid,
+        name: &str,
+        is_admin: bool,
+    ) -> Result<Account, AppError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(AppError::InvalidQuery("姓名不能为空".to_string()));
+        }
+        let mut account = self.find_by_id(id)?.ok_or(AppError::NotFound)?;
+        account.name = name.to_string();
+        account.is_admin = is_admin;
+        self.store.put(cf::ACCOUNTS, &account.id.to_bytes(), &account)?;
+        Ok(account)
+    }
+
     pub fn find_by_email(&self, email: &str) -> Result<Option<Account>, AppError> {
         let Some(raw) = self.store.get_raw(cf::ACCOUNTS_EMAIL_IDX, email.as_bytes())? else {
             return Ok(None);

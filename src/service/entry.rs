@@ -5,8 +5,8 @@ use ulid::Ulid;
 
 use crate::domain::view::{SortField, SortSpec};
 use crate::domain::{
-    generate_entry_code, AuditAction, AuditLog, Entry, EvalEnv, LabelSchema, LabelValue, Labeling,
-    Query,
+    generate_entry_code, AuditAction, AuditLog, DerivedLabel, Entry, EvalEnv, InheritanceGraph,
+    LabelSchema, LabelValue, Labeling, Query,
 };
 use crate::error::AppError;
 use crate::service::audit::audit_ops;
@@ -582,16 +582,20 @@ impl EntryService {
             } else {
                 std::collections::HashMap::new()
             };
+        // 标签定义整体读回：一份拿去查值与时间格式，一份拿去建继承图。
+        let all_schemas: Vec<LabelSchema> = self
+            .store
+            .scan_prefix(cf::LABEL_SCHEMAS, &ws.to_bytes())?
+            .into_iter()
+            .filter_map(|(_, v)| bincode::deserialize::<LabelSchema>(&v).ok())
+            .collect();
         // 标签名 → (值类型, 时间格式)，供时间型标签的 >/< 比较取布局。
         let schemas: std::collections::HashMap<
             String,
             (crate::domain::LabelValueType, Option<String>),
-        > = self
-            .store
-            .scan_prefix(cf::LABEL_SCHEMAS, &ws.to_bytes())?
-            .into_iter()
-            .filter_map(|(_, v)| bincode::deserialize::<crate::domain::LabelSchema>(&v).ok())
-            .map(|s| (s.name, (s.value_type, s.format)))
+        > = all_schemas
+            .iter()
+            .map(|s| (s.name.clone(), (s.value_type, s.format.clone())))
             .collect();
         let account_of = |id: ulid::Ulid| accounts.get(&id).cloned();
         let label_of = |name: &str| schemas.get(name).cloned();
@@ -600,6 +604,18 @@ impl EntryService {
         let labels_of = |code: &str| -> &[Labeling] {
             labels_map.get(code).map(Vec::as_slice).unwrap_or(&empty)
         };
+        // 继承推导只在表达式真的写了 `L4+` 时才做——否则一次全空间扫描白算。
+        let empty_derived: Vec<DerivedLabel> = Vec::new();
+        let derived_map: std::collections::HashMap<String, Vec<DerivedLabel>> =
+            if query.contains_inherited_label() {
+                let graph = InheritanceGraph::build(&all_schemas);
+                rows.iter()
+                    .map(|e| (e.code.clone(), graph.derive(labels_of(&e.code))))
+                    .filter(|(_, d)| !d.is_empty())
+                    .collect()
+            } else {
+                std::collections::HashMap::new()
+            };
         let mut matched: Vec<Entry> = rows
             .into_iter()
             .filter(|e| {
@@ -608,11 +624,16 @@ impl EntryService {
                     Some((keyword, set)) => kw == keyword && set.contains(&e.code),
                     None => false,
                 };
+                let derived = derived_map
+                    .get(&e.code)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&empty_derived);
                 let env = EvalEnv {
                     text_hit: &text_ok,
                     account_of: &account_of,
                     label_of: &label_of,
                     event: None,
+                    derived,
                 };
                 query.evaluate(e, labels, &env)
             })
@@ -623,6 +644,9 @@ impl EntryService {
             .iter()
             .flat_map(|e| labels_of(&e.code).iter().map(|l| l.label_name.clone()))
             .collect();
+        // `L4+` 引用的标签也进列集合：否则纯靠继承命中的条目在表格里没有可展示的列，
+        // 「继承来的要有所区别」也就无从谈起。
+        label_names.extend(query.inherited_label_names());
         label_names.sort();
         label_names.dedup();
 
@@ -1170,6 +1194,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
+                    links: vec![],
                 },
             )
             .unwrap();

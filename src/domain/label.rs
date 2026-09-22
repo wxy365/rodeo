@@ -254,6 +254,181 @@ pub struct LabelSchema {
     /// 无值标签（Null）用 `Some(LabelValue::Null)` 表示「默认打上」。
     #[serde(default)]
     pub default_value: Option<LabelValue>,
+    // 同样只能追加
+    /// 本标签与其他标签的继承 / 覆盖关系。见 `LabelLink`。
+    #[serde(default)]
+    pub links: Vec<LabelLink>,
+}
+
+/// 关系的两种写法。二者归一后是同一件事——「源命中即获得目标」——
+/// 区别只在于声明在谁的配置里、界面怎么念：
+///
+/// - `Inherit`（继承）声明在子标签上：打上本标签的条目也算有对方标签。
+/// - `Override`（覆盖）声明在覆盖标签上：打上对方标签的条目也算有本标签。
+///
+/// 于是「L5 覆盖 L4='V1'」与「L4='V1' 继承 L5」是同一张图上的同一条边。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LinkKind {
+    Inherit,
+    Override,
+}
+
+/// 一条标签关系。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LabelLink {
+    pub kind: LinkKind,
+    /// 对方标签的 key。
+    pub other: String,
+    /// 对方标签的值。
+    #[serde(default)]
+    pub other_value: Option<LabelValue>,
+    /// 本标签的取值：继承时是「仅当本标签为该值才触发」，覆盖时是「覆盖后本标签取的值」。
+    #[serde(default)]
+    pub own_value: Option<LabelValue>,
+}
+
+/// 继承推导出的标签：(标签名, 值)。
+/// 值为 `None` 表示只继承了 key——只满足存在性判断（`L4` / `!L4`），不参与值比较。
+pub type DerivedLabel = (String, Option<LabelValue>);
+
+/// 工作空间内全部标签关系归一成的一张有向图，供 `derive` 求传递闭包。
+/// 归一后每条边都是「源标签(可带值) → 获得标签(可带值)」。
+#[derive(Debug, Clone, Default)]
+pub struct InheritanceGraph {
+    by_from: std::collections::HashMap<String, Vec<Edge>>,
+}
+
+#[derive(Debug, Clone)]
+struct Edge {
+    /// 源侧的值限定；`None` = 源标签带任意值（含 key 继承来的无值）都触发。
+    from_value: Option<LabelValue>,
+    to: String,
+    to_value: Option<LabelValue>,
+}
+
+impl InheritanceGraph {
+    pub fn build(schemas: &[LabelSchema]) -> Self {
+        let mut by_from: std::collections::HashMap<String, Vec<Edge>> = std::collections::HashMap::new();
+        for s in schemas {
+            for l in &s.links {
+                // 「继承」以本标签为源、「覆盖」以对方为源。
+                let (from, from_value, to, to_value) = match l.kind {
+                    LinkKind::Inherit => {
+                        (&s.name, l.own_value.clone(), &l.other, l.other_value.clone())
+                    }
+                    LinkKind::Override => {
+                        (&l.other, l.other_value.clone(), &s.name, l.own_value.clone())
+                    }
+                };
+                by_from.entry(from.clone()).or_default().push(Edge {
+                    from_value,
+                    to: to.clone(),
+                    to_value,
+                });
+            }
+        }
+        Self { by_from }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.by_from.is_empty()
+    }
+
+    /// 找出任意一条环，返回环上的标签名（首尾同名，如 `["L3", "L4", "L3"]`）。
+    ///
+    /// 只看标签名、不看值：值层面的环必然包含名字层面的环，按名字判更保守，不会漏。
+    /// 先跑 Kahn 拓扑剥离圈出所有处在环里的节点，再在剩下的子图里走出一条具体的环，
+    /// 只为了报错时能指出是哪儿打结了。
+    pub fn find_cycle(&self) -> Option<Vec<String>> {
+        use std::collections::{HashMap, HashSet};
+
+        let mut indeg: HashMap<&str, usize> = HashMap::new();
+        for (from, edges) in &self.by_from {
+            indeg.entry(from.as_str()).or_insert(0);
+            for e in edges {
+                *indeg.entry(e.to.as_str()).or_insert(0) += 1;
+            }
+        }
+        let mut queue: Vec<&str> = indeg
+            .iter()
+            .filter(|(_, d)| **d == 0)
+            .map(|(n, _)| *n)
+            .collect();
+        let mut settled: HashSet<&str> = HashSet::new();
+        while let Some(n) = queue.pop() {
+            settled.insert(n);
+            for e in self.by_from.get(n).into_iter().flatten() {
+                if let Some(d) = indeg.get_mut(e.to.as_str()) {
+                    *d -= 1;
+                    if *d == 0 {
+                        queue.push(e.to.as_str());
+                    }
+                }
+            }
+        }
+        let stuck: HashSet<&str> = indeg
+            .keys()
+            .copied()
+            .filter(|n| !settled.contains(n))
+            .collect();
+        let start = *stuck.iter().next()?;
+
+        let mut path = vec![start.to_string()];
+        let mut cur = start;
+        // 环上的点必有指向环内的出边，所以这里不会空手而归。
+        loop {
+            let next = self
+                .by_from
+                .get(cur)?
+                .iter()
+                .map(|e| e.to.as_str())
+                .find(|t| stuck.contains(t))?;
+            if let Some(i) = path.iter().position(|p| p == next) {
+                let mut cycle = path[i..].to_vec();
+                cycle.push(next.to_string());
+                return Some(cycle);
+            }
+            path.push(next.to_string());
+            cur = next;
+        }
+    }
+
+    /// 由直接打标推出全部继承来的标签。环安全：同一份 (标签, 值) 只走一次。
+    /// 已经有直接打标的标签名不出现在结果里——直接打上的值优先，免得两处打架。
+    pub fn derive(&self, direct: &[Labeling]) -> Vec<DerivedLabel> {
+        if self.by_from.is_empty() {
+            return Vec::new();
+        }
+        let direct_names: std::collections::HashSet<&str> =
+            direct.iter().map(|l| l.label_name.as_str()).collect();
+        let mut seen: Vec<DerivedLabel> = Vec::new();
+        let mut queue: Vec<DerivedLabel> = direct
+            .iter()
+            .map(|l| (l.label_name.clone(), Some(l.value.clone())))
+            .collect();
+        while let Some((name, value)) = queue.pop() {
+            let Some(edges) = self.by_from.get(&name) else {
+                continue;
+            };
+            for e in edges {
+                // 值限定只认带值的持有：key 继承来的「无值」不能冒充某个具体值。
+                if let Some(want) = &e.from_value {
+                    if value.as_ref() != Some(want) {
+                        continue;
+                    }
+                }
+                let item: DerivedLabel = (e.to.clone(), e.to_value.clone());
+                if direct_names.contains(item.0.as_str()) || seen.contains(&item) {
+                    continue;
+                }
+                seen.push(item.clone());
+                queue.push(item);
+            }
+        }
+        seen
+    }
 }
 
 /// 标签值到颜色的映射规则。用普通 struct 而非 tagged enum：`LabelSchema` 以 bincode
@@ -289,6 +464,7 @@ impl LabelSchema {
             currency_symbol: None,
             unit: None,
             default_value: None,
+            links: Vec::new(),
         }
     }
 

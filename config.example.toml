@@ -1,7 +1,11 @@
 [server]
+# 监听地址的真来源。host 必须是字面 IP——写 localhost 会在启动时报错告终，
+# 因为 SocketAddr 不接受主机名。
+# 环境变量 LEPTOS_SITE_ADDR 一旦设置则整体覆盖这两项：cargo leptos watch 在 dev 下会
+# 注入它（值为 Cargo.toml 的 site-addr），所以 dev 始终是 127.0.0.1:3000，改这里的
+# host/port 只在手工启动二进制时生效。运维要临时改端口也可以直接设这个变量。
 host = "0.0.0.0"
 port = 3000
-base_url = "https://localhost:3000"
 
 # 取消注释即以 HTTPS 启动，ALPN 会协商到 HTTP/2；本节整体缺失则维持明文 HTTP。
 # 证书不进仓库（见 .gitignore 的 /certs）。本地自签：

@@ -126,6 +126,10 @@ select:focus {
     background: var(--bg2);
     color: var(--ink2);
 }
+/* 继承 / 覆盖得来的标签：虚线描边，与直接打上的实心 chip 区分开。 */
+.chip.inh {
+    border: 1px dashed var(--line);
+}
 .chip .ibtn {
     width: 16px;
     height: 16px;
@@ -762,6 +766,17 @@ select:focus {
     align-items: center;
     gap: 4px;
 }
+/* 继承 / 覆盖得来的标签行：虚线描边、无编辑控件。 */
+.lblrow.inh {
+    border-style: dashed;
+}
+.inhgroup {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin-top: 6px;
+}
 .lblrow select,
 .lblrow .inp {
     width: auto;
@@ -1115,6 +1130,38 @@ input[type="color"].sw:disabled {
 .vc-del:hover:not(:disabled) {
     color: var(--dgr);
 }
+/* 表格里的纯图标按钮：标签定义表的关系列。 */
+.icbtn {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 5px;
+    border: 0;
+    background: none;
+    color: var(--ink2);
+    cursor: pointer;
+    border-radius: var(--r-s);
+}
+.icbtn:hover {
+    background: var(--bg2);
+    color: var(--blue);
+}
+/* 关系编辑器：一行 = 本标签 / 本标签值 / 种类 / 目标标签 / 目标标签值 / 删除。
+   列宽写死是为了让表头和各行的控件对齐；控件宽度由格子给，自己不再写 width。 */
+.link-grid {
+    display: grid;
+    grid-template-columns: 64px 104px 68px 116px 104px 26px;
+    gap: 4px 6px;
+    align-items: center;
+}
+.link-grid .inp {
+    width: 100%;
+    padding: 3px 6px;
+    font-size: 12px;
+}
+.link-head {
+    font-size: 12px;
+    color: var(--ink3);
+}
 /* 视图标题颜色规则编辑器 */
 .tc-rules {
     display: flex;
@@ -1242,6 +1289,17 @@ input[type="color"].sw:disabled {
     border-radius: var(--r-s);
     box-shadow: 0 6px 20px rgb(0 0 0 / 0.12);
 }
+/* 头像与菜单之间那 4px 的 `margin-top` 是一片「死区」：光标从头像往下走，跨过它的
+   一瞬间就已经离开了 `.avatar-menu` 的悬停范围，菜单当场收起，手还没来得及点。用一块
+   透明伪元素把这道缝补上——它属于 `.avatar-drop`，于是悬停链不断。 */
+.avatar-drop::before {
+    content: "";
+    position: absolute;
+    top: -6px;
+    left: 0;
+    right: 0;
+    height: 6px;
+}
 .avatar-menu:hover .avatar-drop,
 .avatar-menu:focus-within .avatar-drop {
     display: block;
@@ -1351,6 +1409,11 @@ input[type="color"].sw:disabled {
 .page-app .wmain > .vhead,
 .page-app .wmain > .filters {
     flex: 0 0 auto;
+}
+
+/* 设置页的表格列多（标签定义有 7 列），收在 1280px 里会挤成一团，故放宽到整个视口。 */
+.page-wide {
+    max-width: none;
 }
 
 /* ===== 侧栏收缩 ===== */

@@ -233,6 +233,9 @@ pub struct LabelSchema {
     /// 数值型标签的单位后缀。
     #[serde(default)]
     pub unit: Option<String>,
+    /// 继承/覆盖关系：`[{ kind, other, otherValue, ownValue }]`，`kind` 为 inherit|override。
+    #[serde(default)]
+    pub links: Value,
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -260,7 +263,7 @@ const COMMENT_FIELDS: &str = "id entryCode body createdAt updatedAt createdBy up
      createdByAccount { id name email } updatedByAccount { id name email }";
 
 const LABEL_SCHEMA_FIELDS: &str =
-    "name title valueType enumValues color valueColors multi format currencySymbol unit defaultValue";
+    "name title valueType enumValues color valueColors multi format currencySymbol unit defaultValue links";
 
 /// 组装 `LabelSchemaAttrsInput`（camelCase）。
 ///
@@ -272,6 +275,7 @@ pub fn label_attrs(
     currency_symbol: Option<&str>,
     unit: Option<&str>,
     default_value: &Value,
+    links: &Value,
 ) -> Value {
     json!({
         "multi": multi,
@@ -279,6 +283,7 @@ pub fn label_attrs(
         "currencySymbol": currency_symbol,
         "unit": unit,
         "defaultValue": default_value,
+        "links": links,
     })
 }
 
@@ -350,6 +355,23 @@ pub async fn set_account_status(
     )
     .await?;
     serde_json::from_value(data.get("setAccountStatus").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+/// 改账号的姓名与管理员标记。状态变更走 [`set_account_status`]——那一条还要吊销令牌、
+/// 注销时释放邮箱索引，和这里的字段覆盖不是一回事。
+pub async fn update_account(
+    account_id: &str,
+    name: &str,
+    is_admin: bool,
+) -> Result<AdminAccount, String> {
+    let data = graphql(
+        "mutation($id: ID!, $n: String!, $a: Boolean!) { \
+         updateAccount(accountId: $id, name: $n, isAdmin: $a) { id email name isAdmin status createdAt isBuiltin } }",
+        json!({ "id": account_id, "n": name, "a": is_admin }),
+    )
+    .await?;
+    serde_json::from_value(data.get("updateAccount").cloned().unwrap_or(Value::Null))
         .map_err(|e| e.to_string())
 }
 

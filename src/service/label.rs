@@ -3,7 +3,8 @@ use std::sync::Arc;
 use ulid::Ulid;
 
 use crate::domain::{
-    AuditAction, AuditLog, LabelSchema, LabelValue, LabelValueType, ValueColor, RESERVED_FIELDS,
+    AuditAction, AuditLog, InheritanceGraph, LabelLink, LabelSchema, LabelValue, LabelValueType,
+    LinkKind, ValueColor, RESERVED_FIELDS,
 };
 use crate::error::AppError;
 use crate::service::audit::audit_ops;
@@ -25,6 +26,111 @@ pub struct LabelSchemaInput {
     pub value_colors: Vec<ValueColor>,
     /// 默认值（原始 JSON）。`None` / `null` 表示没有默认值。
     pub default_value: Option<serde_json::Value>,
+    /// 继承 / 覆盖关系。两侧的值都是原始 JSON，由 `resolve_links` 按对应 schema 解析。
+    pub links: Vec<LabelLinkInput>,
+}
+
+/// 一条关系的原始输入。
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LabelLinkInput {
+    pub kind: LinkKind,
+    pub other: String,
+    #[serde(default)]
+    pub other_value: Option<serde_json::Value>,
+    #[serde(default)]
+    pub own_value: Option<serde_json::Value>,
+}
+
+/// 按 schema 解析一个可选值：给了值但类型对不上就报错。
+fn resolve_link_value(
+    raw: &Option<serde_json::Value>,
+    schema: &LabelSchema,
+    what: &str,
+) -> Result<Option<LabelValue>, AppError> {
+    match raw {
+        // `null` 与不传等价：都是「不带值」。
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(_) if schema.value_type == LabelValueType::Null => Err(AppError::InvalidQuery(
+            format!("{what}是无值标签，不能指定值"),
+        )),
+        Some(v) => Ok(Some(LabelValue::from_json(v, schema)?)),
+    }
+}
+
+/// 校验并解析本标签的关系列表。`schema` 是本标签（尚未落库的新定义也行）。
+///
+/// 只校验「能不能写进去」：关系指向的标签必须存在、两侧的值要各自符合对方的类型、
+/// 不许自引用、不许重复。环不做拦截——推导本身是环安全的（同一份「标签+值」只走一次），
+/// 而互相继承在语义上就是「这两个标签等价」，未必是笔误。
+fn resolve_links(
+    store: &DocStore,
+    ws_id: Ulid,
+    schema: &LabelSchema,
+    inputs: Vec<LabelLinkInput>,
+) -> Result<Vec<LabelLink>, AppError> {
+    let mut out: Vec<LabelLink> = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        let other_name = input.other.trim();
+        if other_name.is_empty() {
+            return Err(AppError::InvalidQuery("关系里没有填对方标签".to_string()));
+        }
+        if other_name == schema.name {
+            return Err(AppError::InvalidQuery(format!(
+                "标签 {} 不能与自己建立继承 / 覆盖关系",
+                schema.name
+            )));
+        }
+        let other = store
+            .get::<LabelSchema>(cf::LABEL_SCHEMAS, &keys::label_schema_key(ws_id, other_name))?
+            .ok_or_else(|| AppError::InvalidQuery(format!("标签不存在: {other_name}")))?;
+        let link = LabelLink {
+            kind: input.kind,
+            other: other_name.to_string(),
+            other_value: resolve_link_value(
+                &input.other_value,
+                &other,
+                &format!("标签 {other_name}"),
+            )?,
+            own_value: resolve_link_value(
+                &input.own_value,
+                schema,
+                &format!("标签 {}", schema.name),
+            )?,
+        };
+        if out.contains(&link) {
+            return Err(AppError::InvalidQuery(format!(
+                "标签 {} 上有一条重复的关系: {other_name}",
+                schema.name
+            )));
+        }
+        out.push(link);
+    }
+    Ok(out)
+}
+
+/// 拒绝会形成环的关系。互相继承在语义上就是「这两个标签等价」，实际几乎都是笔误，
+/// 所以建关系时就拦掉，而不是等推导时安静地绕圈。
+///
+/// 判定把本工作空间里所有标签的关系拼成一张图（本标签用刚解析好的 `links` 覆盖），
+/// 再看有没有环——环可能不是这一条关系自己造的，而是「A 已指向 B，现在给 B 加一条
+/// 指回 A」这种后加的一笔，所以必须带上全量关系一起判。
+fn check_no_cycle(store: &DocStore, ws_id: Ulid, schema: &LabelSchema) -> Result<(), AppError> {
+    let mut all: Vec<LabelSchema> = Vec::new();
+    for (_, v) in store.scan_prefix(cf::LABEL_SCHEMAS, &ws_id.to_bytes())? {
+        let s: LabelSchema = bincode::deserialize(&v)?;
+        if s.name != schema.name {
+            all.push(s);
+        }
+    }
+    all.push(schema.clone());
+    if let Some(cycle) = InheritanceGraph::build(&all).find_cycle() {
+        return Err(AppError::InvalidQuery(format!(
+            "标签关系存在环: {}",
+            cycle.join(" → ")
+        )));
+    }
+    Ok(())
 }
 
 /// 校验颜色字符串为 `#rrggbb` 形式（不引入 regex 依赖）。
@@ -158,27 +264,33 @@ impl LabelService {
         Self { store }
     }
 
-    /// 修复 `default_value` 之前落库的标签定义。bincode 按位置编码，末尾新增的
-    /// `Option` 字段会让存量记录解码时直接读到 EOF——`#[serde(default)]` 拦不住这一步，
-    /// 因为解码器根本走不到「用默认值补上缺失字段」那一步。这些记录只缺末尾那一个
-    /// `None` 标签，补上即可原样读回；读回后按当前编码写回，此后所有读取路径都不再需要
-    /// 兼容分支。幂等：修完再扫不会命中。返回修好的条数。
+    /// 修复末尾新增字段之前落库的标签定义。bincode 按位置编码，末尾新增的字段会让
+    /// 存量记录解码时直接读到 EOF——`#[serde(default)]` 拦不住这一步，因为解码器根本
+    /// 走不到「用默认值补上缺失字段」那一步。
+    ///
+    /// 缺的字节数取决于落库时究竟到哪一版为止，所以这里按 1..=[`MAX_PAD_BYTES`] 依次
+    /// 试补零，取第一个能解出来的：`Option` 的缺失是 1 个零字节，`Vec` 的缺失是 8 个
+    /// （u64 长度 0），两个一起缺就是 9 个。读回后按当前编码写回，此后所有读取路径都
+    /// 不再需要兼容分支。幂等：修完再扫不会命中。返回修好的条数。
     pub fn repair_legacy_schemas(&self) -> Result<usize, AppError> {
+        const MAX_PAD_BYTES: usize = 16;
         let mut ops = Vec::new();
         for (key, value) in self.store.scan_prefix(cf::LABEL_SCHEMAS, b"")? {
             if bincode::deserialize::<LabelSchema>(&value).is_ok() {
                 continue;
             }
-            let mut padded = value.clone();
-            padded.push(0);
-            // 补上之后仍读不出来，说明不是这一个字段的问题，原样留着交给读取路径报错。
-            if let Ok(schema) = bincode::deserialize::<LabelSchema>(&padded) {
-                ops.push(BatchOp::put(cf::LABEL_SCHEMAS, key, &schema)?);
-            } else {
-                tracing::warn!(
+            let repaired = (1..=MAX_PAD_BYTES).find_map(|pad| {
+                let mut padded = value.clone();
+                padded.resize(padded.len() + pad, 0);
+                bincode::deserialize::<LabelSchema>(&padded).ok()
+            });
+            match repaired {
+                Some(schema) => ops.push(BatchOp::put(cf::LABEL_SCHEMAS, key, &schema)?),
+                // 补零也读不出来，说明不是缺末尾字段的问题，原样留着交给读取路径报错。
+                None => tracing::warn!(
                     "标签定义无法修复，保留原样: {}",
                     String::from_utf8_lossy(&key)
-                );
+                ),
             }
         }
         let repaired = ops.len();
@@ -245,6 +357,8 @@ impl LabelService {
         if let Some(dv) = &schema.default_value {
             check_account_member(&self.store, ws_id, dv)?;
         }
+        schema.links = resolve_links(&self.store, ws_id, &schema, input.links)?;
+        check_no_cycle(&self.store, ws_id, &schema)?;
         let audit = AuditLog::new(
             AuditAction::LabelSchemaCreated,
             actor,
@@ -286,6 +400,7 @@ impl LabelService {
             color: input.color,
             value_colors: input.value_colors,
             default_value: input.default_value,
+            links: input.links,
         };
         validate_attrs(&check)?;
         validate_colors(
@@ -307,6 +422,8 @@ impl LabelService {
         if let Some(dv) = &schema.default_value {
             check_account_member(&self.store, ws_id, dv)?;
         }
+        schema.links = resolve_links(&self.store, ws_id, &schema, check.links)?;
+        check_no_cycle(&self.store, ws_id, &schema)?;
         let after = serde_json::to_string(&schema).unwrap_or_default();
         let audit = AuditLog::new(
             AuditAction::LabelSchemaUpdated,
@@ -363,6 +480,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
+                    links: vec![],
                 },
             )
             .unwrap();
@@ -386,6 +504,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
+                    links: vec![],
                 },
             )
             .unwrap_err();
@@ -408,6 +527,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
+                    links: vec![],
                 },
             )
             .unwrap_err();
@@ -430,6 +550,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
+                    links: vec![],
                 },
             )
             .unwrap_err();
@@ -456,6 +577,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
+                    links: vec![],
                 },
             )
             .unwrap();
@@ -497,6 +619,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
+                    links: vec![],
                 },
             )
             .is_err());
@@ -516,6 +639,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
+                    links: vec![],
                 },
             )
             .is_err());
@@ -536,6 +660,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
+                    links: vec![],
                 },
             )
             .unwrap();
@@ -574,6 +699,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
+                    links: vec![],
                 },
             )
             .unwrap_err();
@@ -622,6 +748,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
+                    links: vec![],
                 },
             )
             .unwrap();
@@ -647,6 +774,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
+                    links: vec![],
                 },
             )
             .is_err());

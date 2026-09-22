@@ -4,7 +4,9 @@ use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
-use crate::domain::{Entry, LabelEvent, LabelSchema, LabelValue, LabelValueType, Labeling};
+use crate::domain::{
+    DerivedLabel, Entry, LabelEvent, LabelSchema, LabelValue, LabelValueType, Labeling,
+};
 use crate::error::AppError;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -41,6 +43,20 @@ pub enum Field {
     EventLabel, // $label
     EventOld,   // $old
     EventNew,   // $new
+    // 追加在末尾：标签字段的「含继承」写法（表达式里写作 `L4+`）。
+    // 默认只匹配直接打上的打标，这个变体把继承关联来的也算上。
+    LabelInherited(String),
+}
+
+impl Field {
+    /// 标签字段 → (标签名, 是否连继承关联一起算)。非标签字段返回 `None`。
+    pub fn label_of(&self) -> Option<(&str, bool)> {
+        match self {
+            Field::Label(n) => Some((n, false)),
+            Field::LabelInherited(n) => Some((n, true)),
+            _ => None,
+        }
+    }
 }
 
 /// 内置元数据关键字（大小写不敏感）。供词法器与标签保留名校验共用。
@@ -74,7 +90,40 @@ impl Query {
         match self {
             Query::And(v) | Query::Or(v) => v.iter().any(Query::contains_label),
             Query::Not(q) => q.contains_label(),
-            Query::Cond(c) => matches!(c.field, Field::Label(_)),
+            Query::Cond(c) => c.field.label_of().is_some(),
+        }
+    }
+
+    /// 整棵树里是否有 `L4+` 这类「含继承」条件——没有就不必算继承推导。
+    pub fn contains_inherited_label(&self) -> bool {
+        match self {
+            Query::And(v) | Query::Or(v) => v.iter().any(Query::contains_inherited_label),
+            Query::Not(q) => q.contains_inherited_label(),
+            Query::Cond(c) => matches!(c.field, Field::LabelInherited(_)),
+        }
+    }
+
+    /// 表达式里以 `+` 引用的标签名（去重，保持出现顺序）。
+    /// 视图的标签列据此把这些标签也带上——否则纯靠继承命中的条目在表格里没有可展示的列。
+    pub fn inherited_label_names(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        self.collect_inherited_names(&mut out);
+        out
+    }
+
+    fn collect_inherited_names(&self, out: &mut Vec<String>) {
+        match self {
+            Query::And(v) | Query::Or(v) => {
+                v.iter().for_each(|q| q.collect_inherited_names(out))
+            }
+            Query::Not(q) => q.collect_inherited_names(out),
+            Query::Cond(c) => {
+                if let Field::LabelInherited(name) = &c.field {
+                    if !out.iter().any(|n| n == name) {
+                        out.push(name.clone());
+                    }
+                }
+            }
         }
     }
 
@@ -185,6 +234,9 @@ pub struct EvalEnv<'a> {
     pub label_of: &'a dyn Fn(&str) -> Option<(LabelValueType, Option<String>)>,
     /// 当前事件。视图查询为 None，此时事件字段恒为假。
     pub event: Option<&'a LabelEvent>,
+    /// 继承推导出的标签（`InheritanceGraph::derive` 的结果），只被 `L4+` 这类条件使用。
+    /// 传给普通条件也无妨——它们压根不看这一项。
+    pub derived: &'a [DerivedLabel],
 }
 
 impl Condition {
@@ -242,7 +294,7 @@ impl Condition {
                     }
                 }
             }
-            Field::Label(name) => {
+            Field::Label(name) | Field::LabelInherited(name) => {
                 let schema = schemas
                     .iter()
                     .find(|s| &s.name == name)
@@ -317,6 +369,10 @@ impl Condition {
     }
 
     fn evaluate(&self, entry: &Entry, labels: &[Labeling], env: &EvalEnv) -> bool {
+        // 标签条件（含 `L4+`）在 match 之前处理，免得两个字段变体里抄一遍同样的逻辑。
+        if let Some((name, inherited)) = self.field.label_of() {
+            return self.eval_label(name, inherited, labels, env);
+        }
         match &self.field {
             Field::Text => self
                 .value
@@ -358,34 +414,8 @@ impl Condition {
                     _ => false,
                 }
             }
-            Field::Label(name) => match self.op {
-                Op::Present => labels.iter().any(|l| &l.label_name == name),
-                Op::Absent => !labels.iter().any(|l| &l.label_name == name),
-                _ => {
-                    let Some(l) = labels.iter().find(|l| &l.label_name == name) else {
-                        return false;
-                    };
-                    // 时间型标签按布局解析成时刻再比，避免自定义布局下字符串比较出错。
-                    if let Some((vt, fmt)) = (env.label_of)(name) {
-                        if matches!(
-                            vt,
-                            LabelValueType::Date | LabelValueType::Time | LabelValueType::DateTime
-                        ) && matches!(
-                            self.op,
-                            Op::Eq | Op::Ne | Op::Gt | Op::Ge | Op::Lt | Op::Le
-                        ) {
-                            let layout = crate::domain::label::resolve_layout(fmt.as_deref(), vt);
-                            return cmp_time_layout(
-                                &l.value.to_json(),
-                                &layout,
-                                self.op,
-                                self.value.as_ref(),
-                            );
-                        }
-                    }
-                    cmp_value(&l.value.to_json(), self.op, self.value.as_ref())
-                }
-            },
+            // 上面已早返回，这里只为让 match 穷尽。
+            Field::Label(_) | Field::LabelInherited(_) => false,
             // 事件字段：无事件（视图查询）时恒假。校验已保证这种用法存不进库。
             Field::EventLabel | Field::EventOld | Field::EventNew => {
                 let Some(ev) = env.event else { return false };
@@ -419,6 +449,60 @@ impl Condition {
                     }
                 }
                 cmp_value(&got, self.op, self.value.as_ref())
+            }
+        }
+    }
+
+    /// 单个标签条件求值。`inherited` = 是否把继承关联来的标签也算上（`L4+`）。
+    ///
+    /// 值比较只在「本条件能拿到一个值」时才成立：`L4+` 遇到一个只继承了 key 的
+    /// L4（值为 `None`）会返回假——key 继承本就只承诺存在性。
+    fn eval_label(
+        &self,
+        name: &str,
+        inherited: bool,
+        labels: &[Labeling],
+        env: &EvalEnv,
+    ) -> bool {
+        let direct = labels.iter().find(|l| &l.label_name == name);
+        // 外层 `Option` = 有没有继承来，内层 = 继承来的那一份带没带值。两者不能混：
+        // key 继承（`L5` 继承 `L3`，无关值）只承诺存在性，值仍是 `None`。
+        let derived = env
+            .derived
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.as_ref());
+        let held = direct.is_some() || (inherited && derived.is_some());
+        match self.op {
+            Op::Present => held,
+            Op::Absent => !held,
+            _ => {
+                // 直接打上的值优先；没直接打上才退到继承来的值。
+                let value = match (direct, inherited) {
+                    (Some(l), _) => Some(&l.value),
+                    (None, true) => derived.flatten(),
+                    (None, false) => None,
+                };
+                let Some(value) = value else { return false };
+                // 时间型标签按布局解析成时刻再比，避免自定义布局下字符串比较出错。
+                if let Some((vt, fmt)) = (env.label_of)(name) {
+                    if matches!(
+                        vt,
+                        LabelValueType::Date | LabelValueType::Time | LabelValueType::DateTime
+                    ) && matches!(
+                        self.op,
+                        Op::Eq | Op::Ne | Op::Gt | Op::Ge | Op::Lt | Op::Le
+                    ) {
+                        let layout = crate::domain::label::resolve_layout(fmt.as_deref(), vt);
+                        return cmp_time_layout(
+                            &value.to_json(),
+                            &layout,
+                            self.op,
+                            self.value.as_ref(),
+                        );
+                    }
+                }
+                cmp_value(&value.to_json(), self.op, self.value.as_ref())
             }
         }
     }
@@ -512,7 +596,7 @@ fn type_label(vt: LabelValueType) -> &'static str {
 /// 字段的规范名：内置字段给出关键字原文，Label 无规范名（返回空串）。
 pub fn canonical_name(f: &Field) -> &'static str {
     match f {
-        Field::Label(_) => "",
+        Field::Label(_) | Field::LabelInherited(_) => "",
         Field::Code => "Code",
         Field::Title => "Title",
         Field::Detail => "Detail",
@@ -717,6 +801,7 @@ enum Tok {
     Tilde,
     NotTilde,
     Bang,
+    Plus,
     And,
     Or,
     Not,
@@ -757,6 +842,7 @@ fn lex(input: &str) -> Result<Vec<Tok>, AppError> {
                 _ => { out.push(Tok::Bang); i += 1; }
             },
             '~' => { out.push(Tok::Tilde); i += 1; }
+            '+' => { out.push(Tok::Plus); i += 1; }
             '$' => {
                 let start = i + 1;
                 let mut j = start;
@@ -856,6 +942,7 @@ fn tok_label(t: Option<&Tok>) -> String {
         Some(Tok::Tilde) => "~".to_string(),
         Some(Tok::NotTilde) => "!~".to_string(),
         Some(Tok::Bang) => "!".to_string(),
+        Some(Tok::Plus) => "+".to_string(),
         Some(Tok::And) => "AND".to_string(),
         Some(Tok::Or) => "OR".to_string(),
         Some(Tok::Not) => "NOT".to_string(),
@@ -929,8 +1016,11 @@ impl Parser {
             // `!标签名` 是存在性取反的语法糖，直接落成缺席条件（等价于旧的 absent()）；
             // 其余形式按普通一元否定处理，`!x` 即 `NOT x`。
             return Ok(match self.parse_primary()? {
-                Query::Cond(Condition { field: Field::Label(name), op: Op::Present, value: None }) => {
-                    Query::Cond(Condition { field: Field::Label(name), op: Op::Absent, value: None })
+                // 字段原样带走：`!L4+` 是「直接与继承都没有」。
+                Query::Cond(Condition { field, op: Op::Present, value: None })
+                    if field.label_of().is_some() =>
+                {
+                    Query::Cond(Condition { field, op: Op::Absent, value: None })
                 }
                 other => Query::Not(Box::new(other)),
             });
@@ -1005,7 +1095,15 @@ impl Parser {
         let field = match self.next() {
             Some(Tok::Builtin(f)) => f,
             Some(Tok::EventField(f)) => f,
-            Some(Tok::Ident(s)) => Field::Label(s),
+            Some(Tok::Ident(s)) => {
+                // 后缀 `+`：连继承关联来的条目一起匹配（`L4+`）。
+                if self.peek() == Some(&Tok::Plus) {
+                    self.next();
+                    Field::LabelInherited(s)
+                } else {
+                    Field::Label(s)
+                }
+            }
             other => {
                 return Err(AppError::InvalidQuery(format!(
                     "期望字段，实际 {}",
@@ -1013,7 +1111,13 @@ impl Parser {
                 )))
             }
         };
-        if let Field::Label(_) = &field {
+        // `+` 只对标签有意义：内置元数据没有继承可言。
+        if self.peek() == Some(&Tok::Plus) && field.label_of().is_none() {
+            return Err(AppError::InvalidQuery(
+                "只有标签支持 +（连继承关联一起匹配）".to_string(),
+            ));
+        }
+        if field.label_of().is_some() {
             if self.peek() == Some(&Tok::LParen) {
                 return Err(AppError::InvalidQuery(
                     "不再支持 present()/absent()：标签名单独出现即表示「存在」，前缀 ! 表示「不存在」"
@@ -1142,6 +1246,7 @@ impl Condition {
     fn to_expr(&self) -> String {
         let field = match &self.field {
             Field::Label(name) => name.clone(),
+            Field::LabelInherited(name) => format!("{name}+"),
             other => canonical_name(other).to_string(),
         };
         match self.op {
@@ -1220,7 +1325,7 @@ mod tests {
         let never = |_: &str| false;
         let no_acct = |_: Ulid| None;
         let no_label = |_: &str| None;
-        let env = EvalEnv { text_hit: &never, account_of: &no_acct, label_of: &no_label, event: None };
+        let env = EvalEnv { text_hit: &never, account_of: &no_acct, label_of: &no_label, event: None, derived: &[] };
         assert!(Query::parse("Score = 7").unwrap().evaluate(&e, &labels, &env));
         assert!(!Query::parse("Score != 7").unwrap().evaluate(&e, &labels, &env));
     }
@@ -1254,7 +1359,7 @@ mod tests {
         let never = |_: &str| false;
         let no_acct = |_: Ulid| None;
         let no_label = |_: &str| None;
-        let env = EvalEnv { text_hit: &never, account_of: &no_acct, label_of: &no_label, event: None };
+        let env = EvalEnv { text_hit: &never, account_of: &no_acct, label_of: &no_label, event: None, derived: &[] };
 
         let present = Query::parse("Task").unwrap();
         assert!(present.evaluate(&e, &labels, &env));
@@ -1289,7 +1394,7 @@ mod tests {
         let never = |_: &str| false;
         let no_acct = |_: Ulid| None;
         let no_label = |_: &str| None;
-        let env = EvalEnv { text_hit: &never, account_of: &no_acct, label_of: &no_label, event: None };
+        let env = EvalEnv { text_hit: &never, account_of: &no_acct, label_of: &no_label, event: None, derived: &[] };
 
         let present = Query::Cond(Condition { field: Field::Label("Task".into()), op: Op::Present, value: None });
         assert!(present.evaluate(&e, &labels, &env));
@@ -1313,7 +1418,7 @@ mod tests {
         let never = |_: &str| false;
         let no_acct = |_: Ulid| None;
         let no_label = |_: &str| None;
-        let env = EvalEnv { text_hit: &never, account_of: &no_acct, label_of: &no_label, event: None };
+        let env = EvalEnv { text_hit: &never, account_of: &no_acct, label_of: &no_label, event: None, derived: &[] };
         let cond = |name: &str, op: Op, v: serde_json::Value| Query::Cond(Condition {
             field: Field::Label(name.into()), op, value: Some(v),
         });
@@ -1331,7 +1436,7 @@ mod tests {
         let never = |_: &str| false;
         let no_acct = |_: Ulid| None;
         let no_label = |_: &str| None;
-        let env = EvalEnv { text_hit: &never, account_of: &no_acct, label_of: &no_label, event: None };
+        let env = EvalEnv { text_hit: &never, account_of: &no_acct, label_of: &no_label, event: None, derived: &[] };
         let future = Query::Cond(Condition {
             field: Field::UpdatedAt, op: Op::Gt, value: Some(serde_json::json!("2099-01-01")),
         });
@@ -1351,8 +1456,8 @@ mod tests {
         let miss = |_: &str| false;
         let no_acct = |_: Ulid| None;
         let no_label = |_: &str| None;
-        let hit_env = EvalEnv { text_hit: &hit, account_of: &no_acct, label_of: &no_label, event: None };
-        let miss_env = EvalEnv { text_hit: &miss, account_of: &no_acct, label_of: &no_label, event: None };
+        let hit_env = EvalEnv { text_hit: &hit, account_of: &no_acct, label_of: &no_label, event: None, derived: &[] };
+        let miss_env = EvalEnv { text_hit: &miss, account_of: &no_acct, label_of: &no_label, event: None, derived: &[] };
         assert!(q.evaluate(&e, &[], &hit_env));
         assert!(!q.evaluate(&e, &[], &miss_env));
     }

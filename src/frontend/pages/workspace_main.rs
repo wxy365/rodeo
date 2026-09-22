@@ -1316,8 +1316,19 @@ pub fn WorkspaceMain() -> impl IntoView {
                                         <tr><td><code>"Status IN (\"Open\", \"Done\")"</code></td><td>"Status 是其中之一"</td></tr>
                                         <tr><td><code>"Priority >= 2"</code></td><td>"数值标签大于等于 2"</td></tr>
                                         <tr><td><code>"Summary ~ \"登录\""</code></td><td>"文本标签包含「登录」"</td></tr>
+                                        <tr><td><code>"L5"</code></td><td>"直接打了 L5 标签"</td></tr>
+                                        <tr><td><code>"L4+"</code></td><td>"打了 L4，或通过继承 / 覆盖关系拥有 L4"</td></tr>
+                                        <tr><td><code>"!L4+"</code></td><td>"既没直接打 L4，也没有继承来 L4"</td></tr>
+                                        <tr><td><code>"L4+ = \"V1\""</code></td><td>"已拥有的 L4 值等于 V1（含继承来的）"</td></tr>
                                     </tbody>
                                 </table>
+                                <p class="mut">"标签后面加 "<code>"+"</code>" 表示把继承 / 覆盖关系一并算进来："
+                                    "在「设置 · 标签定义」里给某个标签声明关系后，它能把别的标签带进来"
+                                    "（继承），或者被别的标签带出去（覆盖）。不加 "<code>"+"</code>" 时"
+                                    "只匹配直接打在该条目上的标签。"</p>
+                                <p class="mut">"只有 key 被继承（值没跟着传）的标签，能用于 "
+                                    <code>"L4+"</code>" / "<code>"!L4+"</code>" 这类存在性判断，"
+                                    "不参与等值或大小比较。"</p>
                                 <p class="mut">"内置元数据："<code>"Code"</code>" / "<code>"Title"</code>" / "
                                     <code>"Detail"</code>" / "<code>"CreatedBy"</code>" / "
                                     <code>"CreatedAt"</code>" / "<code>"UpdatedBy"</code>" / "
@@ -1758,6 +1769,8 @@ fn EntryTable(
                             let code_for_check_change = e.code.clone();
                             let code_for_badge = e.code.clone();
                             let labels = e.labels.clone();
+                            // 继承 / 覆盖推导：只影响展示（虚线 + 来源说明），不改数据。
+                            let derived = query_eval::derive_inherited(&sc, &e.labels);
                             let names = cols();
                             // 标题着色：整行 Entry 克隆进响应式闭包，规则变化即刻重算。
                             let entry_for_color = e.clone();
@@ -1827,12 +1840,18 @@ fn EntryTable(
                                             </span>
                                         })}</td>
                                     {names.iter().map(|name| {
-                                        let lv = labels.iter()
+                                        // 优先直接打标；没有再看继承 / 覆盖推导来的（`source` 非空即为推导所得）。
+                                        let direct = labels.iter()
                                             .find(|l| &l.label_name == name)
                                             .map(|l| l.value.clone());
+                                        let lv = direct.map(|v| (v, Option::<String>::None)).or_else(|| {
+                                            derived.iter()
+                                                .find(|(n, _, _)| n == name)
+                                                .map(|(_, v, src)| (v.clone(), Some(src.clone())))
+                                        });
                                         match lv {
                                             None => view! { <td class="mut">"—"</td> }.into_any(),
-                                            Some(v) => {
+                                            Some((v, source)) => {
                                                 // 多值（数组）逐元素走内置枚举的友好展示，再拼接；
                                                 // 否则 display_enum_value 只作用在整串上，内层 token 漏掉。
                                                 let s = match &v {
@@ -1879,25 +1898,35 @@ fn EntryTable(
                                                         base.as_ref(), &sch.value_colors, &v,
                                                     )
                                                 });
+                                                // 推导得来的标签在表格里要能一眼看出来：虚线描边 + 悬停说明来源。
+                                                let hint = source
+                                                    .as_ref()
+                                                    .map(|src| format!("由「{src}」继承而来，未直接打在本条上"));
+                                                let inh = source.is_some();
                                                 match color {
                                                     Some(c) => {
                                                         let style = format!(
-                                                            "background:color-mix(in srgb, {c} 15%, transparent);color:{c}"
+                                                            "border-color:{c};background:color-mix(in srgb, {c} 15%, transparent);color:{c}"
                                                         );
+                                                        let cls = if inh { "chip inh" } else { "chip" };
                                                         view! {
-                                                            <td><span class="chip" style=style>{text}</span></td>
+                                                            <td><span class=cls style=style title=hint>{text}</span></td>
                                                         }.into_any()
                                                     }
                                                     None if is_enum => {
                                                         let cls = label_chip_class(name, &s);
+                                                        let cls = if inh { format!("chip {cls} inh") } else { format!("chip {cls}") };
                                                         view! {
-                                                            <td><span class=format!("chip {cls}")>{text}</span></td>
+                                                            <td><span class=cls title=hint>{text}</span></td>
                                                         }.into_any()
                                                     }
                                                     None if is_null => {
-                                                        view! { <td><span class="chip">{text}</span></td> }.into_any()
+                                                        let cls = if inh { "chip inh" } else { "chip" };
+                                                        view! { <td><span class=cls title=hint>{text}</span></td> }.into_any()
                                                     }
-                                                    None => view! { <td>{text}</td> }.into_any(),
+                                                    None => {
+                                                        view! { <td title=hint>{text}</td> }.into_any()
+                                                    }
                                                 }
                                             }
                                         }

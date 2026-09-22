@@ -141,6 +141,18 @@ pub fn ic_help() -> impl IntoView {
     }
 }
 
+/// 关系（继承 / 覆盖）：两个相扣的环。
+/// 这两个 path 靠描边成形，故在 path 上显式写 `fill="none"`——它比继承自 `svg.ic`
+/// 的 `fill: currentColor` 优先，否则环内会被填成实心。
+pub fn ic_link() -> impl IntoView {
+    view! {
+        <svg class="ic" viewBox="0 0 24 24">
+            <path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+            <path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+        </svg>
+    }
+}
+
 pub fn ic_more() -> impl IntoView {
     view! {
         <svg class="ic" viewBox="0 0 24 24">

@@ -4,10 +4,10 @@ use leptos_router::hooks::use_navigate;
 
 use crate::frontend::components::{copy_to_clipboard, logged_out, short_time};
 use crate::frontend::graphql_client::{
-    accounts, create_account, set_account_status, AdminAccount, CreatedAccount,
+    accounts, create_account, set_account_status, update_account, AdminAccount, CreatedAccount,
 };
-use crate::frontend::icons::{ic_add, ic_copy};
-use crate::frontend::use_auth;
+use crate::frontend::icons::{ic_add, ic_back, ic_copy};
+use crate::frontend::{use_auth, User};
 
 /// 当前站点的 origin（形如 `http://127.0.0.1:3099`），用于拼分享文案里的登录地址。
 /// 非 wasm 目标返回空串：`created` 只在点击回调里被赋值，所以服务端渲染永远走不到这段文案；
@@ -46,6 +46,62 @@ pub fn Admin() -> impl IntoView {
     let confirm_id = RwSignal::new(None::<String>);
     // 正在提交的那一行，用来禁用它的按钮、防连点。
     let row_busy = RwSignal::new(None::<String>);
+
+    // ---------- 编辑姓名 / 角色 ----------
+
+    // 正在编辑的那一行。留一份原始记录：回填姓名与角色要用它，判断「角色那一栏是否
+    // 该禁用」也要用它（自己 / 内置管理员）。
+    let edit_target = RwSignal::new(None::<AdminAccount>);
+    let edit_name = RwSignal::new(String::new());
+    let edit_admin = RwSignal::new(false);
+    let edit_error = RwSignal::new(None::<String>);
+    let edit_busy = RwSignal::new(false);
+
+    // 保存编辑。成功后就地改那一行，与 `change_status` 同一个理由：整表重拉会把顺序和
+    // 滚动位置一起动掉，而这里只改了两个字段。
+    let save_edit = move |_| {
+        let Some(target) = edit_target.get_untracked() else {
+            return;
+        };
+        // 防连点：重复提交除了白跑一趟，还会把「改的是自己」那条分支也走两遍。
+        if edit_busy.get_untracked() {
+            return;
+        }
+        let name = edit_name.get_untracked().trim().to_string();
+        if name.is_empty() {
+            edit_error.set(Some("姓名不能为空".to_string()));
+            return;
+        }
+        let id = target.id.clone();
+        let is_admin = edit_admin.get_untracked();
+        edit_busy.set(true);
+        spawn_local(async move {
+            match update_account(&id, &name, is_admin).await {
+                Ok(updated) => {
+                    // 改的若是自己，右上角头像菜单里的名字也得跟着变——否则要刷新页面才更新。
+                    if auth.user.get_untracked().is_some_and(|u| u.id == updated.id) {
+                        auth.user.set(Some(User {
+                            id: updated.id.clone(),
+                            email: updated.email.clone(),
+                            name: updated.name.clone(),
+                            is_admin: updated.is_admin,
+                        }));
+                    }
+                    account_list.update(|l| {
+                        if let Some(l) = l.as_mut() {
+                            if let Some(row) = l.iter_mut().find(|a| a.id == updated.id) {
+                                *row = updated;
+                            }
+                        }
+                    });
+                    edit_error.set(None);
+                    edit_target.set(None);
+                }
+                Err(e) => edit_error.set(Some(e)),
+            }
+            edit_busy.set(false);
+        });
+    };
 
     // 列表只对系统管理员拉。`auth.user` 还没回来时也不拉——那时分不清
     // 「不是管理员」和「还在问」，拉了会白挨一个 Forbidden。
@@ -94,6 +150,8 @@ pub fn Admin() -> impl IntoView {
     // 未登录、或本地令牌已被服务端判死，都回登录页。与 entry.rs 用同一条路径：
     // `logged_out()` 在 SSR 阶段恒为 true，所以只在 wasm 上跳转，否则服务端渲染会直接跳走。
     let navigate = use_navigate();
+    let nav_back = navigate.clone();
+    let back = move |_| nav_back("/workspaces", Default::default());
     Effect::new(move |_| {
         if cfg!(target_arch = "wasm32") && (logged_out() || auth.session_lost.get()) {
             navigate("/login", Default::default());
@@ -136,7 +194,10 @@ pub fn Admin() -> impl IntoView {
 
     view! {
         <div class="page">
-            <div class="crumb">"/admin · 仅系统管理员"</div>
+            <div class="crumb" style="display:flex;align-items:center;gap:8px">
+                <button class="btn sm" on:click=back>{ic_back()}"返回工作空间"</button>
+                <span>"/admin · 仅系统管理员"</span>
+            </div>
             <div class="stats">
                 <div class="panel stat">
                     <div class="v">
@@ -170,6 +231,8 @@ pub fn Admin() -> impl IntoView {
                 Some(me) => {
                 // 当前登录者：列表里自己那一行的操作要禁用。
                 let me_id = me.id.clone();
+                // 编辑弹窗另要一份 `me_id`：上面那份会被表格那层闭包 move 走，搬不回来。
+                let me_id_for_edit = me.id.clone();
                 view! {
                     <div class="panel set-body">
                         <h2>"账号管理"</h2>
@@ -259,7 +322,7 @@ pub fn Admin() -> impl IntoView {
                                             <th>"角色"</th>
                                             <th>"状态"</th>
                                             <th>"创建时间"</th>
-                                            <th style="width:180px"></th>
+                                            <th style="width:240px"></th>
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -290,6 +353,9 @@ pub fn Admin() -> impl IntoView {
                                                 let next = if frozen { "active" } else { "frozen" };
                                                 let next_txt = if frozen { "解冻" } else { "冻结" };
                                                 let id = a.id.clone();
+                                                // 编辑弹窗要回填姓名与角色，所以它也得有一份。与 `id` 同理：
+                                                // 外面只被借用，进内层 `on:click` 时每次现克隆一份。
+                                                let edit_row = a.clone();
                                                 view! {
                                                     <tr>
                                                         <td>{a.email.clone()}</td>
@@ -326,8 +392,21 @@ pub fn Admin() -> impl IntoView {
                                                                     }.into_any()
                                                                 } else {
                                                                     let (id_freeze, id_deactivate) = (id.clone(), id.clone());
+                                                                    let edit_row = edit_row.clone();
                                                                     view! {
                                                                         <span class="rowact">
+                                                                            // 编辑不随 `locked` 禁用：改自己的显示名无妨，真正不能做的是
+                                                                            // 「撤销自己的管理员权限」，那件事在弹窗里单独禁掉。
+                                                                            <button class="btn sm"
+                                                                                disabled=move || row_busy.get().is_some()
+                                                                                on:click=move |_| {
+                                                                                    edit_name.set(edit_row.name.clone());
+                                                                                    edit_admin.set(edit_row.is_admin);
+                                                                                    edit_error.set(None);
+                                                                                    edit_target.set(Some(edit_row.clone()));
+                                                                                }>
+                                                                                "编辑"
+                                                                            </button>
                                                                             <button class="btn sm"
                                                                                 disabled=move || locked || row_busy.get().is_some()
                                                                                 title=lock_tip
@@ -358,6 +437,50 @@ pub fn Admin() -> impl IntoView {
                             "冻结会立刻踢该账号下线，且需重新登录才能恢复；注销不可逆，但会释放邮箱地址供重新注册。"
                         </div>
                     </div>
+
+                    {move || edit_target.get().map(|t| {
+                        // 「角色」那栏能不能改：自己与内置管理员都不行，理由与服务端那两道守卫
+                        // 一一对应（见 `update_account`）——错在这一栏点了必然失败，不如摆明原因。
+                        let role_locked = t.id == me_id_for_edit || t.is_builtin;
+                        let role_tip = if t.id == me_id_for_edit {
+                            "不能撤销自己的管理员权限"
+                        } else {
+                            "内置管理员账号的管理员权限不可撤销"
+                        };
+                        view! {
+                            <div class="dmodal" on:click=move |_| edit_target.set(None)>
+                                <div class="panel dmbox" on:click=|ev| ev.stop_propagation()>
+                                    <h3>"编辑账号"</h3>
+                                    <div class="dfield">
+                                        <span class="dlabel">"邮箱"</span>
+                                        <div class="mut">{t.email.clone()}</div>
+                                    </div>
+                                    <label class="dfield">
+                                        <span class="dlabel">"姓名"</span>
+                                        <input class="inp" prop:value=edit_name
+                                            on:input=move |ev| edit_name.set(event_target_value(&ev)) />
+                                    </label>
+                                    <div class="dfield">
+                                        <span class="dlabel">"角色"</span>
+                                        <label class="mut" style="display:flex;align-items:center;gap:6px">
+                                            <input type="checkbox" prop:checked=edit_admin
+                                                disabled=role_locked title=role_tip
+                                                on:change=move |ev| edit_admin.set(event_target_checked(&ev)) />
+                                            "系统管理员"
+                                        </label>
+                                    </div>
+                                    {move || edit_error.get().map(|e| view! {
+                                        <p class="error" style="margin:0">{"⚠ "}{e}</p>
+                                    })}
+                                    <div style="display:flex;gap:8px;justify-content:flex-end">
+                                        <button class="btn" on:click=move |_| edit_target.set(None)>"取消"</button>
+                                        <button class="btn pri" disabled=move || edit_busy.get()
+                                            on:click=save_edit>"保存"</button>
+                                    </div>
+                                </div>
+                            </div>
+                        }
+                    })}
                 }.into_any()
                 }
             }}

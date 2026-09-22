@@ -1,0 +1,19 @@
+#!/bin/sh
+# Linux x86_64 (musl) 交叉编译的 C 编译器，同时也是 rustc 的链接器驱动。
+#
+# 为什么需要这层包装：zig 只有在 `zig cc` 这个子命令下才按 gcc 风格解析命令行，
+# 而 cargo 的 `linker` 配置项只接受一个可执行文件路径、不接受带参数的命令
+# （写成 "zig cc -target ..." 会报 "linker not found"）。目标三元组因此被钉在这里。
+#
+# 为什么要滤掉 --target=：cc-rs 识别出交叉编译后会追加 --target=<Rust 三元组>，
+# 而 zig 是自己解析该选项、不透传给 clang 的，Rust 的三元组形式它不认，
+# 会报 "unable to parse target query 'x86_64-unknown-linux-musl'"。目标已钉死，直接丢弃。
+for arg in "$@"; do
+	shift
+	case "$arg" in
+	--target=*) ;;
+	*) set -- "$@" "$arg" ;;
+	esac
+done
+
+exec zig cc -target x86_64-linux-musl "$@"

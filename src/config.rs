@@ -1,3 +1,4 @@
+use std::net::SocketAddr;
 use std::path::Path;
 
 use serde::Deserialize;
@@ -20,8 +21,6 @@ pub struct ServerConfig {
     pub host: String,
     #[serde(default = "default_port")]
     pub port: u16,
-    #[serde(default = "default_base_url")]
-    pub base_url: String,
     pub tls: Option<TlsConfig>,
 }
 
@@ -130,7 +129,6 @@ impl Default for ServerConfig {
         Self {
             host: default_host(),
             port: default_port(),
-            base_url: default_base_url(),
             tls: None,
         }
     }
@@ -234,6 +232,14 @@ impl Config {
     pub fn tls(&self) -> Option<&TlsConfig> {
         self.server.tls.as_ref()
     }
+
+    /// `[server] host` + `port` 拼出的监听地址。host 必须是字面 IP：SocketAddr 不接受
+    /// 主机名，写 `localhost` 会在这里报错告终，而不是静默绑到别处去。
+    pub fn bind_addr(&self) -> Result<SocketAddr, String> {
+        let raw = format!("{}:{}", self.server.host, self.server.port);
+        raw.parse()
+            .map_err(|e| format!("[server] host/port 非法（{raw}）: {e}"))
+    }
 }
 
 fn default_host() -> String {
@@ -241,9 +247,6 @@ fn default_host() -> String {
 }
 fn default_port() -> u16 {
     3000
-}
-fn default_base_url() -> String {
-    "http://localhost:3000".to_string()
 }
 fn default_jwt_secret() -> String {
     "dev-only-insecure-secret-change-me".to_string()

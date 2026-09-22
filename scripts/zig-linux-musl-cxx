@@ -1,0 +1,13 @@
+#!/bin/sh
+# Linux x86_64 (musl) 交叉编译的 C++ 编译器，供 cc-rs 编译 rocksdb 等 C++ 依赖。
+# zig 自带 libc++ 与 musl 头文件，宿主不需要另备 Linux sysroot。
+# --target= 的过滤理由同 zig-linux-musl-cc。
+for arg in "$@"; do
+	shift
+	case "$arg" in
+	--target=*) ;;
+	*) set -- "$@" "$arg" ;;
+	esac
+done
+
+exec zig c++ -target x86_64-linux-musl "$@"

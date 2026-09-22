@@ -331,15 +331,18 @@ impl Overlay {
     }
 }
 
-/// 工作空间标签 schema 的按名索引。
+/// 工作空间标签 schema 的按名索引，外加一张继承推导图。
 struct Schemas {
     by_name: std::collections::HashMap<String, LabelSchema>,
+    graph: crate::domain::InheritanceGraph,
 }
 
 impl Schemas {
     fn new(list: Vec<LabelSchema>) -> Self {
+        let graph = crate::domain::InheritanceGraph::build(&list);
         Self {
             by_name: list.into_iter().map(|s| (s.name.clone(), s)).collect(),
+            graph,
         }
     }
 
@@ -558,11 +561,19 @@ impl RuleEngine {
             return Ok(false);
         };
         let labels = overlay.labels_of(&ev.entry_code);
+        // 触发条件写了 `L4+` 才算继承——规则引擎的 overlay 就是写入后的状态，
+        // 推导要基于它，而不是库里的前像。
+        let derived = if rule.trigger.contains_inherited_label() {
+            schemas.graph.derive(&labels)
+        } else {
+            Vec::new()
+        };
         let env = crate::domain::EvalEnv {
             text_hit: &no_text_hit,
             account_of: &|id| accounts.get(&id).cloned(),
             label_of: &|n| schemas.label_of(n),
             event: Some(ev),
+            derived: &derived,
         };
         Ok(rule.trigger.evaluate(&entry, &labels, &env))
     }
@@ -579,11 +590,17 @@ impl RuleEngine {
             .iter()
             .filter(|e| {
                 let labels = overlay.labels_of(&e.code);
+                let derived = if q.contains_inherited_label() {
+                    schemas.graph.derive(&labels)
+                } else {
+                    Vec::new()
+                };
                 let env = crate::domain::EvalEnv {
                     text_hit: &no_text_hit,
                     account_of: &|id| accounts.get(&id).cloned(),
                     label_of: &|n| schemas.label_of(n),
                     event: None,
+                    derived: &derived,
                 };
                 q.evaluate(e, &labels, &env)
             })
@@ -801,6 +818,7 @@ mod tests {
             currency_symbol: None,
             unit: None,
             default_value: None,
+            links: Vec::new(),
         }
     }
 
@@ -848,6 +866,7 @@ mod tests {
             account_of: &no_acct,
             label_of: &label_of,
             event: Some(ev),
+            derived: &[],
         };
         q.evaluate(&e, labels, &env)
     }
@@ -952,6 +971,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
+                    links: vec![],
                 },
             )
             .unwrap();

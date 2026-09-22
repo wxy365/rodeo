@@ -395,6 +395,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
+                    links: vec![],
                 },
             )
             .unwrap();

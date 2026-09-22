@@ -1,0 +1,17 @@
+# 构建上下文只留源码与静态资源（src/、style/、public/、Cargo.*）。
+# target/ 是数十 GB 的宿主编译产物；data/、certs/、config.toml 是本地数据与密钥，
+# 进上下文既拖慢构建，也可能把密钥写进镜像层。
+target
+dist
+data
+certs
+config.toml
+node_modules
+graphify-out
+.codegraph
+.superpowers
+docs
+spec
+.git
+.gitignore
+.DS_Store

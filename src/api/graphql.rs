@@ -11,7 +11,8 @@ use ulid::Ulid;
 
 use crate::domain::{
     Account, AccountStatus, ActionTarget, Attachment, AuditLog, AutomationRule, Comment, Entry,
-    Invite, LabelSchema, LabelValueType,
+    Invite,
+    LabelSchema, LabelValueType, LinkKind,
     LabelWrite, Labeling, NamedPrompt, Query as ViewQuery, SortField, SortSpec, TitleColorRule,
     ValueColor, ValueSource, View, Workspace, WorkspaceAiConfig, WorkspaceMember, WorkspaceRole,
     WriteOp, ATTACHMENT_URL_PREFIX,
@@ -149,6 +150,8 @@ pub struct GqlLabelSchema {
     currency_symbol: Option<String>,
     unit: Option<String>,
     default_value: Json<serde_json::Value>,
+    /// 继承/覆盖关系，形如 `[{"kind":"inherit","other":"L4","otherValue":"V1"}]`。
+    links: Json<serde_json::Value>,
 }
 
 impl From<LabelSchema> for GqlLabelSchema {
@@ -160,6 +163,24 @@ impl From<LabelSchema> for GqlLabelSchema {
             .as_ref()
             .map(|v| v.to_json())
             .unwrap_or(serde_json::Value::Null);
+        // 手写而非 serde 直出：LabelValue 的 serde 形态是外部标记枚举（`{"string":"V1"}`），
+        // 前端只需朴素 JSON 值，写出去还得能原样传回来。
+        let links = serde_json::Value::Array(
+            s.links
+                .iter()
+                .map(|l| {
+                    serde_json::json!({
+                        "kind": match l.kind {
+                            LinkKind::Inherit => "inherit",
+                            LinkKind::Override => "override",
+                        },
+                        "other": l.other,
+                        "otherValue": l.other_value.as_ref().map(|v| v.to_json()),
+                        "ownValue": l.own_value.as_ref().map(|v| v.to_json()),
+                    })
+                })
+                .collect(),
+        );
         Self {
             name: s.name,
             title: s.title,
@@ -172,6 +193,7 @@ impl From<LabelSchema> for GqlLabelSchema {
             currency_symbol: s.currency_symbol,
             unit: s.unit,
             default_value: Json(default_value),
+            links: Json(links),
         }
     }
 }
@@ -186,6 +208,8 @@ pub struct LabelSchemaAttrsInput {
     unit: Option<String>,
     /// 默认值：缺省或 `null` 表示没有默认值。
     default_value: Option<Json<serde_json::Value>>,
+    /// 继承/覆盖关系；缺省表示清空。
+    links: Option<Json<serde_json::Value>>,
 }
 
 impl LabelSchemaAttrsInput {
@@ -197,8 +221,9 @@ impl LabelSchemaAttrsInput {
         enum_values: Vec<String>,
         color: Option<String>,
         value_colors: Vec<ValueColor>,
-    ) -> crate::service::label::LabelSchemaInput {
-        crate::service::label::LabelSchemaInput {
+    ) -> GqlResult<crate::service::label::LabelSchemaInput> {
+        let links = parse_json_list(self.links, "标签关系")?;
+        Ok(crate::service::label::LabelSchemaInput {
             name,
             title,
             value_type,
@@ -210,7 +235,8 @@ impl LabelSchemaAttrsInput {
             color,
             value_colors,
             default_value: self.default_value.map(|j| j.0),
-        }
+            links,
+        })
     }
 }
 
@@ -1258,6 +1284,45 @@ impl Mutation {
         Ok(GqlAdminAccount::new(account, updated_status, &builtin))
     }
 
+    /// 改账号的姓名与管理员标记，仅系统管理员。状态与密码各有各的 mutation——那两条
+    /// 路径分别附带吊销令牌 / 验旧密码，跟这里纯粹的字段覆盖不是一回事。
+    async fn update_account(
+        &self,
+        ctx: &Context<'_>,
+        account_id: ID,
+        name: String,
+        is_admin: bool,
+    ) -> GqlResult<GqlAdminAccount> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let admin = gql.require_admin()?;
+        let target_id = Ulid::from_string(&account_id.0)
+            .map_err(|_| AppError::InvalidQuery("账号 ID 格式非法".to_string()))?;
+
+        let builtin = builtin_admin_email(gql);
+        let target = gql.services.auth.find_by_id(target_id)?.ok_or(AppError::NotFound)?;
+
+        // 两道守卫只管「撤销管理员」这一个方向：提权是安全的，把本来就是管理员的账号
+        // 再存一次管理员也不该被拒——只认 `!is_admin` 会把这种原样保存也一并拦下。
+        let demoting = target.is_admin && !is_admin;
+        // 保护一：不能撤销自己的管理员权限。一点就把自己关在门外，而这与冻结自己不同
+        // ——冻结了自己还有别人能解冻，这个没人能改回来。
+        if demoting && target_id == admin.account_id {
+            return Err(AppError::InvalidQuery("不能撤销自己的管理员权限".to_string()).into());
+        }
+        // 保护二：内置管理员的管理员权限不可撤销。启动引导 `bootstrap_admin` 只按邮箱
+        // 找账号、找到就原样返回——它**不会**把降了权的账号重新提上来，所以一旦撤销，
+        // 下次重启也补不回来，系统可能就此再无管理员。
+        if demoting && target.email == builtin {
+            return Err(
+                AppError::InvalidQuery("内置管理员账号的管理员权限不可撤销".to_string()).into(),
+            );
+        }
+
+        let account = gql.services.auth.update_profile(target_id, &name, is_admin)?;
+        let updated_status = gql.services.auth.status(target_id)?;
+        Ok(GqlAdminAccount::new(account, updated_status, &builtin))
+    }
+
     async fn login(&self, ctx: &Context<'_>, email: String, password: String) -> GqlResult<GqlAuthResult> {
         let gql = ctx.data::<GraphqlContext>()?;
         let (account, token) = gql.services.auth.login(&email, &password)?;
@@ -1760,7 +1825,7 @@ impl Mutation {
         let vt = LabelValueType::from_str(&value_type)
             .ok_or_else(|| AppError::Internal("无效的标签值类型".to_string()))?;
         let value_colors: Vec<ValueColor> = parse_json_list(value_colors, "值颜色配置")?;
-        let input = attrs.to_service(name, title, vt, enum_values, color, value_colors);
+        let input = attrs.to_service(name, title, vt, enum_values, color, value_colors)?;
         let schema = gql.services.label.create_schema(auth.account_id, ws_id, input)?;
         Ok(schema.into())
     }
@@ -1789,7 +1854,7 @@ impl Mutation {
             enum_values,
             color,
             value_colors,
-        );
+        )?;
         let schema = gql.services.label.update_schema(auth.account_id, ws_id, input)?;
         Ok(schema.into())
     }
