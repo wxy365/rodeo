@@ -681,9 +681,9 @@ select:focus {
     gap: 6px;
     align-self: flex-end;
 }
-/* 下限 150px 而非 200px：`.detail` 的内容盒是 424px，200px 时两列只剩 8px 余量，
-   经典的 15px 滚动条一挤就退回一列。150px 下即使 409px 也稳定排两列；
-   而 300px 的 `.entry-side` 内容盒只有 244px，仍是一列，符合那里窄栏的预期。 */
+/* 下限 150px 而非 200px：`.detail` 的内容盒是 423px，200px 时两列只剩 8px 余量，
+   经典的 15px 滚动条一挤就退回一列。150px 下即使 408px 也稳定排两列；
+   而 300px 的 `.entry-side` 内容盒只有 266px，仍是一列，符合那里窄栏的预期。 */
 .dmeta { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
     gap: 4px 16px; padding: 8px 12px; font-size: 12px; }
 .dmeta .mut { margin-right: 6px; }
