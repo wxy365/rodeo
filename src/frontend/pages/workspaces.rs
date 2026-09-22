@@ -3,12 +3,12 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::hooks::use_navigate;
 
-use crate::frontend::components::{role_chip_class, role_label, short_time, AvatarMenu};
+use crate::frontend::components::{role_chip_class, role_label, short_time};
 use crate::frontend::graphql_client::{
     accept_invite, create_workspace, decline_invite, my_invites, restore_workspace, workspaces,
     Invite, WorkspaceItem,
 };
-use crate::frontend::icons::{ic_add, ic_folder, ic_history, ic_search};
+use crate::frontend::icons::{ic_add, ic_folder, ic_history, ic_search, ic_setting};
 use crate::frontend::use_auth;
 
 use super::super::components::logged_out;
@@ -111,14 +111,11 @@ pub fn WorkspaceList() -> impl IntoView {
                     {ic_search()}
                     <input placeholder="全文检索：标题 / 详情 / 标签值（即将上线）" disabled />
                 </label>
-                <span style="margin-left:auto" class="online">
-                    // 「账号管理」只对系统管理员出现，紧挨头像左边。头像菜单里那两项
-                    // （个人信息 / 退出）人人都有，所以不放在同一个组件里。
-                    {move || auth.user.get().filter(|u| u.is_admin).map(|_| view! {
-                        <button class="btn" on:click=go_admin.clone()>"账号管理"</button>
-                    })}
-                    <AvatarMenu />
-                </span>
+                <button class="ibtn" style="margin-left:auto" title="系统管理"
+                    on:click=go_admin.clone()
+                    disabled=move || !auth.user.get().is_some_and(|u| u.is_admin)>
+                    {ic_setting()}
+                </button>
             </div>
 
             <div style="display:flex;align-items:center;margin-bottom:16px">

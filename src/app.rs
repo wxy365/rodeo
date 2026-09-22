@@ -6,6 +6,7 @@ use leptos_meta::{
 use leptos_router::components::{Route, Router, Routes};
 use leptos_router::{ParamSegment, StaticSegment};
 
+use crate::frontend::components::AvatarMenu;
 use crate::frontend::graphql_client::{clear_token, get_token, me};
 use crate::frontend::pages::{
     Account, Admin, EntryFullScreen, Home, Login, WorkspaceList, WorkspaceMain, WorkspaceSettings,
@@ -64,6 +65,10 @@ pub fn App() -> impl IntoView {
         <Stylesheet id="tiny-editor" href="/tiny-editor/style.css"/>
         <Script type_="module" src="/tiny-editor/glue.js"/>
         <Title text="Rodeo"/>
+        // 身份入口钉在视口右上角，全站一处。用会话的有无做闸门：登录页没有 user，自然不显示。
+        <Show when=move || auth.user.get().is_some()>
+            <div class="corner-user"><AvatarMenu /></div>
+        </Show>
         <Router>
             <main>
                 <Routes fallback=|| view! { <p>"页面不存在"</p> }>

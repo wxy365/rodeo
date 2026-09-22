@@ -11,7 +11,7 @@ use crate::frontend::comment_list::CommentList;
 use crate::frontend::components::{
     display_enum_value, fmt_datetime, from_native, is_native_time_layout, label_chip_class,
     logged_out, member_label, short_time, to_native, value_to_string, AccountPicker, AuditTimeline,
-    AvatarMenu, CodeCopy, TabBar,
+    CodeCopy, ColorPick, TabBar,
 };
 use crate::frontend::graphql_client::{
     archive_entry, archived_entries, audit_logs, create_entry, create_view, delete_entry,
@@ -754,8 +754,6 @@ pub fn WorkspaceMain() -> impl IntoView {
                     Some(v) => format!("/{} · 视图「{}」", slug(), v.name),
                     None => format!("/{} · 基础视图「全部内容」", slug()),
                 }}
-                // 本页没有 appbar，右上角就落在面包屑这一行的右端。
-                <span class="crumb-right"><AvatarMenu /></span>
             </div>
             <div class=move || if sidebar_collapsed.get() { "ws-layout collapsed" } else { "ws-layout" }>
                 <WorkspaceSidebar
@@ -1445,12 +1443,10 @@ pub fn WorkspaceMain() -> impl IntoView {
                                                     placeholder=r#"条件表达式，如：Task = "Open" AND Score >= 60"#
                                                     prop:value=move || exc.get()
                                                     on:input=move |ev| exc.set(event_target_value(&ev)) />
-                                                <input type="color" class="sw sm" title="标题颜色"
-                                                    prop:value=move || {
-                                                        let c = col.get();
-                                                        if c.is_empty() { "#3b82f6".to_string() } else { c }
-                                                    }
-                                                    on:input=move |ev| col.set(event_target_value(&ev)) />
+                                                <ColorPick small=true title="标题颜色".to_string()
+                                                    value=Signal::derive(move || col.get())
+                                                    ws_id=ws_id
+                                                    on_pick=Callback::new(move |c: String| col.set(c)) />
                                                 <button class="vc-op vc-del" type="button" title="删除"
                                                     on:click=move |_| config_rules.update(|rows| rows.retain(|x| x.id != rid))>"×"</button>
                                             </div>

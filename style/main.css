@@ -389,6 +389,8 @@ select:focus {
     align-items: center;
     gap: 16px;
     padding: 10px 16px;
+    /* 视口右上角钉着固定的身份入口，这一行铺满窗口宽度，需要给它让位。 */
+    padding-right: 56px;
     background: var(--bg);
     border: 1px solid var(--line);
     border-radius: var(--r-l);
@@ -1088,6 +1090,46 @@ input[type="color"].sw:disabled {
     cursor: default;
     opacity: 0.55;
 }
+/* 颜色选择器：原生调色盘 + 标准色 + 最近使用。色点可换行，紧凑行里折到下一行吸收宽度。 */
+.cpick {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+.cpick-group {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    flex-wrap: wrap;
+}
+/* 最近使用与标准色之间拉一条细线，两组同看时不会连成一片。 */
+.cpick-sep {
+    padding-left: 6px;
+    border-left: 1px solid var(--line);
+}
+.cpick-dot {
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    cursor: pointer;
+    flex: none;
+}
+.cpick-dot.sm {
+    width: 12px;
+    height: 12px;
+    border-radius: 3px;
+}
+.cpick-dot.sel {
+    outline: 2px solid var(--blue);
+    outline-offset: 1px;
+}
+.cpick-dot:disabled {
+    cursor: default;
+    opacity: 0.55;
+}
 .vc-list {
     display: flex;
     flex-direction: column;
@@ -1262,12 +1304,14 @@ input[type="color"].sw:disabled {
     color: var(--ink3);
     padding: 4px 2px 12px;
 }
-/* 视图页没有 appbar，身份入口落在面包屑这行的右端。 */
-.crumb-right {
-    margin-left: auto;
-}
-
 /* ===== 头像悬停菜单 ===== */
+/* 全站唯一的身份入口：固定钉在视口右上角，不随任何页面的内容宽度居中。 */
+.corner-user {
+    position: fixed;
+    top: 10px;
+    right: 18px;
+    z-index: 40;
+}
 .avatar-menu {
     position: relative;
     display: inline-flex;
