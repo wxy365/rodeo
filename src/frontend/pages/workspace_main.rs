@@ -265,15 +265,6 @@ pub fn WorkspaceMain() -> impl IntoView {
             sidebar_collapsed.set(get_sidebar_collapsed());
         }
     });
-    // 全局 Esc：关闭右侧详情面板。
-    if cfg!(target_arch = "wasm32") {
-        let handle = window_event_listener(leptos::ev::keydown, move |ev| {
-            if ev.key() == "Escape" && !selected.get_untracked().is_empty() {
-                selected.set(String::new());
-            }
-        });
-        on_cleanup(move || handle.remove());
-    }
 
     // ---- 筛选查询状态 ----
     let query_ast = RwSignal::new(serde_json::json!({ "and": [] }));
@@ -2089,7 +2080,24 @@ fn EntryPanel(
         });
     };
 
-    let close = move |_| code.set(String::new());
+    // 关闭动作：`×` 按钮、删除/归档成功后、Esc 监听三处共用。
+    let close: Callback<()> = Callback::new(move |_| code.set(String::new()));
+
+    // Esc 关右侧面板；有未保存改动时拦住。
+    // 面板是无条件挂载的（显隐靠 code 是否为空判断），所以这里仍是常驻的窗口级监听。
+    if cfg!(target_arch = "wasm32") {
+        let handle = window_event_listener(leptos::ev::keydown, move |ev| {
+            if ev.key() != "Escape" || code.get_untracked().is_empty() {
+                return;
+            }
+            if dirty.get_untracked() {
+                error.set(Some("有未保存的改动，先保存再关闭".to_string()));
+                return;
+            }
+            close.run(());
+        });
+        on_cleanup(move || handle.remove());
+    }
 
     // 单品归档：面板只可能显示未归档的条目（归档条目已被列表过滤掉，取消归档走
     // 「已归档」弹窗），故这里是单向操作，归档成功后条目移出视图、面板关闭。
@@ -2128,7 +2136,7 @@ fn EntryPanel(
                                 <button class="btn pri sm" disabled=move || !dirty.get() on:click=move |_| do_save.run(())>"保存"</button>
                                 <button class="btn sm" on:click=arch>"归档"</button>
                                 <button class="btn danger sm" on:click=del>"删除"</button>
-                                <button class="ibtn" title="关闭面板" on:click=close>{ic_close()}</button>
+                                <button class="ibtn" title="关闭面板" on:click=move |_| close.run(())>{ic_close()}</button>
                             </div>
                             {move || if editing_title.get() {
                                 view! {

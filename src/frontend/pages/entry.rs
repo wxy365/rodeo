@@ -177,12 +177,34 @@ pub fn EntryFullScreen() -> impl IntoView {
         });
     };
 
-    let back = move |_| navigate(&format!("/{}", slug()), Default::default());
+    // 按钮与 Esc 监听两处都要用它；`Callback` 是 `Copy`，可以同时进两个 handler。
+    let nav_back = navigate.clone();
+    let go_back: Callback<()> = Callback::new(move |_| {
+        nav_back(&format!("/{}", slug()), Default::default())
+    });
+
+    // Esc 返回视图页；有未保存改动时拦住，并把原因写进现成的提示位。
+    // 显式按钮不受影响：Esc 容易误触，按钮是明确动作。
+    if cfg!(target_arch = "wasm32") {
+        let handle = window_event_listener(leptos::ev::keydown, move |ev| {
+            if ev.key() != "Escape" {
+                return;
+            }
+            if dirty.get_untracked() {
+                error.set(Some("有未保存的改动，先保存再返回".to_string()));
+                return;
+            }
+            // 标题编辑态一并退出，避免监听触发后输入框还浮在页面上。
+            editing_title.set(false);
+            go_back.run(());
+        });
+        on_cleanup(move || handle.remove());
+    }
 
     view! {
         <div class="page">
             <div class="panel entry-top">
-                <button class="btn" on:click=back>{ic_back()}"返回视图"</button>
+                <button class="btn" on:click=move |_| go_back.run(())>{ic_back()}"返回视图"</button>
                 <CodeCopy code=Signal::derive(code) />
                 {move || if editing_title.get() {
                     view! {
