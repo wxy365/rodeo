@@ -317,6 +317,12 @@ select:focus {
     color: var(--ink3);
     font-size: 12px;
 }
+/* 说明性文字：比正文弱、比 `.mut` / `.muted` 强一档。
+   不全局调 `.mut`——它会波及全站几十处，且那些地方本来就该更弱。 */
+.note {
+    color: var(--ink2);
+    font-size: 12px;
+}
 .error {
     color: var(--dgr);
     font-size: 13px;

@@ -257,7 +257,7 @@ pub fn AutomationTab(
 
     view! {
         <h2>"自动化规则"</h2>
-        <p class="mut">
+        <p class="note">
             "标签被写入时触发。触发条件用 $label / $old / $new 引用本次变更，"
             "也可以直接用标签名（如 Priority >= 3）判断事件源条目的写入后状态。"
         </p>
@@ -333,7 +333,7 @@ pub fn AutomationTab(
                 </button>
             }.into_any()
         } else {
-            view! { <p class="mut">"仅 Maintainer 及以上可编辑"</p> }.into_any()
+            view! { <p class="note">"仅 Maintainer 及以上可编辑"</p> }.into_any()
         }}
 
         {move || {
@@ -361,7 +361,7 @@ pub fn AutomationTab(
                             <textarea class="inp mono" rows="3" prop:value=f_trigger
                                 on:input=move |ev| f_trigger.set(event_target_value(&ev))></textarea>
                         </label>
-                        <div class="mut" style="font-size:12px">
+                        <div class="note">
                             "可用关键字：" <code>"$label"</code> "（本次变更的标签名）、"
                             <code>"$old"</code> "（旧值，新增时用 " <code>"!$old"</code> "）、"
                             <code>"$new"</code> "（新值，删除时用 " <code>"!$new"</code> "）。"
