@@ -36,7 +36,14 @@ pub fn EntryFullScreen() -> impl IntoView {
     let ws_members = RwSignal::new(Vec::<Member>::new());
     let title = RwSignal::new(String::new());
     let detail = RwSignal::new(String::new());
-    let saved = RwSignal::new(false);
+    // 「当前编辑态 vs 已加载的条目」的差异。`data` 里的条目就是服务端最新版本
+    // （保存成功后会被就地替换），所以无差异 ⇔ 没改动。
+    // 不用一个 `saved` 布尔：它初值只能是 false，页面一加载就显示「未保存」，语义是错的。
+    let dirty = Signal::derive(move || {
+        data.get()
+            .and_then(|r| r.ok())
+            .is_some_and(|(_, e, _, _, _)| e.title != title.get() || e.detail != detail.get())
+    });
     let error = RwSignal::new(None::<String>);
     // 标题平时只读，点击才换成输入框；输入框挂载后由 Effect 补焦点。
     let editing_title = RwSignal::new(false);
@@ -106,7 +113,6 @@ pub fn EntryFullScreen() -> impl IntoView {
     let on_changed = Callback::new(move |_| load(false));
     let on_editor_change = Callback::new(move |d: String| {
         detail.set(d);
-        saved.set(false);
     });
 
     // 进入标题编辑态后把焦点交给输入框，否则用户还得再点一次。
@@ -119,7 +125,7 @@ pub fn EntryFullScreen() -> impl IntoView {
         }
     });
 
-    let save = move |_| {
+    let do_save: Callback<()> = Callback::new(move |_| {
         let c = code();
         let Some(e) = data.get().and_then(|r| r.ok()).map(|(_, e, _, _, _)| e) else {
             return;
@@ -136,7 +142,6 @@ pub fn EntryFullScreen() -> impl IntoView {
                             *e = updated;
                         }
                     });
-                    saved.set(true);
                     error.set(None);
                 }
                 Err(e) => {
@@ -147,7 +152,7 @@ pub fn EntryFullScreen() -> impl IntoView {
                 }
             }
         });
-    };
+    });
 
     // 删除后条目已不存在，留在详情页只会显示「条目不存在」，直接退回工作空间。
     let nav_del = navigate.clone();
@@ -178,13 +183,15 @@ pub fn EntryFullScreen() -> impl IntoView {
                             prop:value=title
                             on:input=move |ev| {
                                 title.set(event_target_value(&ev));
-                                saved.set(false);
                             }
                             on:blur=move |_| editing_title.set(false)
                             on:keydown=move |ev| {
                                 if ev.key() == "Enter" {
                                     ev.prevent_default();
                                     editing_title.set(false);
+                                } else if (ev.ctrl_key() || ev.meta_key()) && ev.key().eq_ignore_ascii_case("s") {
+                                    ev.prevent_default();
+                                    do_save.run(());
                                 }
                             }
                         />
@@ -197,11 +204,11 @@ pub fn EntryFullScreen() -> impl IntoView {
                         >{move || title.get()}</h1>
                     }.into_any()
                 }}
-                <button class="btn pri" on:click=save>"保存"</button>
-                {move || if saved.get() {
-                    view! { <span class="chip c-done">{ic_check()}"已保存"</span> }.into_any()
-                } else {
+                <button class="btn pri" disabled=move || !dirty.get() on:click=move |_| do_save.run(())>"保存"</button>
+                {move || if dirty.get() {
                     view! { <span class="chip dim">"未保存"</span> }.into_any()
+                } else {
+                    view! { <span class="chip c-done">{ic_check()}"已保存"</span> }.into_any()
                 }}
                 <button class="btn" disabled>{ic_share()}"分享链接（即将上线）"</button>
                 <button class="btn danger" on:click=del>"删除"</button>
@@ -211,7 +218,15 @@ pub fn EntryFullScreen() -> impl IntoView {
 
             <div class="entry-layout">
                 <div class="entry-main">
-                    <div class="panel entry-editor" style="padding:0;overflow:hidden">
+                    <div class="panel entry-editor" style="padding:0;overflow:hidden"
+                        on:keydown=move |ev: leptos::ev::KeyboardEvent| {
+                            // keydown 从 Quill 的 contenteditable 冒泡到这里；Quill 自己不绑 Ctrl+S。
+                            // 必须 prevent_default，否则浏览器会弹「保存网页」对话框。
+                            if (ev.ctrl_key() || ev.meta_key()) && ev.key().eq_ignore_ascii_case("s") {
+                                ev.prevent_default();
+                                do_save.run(());
+                            }
+                        }>
                         {move || match data.get() {
                             Some(Ok((_ws, e, _, _, _))) => {
                                 let initial = e.detail.clone();

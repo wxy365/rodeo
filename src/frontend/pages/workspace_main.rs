@@ -1962,6 +1962,12 @@ fn EntryPanel(
     // 标题平时只读，点击才换成输入框；输入框挂载后由 Effect 补焦点。
     let editing_title = RwSignal::new(false);
     let title_ref: NodeRef<Input> = NodeRef::new();
+    // 与全屏页同源：`data` 里的条目是服务端最新版本，无差异 ⇔ 没改动。
+    let dirty = Signal::derive(move || {
+        data.get()
+            .and_then(|r| r.ok())
+            .is_some_and(|e| e.title != title.get() || e.detail != detail.get())
+    });
 
     // 当前页签：detail | attachments | history。
     let tab = RwSignal::new("detail".to_string());
@@ -2035,7 +2041,7 @@ fn EntryPanel(
         }
     });
 
-    let save = move |_| {
+    let do_save: Callback<()> = Callback::new(move |_| {
         let c = code.get();
         let Some(entry_now) = data.get().and_then(|r| r.ok()) else {
             return;
@@ -2059,7 +2065,7 @@ fn EntryPanel(
                 }
             }
         });
-    };
+    });
 
     let del = move |_| {
         let c = code.get();
@@ -2111,7 +2117,7 @@ fn EntryPanel(
                         <div class="dhead">
                             <div class="dacts">
                                 <button class="btn sm" on:click=open_full.clone()>{ic_full()}"全屏"</button>
-                                <button class="btn pri sm" on:click=save>"保存"</button>
+                                <button class="btn pri sm" disabled=move || !dirty.get() on:click=move |_| do_save.run(())>"保存"</button>
                                 <button class="btn sm" on:click=arch>"归档"</button>
                                 <button class="btn danger sm" on:click=del>"删除"</button>
                                 <button class="ibtn" title="关闭面板" on:click=close>{ic_close()}</button>
@@ -2127,6 +2133,9 @@ fn EntryPanel(
                                             if ev.key() == "Enter" {
                                                 ev.prevent_default();
                                                 editing_title.set(false);
+                                            } else if (ev.ctrl_key() || ev.meta_key()) && ev.key().eq_ignore_ascii_case("s") {
+                                                ev.prevent_default();
+                                                do_save.run(());
                                             }
                                         }
                                     />
@@ -2179,7 +2188,13 @@ fn EntryPanel(
                                 />
                             }.into_any(),
                             _ => view! {
-                                <div class="editor">
+                                <div class="editor"
+                                    on:keydown=move |ev: leptos::ev::KeyboardEvent| {
+                                        if (ev.ctrl_key() || ev.meta_key()) && ev.key().eq_ignore_ascii_case("s") {
+                                            ev.prevent_default();
+                                            do_save.run(());
+                                        }
+                                    }>
                                     {match data.get() {
                                         Some(Ok(e)) => {
                                             let initial = e.detail.clone();
