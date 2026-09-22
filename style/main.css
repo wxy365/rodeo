@@ -629,7 +629,7 @@ select:focus {
     flex: 1;
     min-height: 0;
     display: grid;
-    /* 480px 是 `.dmeta` 排出「每行 2 个元信息字段」的下限：再窄就掉回每行 1 个。 */
+    /* 480px 是详情面板的固定宽度；`.dmeta` 在该宽度下排两列（下限见 `.dmeta` 处）。 */
     grid-template-columns: 1fr 480px;
     gap: 0;
     align-items: stretch;
@@ -681,7 +681,10 @@ select:focus {
     gap: 6px;
     align-self: flex-end;
 }
-.dmeta { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+/* 下限 150px 而非 200px：`.detail` 的内容盒是 424px，200px 时两列只剩 8px 余量，
+   经典的 15px 滚动条一挤就退回一列。150px 下即使 409px 也稳定排两列；
+   而 300px 的 `.entry-side` 内容盒只有 244px，仍是一列，符合那里窄栏的预期。 */
+.dmeta { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
     gap: 4px 16px; padding: 8px 12px; font-size: 12px; }
 .dmeta .mut { margin-right: 6px; }
 .editing {
