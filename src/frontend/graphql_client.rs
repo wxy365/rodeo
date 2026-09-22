@@ -1119,7 +1119,8 @@ pub struct View {
     pub name: String,
     pub query: Value,
     pub query_expr: String,
-    pub sort: ViewSort,
+    /// 排序键链，按优先级从高到低。空数组等价于默认排序（更新时间降序）。
+    pub sorts: Vec<ViewSort>,
     pub columns: Vec<String>,
     pub is_shared: bool,
     pub owner_id: String,
@@ -1142,8 +1143,18 @@ pub struct EntryPage {
     pub label_names: Vec<String>,
 }
 
-const VIEW_FIELDS: &str = "id name query queryExpr sort { field desc } columns isShared ownerId \
+const VIEW_FIELDS: &str = "id name query queryExpr sorts { field desc } columns isShared ownerId \
      titleColors entryCount isDefault";
+
+/// 排序键链 → GraphQL 变量值。空数组会被服务端解释为「用默认排序」。
+fn sorts_var(sorts: &[ViewSort]) -> Value {
+    Value::Array(
+        sorts
+            .iter()
+            .map(|s| json!({ "field": s.field, "desc": s.desc }))
+            .collect(),
+    )
+}
 
 pub async fn views(workspace_id: &str) -> Result<Vec<View>, String> {
     let q = format!("query($id: ID!) {{ views(workspaceId: $id) {{ {VIEW_FIELDS} }} }}");
@@ -1155,14 +1166,13 @@ pub async fn views(workspace_id: &str) -> Result<Vec<View>, String> {
 pub async fn query_entries(
     workspace_id: &str,
     query: &Value,
-    sort_field: &str,
-    desc: bool,
+    sorts: &[ViewSort],
     page: i64,
     page_size: i64,
 ) -> Result<EntryPage, String> {
     let q = format!(
-        "query($id: ID!, $q: JSON, $s: SortInput, $p: PageInput) {{ \
-         queryEntries(workspaceId: $id, query: $q, sort: $s, page: $p) {{ \
+        "query($id: ID!, $q: JSON, $s: [SortInput!], $p: PageInput) {{ \
+         queryEntries(workspaceId: $id, query: $q, sorts: $s, page: $p) {{ \
          items {{ {ENTRY_FIELDS} }} total page pageSize labelNames }} }}"
     );
     let data = graphql(
@@ -1170,7 +1180,7 @@ pub async fn query_entries(
         json!({
             "id": workspace_id,
             "q": query,
-            "s": { "field": sort_field, "desc": desc },
+            "s": sorts_var(sorts),
             "p": { "page": page, "pageSize": page_size },
         }),
     )
@@ -1183,21 +1193,20 @@ pub async fn create_view(
     workspace_id: &str,
     name: &str,
     query: &Value,
-    sort_field: &str,
-    desc: bool,
+    sorts: &[ViewSort],
     columns: &[String],
     is_shared: bool,
     title_colors: &Value,
 ) -> Result<View, String> {
     let q = format!(
-        "mutation($id: ID!, $n: String!, $q: JSON!, $s: SortInput, $c: [String!]!, $sh: Boolean!, $tc: JSON!) {{ \
-         createView(workspaceId: $id, name: $n, query: $q, sort: $s, columns: $c, isShared: $sh, titleColors: $tc) {{ {VIEW_FIELDS} }} }}"
+        "mutation($id: ID!, $n: String!, $q: JSON!, $s: [SortInput!], $c: [String!]!, $sh: Boolean!, $tc: JSON!) {{ \
+         createView(workspaceId: $id, name: $n, query: $q, sorts: $s, columns: $c, isShared: $sh, titleColors: $tc) {{ {VIEW_FIELDS} }} }}"
     );
     let data = graphql(
         &q,
         json!({
             "id": workspace_id, "n": name, "q": query,
-            "s": { "field": sort_field, "desc": desc }, "c": columns, "sh": is_shared,
+            "s": sorts_var(sorts), "c": columns, "sh": is_shared,
             "tc": title_colors,
         }),
     )
@@ -1210,21 +1219,20 @@ pub async fn update_view(
     id: &str,
     name: &str,
     query: &Value,
-    sort_field: &str,
-    desc: bool,
+    sorts: &[ViewSort],
     columns: &[String],
     is_shared: bool,
     title_colors: &Value,
 ) -> Result<View, String> {
     let q = format!(
-        "mutation($id: ID!, $n: String!, $q: JSON!, $s: SortInput, $c: [String!]!, $sh: Boolean!, $tc: JSON!) {{ \
-         updateView(id: $id, name: $n, query: $q, sort: $s, columns: $c, isShared: $sh, titleColors: $tc) {{ {VIEW_FIELDS} }} }}"
+        "mutation($id: ID!, $n: String!, $q: JSON!, $s: [SortInput!], $c: [String!]!, $sh: Boolean!, $tc: JSON!) {{ \
+         updateView(id: $id, name: $n, query: $q, sorts: $s, columns: $c, isShared: $sh, titleColors: $tc) {{ {VIEW_FIELDS} }} }}"
     );
     let data = graphql(
         &q,
         json!({
             "id": id, "n": name, "q": query,
-            "s": { "field": sort_field, "desc": desc }, "c": columns, "sh": is_shared,
+            "s": sorts_var(sorts), "c": columns, "sh": is_shared,
             "tc": title_colors,
         }),
     )

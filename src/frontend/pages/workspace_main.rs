@@ -19,7 +19,7 @@ use crate::frontend::graphql_client::{
     parse_view_query, query_entries, set_labeling, set_labelings, set_sidebar_collapsed,
     summarize_entries, unarchive_entry, update_entry, update_view, views, workspace_ai_config,
     workspace_by_slug, AccountBrief, AuditLog, Entry, Labeling, LabelSchema, Member, NamedPrompt,
-    View, Workspace,
+    View, ViewSort, Workspace,
 };
 use crate::frontend::icons::{
     ic_add, ic_back, ic_close, ic_comment, ic_folder, ic_full, ic_help, ic_search, ic_setting,
@@ -268,12 +268,11 @@ pub fn WorkspaceMain() -> impl IntoView {
 
     // ---- 筛选查询状态 ----
     let query_ast = RwSignal::new(serde_json::json!({ "and": [] }));
-    // 已落库的视图基线 (query, sort_field, sort_desc)。与当前编辑态比较，无差异时
-    // 「保存视图」置灰：既挡掉无效提交，也让保存成功有可见反馈（按钮重新变灰）。
+    // 已落库的视图查询条件基线。排序改动会自动落库（见 `persist_sort`），所以不再进基线——
+    // 否则每点一次表头，「保存视图」按钮都会无意义地亮起来。
     // 基础视图没有这个按钮（它上面的过滤只作临时用途），但基线仍要维护——「视图配置」
     // 保存后会用它重新对齐。
-    let saved_baseline: RwSignal<(Value, String, bool)> =
-        RwSignal::new((serde_json::json!({ "and": [] }), "updatedAt".to_string(), true));
+    let saved_baseline: RwSignal<Value> = RwSignal::new(serde_json::json!({ "and": [] }));
     let expr_text = RwSignal::new(String::new());
     // 输入 `/` 时弹出的标签候选列表开关。
     let hint_open = RwSignal::new(false);
@@ -312,10 +311,8 @@ pub fn WorkspaceMain() -> impl IntoView {
         batch(move || {
             saved_baseline.set(
                 v.as_ref()
-                    .map(|v| (v.query.clone(), v.sort.field.clone(), v.sort.desc))
-                    .unwrap_or_else(|| {
-                        (serde_json::json!({ "and": [] }), "updatedAt".to_string(), true)
-                    }),
+                    .map(|v| v.query.clone())
+                    .unwrap_or_else(|| serde_json::json!({ "and": [] })),
             );
             query_ast.set(
                 v.as_ref()
@@ -394,13 +391,33 @@ pub fn WorkspaceMain() -> impl IntoView {
         time_pick.set(None);
     };
 
-    // 编辑态与已落库基线的差异：查询条件或排序任一变化即视为有未保存改动。
+    // 已落库的查询条件与当前编辑态有差异即视为有未保存改动。
     let view_dirty = move || {
-        let Some(v) = active_view.get() else {
-            return false;
-        };
-        let (q, f, d) = saved_baseline.get();
-        query_ast.get() != q || v.sort.field != f || v.sort.desc != d
+        active_view.get().is_some() && query_ast.get() != saved_baseline.get()
+    };
+
+    // 排序改动自动落库，不再依赖「保存视图」按钮。两条约束：
+    // 1) 只改排序——`query` 用视图已存的那份，不是界面上的 `query_ast`（那是临时过滤态，
+    //    不该被一次点表头顺手固化）；其余字段原样回传。
+    // 2) 基础视图不发请求——服务端本来就会忽略它的排序改动，排序在那上面是本地态。
+    let persist_sort = move |v: View| {
+        if v.is_default {
+            return;
+        }
+        spawn_local(async move {
+            match update_view(&v.id, &v.name, &v.query, &v.sorts, &v.columns, v.is_shared, &v.title_colors).await {
+                Ok(saved) => {
+                    // 不回写 active_view：界面已按新排序查过一次，再写会多触发一轮查询。
+                    view_list.update(|l| {
+                        if let Some(slot) = l.iter_mut().find(|x| x.id == saved.id) {
+                            *slot = saved.clone();
+                        }
+                    });
+                }
+                // 落库失败不回滚本地排序（列表已经按新排序显示），但要说出来。
+                Err(e) => error.set(Some(format!("排序未能保存：{e}"))),
+            }
+        });
     };
 
     // ---- 新建 / 另存为视图弹窗 ----
@@ -410,9 +427,9 @@ pub fn WorkspaceMain() -> impl IntoView {
     let view_name_input = RwSignal::new(String::new());
     let view_shared_input = RwSignal::new(false);
     let view_columns_input = RwSignal::new(Vec::<String>::new()); // 选中展示为列的标签 name
-    // 要落库的条件与排序：「新建视图」给空条件，「另存为新视图」继承基础视图当前的临时过滤与排序。
+    // 要落库的条件与排序：「新建视图」给空条件，「另存为新视图」继承当前视图的排序链。
     let view_query_input = RwSignal::new(serde_json::json!({ "and": [] }));
-    let view_sort_input = RwSignal::new(("updatedAt".to_string(), true));
+    let view_sort_input = RwSignal::new(Vec::<ViewSort>::new());
 
     // ---- 视图配置弹窗（重命名 + 列配置）----
     let show_config_dialog = RwSignal::new(false);
@@ -462,11 +479,7 @@ pub fn WorkspaceMain() -> impl IntoView {
         // R16：ad-hoc 词仅在回车时写入 query_ast，故这里用 get_untracked 读取，
         // 避免每次击键都触发重查；query_ast 才是真正的重查触发器。
         let ast = with_text(&query_ast.get(), &ad_hoc_text.get_untracked());
-        let sort_field = active_view
-            .get()
-            .map(|v| v.sort.field)
-            .unwrap_or_else(|| "updatedAt".to_string());
-        let sort_desc = active_view.get().map(|v| v.sort.desc).unwrap_or(true);
+        let sorts = active_view.get().map(|v| v.sorts).unwrap_or_default();
         let page_now = page_signal.get();
         let my_seq = req_seq.get_untracked() + 1;
         req_seq.set(my_seq);
@@ -478,8 +491,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                 let Some(ws) = ws else {
                     return Ok(None);
                 };
-                let ep = query_entries(&ws.id, &ast, &sort_field, sort_desc, page_now, page_size)
-                    .await?;
+                let ep = query_entries(&ws.id, &ast, &sorts, page_now, page_size).await?;
                 let schema_list = label_schemas(&ws.id).await?;
                 // 成员表只在 Account 型标签或账号列出现时才用得上，但那是加载后的才知道的
                 // 信息，多一次请求换掉「打开详情才发现选不了人」的空窗。
@@ -758,7 +770,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                         batch(move || {
                             view_dialog_saveas.set(false);
                             view_query_input.set(serde_json::json!({ "and": [] }));
-                            view_sort_input.set(("updatedAt".to_string(), true));
+                            view_sort_input.set(Vec::new());
                             view_name_input.set(String::new());
                             view_columns_input.set(Vec::new());
                             view_shared_input.set(false);
@@ -1006,13 +1018,13 @@ pub fn WorkspaceMain() -> impl IntoView {
                                     on:click=move |_| {
                                         let Some(v) = active_view.get() else { return };
                                         let ast = query_ast.get_untracked();
-                                        let sort = (v.sort.field.clone(), v.sort.desc);
+                                        let sorts = v.sorts.clone();
                                         let cols = v.columns.clone();
                                         dialog_error.set(None);
                                         batch(move || {
                                             view_dialog_saveas.set(true);
                                             view_query_input.set(ast);
-                                            view_sort_input.set(sort);
+                                            view_sort_input.set(sorts);
                                             view_name_input.set(String::new());
                                             view_columns_input.set(cols);
                                             view_shared_input.set(false);
@@ -1026,15 +1038,14 @@ pub fn WorkspaceMain() -> impl IntoView {
                                     on:click=move |_| {
                                         let Some(v) = active_view.get() else { return };
                                         let ast = query_ast.get();
+                                        let sorts = v.sorts.clone();
                                         let cols = v.columns.clone();
                                         let shared = v.is_shared;
                                         let id = v.id.clone();
                                         let name = v.name.clone();
-                                        let field = v.sort.field.clone();
-                                        let desc = v.sort.desc;
                                         let title_colors = v.title_colors.clone();
                                         spawn_local(async move {
-                                            match update_view(&id, &name, &ast, &field, desc, &cols, shared, &title_colors).await {
+                                            match update_view(&id, &name, &ast, &sorts, &cols, shared, &title_colors).await {
                                                 Ok(saved) => {
                                                     view_list.update(|l| {
                                                         if let Some(slot) = l.iter_mut().find(|x| x.id == saved.id) {
@@ -1042,7 +1053,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                                         }
                                                     });
                                                     active_view.set(Some(saved));
-                                                    saved_baseline.set((ast, field, desc));
+                                                    saved_baseline.set(ast);
                                                     error.set(None);
                                                 }
                                                 Err(e) => error.set(Some(e)),
@@ -1052,11 +1063,27 @@ pub fn WorkspaceMain() -> impl IntoView {
                             }.into_any()
                         }}
                         <span class="mut">{move || {
-                            let (field, desc) = active_view
-                                .get()
-                                .map(|v| (v.sort.field, v.sort.desc))
-                                .unwrap_or_else(|| ("updatedAt".to_string(), true));
-                            format!("排序：{}", sort_label(&field, desc))
+                            let sorts = active_view.get().map(|v| v.sorts).unwrap_or_default();
+                            if sorts.is_empty() {
+                                return "排序：默认".to_string();
+                            }
+                            let schemas_now = schemas.get();
+                            let parts: Vec<String> = sorts
+                                .iter()
+                                .enumerate()
+                                .map(|(i, s)| {
+                                    let mark = PRIO_MARKS
+                                        .get(i)
+                                        .map(|m| m.to_string())
+                                        .unwrap_or_else(|| format!("({})", i + 1));
+                                    format!(
+                                        "{mark} {} {}",
+                                        sort_field_label(&s.field, &schemas_now),
+                                        if s.desc { "↓" } else { "↑" },
+                                    )
+                                })
+                                .collect();
+                            format!("排序：{}", parts.join("  "))
                         }}</span>
                     </div>
 
@@ -1112,14 +1139,8 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 columns=Signal::derive(move || {
                                     active_view.get().map(|v| v.columns).unwrap_or_default()
                                 })
-                                sort_field=Signal::derive(move || {
-                                    active_view
-                                        .get()
-                                        .map(|v| v.sort.field)
-                                        .unwrap_or_else(|| "updatedAt".to_string())
-                                })
-                                sort_desc=Signal::derive(move || {
-                                    active_view.get().map(|v| v.sort.desc).unwrap_or(true)
+                                sorts=Signal::derive(move || {
+                                    active_view.get().map(|v| v.sorts).unwrap_or_default()
                                 })
                                 title_colors=Signal::derive(move || {
                                     active_view
@@ -1127,27 +1148,37 @@ pub fn WorkspaceMain() -> impl IntoView {
                                         .map(|v| v.title_colors)
                                         .unwrap_or(Value::Null)
                                 })
-                                on_sort=Callback::new(move |field: String| {
-                                    // 后端 SortField 仅支持 updatedAt/createdAt/title，
-                                    // 未知字段会被拒绝；这里只接受受支持字段。
-                                    if !matches!(field.as_str(), "updatedAt" | "createdAt" | "title") {
+                                on_sort=Callback::new(move |req: SortRequest| {
+                                    let Some(mut v) = active_view.get_untracked() else {
                                         return;
-                                    }
-                                    let (cur_field, cur_desc) = active_view
-                                        .get()
-                                        .map(|v| (v.sort.field, v.sort.desc))
-                                        .unwrap_or_else(|| ("updatedAt".to_string(), true));
-                                    let desc = if field == cur_field { !cur_desc } else { true };
+                                    };
+                                    let pos = v.sorts.iter().position(|s| s.field == req.field);
+                                    v.sorts = match (pos, req.additive) {
+                                        // 已在链上：翻转方向，位置不变。
+                                        (Some(i), _) => {
+                                            let mut s = v.sorts;
+                                            s[i].desc = !s[i].desc;
+                                            s
+                                        }
+                                        // Shift + 未在链上：追加为末位降序键。
+                                        (None, true) => {
+                                            let mut s = v.sorts;
+                                            s.push(ViewSort { field: req.field, desc: true });
+                                            s
+                                        }
+                                        // 未按 Shift 且不在链首：整条链替换成这一个键，默认降序。
+                                        (None, false) => vec![ViewSort { field: req.field, desc: true }],
+                                    };
                                     // 同一批内改写 active_view 与 page_signal，Effect 只跑一次，
                                     // 避免并发两次请求、旧页码的结果乱序覆盖新结果。
-                                    batch(move || {
-                                        if let Some(mut v) = active_view.get() {
-                                            v.sort.field = field;
-                                            v.sort.desc = desc;
+                                    batch({
+                                        let v = v.clone();
+                                        move || {
                                             active_view.set(Some(v));
+                                            page_signal.set(1);
                                         }
-                                        page_signal.set(1);
                                     });
+                                    persist_sort(v);
                                 })
                             />
                             <div class="pager">
@@ -1377,11 +1408,10 @@ pub fn WorkspaceMain() -> impl IntoView {
                                     let shared = view_shared_input.get();
                                     let cols = view_columns_input.get();
                                     let query = view_query_input.get_untracked();
-                                    let (sort_field, sort_desc) = view_sort_input.get_untracked();
+                                    let sorts = view_sort_input.get_untracked();
                                     dialog_error.set(None);
                                     spawn_local(async move {
-                                        match create_view(&ws_id, &name, &query,
-                                            &sort_field, sort_desc, &cols, shared, &serde_json::json!([])).await {
+                                        match create_view(&ws_id, &name, &query, &sorts, &cols, shared, &serde_json::json!([])).await {
                                             Ok(v) => {
                                                 view_list.update(|l| l.push(v.clone()));
                                                 set_active(Some(v));
@@ -1462,8 +1492,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                     let shared = config_shared_input.get();
                                     let cols = config_columns_input.get();
                                     let ast = query_ast.get();
-                                    let field = v.sort.field.clone();
-                                    let desc = v.sort.desc;
+                                    let sorts = v.sorts.clone();
                                     let ws_id = data.get().and_then(|r| r.ok()).map(|(w, _, _)| w.id.clone());
                                     // 快照规则：条件表达式 + 颜色 + 预填缓存。
                                     let draft: Vec<(String, String, String, Value)> =
@@ -1502,7 +1531,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                             out.push(serde_json::json!({ "query": ast, "color": color }));
                                         }
                                         let title_colors = Value::Array(out);
-                                        match update_view(&id, &name, &ast, &field, desc, &cols, shared, &title_colors).await {
+                                        match update_view(&id, &name, &ast, &sorts, &cols, shared, &title_colors).await {
                                             Ok(saved) => {
                                                 view_list.update(|l| {
                                                     if let Some(slot) = l.iter_mut().find(|x| x.id == saved.id) {
@@ -1625,7 +1654,8 @@ fn WorkspaceSidebar(
     }
 }
 
-/// 动态列条目表：列来自当前视图（`columns` 里的标签 name），标题/更新时间可点击排序。
+/// 动态列条目表：列来自当前视图（`columns` 里的标签 name）。
+/// 标题 / 更新时间 / 展示为列的标签都可点击排序；`Shift` + 点击追加为次级排序键。
 #[component]
 fn EntryTable(
     data: RwSignal<Option<Result<(Workspace, Vec<Entry>, Vec<LabelSchema>), String>>>,
@@ -1636,33 +1666,25 @@ fn EntryTable(
     /// 双击行时带上条目编码，由外层跳转到条目全屏页。
     on_open: Callback<String>,
     columns: Signal<Vec<String>>,
-    sort_field: Signal<String>,
-    sort_desc: Signal<bool>,
+    /// 当前视图的排序键链，按优先级从高到低。
+    sorts: Signal<Vec<ViewSort>>,
     /// 当前视图的标题颜色规则 `[{query,color}]`；命中即给标题上色。
     title_colors: Signal<Value>,
     /// 工作空间成员表：账号型标签列的 id → 姓名。
     members: RwSignal<Vec<Member>>,
-    on_sort: Callback<String>,
+    /// 表头点击。`additive` 来自 `Shift` 键。
+    on_sort: Callback<SortRequest>,
 ) -> impl IntoView {
     let cols = move || columns.get();
-    // 当前排序列的升降序箭头；未排序列为空。
-    let arrow = move |field: &str| -> &'static str {
-        if sort_field.get() == field {
-            if sort_desc.get() {
-                " ↓"
-            } else {
-                " ↑"
-            }
-        } else {
-            ""
-        }
-    };
-    // 可排序表头。后端 SortField 仅支持 title/updatedAt/createdAt，
-    // 标签列因此不接排序，避免提交未知字段被服务端拒绝。
-    let sortable_th = move |field: &'static str, label: &'static str| {
+    // 可排序表头：内置三列恒可排；标签列只在其属于本视图 `columns` 时可排——
+    // 列不展示的标签排序，用户看不见结果。
+    let sortable_th = move |field: String, label: String| {
+        let click_field = field.clone();
         view! {
-            <th class="sortable" on:click=move |_| on_sort.run(field.to_string())>
-                {move || format!("{label}{}", arrow(field))}
+            <th class="sortable" on:click=move |ev: leptos::ev::MouseEvent| {
+                on_sort.run(SortRequest { field: click_field.clone(), additive: ev.shift_key() });
+            }>
+                {move || format!("{label}{}", sort_mark(&sorts.get(), &field))}
             </th>
         }
     };
@@ -1721,16 +1743,16 @@ fn EntryTable(
                             }
                         />
                     </th>
-                    {sortable_th("title", "标题")}
+                    {sortable_th("title".to_string(), "标题".to_string())}
                     {move || cols().iter().map(|name| {
                         let title = schemas.get().into_iter()
                             .find(|s| &s.name == name)
                             .map(|s| s.title)
                             .unwrap_or_else(|| name.clone());
-                        view! { <th>{title}</th> }
+                        sortable_th(name.clone(), title)
                     }).collect::<Vec<_>>()}
                     <th>"创建人"</th>
-                    {sortable_th("updatedAt", "更新时间")}
+                    {sortable_th("updatedAt".to_string(), "更新时间".to_string())}
                 </tr>
             </thead>
             <tbody>
@@ -2435,14 +2457,42 @@ fn ColumnPicker(
     }
 }
 
-fn sort_label(field: &str, desc: bool) -> String {
-    let name = match field {
-        "title" => "标题",
-        "createdAt" => "创建时间",
-        "updatedAt" | "" => "更新时间",
-        other => other,
-    };
-    format!("{name} {}", if desc { "↓" } else { "↑" })
+/// 排序优先级角标。超过 9 个键时退回 `(n)`，实际用不到那么深。
+const PRIO_MARKS: [&str; 9] = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨"];
+
+/// 表头上的排序标记：链上位置给 `①/②/…`，方向给 `↑/↓`；不在链上则空串。
+fn sort_mark(sorts: &[ViewSort], field: &str) -> String {
+    match sorts.iter().position(|s| s.field == field) {
+        Some(i) => {
+            let mark = PRIO_MARKS
+                .get(i)
+                .map(|m| m.to_string())
+                .unwrap_or_else(|| format!("({})", i + 1));
+            format!(" {mark} {}", if sorts[i].desc { "↓" } else { "↑" })
+        }
+        None => String::new(),
+    }
+}
+
+/// 排序字段的展示名：内置三值有固定中文名，其余按标签名查 schema 的标题。
+fn sort_field_label(field: &str, schemas: &[LabelSchema]) -> String {
+    match field {
+        "title" => "标题".to_string(),
+        "createdAt" => "创建时间".to_string(),
+        "updatedAt" => "更新时间".to_string(),
+        other => schemas
+            .iter()
+            .find(|s| s.name == other)
+            .map(|s| s.title.clone())
+            .unwrap_or_else(|| other.to_string()),
+    }
+}
+
+/// 表头点击的参数：`additive` 来自 `Shift` 键（追加为次级排序键）。
+#[derive(Clone)]
+struct SortRequest {
+    field: String,
+    additive: bool,
 }
 
 /// 时间型内置名 / 标签的值，用哪种原生控件表达。
