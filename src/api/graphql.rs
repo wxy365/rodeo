@@ -17,6 +17,7 @@ use crate::domain::{
     ValueColor, ValueSource, View, Workspace, WorkspaceAiConfig, WorkspaceMember, WorkspaceRole,
     WriteOp, ATTACHMENT_URL_PREFIX,
 };
+use crate::domain::view::SortKey;
 use crate::error::AppError;
 use crate::service::ai::derive_title;
 use crate::service::entry::PageInput as EntryPageInput;
@@ -537,16 +538,17 @@ struct TitleColorRuleWire {
     color: String,
 }
 
+/// 一个排序键的线上形态。`field` 是内置字段名或标签名。
 #[derive(SimpleObject, Clone)]
 #[graphql(rename_fields = "camelCase")]
-pub struct GqlSortSpec {
+pub struct GqlSortKey {
     field: String,
     desc: bool,
 }
 
-impl From<SortSpec> for GqlSortSpec {
-    fn from(s: SortSpec) -> Self {
-        Self { field: s.field.as_str().to_string(), desc: s.desc }
+impl From<SortKey> for GqlSortKey {
+    fn from(k: SortKey) -> Self {
+        Self { field: k.field.as_str().to_string(), desc: k.desc }
     }
 }
 
@@ -557,7 +559,7 @@ pub struct GqlView {
     name: String,
     query: Json<serde_json::Value>,
     query_expr: String,
-    sort: GqlSortSpec,
+    sorts: Vec<GqlSortKey>,
     columns: Vec<String>,
     is_shared: bool,
     owner_id: ID,
@@ -586,12 +588,13 @@ impl GqlView {
                 })
                 .collect(),
         );
+        let sorts: Vec<GqlSortKey> = v.sort.keys.into_iter().map(GqlSortKey::from).collect();
         Self {
             id: v.id.to_string().into(),
             name: v.name,
             query: Json(query),
             query_expr,
-            sort: v.sort.into(),
+            sorts,
             columns: v.columns,
             is_shared: v.is_shared,
             owner_id: v.owner_id.to_string().into(),
@@ -743,13 +746,23 @@ pub struct SortInput {
 }
 
 impl SortInput {
-    fn to_sort(&self) -> GqlResult<SortSpec> {
+    fn to_key(&self) -> SortKey {
         let field = match &self.field {
-            Some(f) => SortField::from_str(f)
-                .ok_or_else(|| AppError::InvalidQuery(format!("未知排序字段: {f}")))?,
+            // 内置三值优先：标签恰好叫 `title` 时仍按内置「标题」解释。
+            Some(f) => SortField::from_str(f).unwrap_or_else(|| SortField::Label(f.clone())),
             None => SortField::UpdatedAt,
         };
-        Ok(SortSpec { field, desc: self.desc.unwrap_or(true) })
+        SortKey { field, desc: self.desc.unwrap_or(true) }
+    }
+}
+
+/// 入参缺省（`None` / 空数组）落回默认排序，与改动前一致。
+fn to_sort(sorts: Option<Vec<SortInput>>) -> SortSpec {
+    let keys: Vec<SortKey> = sorts.unwrap_or_default().iter().map(|s| s.to_key()).collect();
+    if keys.is_empty() {
+        SortSpec::default()
+    } else {
+        SortSpec { keys }
     }
 }
 
@@ -1170,7 +1183,7 @@ impl Query {
         ctx: &Context<'_>,
         workspace_id: ID,
         query: Option<Json<serde_json::Value>>,
-        sort: Option<SortInput>,
+        sorts: Option<Vec<SortInput>>,
         page: Option<PageInput>,
     ) -> GqlResult<GqlEntryConnection> {
         let gql = ctx.data::<GraphqlContext>()?;
@@ -1178,7 +1191,7 @@ impl Query {
         gql.require_member(ws)?;
         let q = parse_query_json(query)?;
         q.validate(&gql.services.label.list_schemas(ws)?)?;
-        let sort = sort.map(|s| s.to_sort()).transpose()?.unwrap_or_default();
+        let sort = to_sort(sorts);
         let page = page.map(|p| p.to_page()).unwrap_or_default();
         let result = gql.services.entry.query(ws, &q, &sort, page)?;
         let items = result
@@ -1907,7 +1920,7 @@ impl Mutation {
         workspace_id: ID,
         name: String,
         query: Json<serde_json::Value>,
-        sort: Option<SortInput>,
+        sorts: Option<Vec<SortInput>>,
         columns: Vec<String>,
         is_shared: bool,
         title_colors: Option<Json<serde_json::Value>>,
@@ -1921,7 +1934,7 @@ impl Mutation {
         )?;
         let q: ViewQuery = serde_json::from_value(query.0)
             .map_err(|e| AppError::InvalidQuery(format!("查询条件格式错误: {e}")))?;
-        let sort = sort.map(|s| s.to_sort()).transpose()?.unwrap_or_default();
+        let sort = to_sort(sorts);
         let title_colors = parse_title_colors(title_colors)?;
         let v = gql.services.view.create(
             auth.account_id,
@@ -1944,7 +1957,7 @@ impl Mutation {
         id: ID,
         name: String,
         query: Json<serde_json::Value>,
-        sort: Option<SortInput>,
+        sorts: Option<Vec<SortInput>>,
         columns: Vec<String>,
         is_shared: bool,
         title_colors: Option<Json<serde_json::Value>>,
@@ -1963,7 +1976,7 @@ impl Mutation {
         gql.require_role(existing.workspace_id, need)?;
         let q: ViewQuery = serde_json::from_value(query.0)
             .map_err(|e| AppError::InvalidQuery(format!("查询条件格式错误: {e}")))?;
-        let sort = sort.map(|s| s.to_sort()).transpose()?.unwrap_or_default();
+        let sort = to_sort(sorts);
         let title_colors = parse_title_colors(title_colors)?;
         let v = gql.services.view.update(
             auth.account_id,

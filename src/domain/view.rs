@@ -56,36 +56,50 @@ pub struct TitleColorRule {
     pub color: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// 一个排序键。`SortSpec` 按顺序依次比较，前一个不定的才看后一个。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SortSpec {
+pub struct SortKey {
     pub field: SortField,
     pub desc: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SortSpec {
+    pub keys: Vec<SortKey>,
+}
+
 impl Default for SortSpec {
     fn default() -> Self {
-        Self { field: SortField::UpdatedAt, desc: true }
+        Self { keys: vec![SortKey { field: SortField::UpdatedAt, desc: true }] }
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SortField {
     UpdatedAt,
     CreatedAt,
     Title,
+    /// 追加在末尾：索引 0/1/2 是既有记录里的值，插入会毁掉所有存量视图。
+    /// 载荷是标签名（`LabelSchema.name`），与 `View::columns` 同一套标识。
+    /// 因此 `SortField` 不再是 `Copy`。
+    Label(String),
 }
 
 impl SortField {
-    pub fn as_str(&self) -> &'static str {
+    pub fn as_str(&self) -> &str {
         match self {
             SortField::UpdatedAt => "updatedAt",
             SortField::CreatedAt => "createdAt",
             SortField::Title => "title",
+            SortField::Label(name) => name,
         }
     }
 
+    /// 只认内置三值。标签名由 GraphQL 层在解析入参时单独构造 `Label(..)`——
+    /// 这样 `title` 恒按内置「标题」解释，不会被同名标签抢走。
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "updatedAt" => Some(SortField::UpdatedAt),
@@ -105,8 +119,9 @@ mod tests {
     #[test]
     fn sort_spec_default_is_updated_desc() {
         let s = SortSpec::default();
-        assert_eq!(s.field, SortField::UpdatedAt);
-        assert!(s.desc);
+        assert_eq!(s.keys.len(), 1);
+        assert_eq!(s.keys[0].field, SortField::UpdatedAt);
+        assert!(s.keys[0].desc);
     }
 
     #[test]

@@ -1,12 +1,13 @@
+use std::cmp::Ordering;
 use std::sync::Arc;
 
 use chrono::Utc;
 use ulid::Ulid;
 
-use crate::domain::view::{SortField, SortSpec};
+use crate::domain::view::{SortField, SortKey, SortSpec};
 use crate::domain::{
     generate_entry_code, AuditAction, AuditLog, DerivedLabel, Entry, EvalEnv, InheritanceGraph,
-    LabelSchema, LabelValue, Labeling, Query,
+    LabelSchema, LabelValue, LabelValueType, Labeling, Query,
 };
 use crate::error::AppError;
 use crate::service::audit::audit_ops;
@@ -650,7 +651,7 @@ impl EntryService {
         label_names.sort();
         label_names.dedup();
 
-        sort_rows(&mut matched, sort);
+        sort_rows(&mut matched, sort, &labels_map, &schemas);
         let total = matched.len();
         let (page, page_size) = page.normalized();
         let slice: Vec<Entry> = matched
@@ -772,16 +773,144 @@ fn entry_snapshot(entry: &Entry, archived_at: Option<&str>) -> String {
     .to_string()
 }
 
-/// 按 SortSpec 对条目就地排序；标题大小写不敏感。
-fn sort_rows(rows: &mut [Entry], sort: &SortSpec) {
+/// 按 `SortSpec` 对条目就地排序：按键顺序依次比较，全部相等则保持原序
+/// （`sort_by` 是稳定排序，条目的原始顺序来自扫描，稳定可复现）。
+///
+/// **缺失值永远排在最后，与升降序无关**——字典型排序里把空值翻到最前通常不是
+/// 用户想要的，而「空值永远最后」是一条不需要额外开关的确定规则。
+fn sort_rows(
+    rows: &mut [Entry],
+    sort: &SortSpec,
+    labels_map: &std::collections::HashMap<String, Vec<Labeling>>,
+    schemas: &std::collections::HashMap<String, (LabelValueType, Option<String>)>,
+) {
     rows.sort_by(|a, b| {
-        let ord = match sort.field {
+        for k in &sort.keys {
+            match key_ordering(a, b, k, labels_map, schemas) {
+                // 这两支不参与 desc 翻转：缺失永远最后。
+                KeyOrder::AMissing => return Ordering::Greater,
+                KeyOrder::BMissing => return Ordering::Less,
+                KeyOrder::BothMissing => continue,
+                KeyOrder::Values(o) => {
+                    let o = if k.desc { o.reverse() } else { o };
+                    if o != Ordering::Equal {
+                        return o;
+                    }
+                }
+            }
+        }
+        Ordering::Equal
+    });
+}
+
+enum KeyOrder {
+    /// a 在这个键上没有值，b 有 → a 排后面。
+    AMissing,
+    /// b 没有值 → b 排后面。
+    BMissing,
+    BothMissing,
+    Values(Ordering),
+}
+
+fn key_ordering(
+    a: &Entry,
+    b: &Entry,
+    k: &SortKey,
+    labels_map: &std::collections::HashMap<String, Vec<Labeling>>,
+    schemas: &std::collections::HashMap<String, (LabelValueType, Option<String>)>,
+) -> KeyOrder {
+    let SortField::Label(name) = &k.field else {
+        // 内置三列恒有值，不存在缺失这一支。
+        let o = match k.field {
             SortField::UpdatedAt => a.updated_at.cmp(&b.updated_at),
             SortField::CreatedAt => a.created_at.cmp(&b.created_at),
+            // 标题大小写不敏感，与改动前的行为一致。
             SortField::Title => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
+            SortField::Label(_) => unreachable!(),
         };
-        if sort.desc { ord.reverse() } else { ord }
-    });
+        return KeyOrder::Values(o);
+    };
+    let va = label_value_of(a, name, labels_map);
+    let vb = label_value_of(b, name, labels_map);
+    match (va, vb) {
+        (None, None) => KeyOrder::BothMissing,
+        (None, Some(_)) => KeyOrder::AMissing,
+        (Some(_), None) => KeyOrder::BMissing,
+        (Some(x), Some(y)) => {
+            // 值类型取标签声明；声明取不到（schema 已被删）时退到字符串比较。
+            let vt = schemas
+                .get(name)
+                .map(|(t, _)| *t)
+                .unwrap_or(LabelValueType::String);
+            KeyOrder::Values(compare_values(x, y, vt))
+        }
+    }
+}
+
+fn label_value_of<'a>(
+    e: &Entry,
+    name: &str,
+    labels_map: &'a std::collections::HashMap<String, Vec<Labeling>>,
+) -> Option<&'a LabelValue> {
+    labels_map
+        .get(&e.code)?
+        .iter()
+        .find(|l| l.label_name == name)
+        .map(|l| &l.value)
+}
+
+fn compare_values(a: &LabelValue, b: &LabelValue, vt: LabelValueType) -> Ordering {
+    // 多值标签逐元素按字符串比较，字典序。
+    if let (LabelValue::EnumList(x), LabelValue::EnumList(y)) = (a, b) {
+        return x.iter().map(String::as_str).cmp(y.iter().map(String::as_str));
+    }
+    match vt {
+        LabelValueType::Integer | LabelValueType::Float | LabelValueType::Currency => {
+            match (as_number(a), as_number(b)) {
+                (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
+                // 按声明类型解析不出来（脏数据）：退到字符串比较，好过认定两者相等。
+                _ => display_key(a).cmp(&display_key(b)),
+            }
+        }
+        LabelValueType::Boolean => {
+            matches!(a, LabelValue::Bool(true)).cmp(&matches!(b, LabelValue::Bool(true)))
+        }
+        // enum / string / email / account / date / time / datetime，以及无值标签：
+        // 一律按存下来的字符串比较。无值标签的 `LabelValue::Null` 两边都相等，
+        // 于是「有 < 无」由缺失规则自然给出。
+        _ => display_key(a).cmp(&display_key(b)),
+    }
+}
+
+fn as_number(v: &LabelValue) -> Option<f64> {
+    match v {
+        LabelValue::Int(i) => Some(*i as f64),
+        LabelValue::Float(f) | LabelValue::Currency(f) => Some(*f),
+        LabelValue::String(s)
+        | LabelValue::Enum(s)
+        | LabelValue::Date(s)
+        | LabelValue::Time(s)
+        | LabelValue::DateTime(s)
+        | LabelValue::Email(s) => s.parse().ok(),
+        _ => None,
+    }
+}
+
+fn display_key(v: &LabelValue) -> String {
+    match v {
+        LabelValue::Null => String::new(),
+        LabelValue::Bool(b) => b.to_string(),
+        LabelValue::Int(i) => i.to_string(),
+        LabelValue::Float(f) | LabelValue::Currency(f) => f.to_string(),
+        LabelValue::String(s)
+        | LabelValue::Enum(s)
+        | LabelValue::Date(s)
+        | LabelValue::Time(s)
+        | LabelValue::DateTime(s)
+        | LabelValue::Email(s)
+        | LabelValue::Account(s) => s.clone(),
+        LabelValue::EnumList(xs) => xs.join(","),
+    }
 }
 
 #[cfg(test)]
@@ -790,7 +919,7 @@ mod tests {
     use crate::service::WorkspaceService;
 
     use crate::domain::query::{Condition, Field, Op, Query};
-    use crate::domain::view::{SortField, SortSpec};
+    use crate::domain::view::{SortField, SortKey, SortSpec};
 
     fn temp_search() -> (String, std::sync::Arc<crate::service::search::SearchIndex>) {
         let mut p = std::env::temp_dir();
@@ -876,13 +1005,13 @@ mod tests {
         for t in ["b", "a", "c"] {
             svc.create(actor, ws_id, t).unwrap();
         }
-        let asc = SortSpec { field: SortField::Title, desc: false };
+        let asc = SortSpec { keys: vec![SortKey { field: SortField::Title, desc: false }] };
         let r = svc.query(ws_id, &Query::all(), &asc, PageInput::default()).unwrap();
         let titles: Vec<String> = r.items.into_iter().map(|(e, _)| e.title).collect();
         assert_eq!(titles, vec!["a", "b", "c"]);
 
         // desc 是默认排序方向，必须单独覆盖。
-        let desc = SortSpec { field: SortField::Title, desc: true };
+        let desc = SortSpec { keys: vec![SortKey { field: SortField::Title, desc: true }] };
         let r = svc.query(ws_id, &Query::all(), &desc, PageInput::default()).unwrap();
         let titles: Vec<String> = r.items.into_iter().map(|(e, _)| e.title).collect();
         assert_eq!(titles, vec!["c", "b", "a"]);

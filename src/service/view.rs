@@ -1,9 +1,13 @@
 use std::sync::Arc;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
+use serde::Deserialize;
 use ulid::Ulid;
 
-use crate::domain::{AuditAction, AuditLog, LabelSchema, Query, SortSpec, TitleColorRule, View};
+use crate::domain::view::SortKey;
+use crate::domain::{
+    AuditAction, AuditLog, LabelSchema, Query, SortField, SortSpec, TitleColorRule, View,
+};
 use crate::error::AppError;
 use crate::service::audit::audit_ops;
 use crate::service::label::check_color;
@@ -30,6 +34,7 @@ impl ViewService {
         ws: Ulid,
         name: &str,
         query: &Query,
+        sort: &SortSpec,
         columns: &[String],
         title_colors: &[TitleColorRule],
     ) -> Result<(), AppError> {
@@ -40,6 +45,14 @@ impl ViewService {
         for c in columns {
             if !schemas.iter().any(|s| &s.name == c) {
                 return Err(AppError::InvalidQuery(format!("列引用了不存在的标签: {c}")));
+            }
+        }
+        // 排序键引用的标签必须存在，与列同一套校验。
+        for k in &sort.keys {
+            if let SortField::Label(n) = &k.field {
+                if !schemas.iter().any(|s| &s.name == n) {
+                    return Err(AppError::InvalidQuery(format!("排序引用了不存在的标签: {n}")));
+                }
             }
         }
         query.validate(&schemas)?;
@@ -113,6 +126,60 @@ impl ViewService {
         Ok(repaired)
     }
 
+    /// 修复多字段排序之前落库的视图。`SortSpec` 的编码从 `{field, desc}`
+    /// （枚举序号 u32 + bool，5 字节）变成 `Vec<SortKey>`（u64 长度前缀 + n×5），
+    /// 两者布局不同，而 `sort` 位于 `View` 的中段——补零只对**末尾**新增字段有效，
+    /// 这里救不回来，只能用旧结构解一遍再按新结构写回。
+    ///
+    /// 幂等：修完再扫不会命中。返回修好的条数。
+    pub fn repair_legacy_view_sort(&self) -> Result<usize, AppError> {
+        const MAX_PAD_BYTES: usize = 16;
+        let mut ops = Vec::new();
+        for (key, value) in self.store.scan_prefix(cf::VIEWS, b"")? {
+            if bincode::deserialize::<View>(&value).is_ok() {
+                continue;
+            }
+            // 先按原样解，再按 1..=MAX_PAD_BYTES 补零重试：后者覆盖 `title_colors`
+            // 之前那一代记录（末尾缺字段），与标签定义的修复同一套理由。
+            let legacy = bincode::deserialize::<LegacyView>(&value).ok().or_else(|| {
+                (1..=MAX_PAD_BYTES).find_map(|pad| {
+                    let mut padded = value.clone();
+                    padded.resize(padded.len() + pad, 0);
+                    bincode::deserialize::<LegacyView>(&padded).ok()
+                })
+            });
+            match legacy {
+                Some(l) => {
+                    let view = View {
+                        id: l.id,
+                        workspace_id: l.workspace_id,
+                        name: l.name,
+                        query: l.query,
+                        sort: SortSpec { keys: vec![l.sort.into()] },
+                        columns: l.columns,
+                        is_shared: l.is_shared,
+                        owner_id: l.owner_id,
+                        created_at: l.created_at,
+                        updated_at: l.updated_at,
+                        title_colors: l.title_colors,
+                    };
+                    ops.push(BatchOp::put(cf::VIEWS, key, &view)?);
+                }
+                // 全都解不出来：原样留着，交给读取路径报错。
+                None => tracing::warn!(
+                    "视图无法修复，保留原样: {}",
+                    String::from_utf8_lossy(&key)
+                ),
+            }
+        }
+        let repaired = ops.len();
+        if repaired > 0 {
+            self.store.write_batch(ops)?;
+            tracing::info!("修复 {repaired} 个视图的旧编码排序");
+        }
+        Ok(repaired)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn create(
         &self,
@@ -125,7 +192,7 @@ impl ViewService {
         is_shared: bool,
         title_colors: Vec<TitleColorRule>,
     ) -> Result<View, AppError> {
-        self.validate(ws, name, &query, &columns, &title_colors)?;
+        self.validate(ws, name, &query, &sort, &columns, &title_colors)?;
         let view = self.build(ws, name, query, sort, columns, is_shared, title_colors, actor);
         let audit = AuditLog::new(
             AuditAction::ViewCreated,
@@ -238,7 +305,7 @@ impl ViewService {
         title_colors: Vec<TitleColorRule>,
     ) -> Result<View, AppError> {
         let mut view = self.get(id)?.ok_or(AppError::NotFound)?;
-        self.validate(view.workspace_id, name, &query, &columns, &title_colors)?;
+        self.validate(view.workspace_id, name, &query, &sort, &columns, &title_colors)?;
         let is_default = self.default_view_id(view.workspace_id)? == Some(id);
         let before = serde_json::to_string(&view).unwrap_or_default();
         if is_default {
@@ -299,11 +366,43 @@ impl ViewService {
     }
 }
 
+/// 多字段排序之前的 `View` 落库形状，只用于一次性转码。
+/// `query` 一栏沿用它当时的 `query_json` 适配器，否则解不出来。
+#[derive(Deserialize)]
+struct LegacyView {
+    id: Ulid,
+    workspace_id: Ulid,
+    name: String,
+    #[serde(with = "crate::domain::view::query_json")]
+    query: Query,
+    sort: LegacySortSpec,
+    columns: Vec<String>,
+    is_shared: bool,
+    owner_id: Ulid,
+    created_at: DateTime<Utc>,
+    updated_at: DateTime<Utc>,
+    #[serde(default)]
+    title_colors: Vec<TitleColorRule>,
+}
+
+#[derive(Deserialize)]
+struct LegacySortSpec {
+    field: SortField,
+    desc: bool,
+}
+
+impl From<LegacySortSpec> for SortKey {
+    fn from(s: LegacySortSpec) -> Self {
+        SortKey { field: s.field, desc: s.desc }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::query::Query;
     use crate::domain::SortField;
+    use crate::domain::view::SortKey;
     use crate::service::WorkspaceService;
 
     fn temp_dir(name: &str) -> String {
@@ -465,12 +564,12 @@ mod tests {
             value: None,
         });
         let u = svc
-            .update(actor, d.id, "全部", q, SortSpec { field: SortField::Title, desc: false }, vec!["Task".into()], false, vec![])
+            .update(actor, d.id, "全部", q, SortSpec { keys: vec![SortKey { field: SortField::Title, desc: false }] }, vec!["Task".into()], false, vec![])
             .unwrap();
         assert!(u.is_shared);
         assert_eq!(u.name, "基础视图", "基础视图不可改名");
         assert_eq!(u.query, Query::all(), "基础视图恒为全部条目，过滤只在临时态");
-        assert_eq!(u.sort.field, SortField::UpdatedAt, "基础视图不可改排序");
+        assert_eq!(u.sort.keys[0].field, SortField::UpdatedAt, "基础视图不可改排序");
         assert_eq!(u.columns, vec!["Task"], "但列仍可配置");
         std::fs::remove_dir_all(&dir).ok();
     }
