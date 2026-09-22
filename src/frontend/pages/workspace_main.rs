@@ -1963,10 +1963,13 @@ fn EntryPanel(
     let editing_title = RwSignal::new(false);
     let title_ref: NodeRef<Input> = NodeRef::new();
     // 与全屏页同源：`data` 里的条目是服务端最新版本，无差异 ⇔ 没改动。
+    // 标题比较必须带 trim：服务端存/返回前会 trim（service/entry.rs），若不加，
+    // 用户输入 "abc " 存回 "abc"，两者永不相等，dirty 卡在 true、按钮再也不置灰。
+    // 别「简化」掉这个 trim，也别改成回头 set 缓冲——那会动到用户正在打的字。
     let dirty = Signal::derive(move || {
         data.get()
             .and_then(|r| r.ok())
-            .is_some_and(|e| e.title != title.get() || e.detail != detail.get())
+            .is_some_and(|e| e.title != title.get().trim() || e.detail != detail.get())
     });
 
     // 当前页签：detail | attachments | history。
@@ -2042,6 +2045,11 @@ fn EntryPanel(
     });
 
     let do_save: Callback<()> = Callback::new(move |_| {
+        // 无改动就不写：服务端即便 title/detail 未变也会 bump updated_at 并追加一条审计，
+        // 而 updated_at 是乐观并发比的令牌。按钮那边由 disabled 挡住，快捷键这条路径得自己挡。
+        if !dirty.get() {
+            return;
+        }
         let c = code.get();
         let Some(entry_now) = data.get().and_then(|r| r.ok()) else {
             return;

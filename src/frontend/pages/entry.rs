@@ -39,10 +39,13 @@ pub fn EntryFullScreen() -> impl IntoView {
     // 「当前编辑态 vs 已加载的条目」的差异。`data` 里的条目就是服务端最新版本
     // （保存成功后会被就地替换），所以无差异 ⇔ 没改动。
     // 不用一个 `saved` 布尔：它初值只能是 false，页面一加载就显示「未保存」，语义是错的。
+    // 标题比较必须带 trim：服务端存/返回前会 trim（service/entry.rs），若不加，
+    // 用户输入 "abc " 存回 "abc"，两者永不相等，dirty 卡在 true、按钮再也不置灰。
+    // 别「简化」掉这个 trim，也别改成回头 set 缓冲——那会动到用户正在打的字。
     let dirty = Signal::derive(move || {
         data.get()
             .and_then(|r| r.ok())
-            .is_some_and(|(_, e, _, _, _)| e.title != title.get() || e.detail != detail.get())
+            .is_some_and(|(_, e, _, _, _)| e.title != title.get().trim() || e.detail != detail.get())
     });
     let error = RwSignal::new(None::<String>);
     // 标题平时只读，点击才换成输入框；输入框挂载后由 Effect 补焦点。
@@ -126,6 +129,11 @@ pub fn EntryFullScreen() -> impl IntoView {
     });
 
     let do_save: Callback<()> = Callback::new(move |_| {
+        // 无改动就不写：服务端即便 title/detail 未变也会 bump updated_at 并追加一条审计，
+        // 而 updated_at 是乐观并发比的令牌。按钮那边由 disabled 挡住，快捷键这条路径得自己挡。
+        if !dirty.get() {
+            return;
+        }
         let c = code();
         let Some(e) = data.get().and_then(|r| r.ok()).map(|(_, e, _, _, _)| e) else {
             return;
