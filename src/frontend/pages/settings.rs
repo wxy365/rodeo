@@ -8,7 +8,7 @@ use crate::frontend::ai_prompt_editor::{rows_from, rows_to_value, PromptRow, Pro
 use crate::frontend::automation_tab::AutomationTab;
 use crate::frontend::components::{
     action_label, audit_change, display_enum_value, logged_out, role_label, short_time,
-    value_type_label, DefaultValueInput, FormatSelect,
+    value_type_label, ColorPick, DefaultValueInput, FormatSelect,
 };
 use crate::frontend::graphql_client::{
     audit_logs, create_label_schema, delete_workspace, invite_member, invites, label_attrs,
@@ -1317,21 +1317,23 @@ fn schema_row(
         });
     };
 
-    let swatch = move |sig: RwSignal<String>| {
-        view! {
-            <input
-                type="color"
-                class="sw sm"
-                disabled=!editable
-                prop:value=move || {
-                    let c = sig.get();
-                    if c.is_empty() { "#3b82f6".to_string() } else { c }
-                }
-                on:input=move |ev| {
-                    sig.set(event_target_value(&ev));
-                    dirty.set(true);
-                }
-            />
+    // 值色行的色块：每个值一个，故用 `small` 的紧凑色点。
+    let swatch = {
+        let ws_swatch = ws_id.clone();
+        move |sig: RwSignal<String>| {
+            let ws = ws_swatch.clone();
+            view! {
+                <ColorPick
+                    small=true
+                    value=Signal::derive(move || sig.get())
+                    ws_id=Signal::derive(move || ws.clone())
+                    disabled=!editable
+                    on_pick=Callback::new(move |c: String| {
+                        sig.set(c);
+                        dirty.set(true);
+                    })
+                />
+            }
         }
     };
 
@@ -1564,15 +1566,17 @@ fn schema_row(
             <td>
                 <div class="color-cell">
                     <div class="color-base">
-                        <input
-                            type="color"
-                            class="sw"
+                        <ColorPick
+                            value=Signal::derive(move || base_color.get().unwrap_or_default())
+                            ws_id=Signal::derive({
+                                let w = ws_id.clone();
+                                move || w.clone()
+                            })
                             disabled=!can_edit_basic
-                            prop:value=move || base_color.get().unwrap_or_else(|| "#3b82f6".to_string())
-                            on:input=move |ev| {
-                                base_color.set(Some(event_target_value(&ev)));
+                            on_pick=Callback::new(move |c: String| {
+                                base_color.set(Some(c));
                                 dirty.set(true);
-                            }
+                            })
                         />
                         <span class="code" style="font-size:11px">
                             {move || base_color.get().unwrap_or_else(|| "未设置".to_string())}

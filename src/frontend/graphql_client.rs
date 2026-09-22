@@ -54,6 +54,49 @@ pub fn get_sidebar_collapsed() -> bool {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn set_sidebar_collapsed(_collapsed: bool) {}
 
+// ---------- 最近使用过的颜色（按工作空间隔离，仅 WASM 生效） ----------
+
+/// 留存条数：再多颜色选择器就被撑开了，也不再是「最近」。
+pub const RECENT_COLORS_MAX: usize = 6;
+
+#[cfg(target_arch = "wasm32")]
+fn recent_colors_key(ws_id: &str) -> String {
+    format!("rodeo_recent_colors_{ws_id}")
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn get_recent_colors(ws_id: &str) -> Vec<String> {
+    use gloo_storage::{LocalStorage, Storage};
+    LocalStorage::get::<Vec<String>>(recent_colors_key(ws_id)).unwrap_or_default()
+}
+
+/// 记一笔用过的颜色：统一小写、去重、最新在前、超出上限截断，落盘后返回新列表。
+///
+/// 只做「记下来」这一件事——哪些颜色值得记（比如标准色板里已有的）由调用方判断。
+#[cfg(target_arch = "wasm32")]
+pub fn push_recent_color(ws_id: &str, color: &str) -> Vec<String> {
+    use gloo_storage::{LocalStorage, Storage};
+    let mut list = get_recent_colors(ws_id);
+    let c = color.trim().to_ascii_lowercase();
+    if c.is_empty() {
+        return list;
+    }
+    list.retain(|x| x != &c);
+    list.insert(0, c);
+    list.truncate(RECENT_COLORS_MAX);
+    let _ = LocalStorage::set(recent_colors_key(ws_id), &list);
+    list
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn get_recent_colors(_ws_id: &str) -> Vec<String> {
+    Vec::new()
+}
+#[cfg(not(target_arch = "wasm32"))]
+pub fn push_recent_color(_ws_id: &str, _color: &str) -> Vec<String> {
+    Vec::new()
+}
+
 // ---------- 底层 GraphQL 请求 ----------
 
 #[cfg(target_arch = "wasm32")]

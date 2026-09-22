@@ -3,7 +3,9 @@ use leptos::task::spawn_local;
 use leptos_router::hooks::use_navigate;
 use serde_json::Value;
 
-use crate::frontend::graphql_client::{logout, AuditLog, Member};
+use crate::frontend::graphql_client::{
+    get_recent_colors, logout, push_recent_color, AuditLog, Member,
+};
 use crate::frontend::icons::{ic_check, ic_copy, ic_logout, ic_profile};
 use crate::frontend::use_auth;
 
@@ -832,6 +834,111 @@ pub fn AuditTimeline(logs: RwSignal<Vec<AuditLog>>, code: Signal<String>) -> imp
                 .into_any()
             }
         }}
+    }
+}
+
+/// 标准色板：与原生调色盘并排、可直接点选的一组常用色。
+pub const PRESET_COLORS: [&str; 10] = [
+    "#ef4444", // 红
+    "#f97316", // 橙
+    "#eab308", // 黄
+    "#22c55e", // 绿
+    "#14b8a6", // 青
+    "#3b82f6", // 蓝
+    "#6366f1", // 靛
+    "#a855f7", // 紫
+    "#ec4899", // 粉
+    "#6b7280", // 灰
+];
+
+/// 未设色时原生控件里显示的那个色，与各调用点此前的默认值一致。
+const COLOR_FALLBACK: &str = "#3b82f6";
+
+/// 颜色选择器：原生调色盘 + 标准色 + 最近使用色，标签基础色、值色行、标题颜色
+/// 规则三处共用一份。
+///
+/// 原生调色盘照旧负责调自定义色——网页改不了系统调色盘里的内容，「标准色直接
+/// 点选」只能落在控件旁边这一排色点上。
+#[component]
+pub fn ColorPick(
+    /// 当前颜色，空串表示未设置。
+    #[prop(into)]
+    value: Signal<String>,
+    /// 任何一种点选（标准色 / 最近使用 / 调色盘）都走这里，落不落库由调用方决定。
+    #[prop(into)]
+    on_pick: Callback<String>,
+    /// 当前工作空间：最近使用色按它隔离。
+    #[prop(into)]
+    ws_id: Signal<String>,
+    #[prop(optional)] small: bool,
+    #[prop(optional)] disabled: bool,
+    #[prop(optional, into)] title: Option<String>,
+) -> impl IntoView {
+    // 初值空表、挂载后再从 localStorage 恢复：SSR 与 hydrate 两趟的 DOM 才一致。
+    let recent = RwSignal::new(Vec::<String>::new());
+    Effect::new_sync(move |_| {
+        if cfg!(target_arch = "wasm32") {
+            recent.set(get_recent_colors(&ws_id.get_untracked()));
+        }
+    });
+
+    // 记一笔用过的颜色。标准色板里已有的不记——否则最近使用只会是标准色的副本，
+    // 这一组是留给调色盘里调出来的自定义色的。
+    let record = move |c: String| {
+        if cfg!(target_arch = "wasm32") && !PRESET_COLORS.contains(&c.as_str()) {
+            recent.set(push_recent_color(&ws_id.get_untracked(), &c));
+        }
+        on_pick.run(c);
+    };
+
+    let dot = move |c: String| {
+        let bg = c.clone();
+        let label = c.clone();
+        let sel = c.clone();
+        let pick = c;
+        view! {
+            <button
+                type="button"
+                class="cpick-dot"
+                class:sm=small
+                class:sel=move || value.get().eq_ignore_ascii_case(&sel)
+                style=format!("background:{bg}")
+                title=label
+                disabled=disabled
+                on:click=move |_| record(pick.clone())
+            ></button>
+        }
+    };
+
+    view! {
+        <div class="cpick">
+            <input
+                type="color"
+                class="sw"
+                class:sm=small
+                title=title
+                disabled=disabled
+                prop:value=move || {
+                    let c = value.get();
+                    if c.is_empty() { COLOR_FALLBACK.to_string() } else { c }
+                }
+                on:input=move |ev| record(event_target_value(&ev))
+            />
+            <div class="cpick-group" title="标准色">
+                {PRESET_COLORS.iter().map(|c| dot(c.to_string())).collect::<Vec<_>>()}
+            </div>
+            {move || {
+                let list = recent.get();
+                (!list.is_empty())
+                    .then(|| {
+                        view! {
+                            <div class="cpick-group cpick-sep" title="最近使用">
+                                {list.into_iter().map(|c| dot(c.to_string())).collect::<Vec<_>>()}
+                            </div>
+                        }
+                    })
+            }}
+        </div>
     }
 }
 
