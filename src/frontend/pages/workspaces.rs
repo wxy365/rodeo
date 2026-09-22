@@ -112,7 +112,7 @@ pub fn WorkspaceList() -> impl IntoView {
                     <input placeholder="全文检索：标题 / 详情 / 标签值（即将上线）" disabled />
                 </label>
                 <button class="ibtn" style="margin-left:auto" title="系统管理"
-                    on:click=go_admin.clone()
+                    on:click=go_admin
                     disabled=move || !auth.user.get().is_some_and(|u| u.is_admin)>
                     {ic_setting()}
                 </button>

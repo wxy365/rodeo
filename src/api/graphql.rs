@@ -13,11 +13,10 @@ use crate::domain::{
     Account, AccountStatus, ActionTarget, Attachment, AuditLog, AutomationRule, Comment, Entry,
     Invite,
     LabelSchema, LabelValueType, LinkKind,
-    LabelWrite, Labeling, NamedPrompt, Query as ViewQuery, SortField, SortSpec, TitleColorRule,
+    LabelWrite, Labeling, NamedPrompt, Query as ViewQuery, SortField, SortKey, SortSpec, TitleColorRule,
     ValueColor, ValueSource, View, Workspace, WorkspaceAiConfig, WorkspaceMember, WorkspaceRole,
     WriteOp, ATTACHMENT_URL_PREFIX,
 };
-use crate::domain::view::SortKey;
 use crate::error::AppError;
 use crate::service::ai::derive_title;
 use crate::service::entry::PageInput as EntryPageInput;

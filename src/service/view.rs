@@ -4,9 +4,8 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use ulid::Ulid;
 
-use crate::domain::view::SortKey;
 use crate::domain::{
-    AuditAction, AuditLog, LabelSchema, Query, SortField, SortSpec, TitleColorRule, View,
+    AuditAction, AuditLog, LabelSchema, Query, SortField, SortKey, SortSpec, TitleColorRule, View,
 };
 use crate::error::AppError;
 use crate::service::audit::audit_ops;
@@ -401,8 +400,7 @@ impl From<LegacySortSpec> for SortKey {
 mod tests {
     use super::*;
     use crate::domain::query::Query;
-    use crate::domain::SortField;
-    use crate::domain::view::SortKey;
+    use crate::domain::{SortField, SortKey};
     use crate::service::WorkspaceService;
 
     fn temp_dir(name: &str) -> String {

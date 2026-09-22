@@ -420,6 +420,8 @@ pub fn WorkspaceMain() -> impl IntoView {
             while let Some(v) = next {
                 match update_view(&v.id, &v.name, &v.query, &v.sorts, &v.columns, v.is_shared, &v.title_colors).await {
                     Ok(saved) => {
+                        // 上一次失败可能留下横幅，成功后清掉。
+                        error.set(None);
                         // 不回写 active_view：界面已按新排序查过一次，再写会多触发一轮查询。
                         view_list.update(|l| {
                             if let Some(slot) = l.iter_mut().find(|x| x.id == saved.id) {
@@ -1090,10 +1092,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 .iter()
                                 .enumerate()
                                 .map(|(i, s)| {
-                                    let mark = PRIO_MARKS
-                                        .get(i)
-                                        .map(|m| m.to_string())
-                                        .unwrap_or_else(|| format!("({})", i + 1));
+                                    let mark = prio_mark(i);
                                     format!(
                                         "{mark} {} {}",
                                         sort_field_label(&s.field, &schemas_now),
@@ -1184,7 +1183,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                             s.push(ViewSort { field: req.field, desc: true });
                                             s
                                         }
-                                        // 未按 Shift 且不在链首：整条链替换成这一个键，默认降序。
+                                        // 未按 Shift 且不在链上：整条链替换成这一个键，默认降序。
                                         (None, false) => vec![ViewSort { field: req.field, desc: true }],
                                     };
                                     // 同一批内改写 active_view 与 page_signal，Effect 只跑一次，
@@ -2120,7 +2119,7 @@ fn EntryPanel(
         });
     };
 
-    // 关闭动作：`×` 按钮、删除/归档成功后、Esc 监听三处共用。
+    // 关闭动作：面板的 `×` 按钮与窗口级 Esc 监听两处共用。
     let close: Callback<()> = Callback::new(move |_| code.set(String::new()));
 
     // Esc 关右侧面板；有未保存改动时拦住。
@@ -2478,14 +2477,19 @@ fn ColumnPicker(
 /// 排序优先级角标。超过 9 个键时退回 `(n)`，实际用不到那么深。
 const PRIO_MARKS: [&str; 9] = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧", "⑨"];
 
+/// 第 `i` 位的优先级角标；超过 9 个键时退回 `(n)`。
+fn prio_mark(i: usize) -> String {
+    PRIO_MARKS
+        .get(i)
+        .map(|m| m.to_string())
+        .unwrap_or_else(|| format!("({})", i + 1))
+}
+
 /// 表头上的排序标记：链上位置给 `①/②/…`，方向给 `↑/↓`；不在链上则空串。
 fn sort_mark(sorts: &[ViewSort], field: &str) -> String {
     match sorts.iter().position(|s| s.field == field) {
         Some(i) => {
-            let mark = PRIO_MARKS
-                .get(i)
-                .map(|m| m.to_string())
-                .unwrap_or_else(|| format!("({})", i + 1));
+            let mark = prio_mark(i);
             format!(" {mark} {}", if sorts[i].desc { "↓" } else { "↑" })
         }
         None => String::new(),
