@@ -396,27 +396,45 @@ pub fn WorkspaceMain() -> impl IntoView {
         active_view.get().is_some() && query_ast.get() != saved_baseline.get()
     };
 
-    // 排序改动自动落库，不再依赖「保存视图」按钮。两条约束：
+    // 排序自动落库，不再依赖「保存视图」按钮。两条约束：
     // 1) 只改排序——`query` 用视图已存的那份，不是界面上的 `query_ast`（那是临时过滤态，
     //    不该被一次点表头顺手固化）；其余字段原样回传。
     // 2) 基础视图不发请求——服务端本来就会忽略它的排序改动，排序在那上面是本地态。
+    // 请求必须串行：`ViewService::update` 在服务端是整条记录覆盖（last-writer-wins），
+    // 并发下发时若后发的短排序链先落地、先发的长链后落地，库里留下的是过期链，下次
+    // 加载就静默丢掉后点的排序键。故同一时刻只允许一个请求在飞：飞行中的新点击只写进
+    // `persist_pending`（只留最新一条，中间态已被更新的链取代），由当前请求完成后接力。
+    let persist_busy = RwSignal::new(false);
+    let persist_pending = RwSignal::new(None::<View>);
     let persist_sort = move |v: View| {
         if v.is_default {
             return;
         }
+        if persist_busy.get_untracked() {
+            persist_pending.set(Some(v));
+            return;
+        }
+        persist_busy.set(true);
         spawn_local(async move {
-            match update_view(&v.id, &v.name, &v.query, &v.sorts, &v.columns, v.is_shared, &v.title_colors).await {
-                Ok(saved) => {
-                    // 不回写 active_view：界面已按新排序查过一次，再写会多触发一轮查询。
-                    view_list.update(|l| {
-                        if let Some(slot) = l.iter_mut().find(|x| x.id == saved.id) {
-                            *slot = saved.clone();
-                        }
-                    });
+            let mut next = Some(v);
+            while let Some(v) = next {
+                match update_view(&v.id, &v.name, &v.query, &v.sorts, &v.columns, v.is_shared, &v.title_colors).await {
+                    Ok(saved) => {
+                        // 不回写 active_view：界面已按新排序查过一次，再写会多触发一轮查询。
+                        view_list.update(|l| {
+                            if let Some(slot) = l.iter_mut().find(|x| x.id == saved.id) {
+                                *slot = saved.clone();
+                            }
+                        });
+                    }
+                    // 落库失败不回滚本地排序（列表已经按新排序显示），但要说出来。
+                    Err(e) => error.set(Some(format!("排序未能保存：{e}"))),
                 }
-                // 落库失败不回滚本地排序（列表已经按新排序显示），但要说出来。
-                Err(e) => error.set(Some(format!("排序未能保存：{e}"))),
+                // 接力最新待发项：取与清之间没有 await（wasm 单线程），读写是原子的。
+                next = persist_pending.get_untracked();
+                persist_pending.set(None);
             }
+            persist_busy.set(false);
         });
     };
 
