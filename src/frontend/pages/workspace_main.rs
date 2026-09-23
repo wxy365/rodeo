@@ -16,10 +16,10 @@ use crate::frontend::components::{
 use crate::frontend::graphql_client::{
     archive_entry, archived_entries, audit_logs, create_entry, create_view, delete_entry,
     delete_view, entry, format_view_query, get_sidebar_collapsed, label_schemas, members,
-    parse_view_query, query_entries, set_labeling, set_labelings, set_sidebar_collapsed,
-    summarize_entries, unarchive_entry, update_entry, update_view, views, workspace_ai_config,
-    workspace_by_slug, AccountBrief, AuditLog, Entry, Labeling, LabelSchema, Member, NamedPrompt,
-    View, ViewSort, Workspace,
+    parse_view_query, query_all_entries, query_entries, set_labeling, set_labelings,
+    set_sidebar_collapsed, set_view_timeline, summarize_entries, unarchive_entry, update_entry,
+    update_view, views, workspace_ai_config, workspace_by_slug, AccountBrief, AuditLog, Entry,
+    Labeling, LabelSchema, Member, NamedPrompt, View, ViewSort, ViewTimeline, Workspace,
 };
 use crate::frontend::icons::{
     ic_add, ic_back, ic_close, ic_comment, ic_folder, ic_full, ic_help, ic_search, ic_setting,
@@ -27,6 +27,7 @@ use crate::frontend::icons::{
 };
 use crate::frontend::label_editor::LabelEditor;
 use crate::frontend::query_eval;
+use crate::frontend::timeline::TimelineView;
 use crate::frontend::tiny_editor::TinyEditor;
 use crate::frontend::use_auth;
 use crate::frontend::view_filter::with_text;
@@ -202,6 +203,25 @@ fn auto_label_names(columns: Vec<String>, query: &Value) -> Vec<String> {
     out
 }
 
+/// 时间轴配置下拉的候选。`time` 为真给日期 / 时间 / 日期时间型标签
+/// （起止各选一个），为假给账号型（相关人）。
+fn label_options(schemas: Vec<LabelSchema>, time: bool) -> Vec<impl IntoView> {
+    schemas
+        .into_iter()
+        .filter(|s| {
+            if time {
+                matches!(s.value_type.as_str(), "date" | "time" | "datetime")
+            } else {
+                s.value_type == "account"
+            }
+        })
+        .map(|s| {
+            let (name, title) = (s.name, s.title);
+            view! { <option value=name>{title}</option> }
+        })
+        .collect()
+}
+
 #[component]
 pub fn WorkspaceMain() -> impl IntoView {
     let params = use_params_map();
@@ -297,6 +317,20 @@ pub fn WorkspaceMain() -> impl IntoView {
     let active_view = RwSignal::new(None::<View>);
     // 侧栏高亮只需 id；与 active_view 一并更新，保持二者同步。
     let active_id = RwSignal::new(None::<String>);
+    // ---- 时间轴视图 ----
+    // 是否切到时间轴渲染。切换视图时归零（见 `set_active`）；配置被清掉时
+    // `tl_active` 会自行变假，不必再额外同步。
+    let timeline_mode = RwSignal::new(false);
+    // 视图配置弹窗里的三个选择：起始 / 结束时间标签、相关人标签。
+    // 空串分别表示「不启用」「不展示相关人」，与服务端「空串即清除」对齐。
+    let config_tl_start = RwSignal::new(String::new());
+    let config_tl_end = RwSignal::new(String::new());
+    let config_tl_person = RwSignal::new(String::new());
+    // 真正生效的开关：既要切到时间轴，当前视图也得确实配了。
+    // 配置在弹窗里被清掉后，界面自动退回表格，不会卡在一条空轴上。
+    let tl_active = Signal::derive(move || {
+        timeline_mode.get() && active_view.get().is_some_and(|v| v.timeline.is_some())
+    });
     // 选中视图变化时，播种 query_ast 并把 id/active_view 一并切换；id 未变则整体跳过。
     // Leptos 0.8 的 RwSignal::set 无相等短路，无条件写 active_view 会让 Effect（以
     // active_view / query_ast 为依赖）与 load_views 相互触发，形成无限刷新回环。
@@ -327,6 +361,8 @@ pub fn WorkspaceMain() -> impl IntoView {
             time_pick.set(None);
             // 切换视图回到第 1 页，避免旧的页码超出新视图总页数导致空表。
             page_signal.set(1);
+            // 新视图未必配了时间轴，渲染模式跟着回普通视图。
+            timeline_mode.set(false);
         });
     };
     let load_views = move |ws_id: String| {
@@ -501,6 +537,7 @@ pub fn WorkspaceMain() -> impl IntoView {
         let ast = with_text(&query_ast.get(), &ad_hoc_text.get_untracked());
         let sorts = active_view.get().map(|v| v.sorts).unwrap_or_default();
         let page_now = page_signal.get();
+        let all = tl_active.get();
         let my_seq = req_seq.get_untracked() + 1;
         req_seq.set(my_seq);
         // 地址里的工作空间可能已不存在（库被重置、链接失效），此时要把用户送回列表。
@@ -511,7 +548,13 @@ pub fn WorkspaceMain() -> impl IntoView {
                 let Some(ws) = ws else {
                     return Ok(None);
                 };
-                let ep = query_entries(&ws.id, &ast, &sorts, page_now, page_size).await?;
+                // 时间轴要按全量画，两条分支返回同一个 `EntryPage` 形状，
+                // 后面写入 `data` 的代码完全共用。
+                let ep = if all {
+                    query_all_entries(&ws.id, &ast, &sorts).await?
+                } else {
+                    query_entries(&ws.id, &ast, &sorts, page_now, page_size).await?
+                };
                 let schema_list = label_schemas(&ws.id).await?;
                 // 成员表只在 Account 型标签或账号列出现时才用得上，但那是加载后的才知道的
                 // 信息，多一次请求换掉「打开详情才发现选不了人」的空窗。
@@ -818,6 +861,14 @@ pub fn WorkspaceMain() -> impl IntoView {
                                     }
                                 } />
                         </label>
+                        {move || active_view.get().is_some_and(|v| v.timeline.is_some()).then(|| view! {
+                            <div class="seg">
+                                <button class=move || if timeline_mode.get() { "" } else { "on" }
+                                    on:click=move |_| timeline_mode.set(false)>"普通视图"</button>
+                                <button class=move || if timeline_mode.get() { "on" } else { "" }
+                                    on:click=move |_| timeline_mode.set(true)>"时间轴"</button>
+                            </div>
+                        })}
                         <button class="btn" on:click=move |_| {
                             let Some(v) = active_view.get() else {
                                 error.set(Some("请先选择或新建一个视图".to_string()));
@@ -826,6 +877,15 @@ pub fn WorkspaceMain() -> impl IntoView {
                             config_name_input.set(v.name.clone());
                             config_columns_input.set(v.columns.clone());
                             config_shared_input.set(v.is_shared);
+                            config_tl_start.set(
+                                v.timeline.as_ref().map(|t| t.start.clone()).unwrap_or_default(),
+                            );
+                            config_tl_end.set(
+                                v.timeline.as_ref().map(|t| t.end.clone()).unwrap_or_default(),
+                            );
+                            config_tl_person.set(
+                                v.timeline.as_ref().and_then(|t| t.person.clone()).unwrap_or_default(),
+                            );
                             dialog_error.set(None);
                             // 预填标题颜色规则：先以缓存的 AST 建行，表达式文本异步反格式化回填。
                             let raw = v.title_colors.as_array().cloned().unwrap_or_default();
@@ -1146,76 +1206,97 @@ pub fn WorkspaceMain() -> impl IntoView {
                                     </div>
                                 })
                             }}
-                            <EntryTable
-                                data
-                                schemas
-                                selected
-                                batch_selected
-                                on_open=open_entry
-                                members=ws_members
-                                columns=Signal::derive(move || {
-                                    active_view.get().map(|v| v.columns).unwrap_or_default()
-                                })
-                                sorts=Signal::derive(move || {
-                                    active_view.get().map(|v| v.sorts).unwrap_or_default()
-                                })
-                                title_colors=Signal::derive(move || {
-                                    active_view
-                                        .get()
-                                        .map(|v| v.title_colors)
-                                        .unwrap_or(Value::Null)
-                                })
-                                on_sort=Callback::new(move |req: SortRequest| {
-                                    let Some(mut v) = active_view.get_untracked() else {
-                                        return;
-                                    };
-                                    let pos = v.sorts.iter().position(|s| s.field == req.field);
-                                    v.sorts = match (pos, req.additive) {
-                                        // 已在链上：翻转方向，位置不变。
-                                        (Some(i), _) => {
-                                            let mut s = v.sorts;
-                                            s[i].desc = !s[i].desc;
-                                            s
-                                        }
-                                        // Shift + 未在链上：追加为末位降序键。
-                                        (None, true) => {
-                                            let mut s = v.sorts;
-                                            s.push(ViewSort { field: req.field, desc: true });
-                                            s
-                                        }
-                                        // 未按 Shift 且不在链上：整条链替换成这一个键，默认降序。
-                                        (None, false) => vec![ViewSort { field: req.field, desc: true }],
-                                    };
-                                    // 同一批内改写 active_view 与 page_signal，Effect 只跑一次，
-                                    // 避免并发两次请求、旧页码的结果乱序覆盖新结果。
-                                    batch({
-                                        let v = v.clone();
-                                        move || {
-                                            active_view.set(Some(v));
-                                            page_signal.set(1);
-                                        }
-                                    });
-                                    persist_sort(v);
-                                })
-                            />
-                            <div class="pager">
-                                <button on:click=move |_| page_signal.update(|p| *p = (*p - 1).max(1))>"‹"</button>
-                                {move || {
-                                    let pages = ((total_signal.get() + page_size - 1) / page_size).max(1);
-                                    (1..=pages.min(9)).map(|p| {
-                                        let cur = page_signal.get();
-                                        view! {
-                                            <button class=if p == cur { "on" } else { "" }
-                                                on:click=move |_| page_signal.set(p)>{p}</button>
-                                        }
-                                    }).collect::<Vec<_>>()
-                                }}
-                                <button on:click=move |_| {
-                                    let pages = ((total_signal.get() + page_size - 1) / page_size).max(1);
-                                    page_signal.update(|p| *p = (*p + 1).min(pages));
-                                }>"›"</button>
-                                <span class="mut">{move || format!("共 {} 条", total_signal.get())}</span>
-                            </div>
+                            {move || if tl_active.get() {
+                                view! {
+                                    <TimelineView
+                                        data
+                                        schemas
+                                        members=ws_members
+                                        config=Signal::derive(move || -> Option<ViewTimeline> {
+                                            active_view.get().and_then(|v| v.timeline)
+                                        })
+                                        selected
+                                        on_open=open_entry
+                                    />
+                                }
+                                .into_any()
+                            } else {
+                                view! {
+                                    <EntryTable
+                                        data
+                                        schemas
+                                        selected
+                                        batch_selected
+                                        on_open=open_entry
+                                        members=ws_members
+                                        columns=Signal::derive(move || {
+                                            active_view.get().map(|v| v.columns).unwrap_or_default()
+                                        })
+                                        sorts=Signal::derive(move || {
+                                            active_view.get().map(|v| v.sorts).unwrap_or_default()
+                                        })
+                                        title_colors=Signal::derive(move || {
+                                            active_view
+                                                .get()
+                                                .map(|v| v.title_colors)
+                                                .unwrap_or(Value::Null)
+                                        })
+                                        on_sort=Callback::new(move |req: SortRequest| {
+                                            let Some(mut v) = active_view.get_untracked() else {
+                                                return;
+                                            };
+                                            let pos = v.sorts.iter().position(|s| s.field == req.field);
+                                            v.sorts = match (pos, req.additive) {
+                                                // 已在链上：翻转方向，位置不变。
+                                                (Some(i), _) => {
+                                                    let mut s = v.sorts;
+                                                    s[i].desc = !s[i].desc;
+                                                    s
+                                                }
+                                                // Shift + 未在链上：追加为末位降序键。
+                                                (None, true) => {
+                                                    let mut s = v.sorts;
+                                                    s.push(ViewSort { field: req.field, desc: true });
+                                                    s
+                                                }
+                                                // 未按 Shift 且不在链上：整条链替换成这一个键，默认降序。
+                                                (None, false) => vec![ViewSort { field: req.field, desc: true }],
+                                            };
+                                            // 同一批内改写 active_view 与 page_signal，Effect 只跑一次，
+                                            // 避免并发两次请求、旧页码的结果乱序覆盖新结果。
+                                            batch({
+                                                let v = v.clone();
+                                                move || {
+                                                    active_view.set(Some(v));
+                                                    page_signal.set(1);
+                                                }
+                                            });
+                                            persist_sort(v);
+                                        })
+                                    />
+                                }
+                                .into_any()
+                            }}
+                            {move || (!tl_active.get()).then(|| view! {
+                                <div class="pager">
+                                    <button on:click=move |_| page_signal.update(|p| *p = (*p - 1).max(1))>"‹"</button>
+                                    {move || {
+                                        let pages = ((total_signal.get() + page_size - 1) / page_size).max(1);
+                                        (1..=pages.min(9)).map(|p| {
+                                            let cur = page_signal.get();
+                                            view! {
+                                                <button class=if p == cur { "on" } else { "" }
+                                                    on:click=move |_| page_signal.set(p)>{p}</button>
+                                            }
+                                        }).collect::<Vec<_>>()
+                                    }}
+                                    <button on:click=move |_| {
+                                        let pages = ((total_signal.get() + page_size - 1) / page_size).max(1);
+                                        page_signal.update(|p| *p = (*p + 1).min(pages));
+                                    }>"›"</button>
+                                    <span class="mut">{move || format!("共 {} 条", total_signal.get())}</span>
+                                </div>
+                            })}
                         </div>
                         <EntryPanel code=selected slug=slug().to_string() workspace_id=ws_id schemas members=ws_members refresh />
                     </div>
@@ -1458,6 +1539,27 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 <span class="dlabel">"展示为列的标签"</span>
                                 <ColumnPicker schemas=schemas selected=config_columns_input />
                             </div>
+                            <div class="dfield">
+                                <span class="dlabel">"时间轴视图"</span>
+                                <select class="inp" prop:value=config_tl_start
+                                    on:change=move |ev| config_tl_start.set(event_target_value(&ev))>
+                                    <option value="">"起始时间：不启用"</option>
+                                    {move || label_options(schemas.get(), true)}
+                                </select>
+                                <select class="inp" prop:value=config_tl_end
+                                    on:change=move |ev| config_tl_end.set(event_target_value(&ev))>
+                                    <option value="">"结束时间：不启用"</option>
+                                    {move || label_options(schemas.get(), true)}
+                                </select>
+                                <select class="inp" prop:value=config_tl_person
+                                    on:change=move |ev| config_tl_person.set(event_target_value(&ev))>
+                                    <option value="">"相关人：不展示"</option>
+                                    {move || label_options(schemas.get(), false)}
+                                </select>
+                                <p class="mut" style="font-size:11px;margin:2px 0 0">
+                                    "起止必须是同一类时间标签（都含日期，或都是纯时刻）；留空即不启用时间轴。"
+                                </p>
+                            </div>
                             <label style="display:flex;gap:6px;align-items:center">
                                 <input type="checkbox" prop:checked=config_shared_input
                                     on:change=move |ev| config_shared_input.set(event_target_checked(&ev)) />
@@ -1510,6 +1612,9 @@ pub fn WorkspaceMain() -> impl IntoView {
                                     let cols = config_columns_input.get();
                                     let ast = query_ast.get();
                                     let sorts = v.sorts.clone();
+                                    let tl_start = config_tl_start.get_untracked();
+                                    let tl_end = config_tl_end.get_untracked();
+                                    let tl_person = config_tl_person.get_untracked();
                                     let ws_id = data.get().and_then(|r| r.ok()).map(|(w, _, _)| w.id.clone());
                                     // 快照规则：条件表达式 + 颜色 + 预填缓存。
                                     let draft: Vec<(String, String, String, Value)> =
@@ -1550,6 +1655,16 @@ pub fn WorkspaceMain() -> impl IntoView {
                                         let title_colors = Value::Array(out);
                                         match update_view(&id, &name, &ast, &sorts, &cols, shared, &title_colors).await {
                                             Ok(saved) => {
+                                                // 时间轴配置另发一条 mutation（独立列族、独立并发语义）；
+                                                // 失败不回滚视图本身，但要说出来，否则用户以为存上了。
+                                                let mut saved = saved;
+                                                match set_view_timeline(&saved.id, &tl_start, &tl_end, &tl_person).await {
+                                                    Ok(tl) => saved.timeline = tl,
+                                                    Err(e) => {
+                                                        dialog_error.set(Some(format!("时间轴配置未保存：{e}")));
+                                                        return;
+                                                    }
+                                                }
                                                 view_list.update(|l| {
                                                     if let Some(slot) = l.iter_mut().find(|x| x.id == saved.id) {
                                                         *slot = saved.clone();

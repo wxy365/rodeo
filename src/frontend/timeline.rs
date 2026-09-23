@@ -304,6 +304,13 @@ fn person_name(
 /// 泳道高度；`.tl-block` 高 28px + 6px 间距。与 `style/main.css` 保持一致。
 const LANE_H: f64 = 34.0;
 
+/// 单击落点的认领窗口（毫秒），要盖过系统的双击间隔（macOS 默认 0.5s）。
+/// 见 `remember_pick` 的说明。
+const PICK_ARM_MS: u64 = 800;
+
+/// 落点重合的容差（像素）：两次点击的坐标差在这之内才算「同一处的第二下」。
+const PICK_SAME_PX: i32 = 4;
+
 /// 时间轴渲染。外层只在「该视图配了时间轴」且开关切到时间轴时才挂载。
 #[component]
 pub fn TimelineView(
@@ -319,6 +326,43 @@ pub fn TimelineView(
     /// 双击色块 → 打开条目全屏页。
     on_open: Callback<String>,
 ) -> impl IntoView {
+    // 最近一次色块 / 未排期条目的单击落点：(code, 视口 x, 视口 y)。
+    let last_pick: RwSignal<Option<(String, i32, i32)>> = RwSignal::new(None);
+    // 认领窗口的代次：过期清空与再次单击都靠它判断「这条记录还是不是当前那次」。
+    let pick_gen = RwSignal::new(0u32);
+    // 单击详情面板一挂上，`.view-body` 的内容列就窄 480px，时间轴右端的色块被面板盖住、
+    // 还被 `.tl-scroll` 裁掉。此时双击的第二下会连同 `dblclick` 一起派发给面板，色块自己的
+    // `on:dblclick` 永远收不到——这一下得由窗口级监听按落点认回来（见下方 `dblclick` 兜底）。
+    // 记这里而不是记 `selected`：只有「同一处的第二下」才算，别处的双击不受影响。
+    let remember_pick = move |code: String, x: i32, y: i32| {
+        let g = pick_gen.try_get_untracked().unwrap_or_default() + 1;
+        pick_gen.set(g);
+        last_pick.set(Some((code, x, y)));
+        // 延时回调与窗口监听都可能活到组件卸载之后（双击跳全屏页就发生在这一次事件派发里），
+        // 那时 signal 已 dispose，取值得用 `try_*` 变体，否则一次正常的跳转会打出 wasm panic。
+        set_timeout(
+            move || {
+                if pick_gen.try_get_untracked() == Some(g) {
+                    last_pick.set(None);
+                }
+            },
+            std::time::Duration::from_millis(PICK_ARM_MS),
+        );
+    };
+    // 双击兜底：本组件只在时间轴模式下挂载，故这条窗口监听不会干扰表格行的双击。
+    if cfg!(target_arch = "wasm32") {
+        let handle = window_event_listener(leptos::ev::dblclick, move |ev| {
+            let Some(Some((code, x, y))) = last_pick.try_get_untracked() else {
+                return;
+            };
+            if (ev.client_x() - x).abs() > PICK_SAME_PX || (ev.client_y() - y).abs() > PICK_SAME_PX {
+                return;
+            }
+            last_pick.set(None);
+            on_open.run(code);
+        });
+        on_cleanup(move || handle.remove());
+    }
     view! {
         // 根类名是 `.tlv`：`.tl` 已归审计日志行（`AuditTimeline`）所有，不能复用。
         <div class="tlv">
@@ -401,13 +445,18 @@ pub fn TimelineView(
                                     if ev.detail() > 1 {
                                         return;
                                     }
+                                    remember_pick(c_click.clone(), ev.client_x(), ev.client_y());
                                     if selected.get_untracked() == c_click {
                                         selected.set(String::new());
                                     } else {
                                         selected.set(c_click.clone());
                                     }
                                 }
-                                on:dblclick=move |_| on_open.run(c_dbl.clone())
+                                on:dblclick=move |_| {
+                                    // 这一下没被面板接走：自己消化掉，别让兜底再开一次。
+                                    last_pick.set(None);
+                                    on_open.run(c_dbl.clone());
+                                }
                             >
                                 <span class="tl-title">{title}</span>
                                 {person.map(|p| view! { <span class="tl-person">{p}</span> })}
@@ -433,13 +482,17 @@ pub fn TimelineView(
                                     if ev.detail() > 1 {
                                         return;
                                     }
+                                    remember_pick(c_click.clone(), ev.client_x(), ev.client_y());
                                     if selected.get_untracked() == c_click {
                                         selected.set(String::new());
                                     } else {
                                         selected.set(c_click.clone());
                                     }
                                 }
-                                on:dblclick=move |_| on_open.run(c_dbl.clone())
+                                on:dblclick=move |_| {
+                                    last_pick.set(None);
+                                    on_open.run(c_dbl.clone());
+                                }
                             >
                                 {title}
                             </div>

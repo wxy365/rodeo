@@ -570,7 +570,27 @@ pub struct GqlView {
     /// 是否为该工作空间的基础视图（不可删除、始终存在）。
     is_default: bool,
     /// 时间轴配置；未配置为 `null`，此时前端不显示「普通 / 时间轴」开关。
-    timeline: Json<serde_json::Value>,
+    timeline: Option<GqlViewTimeline>,
+}
+
+/// 视图的时间轴配置。必须是**对象类型**而不是 JSON 标量：客户端按
+/// `timeline { start end person }` 取字段，JSON 标量不允许带子选择，整条 views 查询会被拒。
+#[derive(SimpleObject, Clone)]
+#[graphql(rename_fields = "camelCase")]
+pub struct GqlViewTimeline {
+    start: String,
+    end: String,
+    person: Option<String>,
+}
+
+impl From<ViewTimeline> for GqlViewTimeline {
+    fn from(t: ViewTimeline) -> Self {
+        Self {
+            start: t.start,
+            end: t.end,
+            person: t.person,
+        }
+    }
 }
 
 impl GqlView {
@@ -591,11 +611,7 @@ impl GqlView {
                 .collect(),
         );
         let sorts: Vec<GqlSortKey> = v.sort.keys.into_iter().map(GqlSortKey::from).collect();
-        // `ViewTimeline` 没有字段级 serde 适配器（不涉及 `Query`），
-        // 直接序列化就是对外的 camelCase 形状，不必像 `title_colors` 那样手写。
-        let timeline = timeline
-            .and_then(|t| serde_json::to_value(t).ok())
-            .unwrap_or(serde_json::Value::Null);
+        let timeline = timeline.map(GqlViewTimeline::from);
         Self {
             id: v.id.to_string().into(),
             name: v.name,
@@ -610,7 +626,7 @@ impl GqlView {
             title_colors: Json(title_colors),
             entry_count,
             is_default,
-            timeline: Json(timeline),
+            timeline,
         }
     }
 }
@@ -2016,7 +2032,7 @@ impl Mutation {
         start: String,
         end: String,
         person: String,
-    ) -> GqlResult<Json<serde_json::Value>> {
+    ) -> GqlResult<Option<GqlViewTimeline>> {
         let gql = ctx.data::<GraphqlContext>()?;
         let auth = gql.require_auth()?;
         let view_id = parse_ulid(id.as_str())?;
@@ -2038,7 +2054,7 @@ impl Mutation {
             person: (!person.is_empty()).then_some(person),
         });
         let saved = gql.services.view.set_timeline(auth.account_id, view_id, cfg)?;
-        Ok(Json(serde_json::to_value(saved).unwrap_or(serde_json::Value::Null)))
+        Ok(saved.map(GqlViewTimeline::from))
     }
 
     async fn delete_view(&self, ctx: &Context<'_>, id: ID) -> GqlResult<bool> {
