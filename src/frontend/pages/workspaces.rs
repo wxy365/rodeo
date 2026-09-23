@@ -8,7 +8,7 @@ use crate::frontend::graphql_client::{
     accept_invite, create_workspace, decline_invite, my_invites, restore_workspace, workspaces,
     Invite, WorkspaceItem,
 };
-use crate::frontend::icons::{ic_add, ic_folder, ic_history, ic_search, ic_setting};
+use crate::frontend::icons::{ic_add, ic_folder, ic_history, ic_search};
 use crate::frontend::use_auth;
 
 use super::super::components::logged_out;
@@ -100,22 +100,15 @@ pub fn WorkspaceList() -> impl IntoView {
 
     let nav_grid = navigate.clone();
     let nav_trash = navigate.clone();
-    let nav_admin = navigate.clone();
-    let go_admin = move |_| nav_admin("/admin", Default::default());
 
     view! {
         <div class="page">
             <div class="appbar">
                 <b style="font-size:17px">"Rodeo"</b>
-                <label class="inp">
+                <label class="inp" style="margin-left:auto">
                     {ic_search()}
                     <input placeholder="全文检索：标题 / 详情 / 标签值（即将上线）" disabled />
                 </label>
-                <button class="ibtn" style="margin-left:auto" title="系统管理"
-                    on:click=go_admin
-                    disabled=move || !auth.user.get().is_some_and(|u| u.is_admin)>
-                    {ic_setting()}
-                </button>
             </div>
 
             <div style="display:flex;align-items:center;margin-bottom:16px">

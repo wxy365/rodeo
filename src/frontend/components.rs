@@ -6,7 +6,7 @@ use serde_json::Value;
 use crate::frontend::graphql_client::{
     get_recent_colors, logout, push_recent_color, AuditLog, Member,
 };
-use crate::frontend::icons::{ic_check, ic_copy, ic_logout, ic_profile};
+use crate::frontend::icons::{ic_check, ic_copy, ic_logout, ic_profile, ic_setting};
 use crate::frontend::use_auth;
 
 /// 账号的展示名：优先姓名，缺失时退回邮箱。
@@ -347,6 +347,8 @@ pub fn AvatarMenu() -> impl IntoView {
     let nav_profile = navigate.clone();
     let go_profile = move |_| nav_profile("/account", Default::default());
 
+    let nav_admin = navigate.clone();
+
     let nav_logout = navigate.clone();
     let do_logout = move |_| {
         auth.user.set(None);
@@ -369,6 +371,13 @@ pub fn AvatarMenu() -> impl IntoView {
             }}
             <div class="avatar-drop">
                 <button class="mi" on:click=go_profile>{ic_profile()}"个人信息"</button>
+                // 非管理员整项不渲染，而不是置灰：一个点不动的管理入口只会招来「为什么点不动」。
+                {move || {
+                    let nav_admin = nav_admin.clone();
+                    auth.user.get().is_some_and(|u| u.is_admin).then(|| view! {
+                        <button class="mi" on:click=move |_| nav_admin("/admin", Default::default())>{ic_setting()}"系统管理"</button>
+                    })
+                }}
                 <button class="mi" on:click=do_logout>{ic_logout()}"退出"</button>
             </div>
         </div>
@@ -858,7 +867,8 @@ const COLOR_FALLBACK: &str = "#3b82f6";
 /// 规则三处共用一份。
 ///
 /// 原生调色盘照旧负责调自定义色——网页改不了系统调色盘里的内容，「标准色直接
-/// 点选」只能落在控件旁边这一排色点上。
+/// 点选」只能落在控件旁边这一排色点上。色点常显会把表格撑宽，所以整组折叠进
+/// 悬停浮层，平时只占一个调色盘按钮的宽度。
 #[component]
 pub fn ColorPick(
     /// 当前颜色，空串表示未设置。
@@ -900,18 +910,21 @@ pub fn ColorPick(
             <button
                 type="button"
                 class="cpick-dot"
-                class:sm=small
                 class:sel=move || value.get().eq_ignore_ascii_case(&sel)
                 style=format!("background:{bg}")
                 title=label
                 disabled=disabled
+                // 鼠标按下时不让色点拿到焦点。`:focus-within` 是留给键盘用户的——没有它
+                // 键盘就摸不到这排色点；但鼠标点过的色点也会一直攥着焦点，于是指针移开
+                // 浮层也收不起来。键盘激活（Tab + 回车）不触发 mousedown，所以那条路不受影响。
+                on:mousedown=|ev| ev.prevent_default()
                 on:click=move |_| record(pick.clone())
             ></button>
         }
     };
 
     view! {
-        <div class="cpick">
+        <div class="cpick" class:off=disabled>
             <input
                 type="color"
                 class="sw"
@@ -924,20 +937,22 @@ pub fn ColorPick(
                 }
                 on:input=move |ev| record(event_target_value(&ev))
             />
-            <div class="cpick-group" title="标准色">
-                {PRESET_COLORS.iter().map(|c| dot(c.to_string())).collect::<Vec<_>>()}
+            <div class="cpick-pop">
+                <div class="cpick-group" title="标准色">
+                    {PRESET_COLORS.iter().map(|c| dot(c.to_string())).collect::<Vec<_>>()}
+                </div>
+                {move || {
+                    let list = recent.get();
+                    (!list.is_empty())
+                        .then(|| {
+                            view! {
+                                <div class="cpick-group cpick-sep" title="最近使用">
+                                    {list.into_iter().map(|c| dot(c.to_string())).collect::<Vec<_>>()}
+                                </div>
+                            }
+                        })
+                }}
             </div>
-            {move || {
-                let list = recent.get();
-                (!list.is_empty())
-                    .then(|| {
-                        view! {
-                            <div class="cpick-group cpick-sep" title="最近使用">
-                                {list.into_iter().map(|c| dot(c.to_string())).collect::<Vec<_>>()}
-                            </div>
-                        }
-                    })
-            }}
         </div>
     }
 }

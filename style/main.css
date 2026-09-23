@@ -1088,23 +1088,64 @@ input[type="color"].sw:disabled {
     cursor: default;
     opacity: 0.55;
 }
-/* 颜色选择器：原生调色盘 + 标准色 + 最近使用。色点可换行，紧凑行里折到下一行吸收宽度。 */
+/* 颜色选择器：常态只有一个原生调色盘按钮，标准色 / 最近使用折叠在悬停浮层里，
+   否则一排色点会把表格撑宽。右对齐浮层，保证它朝表格内侧展开、不会顶出页面。 */
 .cpick {
-    display: flex;
+    position: relative;
+    display: inline-flex;
     align-items: center;
+}
+.cpick-pop {
+    display: none;
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    z-index: 60;
+    flex-direction: column;
     gap: 6px;
-    flex-wrap: wrap;
+    width: max-content;
+    padding: 6px;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: var(--r-s);
+    box-shadow: 0 6px 18px rgba(15, 23, 42, 0.14);
+}
+/* 感应区：按钮与浮层之间那 4px 空隙，以及指针斜着划向最边上的色点时会掠过的浮层正上方，
+   都要能接住指针。否则指针半途离开 .cpick 那个按钮宽度的窄框，浮层先消失，而 display:none
+   的浮层不再参与命中测试，就再也接不回来了。 */
+.cpick-pop::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: auto;
+    bottom: 100%;
+    height: 30px;
+}
+/* 感应区盖在按钮下半截上，把按钮抬到它上面，原生调色盘才点得动。 */
+.cpick > input.sw {
+    position: relative;
+    z-index: 70;
+}
+/* :focus-within 是留给键盘的：色点藏在 display:none 里，没有它 Tab 根本进不去。
+   代价是鼠标点过的色点也会攥着焦点，所以色点自己在 mousedown 上拦掉了焦点获取。 */
+.cpick:hover .cpick-pop,
+.cpick:focus-within .cpick-pop {
+    display: flex;
+}
+.cpick.off:hover .cpick-pop,
+.cpick.off:focus-within .cpick-pop {
+    display: none;
 }
 .cpick-group {
     display: flex;
     align-items: center;
     gap: 3px;
-    flex-wrap: wrap;
 }
-/* 最近使用与标准色之间拉一条细线，两组同看时不会连成一片。 */
+/* 最近使用与标准色上下排，中间拉一条细线，两组不会连成一片。 */
 .cpick-sep {
-    padding-left: 6px;
-    border-left: 1px solid var(--line);
+    padding-top: 6px;
+    border-top: 1px solid var(--line);
 }
 .cpick-dot {
     width: 16px;
@@ -1114,11 +1155,6 @@ input[type="color"].sw:disabled {
     border-radius: 4px;
     cursor: pointer;
     flex: none;
-}
-.cpick-dot.sm {
-    width: 12px;
-    height: 12px;
-    border-radius: 3px;
 }
 .cpick-dot.sel {
     outline: 2px solid var(--blue);
