@@ -1218,7 +1218,9 @@ pub async fn query_all_entries(
     let pages = (TIMELINE_MAX_ENTRIES as i64 + PAGE_SIZE - 1) / PAGE_SIZE;
     let mut items = Vec::new();
     let mut names: Vec<String> = Vec::new();
-    let mut total = 0i64;
+    // 不预置初值：循环体在读取 `total`（下文的取满判断）之前必定先赋值，
+    // 给个 `0i64` 初值只会在编译期被判为从未读取，招来 unused_assignments 告警。
+    let mut total;
     for page in 1..=pages {
         let ep = query_entries(workspace_id, query, sorts, page, PAGE_SIZE).await?;
         total = ep.total;
