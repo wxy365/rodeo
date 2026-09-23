@@ -1112,6 +1112,16 @@ pub struct ViewSort {
     pub desc: bool,
 }
 
+/// 视图的时间轴配置。`person` 为 `None` 表示不展示相关人。
+#[derive(Clone, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ViewTimeline {
+    pub start: String,
+    pub end: String,
+    #[serde(default)]
+    pub person: Option<String>,
+}
+
 #[derive(Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct View {
@@ -1130,6 +1140,9 @@ pub struct View {
     /// 基础视图：始终存在、不可删除，列表中置顶。
     #[serde(default)]
     pub is_default: bool,
+    /// 时间轴配置；`None` 表示未配置，此时界面不显示「普通 / 时间轴」开关。
+    #[serde(default)]
+    pub timeline: Option<ViewTimeline>,
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -1144,7 +1157,7 @@ pub struct EntryPage {
 }
 
 const VIEW_FIELDS: &str = "id name query queryExpr sorts { field desc } columns isShared ownerId \
-     titleColors entryCount isDefault";
+     titleColors entryCount isDefault timeline { start end person }";
 
 /// 排序键链 → GraphQL 变量值。空数组会被服务端解释为「用默认排序」。
 fn sorts_var(sorts: &[ViewSort]) -> Value {
@@ -1187,6 +1200,46 @@ pub async fn query_entries(
     .await?;
     serde_json::from_value(data.get("queryEntries").cloned().unwrap_or(Value::Null))
         .map_err(|e| e.to_string())
+}
+
+/// 时间轴模式一次取回的条目上限。时间轴要按全量画（铺在轴上才有意义），
+/// 而服务端 `pageSize` 上限是 100，故逐页翻。500 条覆盖了绝大多数视图；
+/// 真超了也只是少画几条，界面上有提示。
+pub const TIMELINE_MAX_ENTRIES: usize = 500;
+
+/// 按视图条件取回**全部**命中条目（时间轴模式用）。
+/// 返回值与 `query_entries` 同一个 `EntryPage` 形状，调用方两条分支可以走同一段代码。
+pub async fn query_all_entries(
+    workspace_id: &str,
+    query: &Value,
+    sorts: &[ViewSort],
+) -> Result<EntryPage, String> {
+    const PAGE_SIZE: i64 = 100;
+    let pages = (TIMELINE_MAX_ENTRIES as i64 + PAGE_SIZE - 1) / PAGE_SIZE;
+    let mut items = Vec::new();
+    let mut names: Vec<String> = Vec::new();
+    let mut total = 0i64;
+    for page in 1..=pages {
+        let ep = query_entries(workspace_id, query, sorts, page, PAGE_SIZE).await?;
+        total = ep.total;
+        for n in ep.label_names {
+            if !names.contains(&n) {
+                names.push(n);
+            }
+        }
+        items.extend(ep.items);
+        // 取满了（`total` 是本次查询命中总数，与分页无关）就停，不再空翻。
+        if items.len() as i64 >= total {
+            break;
+        }
+    }
+    Ok(EntryPage {
+        total: items.len() as i64,
+        page: 1,
+        page_size: items.len() as i64,
+        label_names: names,
+        items,
+    })
 }
 
 pub async fn create_view(
@@ -1239,6 +1292,26 @@ pub async fn update_view(
     .await?;
     serde_json::from_value(data.get("updateView").cloned().unwrap_or(Value::Null))
         .map_err(|e| e.to_string())
+}
+
+/// 设置 / 清除视图的时间轴配置。`start` 或 `end` 空串即清除，返回 `None`。
+pub async fn set_view_timeline(
+    id: &str,
+    start: &str,
+    end: &str,
+    person: &str,
+) -> Result<Option<ViewTimeline>, String> {
+    let data = graphql(
+        "mutation($id: ID!, $s: String!, $e: String!, $p: String!) { \
+         setViewTimeline(id: $id, start: $s, end: $e, person: $p) { start end person } }",
+        json!({ "id": id, "s": start, "e": end, "p": person }),
+    )
+    .await?;
+    let v = data.get("setViewTimeline").cloned().unwrap_or(Value::Null);
+    if v.is_null() {
+        return Ok(None);
+    }
+    serde_json::from_value(v).map(Some).map_err(|e| e.to_string())
 }
 
 pub async fn delete_view(id: &str) -> Result<bool, String> {
