@@ -14,7 +14,8 @@ use crate::domain::{
     Invite,
     LabelSchema, LabelValueType, LinkKind,
     LabelWrite, Labeling, NamedPrompt, Query as ViewQuery, SortField, SortKey, SortSpec, TitleColorRule,
-    ValueColor, ValueSource, View, Workspace, WorkspaceAiConfig, WorkspaceMember, WorkspaceRole,
+    ValueColor, ValueSource, View, ViewTimeline, Workspace, WorkspaceAiConfig, WorkspaceMember,
+    WorkspaceRole,
     WriteOp, ATTACHMENT_URL_PREFIX,
 };
 use crate::error::AppError;
@@ -568,10 +569,12 @@ pub struct GqlView {
     entry_count: i32,
     /// 是否为该工作空间的基础视图（不可删除、始终存在）。
     is_default: bool,
+    /// 时间轴配置；未配置为 `null`，此时前端不显示「普通 / 时间轴」开关。
+    timeline: Json<serde_json::Value>,
 }
 
 impl GqlView {
-    fn new(v: View, entry_count: i32, is_default: bool) -> Self {
+    fn new(v: View, entry_count: i32, is_default: bool, timeline: Option<ViewTimeline>) -> Self {
         let query = serde_json::to_value(&v.query).unwrap_or(serde_json::Value::Null);
         let query_expr = v.query.to_expr();
         // 手写投影：整结构序列化会把 TitleColorRule.query 变成转义过的 JSON 字符串。
@@ -588,6 +591,11 @@ impl GqlView {
                 .collect(),
         );
         let sorts: Vec<GqlSortKey> = v.sort.keys.into_iter().map(GqlSortKey::from).collect();
+        // `ViewTimeline` 没有字段级 serde 适配器（不涉及 `Query`），
+        // 直接序列化就是对外的 camelCase 形状，不必像 `title_colors` 那样手写。
+        let timeline = timeline
+            .and_then(|t| serde_json::to_value(t).ok())
+            .unwrap_or(serde_json::Value::Null);
         Self {
             id: v.id.to_string().into(),
             name: v.name,
@@ -602,6 +610,7 @@ impl GqlView {
             title_colors: Json(title_colors),
             entry_count,
             is_default,
+            timeline: Json(timeline),
         }
     }
 }
@@ -1096,7 +1105,8 @@ impl Query {
         for v in gql.services.view.list(auth.account_id, ws)? {
             let count = gql.services.entry.count(ws, &v.query)? as i32;
             let is_default = v.id == def;
-            out.push(GqlView::new(v, count, is_default));
+            let timeline = gql.services.view.timeline_of(v.id)?;
+            out.push(GqlView::new(v, count, is_default, timeline));
         }
         Ok(out)
     }
@@ -1114,7 +1124,8 @@ impl Query {
         }
         let count = gql.services.entry.count(v.workspace_id, &v.query)? as i32;
         let is_default = gql.services.view.default_view_id(v.workspace_id)? == Some(v.id);
-        Ok(Some(GqlView::new(v, count, is_default)))
+        let timeline = gql.services.view.timeline_of(v.id)?;
+        Ok(Some(GqlView::new(v, count, is_default, timeline)))
     }
 
     async fn parse_view_query(
@@ -1946,7 +1957,7 @@ impl Mutation {
             title_colors,
         )?;
         let count = gql.services.entry.count(ws, &v.query)? as i32;
-        Ok(GqlView::new(v, count, false))
+        Ok(GqlView::new(v, count, false, None))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1989,7 +2000,45 @@ impl Mutation {
         )?;
         let count = gql.services.entry.count(existing.workspace_id, &v.query)? as i32;
         let is_default = gql.services.view.default_view_id(existing.workspace_id)? == Some(v.id);
-        Ok(GqlView::new(v, count, is_default))
+        let timeline = gql.services.view.timeline_of(v.id)?;
+        Ok(GqlView::new(v, count, is_default, timeline))
+    }
+
+    /// 设置 / 清除视图的时间轴配置。`start` 或 `end` 传空串即清除。
+    ///
+    /// 与 `updateView` 分成两条 mutation：配置在独立列族，改它不该顺带重写视图的
+    /// 查询 / 排序 / 列——那些字段各有自己的并发语义（排序已改为自动串行落库），
+    /// 混在一起会互相覆盖。
+    async fn set_view_timeline(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+        start: String,
+        end: String,
+        person: String,
+    ) -> GqlResult<Json<serde_json::Value>> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let view_id = parse_ulid(id.as_str())?;
+        let existing = gql.services.view.get(view_id)?.ok_or(AppError::NotFound)?;
+        gql.require_member(existing.workspace_id)?;
+        // 与 update_view 同一套权限：改共享视图、或改别人的视图，都要 Maintainer。
+        let need = if existing.is_shared || existing.owner_id != auth.account_id {
+            WorkspaceRole::Maintainer
+        } else {
+            WorkspaceRole::Worker
+        };
+        gql.require_role(existing.workspace_id, need)?;
+        let start = start.trim().to_string();
+        let end = end.trim().to_string();
+        let person = person.trim().to_string();
+        let cfg = (!start.is_empty() && !end.is_empty()).then(|| ViewTimeline {
+            start,
+            end,
+            person: (!person.is_empty()).then_some(person),
+        });
+        let saved = gql.services.view.set_timeline(auth.account_id, view_id, cfg)?;
+        Ok(Json(serde_json::to_value(saved).unwrap_or(serde_json::Value::Null)))
     }
 
     async fn delete_view(&self, ctx: &Context<'_>, id: ID) -> GqlResult<bool> {
