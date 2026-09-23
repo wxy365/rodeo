@@ -7,6 +7,7 @@ use crate::domain::{AuditAction, AuditLog, Comment};
 use crate::error::AppError;
 use crate::service::audit::audit_ops;
 use crate::service::entry::EntryService;
+use crate::service::mention;
 use crate::storage::{cf, keys, BatchOp, DocStore};
 
 pub struct CommentService {
@@ -14,11 +15,16 @@ pub struct CommentService {
     /// 单向依赖：评论变更要推进 Entry 的更新时间并重建检索文档。
     /// `EntryService` 不感知评论，因此不构成循环。
     entries: EntryService,
+    messages: crate::service::message::MessageService,
 }
 
 impl CommentService {
-    pub fn new(store: Arc<DocStore>, entries: EntryService) -> Self {
-        Self { store, entries }
+    pub fn new(
+        store: Arc<DocStore>,
+        entries: EntryService,
+        messages: crate::service::message::MessageService,
+    ) -> Self {
+        Self { store, entries, messages }
     }
 
     /// 某条目的全部评论。`comment_key` 的 ULID 后缀保证扫描顺序即时间升序。
@@ -43,7 +49,13 @@ impl CommentService {
             .get(cf::COMMENTS, &keys::comment_key(entry_code, id))
     }
 
-    pub fn create(&self, actor: Ulid, entry_code: &str, body: &str) -> Result<Comment, AppError> {
+    pub fn create(
+        &self,
+        actor: Ulid,
+        actor_name: &str,
+        entry_code: &str,
+        body: &str,
+    ) -> Result<Comment, AppError> {
         if is_blank_body(body) {
             return Err(AppError::InvalidQuery("评论内容不能为空".to_string()));
         }
@@ -81,12 +93,23 @@ impl CommentService {
         ops.push(BatchOp::put(cf::ENTRIES, entry_code.as_bytes().to_vec(), &entry)?);
         self.store.write_batch(ops)?;
         self.entries.reindex_by_code(entry_code)?;
+        let entry_ref = self.entries.get(entry_code)?;
+        if let Some(e) = &entry_ref {
+            let previous = self.messages.notified_recipients(
+                e.workspace_id,
+                &e.code,
+                "comment",
+                Some(comment.id),
+            )?;
+            self.dispatch_mentions(actor, actor_name, e, comment.id, body, &previous)?;
+        }
         Ok(comment)
     }
 
     pub fn update(
         &self,
         actor: Ulid,
+        actor_name: &str,
         entry_code: &str,
         id: Ulid,
         body: &str,
@@ -120,6 +143,16 @@ impl CommentService {
         self.store.write_batch(ops)?;
         // 编辑不推进 Entry.updated_at：纠错不该把条目顶到列表最前；但检索要跟着更新。
         self.entries.reindex_by_code(entry_code)?;
+        let entry_ref = self.entries.get(entry_code)?;
+        if let Some(e) = &entry_ref {
+            let previous = self.messages.notified_recipients(
+                e.workspace_id,
+                &e.code,
+                "comment",
+                Some(comment.id),
+            )?;
+            self.dispatch_mentions(actor, actor_name, e, comment.id, body, &previous)?;
+        }
         Ok(comment)
     }
 
@@ -152,6 +185,42 @@ impl CommentService {
         ));
         self.store.write_batch(ops)?;
         self.entries.reindex_by_code(entry_code)?;
+        Ok(())
+    }
+
+    /// 评论保存后按 Delta 文本里的 `@姓名` 给成员发消息。
+    /// `previous_notified` 来自 `MessageService::notified_recipients`，用来去重。
+    fn dispatch_mentions(
+        &self,
+        actor: Ulid,
+        actor_name: &str,
+        entry: &crate::domain::Entry,
+        comment_id: ulid::Ulid,
+        body: &str,
+        previous_notified: &std::collections::HashSet<Ulid>,
+    ) -> Result<(), AppError> {
+        let members = self.messages.workspaces.list_members(entry.workspace_id)?;
+        let names = mention::extract_mention_names(&mention::flat_text(body));
+        let targets = mention::resolve_mentions(&names, &members);
+        let preview = mention::preview(body, 80);
+        for rid in targets {
+            if rid == actor {
+                continue;
+            }
+            if previous_notified.contains(&rid) {
+                continue;
+            }
+            self.messages.send(
+                actor,
+                actor_name,
+                entry.workspace_id,
+                &entry.code,
+                "comment",
+                Some(comment_id),
+                &preview,
+                rid,
+            )?;
+        }
         Ok(())
     }
 }

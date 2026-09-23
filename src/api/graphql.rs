@@ -1701,10 +1701,16 @@ impl Mutation {
             .get(&entry_code)?
             .ok_or(AppError::NotFound)?;
         gql.require_role(entry.workspace_id, WorkspaceRole::Worker)?;
+        let name = gql
+            .services
+            .auth
+            .find_by_id(auth.account_id)?
+            .map(|a| a.name)
+            .unwrap_or_default();
         let c = gql
             .services
             .comment
-            .create(auth.account_id, &entry_code, &body)?;
+            .create(auth.account_id, &name, &entry_code, &body)?;
         gql_comment(gql, c)
     }
 
@@ -1725,6 +1731,12 @@ impl Mutation {
             .ok_or(AppError::NotFound)?;
         gql.require_role(entry.workspace_id, WorkspaceRole::Worker)?;
         let id = parse_ulid(id.as_str())?;
+        let name = gql
+            .services
+            .auth
+            .find_by_id(auth.account_id)?
+            .map(|a| a.name)
+            .unwrap_or_default();
         // 评论正文里的内联图片同样按「旧有今无」回收。
         let before_body = gql
             .services
@@ -1735,7 +1747,7 @@ impl Mutation {
         let c = gql
             .services
             .comment
-            .update(auth.account_id, &entry_code, id, &body)?;
+            .update(auth.account_id, &name, &entry_code, id, &body)?;
         gql.services
             .attachment
             .purge_unreferenced(auth.account_id, &entry_code, &before_body, &c.body)

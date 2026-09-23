@@ -5,6 +5,8 @@ pub mod auth;
 pub mod comment;
 pub mod entry;
 pub mod label;
+pub mod mention;
+pub mod message;
 pub mod rule;
 pub mod search;
 pub mod view;
@@ -23,6 +25,7 @@ pub use auth::{AuthContext, AuthService};
 pub use comment::CommentService;
 pub use entry::EntryService;
 pub use label::LabelService;
+pub use message::MessageService;
 pub use rule::{RuleEngine, RuleService};
 pub use search::SearchIndex;
 pub use view::ViewService;
@@ -34,6 +37,7 @@ pub struct Services {
     pub config: Arc<Config>,
     pub auth: AuthService,
     pub workspace: WorkspaceService,
+    pub message: MessageService,
     pub entry: EntryService,
     pub comment: CommentService,
     pub attachment: AttachmentService,
@@ -51,16 +55,21 @@ impl Services {
         let search = Arc::new(SearchIndex::open(&format!("{}/search", config.data_dir()))?);
         // 未配置就保持 None，启动阶段不做任何网络操作。
         let ai_client = AiClient::from_config(&config.ai)?;
+        let workspace = WorkspaceService::new(store.clone());
+        let message = MessageService::new(store.clone(), workspace.clone());
+        // EntryService 的构造签名会在 Task 4 改；
+        // 现在先按原签名写，等 Task 4 跑完再回来更新这一行的参数。
         let entry = EntryService::with_search(store.clone(), search.clone());
         // 评论服务要与 EntryService 共用同一份实例：评论变更后要触发它的重索引。
-        let comment = CommentService::new(store.clone(), entry.clone());
+        let comment = CommentService::new(store.clone(), entry.clone(), message.clone());
         // 附件服务同样要与 EntryService 共用同一份实例：上传后要推进条目更新时间并重索引。
         // 附件后端在启动期就把根目录建好 / 客户端初始化好，配置写错在这里就暴露。
         let blobs = BlobStore::from_config(&config.storage)?;
         let attachment = AttachmentService::new(store.clone(), entry.clone(), blobs);
         let services = Self {
             auth: AuthService::new(store.clone(), config.clone()),
-            workspace: WorkspaceService::new(store.clone()),
+            workspace,
+            message,
             entry,
             comment,
             attachment,

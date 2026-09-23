@@ -10,6 +10,8 @@ use crate::error::AppError;
 use crate::service::audit::audit_ops;
 use crate::storage::{cf, keys, BatchOp, DocStore};
 
+/// 字段全是 `Arc`，克隆只是复制几个指针，供 `MessageService` 等持有同一份实例。
+#[derive(Clone)]
 pub struct WorkspaceService {
     store: Arc<DocStore>,
 }
