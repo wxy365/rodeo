@@ -80,17 +80,46 @@ fn label_value(entry: &Entry, derived: &[DerivedLabel], name: &str) -> Option<se
         })
 }
 
-/// 条目的起止时刻（绝对秒）。任一端缺失、或按布局解析不出来，都返回 `None`。
-fn span(entry: &Entry, derived: &[DerivedLabel], start: &LabelSchema, end: &LabelSchema) -> Option<(i64, i64)> {
+/// 日期整体缺失：`golayout::parse` 的累加器从 `YmdHms::default()` 起步，布局里没有日期
+/// token 时年月日留在 0（对 `time` 布局是合法值）。这种值在含日期族的轴上没有位置。
+fn date_less(t: golayout::YmdHms) -> bool {
+    t.year == 0 && t.month == 0 && t.day == 0
+}
+
+/// 条目的起止位置（秒，已按族归一）。任一端缺失、解析不出来，或含日期族缺日期，都返回 `None`。
+fn span(
+    entry: &Entry,
+    derived: &[DerivedLabel],
+    start: &LabelSchema,
+    end: &LabelSchema,
+    family: Family,
+) -> Option<(i64, i64)> {
     let parse = |s: &LabelSchema| {
         let raw = label_value(entry, derived, &s.name)?;
-        let t = golayout::parse(&layout_of(s), raw.as_str()?)?;
-        Some(golayout::to_seconds(t))
+        golayout::parse(&layout_of(s), raw.as_str()?)
     };
     let a = parse(start)?;
     let b = parse(end)?;
-    // 结束早于开始是录入错误：归零成「起点的瞬时块」，好过画出一个负宽度。
-    Some((a, b.max(a)))
+    match family {
+        // 纯时刻：轴恒为一天，位置就是「一天里的第几秒」。布局没有日期 token 时
+        // `to_seconds` 是负的（从公元 0 年起算），取模即回到当天的时刻位。
+        Family::TimeOfDay => {
+            let a = golayout::to_seconds(a).rem_euclid(86_400);
+            let b = golayout::to_seconds(b).rem_euclid(86_400);
+            Some((a, b.max(a)))
+        }
+        // 含日期：缺日期的一端在日期轴上无处可放，与「没有时间值」同样归入未排期——
+        // 否则 `date_bounds` 会被拖到公元 0 年，真实区间的块被压成右缘一条缝。
+        Family::DateTime => {
+            if date_less(a) || date_less(b) {
+                return None;
+            }
+            let a = golayout::to_seconds(a);
+            let b = golayout::to_seconds(b);
+            // 结束早于开始是录入错误：归零成「起点的瞬时块」，好过画出一个负宽度。
+            Some((a, b.max(a)))
+        }
+    }
 }
 
 /// 含日期族的轴两端：覆盖全部区间；全部落在一个瞬间时撑开成一天，
@@ -107,23 +136,38 @@ fn date_bounds(placed: &[Placed]) -> (i64, i64) {
     (lo, hi)
 }
 
-/// 横向比例（像素 / 秒）。含日期族按「整条轴约 900px」折算，再夹在每天 8–120px：
-/// 太挤看不清重叠，太疏要横向滚很久。
+/// 横向比例（像素 / 秒）。含日期族的目标是整条轴约 `TARGET_W` px：
+/// 短跨度按 `TARGET_W / 跨度` 放大，所以 1 天的轴也铺满 900px，而不是被上限压成 120px
+/// 挤在左缘；长跨度按每天 `MIN_PX_PER_DAY` 兜底，再长就交给横向滚动。
 fn px_per_sec(span: i64, family: Family) -> f64 {
+    const TARGET_W: f64 = 900.0;
+    const MIN_PX_PER_DAY: f64 = 8.0;
     match family {
         Family::DateTime => {
             let days = (span.max(1) as f64) / 86_400.0;
-            (900.0 / days).clamp(8.0, 120.0) / 86_400.0
+            (TARGET_W / days).max(MIN_PX_PER_DAY) / 86_400.0
         }
         // 纯时刻的轴恒为一天，按「整条轴约 1200px」折算，即每小时 50px。
         Family::TimeOfDay => 50.0 / 3_600.0,
     }
 }
 
-/// 刻度步长：从固定梯子上挑第一个能让刻度数不超过 40 的。
+/// 刻度标签在 11px 字号下的经验最小间距（含 `.tl-tick` 的 4px 左内边距与一点缝隙）。
+/// 含日期族在步长小于一天时带时刻，是最宽的一档；只给日期时短得多。
+fn label_min_px(step: i64, family: Family) -> f64 {
+    match family {
+        Family::TimeOfDay => 34.0,
+        Family::DateTime if step < 86_400 => 88.0,
+        Family::DateTime => 58.0,
+    }
+}
+
+/// 刻度步长：从固定梯子上挑第一个「刻度数不超过 40」且「像素间距大过标签宽度」的。
+/// 只按数量挑是不够的——日期时刻标签宽约 85px，而 900px 铺 40 个只有 22px 间距，
+/// 相邻标签会叠在一起；按实际比例换算间距，宁可疏一点也不重叠。
 /// 用固定秒数而不是「月 / 年」这种变长步，是因为刻度标签由 `from_seconds` 精确反算，
 /// 步长不落在自然历法边界上也不影响读数——标签上的日期本身就是对的。
-fn tick_step(span: i64, family: Family) -> i64 {
+fn tick_step(span: i64, family: Family, px_per_sec: f64) -> i64 {
     const DATE_STEPS: [i64; 16] = [
         3_600, 21_600, 43_200, 86_400, 172_800, 604_800, 1_209_600, 2_592_000, 7_776_000,
         15_552_000, 31_536_000, 63_072_000, 157_680_000, 315_360_000, 788_400_000, 1_576_800_000,
@@ -138,7 +182,9 @@ fn tick_step(span: i64, family: Family) -> i64 {
     steps
         .iter()
         .copied()
-        .find(|s| span / *s <= MAX_TICKS)
+        .find(|s| {
+            span / *s <= MAX_TICKS && *s as f64 * px_per_sec >= label_min_px(*s, family)
+        })
         .unwrap_or_else(|| *steps.last().unwrap())
 }
 
@@ -154,7 +200,7 @@ pub fn plan(entries: &[Entry], schemas: &[LabelSchema], cfg: &ViewTimeline) -> O
     for (idx, e) in entries.iter().enumerate() {
         // 推导结果每条算一次：起止和相关人都可能是继承 / 覆盖来的。
         let derived = query_eval::derive_inherited(schemas, &e.labels);
-        match span(e, &derived, start_s, end_s) {
+        match span(e, &derived, start_s, end_s, family) {
             Some((a, b)) => spans.push((idx, a, b)),
             None => unscheduled.push(idx),
         }
@@ -187,12 +233,14 @@ pub fn plan(entries: &[Entry], schemas: &[LabelSchema], cfg: &ViewTimeline) -> O
         Family::TimeOfDay => (0, 86_400),
         Family::DateTime => date_bounds(&placed),
     };
+    let span = hi - lo;
+    let px = px_per_sec(span, family);
     Some(Plan {
         family,
         lo,
         hi,
-        step: tick_step(hi - lo, family),
-        px_per_sec: px_per_sec(hi - lo, family),
+        step: tick_step(span, family, px),
+        px_per_sec: px,
         placed,
         lanes,
         unscheduled,
@@ -229,7 +277,8 @@ fn tick_label(secs: i64, step: i64, family: Family) -> String {
 }
 
 /// 色块配色：复用标签色 / 标题色那套标准色，但跳过末尾的灰——在时间轴上
-/// 一块灰会被读成「无数据」。按排布顺序轮转，同一批数据每次渲染颜色一致。
+/// 一块灰会被读成「无数据」。按条目在数据里的下标轮转（调用点传的是 `Placed.idx`），
+/// 下标与渲染顺序无关，同一批数据每次渲染颜色一致。
 fn block_color(i: usize) -> &'static str {
     PRESET_COLORS[i % (PRESET_COLORS.len() - 1)]
 }
@@ -271,7 +320,8 @@ pub fn TimelineView(
     on_open: Callback<String>,
 ) -> impl IntoView {
     view! {
-        <div class="tl">
+        // 根类名是 `.tlv`：`.tl` 已归审计日志行（`AuditTimeline`）所有，不能复用。
+        <div class="tlv">
             {move || {
                 let Some(cfg) = config.get() else {
                     return ().into_any();

@@ -1290,7 +1290,9 @@ input[type="color"].sw:disabled {
 }
 
 /* ===== 时间轴视图 ===== */
-.tl {
+/* 根类名用 `.tlv` 而不是 `.tl`：`.tl` 已是审计日志行的横向布局（见上文），同类名同优先级
+   会互相覆盖。`.tl-*` 子类此前不存在，无冲突。 */
+.tlv {
     display: flex;
     flex-direction: column;
     gap: 10px;
