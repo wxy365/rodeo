@@ -5,6 +5,7 @@ pub mod audit;
 pub mod comment;
 pub mod entry;
 pub mod label;
+pub mod message;
 pub mod query;
 pub mod rule;
 pub mod view;
@@ -20,6 +21,7 @@ pub use label::{
     default_layout, default_pattern, resolve_color, resolve_layout, DerivedLabel, InheritanceGraph,
     LabelLink, LabelSchema, LabelValue, LabelValueType, Labeling, LinkKind, ValueColor,
 };
+pub use message::Message;
 pub use query::{Condition, EvalEnv, Field, Op, Query, RESERVED_FIELDS};
 pub use rule::{ActionTarget, AutomationRule, LabelEvent, LabelWrite, RuleAction, ValueSource, WriteOp};
 pub use view::{SortField, SortKey, SortSpec, TitleColorRule, View, ViewTimeline};

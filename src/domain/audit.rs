@@ -43,6 +43,8 @@ pub enum AuditAction {
     CommentCreated,
     CommentUpdated,
     CommentDeleted,
+    // 追加在末尾：bincode 按变体序号编码，新变体只能往后加。
+    MessageCreated,
 }
 
 /// 审计日志。before/after 为 JSON 字符串（序列化后的快照）。

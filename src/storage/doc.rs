@@ -75,6 +75,10 @@ pub mod cf {
     /// 与 `ENTRIES_ARCHIVED` / `WORKSPACES_DELETED` 同理，用独立列族而不是给 `View`
     /// 加字段——加字段会让存量视图记录反序列化读到 EOF。
     pub const VIEW_TIMELINE: &str = "view_timeline";
+    /// 站内消息：(recipient_id 字节 + 时间倒序 + id) → `Message`（bincode）。
+    /// recipient_id 作前缀，每位用户的消息天然分区。
+    /// 用 i64::MAX - millis 倒序键让最新消息排在前。
+    pub const MESSAGES_BY_RECIPIENT: &str = "messages_by_recipient";
 }
 
 /// 单个批量写操作：文档/索引/审计统一原子写入。

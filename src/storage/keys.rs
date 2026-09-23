@@ -68,6 +68,17 @@ pub fn comment_key(entry_code: &str, comment_id: Ulid) -> Vec<u8> {
     key
 }
 
+/// (recipient_id, 时间倒序, id) 复合键。recipient_id 前缀扫描做分区，
+/// 时间倒序让最新消息在前。键总长 = 16 + 8 + 16 = 40 字节。
+pub fn message_key(recipient_id: Ulid, at: chrono::DateTime<chrono::Utc>, id: Ulid) -> Vec<u8> {
+    let mut key = Vec::with_capacity(40);
+    key.extend_from_slice(&recipient_id.to_bytes());
+    let desc = i64::MAX - at.timestamp_millis();
+    key.extend_from_slice(&desc.to_be_bytes());
+    key.extend_from_slice(&id.to_bytes());
+    key
+}
+
 /// (entry_code, attachment_id) 复合键。`attachment_id` 是 ULID，字节序即时间序，
 /// 因此按 entry_code 前缀扫描天然得到按上传时间升序的附件列表——与 `comment_key` 同构。
 pub fn attachment_by_entry_key(entry_code: &str, attachment_id: Ulid) -> Vec<u8> {
