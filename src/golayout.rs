@@ -422,3 +422,35 @@ pub fn parse(layout: &str, s: &str) -> Option<YmdHms> {
     }
     Some(t)
 }
+
+/// `YmdHms` → Unix 秒。没有时区概念：这些值都是用户按当地时间敲进去的裸串，
+/// 只要同一条轴上的口径一致就够了。
+pub fn to_seconds(t: YmdHms) -> i64 {
+    days_from_civil(t.year, t.month, t.day) * 86_400
+        + t.hour as i64 * 3_600
+        + t.minute as i64 * 60
+        + t.second as i64
+}
+
+/// `to_seconds` 的逆（Howard Hinnant `civil_from_days`，与上面的 `days_from_civil` 同源）。
+pub fn from_seconds(secs: i64) -> YmdHms {
+    let days = secs.div_euclid(86_400);
+    let rem = secs.rem_euclid(86_400);
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    YmdHms {
+        year: (if m <= 2 { y + 1 } else { y }) as i32,
+        month: m as u32,
+        day: d as u32,
+        hour: (rem / 3_600) as u32,
+        minute: ((rem % 3_600) / 60) as u32,
+        second: (rem % 60) as u32,
+    }
+}

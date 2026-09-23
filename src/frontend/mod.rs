@@ -8,6 +8,7 @@ pub mod icons;
 pub mod label_editor;
 pub mod pages;
 pub mod query_eval;
+pub mod timeline;
 pub mod tiny_editor;
 pub mod view_filter;
 
