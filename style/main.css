@@ -42,6 +42,13 @@ svg.ic {
     fill: currentColor;
     flex: none;
 }
+/* 应用 logo 专属尺寸与基线对齐：比通用 .ic 大一档，让「Rodeo」作为品牌名可见。 */
+svg.logo-mark {
+    width: 22px;
+    height: 22px;
+    flex: none;
+    color: var(--ink);
+}
 
 a {
     color: inherit;
@@ -246,6 +253,22 @@ select:focus {
     cursor: pointer;
     accent-color: var(--blue);
 }
+/* 勾选格内的行号：紧贴复选框右侧，11px 灰字，让用户在多行里能凭序号快速锚定。
+   不撑宽整列——勾选列仍然维持 34px，行号用 absolute 偏移贴上去。 */
+.tbl td.pick .pick-cell {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+}
+.tbl td.pick .row-no {
+    margin-left: 4px;
+    font-size: 11px;
+    color: var(--ink3);
+    font-variant-numeric: tabular-nums;
+    user-select: none;
+    pointer-events: none;
+}
 
 /* 选中若干条目后出现的批量操作条。 */
 .batchbar {
@@ -390,32 +413,8 @@ select:focus {
 }
 
 /* ===== 2 工作空间列表 ===== */
-.appbar {
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    padding: 10px 16px;
-    /* 视口右上角钉着固定的身份入口，这一行铺满窗口宽度，需要给它让位。 */
-    padding-right: 56px;
-    background: var(--bg);
-    border: 1px solid var(--line);
-    border-radius: var(--r-l);
-    margin-bottom: 16px;
-}
-.appbar .inp {
-    width: 280px;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 0 12px;
-}
-.appbar .inp input {
-    border: 0;
-    outline: 0;
-    flex: 1;
-    padding: 7px 0;
-    background: none;
-}
+/* `.appbar` 已废弃：原来挂 logo + 搜索框的那条横条让位给左侧的 SideNav，全站不再渲染。
+   样式保留是为了不让老 CSS 选择器撞到；新页面用 SideNav。 */
 .ws-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -426,6 +425,23 @@ select:focus {
     display: flex;
     flex-direction: column;
     gap: 8px;
+}
+/* 邀请卡片：虚线边框 + 卡片标题前的「邀请」小角标，与正式工作空间区分。 */
+.ws-card.ws-invite {
+    border-style: dashed;
+    border-color: color-mix(in srgb, var(--blue) 35%, var(--line));
+    background: color-mix(in srgb, var(--blue) 4%, var(--bg));
+}
+.ws-card .invite-tag {
+    display: inline-block;
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--blue);
+    background: color-mix(in srgb, var(--blue) 14%, transparent);
+    vertical-align: middle;
 }
 .ws-card h3 {
     font-size: 16px;
@@ -485,10 +501,17 @@ select:focus {
     margin-bottom: 10px;
     border-bottom: 1px solid var(--line);
 }
+/* 视图树中间节点（仅作为路径前缀的分组标题）：不响应点击，仅展示。 */
+.wside .sb-group {
+    font-size: 11px;
+    color: var(--ink3);
+    padding: 4px 12px 2px;
+    cursor: default;
+}
 .wmain {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 6px;
     min-height: 0;
     overflow: hidden;
 }
@@ -496,7 +519,7 @@ select:focus {
     display: flex;
     align-items: center;
     gap: 12px;
-    padding: 12px 16px;
+    padding: 6px 16px;
     flex-wrap: wrap;
 }
 .vhead h2 {
@@ -522,7 +545,7 @@ select:focus {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 10px 16px;
+    padding: 6px 16px;
     border-top: 1px solid var(--line);
     flex-wrap: wrap;
 }
@@ -1089,7 +1112,9 @@ input[type="color"].sw:disabled {
     opacity: 0.55;
 }
 /* 颜色选择器：常态只有一个原生调色盘按钮，标准色 / 最近使用折叠在悬停浮层里，
-   否则一排色点会把表格撑宽。右对齐浮层，保证它朝表格内侧展开、不会顶出页面。 */
+   否则一排色点会把表格撑宽。浮层放在按钮外侧（默认右侧），与按钮之间留 4px
+   间隙；`::before` 只覆盖这道 4px 间隙作为 hover 桥接，不会越过按钮位置——
+   否则会盖住按钮的可点击区域。 */
 .cpick {
     position: relative;
     display: inline-flex;
@@ -1098,8 +1123,10 @@ input[type="color"].sw:disabled {
 .cpick-pop {
     display: none;
     position: absolute;
-    top: calc(100% + 4px);
-    right: 0;
+    /* 默认浮层在按钮右侧 4px 处，纵向居中。`.left` / `.below` 修饰类切换方向。 */
+    top: 50%;
+    left: calc(100% + 4px);
+    transform: translateY(-50%);
     z-index: 60;
     flex-direction: column;
     gap: 6px;
@@ -1110,22 +1137,53 @@ input[type="color"].sw:disabled {
     border-radius: var(--r-s);
     box-shadow: 0 6px 18px rgba(15, 23, 42, 0.14);
 }
-/* 感应区：按钮与浮层之间那 4px 空隙，以及指针斜着划向最边上的色点时会掠过的浮层正上方，
-   都要能接住指针。否则指针半途离开 .cpick 那个按钮宽度的窄框，浮层先消失，而 display:none
-   的浮层不再参与命中测试，就再也接不回来了。 */
+/* 备选：视口右侧放不下时翻到左侧。 */
+.cpick-pop.left {
+    right: calc(100% + 4px);
+    left: auto;
+}
+/* 兜底：右 / 左都放不下时退回按钮下方，回到「按 4px 间距贴下方」的旧行为。 */
+.cpick-pop.below {
+    top: calc(100% + 4px);
+    left: 0;
+    right: auto;
+    transform: none;
+}
+/* 感应区（hover 桥接）：色点在按钮旁边时，鼠标从按钮滑向浮层要穿过 4px 间隙，
+   这道间隙没有元素接收 hover 会让浮层消失。`::before` 在浮层与按钮之间铺一条
+   透明桥带（宽 8px，覆盖 4px 间隙 + 各 2px 余量），高 32px（按钮 26px + 上下
+   各 3px）。在右 / 左模式下，桥带贴在浮层朝按钮的那一侧；不向按钮方向继续延伸，
+   否则会盖住按钮的可点击区。 */
 .cpick-pop::before {
     content: "";
     position: absolute;
-    left: 0;
-    right: 0;
-    top: auto;
-    bottom: 100%;
-    height: 30px;
+    /* 默认（右）：桥带贴在浮层左缘外侧，宽 8px（4px 间隙 + 2px 余量），高 32px */
+    top: 50%;
+    left: -8px;
+    width: 8px;
+    height: 32px;
+    transform: translateY(-50%);
 }
-/* 感应区盖在按钮下半截上，把按钮抬到它上面，原生调色盘才点得动。 */
+.cpick-pop.left::before {
+    /* 左模式：桥带贴在浮层右缘外侧 */
+    left: auto;
+    right: -8px;
+}
+.cpick-pop.below::before {
+    /* 下方模式：桥带贴在浮层顶缘上方，宽 36px（按钮 34px + 2px 余量），高 8px */
+    top: -8px;
+    left: 0;
+    right: auto;
+    width: 36px;
+    height: 8px;
+    transform: none;
+}
+/* 按钮保持在浮层之上的 stacking context，但 z-index 不必高于浮层——
+   浮层与按钮不在同一像素位置（4px 间隙），互不遮挡。按钮仍 z-index 1
+   以保证悬浮层内部 ::before 不会盖住按钮的可点击区。 */
 .cpick > input.sw {
     position: relative;
-    z-index: 70;
+    z-index: 1;
 }
 /* :focus-within 是留给键盘的：色点藏在 display:none 里，没有它 Tab 根本进不去。
    代价是鼠标点过的色点也会攥着焦点，所以色点自己在 mousedown 上拦掉了焦点获取。 */
@@ -1445,8 +1503,105 @@ input[type="color"].sw:disabled {
     color: var(--ink3);
     padding: 4px 2px 12px;
 }
+/* ===== 全局左侧导航栏（SideNav） ===== */
+/* 钉在视口左缘、固定列宽；中间是可滚动的导航项，底部钉头像。
+   配 `.has-sidenav` 的 <main> 会自动让出 220px，避免内容被遮。 */
+.sidenav {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 220px;
+    z-index: 30;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    border-right: 1px solid var(--line);
+}
+.sidenav-brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 16px;
+    text-decoration: none;
+    color: var(--ink);
+    border-bottom: 1px solid var(--line);
+}
+.sidenav-brand-name {
+    font: 600 15px var(--font, system-ui);
+    letter-spacing: 0.3px;
+}
+/* 中段是可滚动的导航项列表；底部头像靠 flex 推到底。 */
+.sidenav-items {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.sidenav-it {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 9px 12px;
+    border: 0;
+    border-radius: var(--r-s);
+    background: none;
+    color: var(--ink2);
+    text-align: left;
+    font: 14px var(--font, system-ui);
+    cursor: pointer;
+}
+.sidenav-it:hover:not(:disabled) {
+    background: var(--bg2);
+    color: var(--ink);
+}
+.sidenav-it.on {
+    background: color-mix(in srgb, var(--blue) 12%, var(--bg));
+    color: var(--ink);
+}
+.sidenav-it:disabled {
+    color: var(--ink3);
+    cursor: not-allowed;
+}
+.sidenav-it svg {
+    flex: 0 0 auto;
+}
+.sidenav-foot {
+    flex: 0 0 auto;
+    padding: 10px;
+    border-top: 1px solid var(--line);
+    display: flex;
+    justify-content: flex-start;
+}
+/* <main> 拿到 `.has-sidenav` 时把左缘让给 SideNav；登录页没有这个类，左右撑满。 */
+main.has-sidenav {
+    margin-left: 220px;
+}
+/* `position: fixed` 的 SideNav 在小视口里（横向 < 700px）会挤压主区，这种尺寸下退回到
+   文档流顶部的一条横栏而不是左侧固定列。220px 让出来比把内容挤到看不见强。 */
+@media (max-width: 700px) {
+    .sidenav {
+        position: static;
+        width: 100%;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+    }
+    .sidenav-items {
+        flex-direction: row;
+        overflow-x: auto;
+    }
+    main.has-sidenav {
+        margin-left: 0;
+    }
+}
+
 /* ===== 头像悬停菜单 ===== */
-/* 全站唯一的身份入口：固定钉在视口右上角，不随任何页面的内容宽度居中。 */
+/* 旧版右上角固定入口（`.corner-user`）：已被 SideNav 底部的 `AvatarMenu` 取代，
+   样式保留是为了万一有遗留脚本还在引用；正常渲染路径不再挂这个类。 */
 .corner-user {
     position: fixed;
     top: 10px;
