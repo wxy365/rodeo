@@ -37,6 +37,7 @@ const ALL_CFS: &[&str] = &[
     cf::ATTACHMENTS,
     cf::ATTACHMENTS_BY_ENTRY,
     cf::INLINE_ATTACHMENTS,
+    cf::VIEW_TIMELINE,
 ];
 
 /// RocksDB 文档存储：每个 CF 存一类文档（bincode 序列化）或二级索引（裸字节）。

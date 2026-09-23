@@ -6,6 +6,7 @@ use ulid::Ulid;
 
 use crate::domain::{
     AuditAction, AuditLog, LabelSchema, Query, SortField, SortKey, SortSpec, TitleColorRule, View,
+    ViewTimeline,
 };
 use crate::error::AppError;
 use crate::service::audit::audit_ops;
@@ -14,6 +15,24 @@ use crate::storage::{cf, keys, BatchOp, DocStore};
 
 pub struct ViewService {
     store: Arc<DocStore>,
+}
+
+/// 时间型标签的「族」：轴上的刻度与跨度都按族算。两个标签必须同族——
+/// 纯时刻（`time`）的值里没有日期，跟含日期的值放在同一条轴上量纲不一致。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TimeFamily {
+    /// 含日期：`date` / `datetime`。
+    DateTime,
+    /// 纯时刻：`time`。
+    TimeOfDay,
+}
+
+fn time_family(value_type: &str) -> Option<TimeFamily> {
+    match value_type {
+        "date" | "datetime" => Some(TimeFamily::DateTime),
+        "time" => Some(TimeFamily::TimeOfDay),
+        _ => None,
+    }
 }
 
 impl ViewService {
@@ -338,6 +357,78 @@ impl ViewService {
         Ok(view)
     }
 
+    /// 读视图的时间轴配置；没配过（或已被清除）返回 `None`。
+    pub fn timeline_of(&self, id: Ulid) -> Result<Option<ViewTimeline>, AppError> {
+        self.store.get(cf::VIEW_TIMELINE, &keys::view_key(id))
+    }
+
+    /// 写 / 清视图的时间轴配置。`cfg` 为 `None` 即清除，界面上的开关随之消失。
+    pub fn set_timeline(
+        &self,
+        actor: Ulid,
+        id: Ulid,
+        cfg: Option<ViewTimeline>,
+    ) -> Result<Option<ViewTimeline>, AppError> {
+        let view = self.get(id)?.ok_or(AppError::NotFound)?;
+        if let Some(c) = &cfg {
+            self.validate_timeline(view.workspace_id, c)?;
+        }
+        let before = self.timeline_of(id)?;
+        // 复用 `ViewUpdated`：这确实是「改视图配置」，不值得为它往 `AuditAction`
+        // 追加变体（那是 bincode 编码的枚举，多一个变体就多一份向后兼容的负担）。
+        let audit = AuditLog::new(
+            AuditAction::ViewUpdated,
+            actor,
+            "view",
+            &id.to_string(),
+            Some(view.workspace_id),
+            Some(serde_json::to_string(&before).unwrap_or_default()),
+            Some(serde_json::to_string(&cfg).unwrap_or_default()),
+        );
+        let mut ops = audit_ops(&audit)?;
+        match &cfg {
+            Some(c) => ops.push(BatchOp::put(cf::VIEW_TIMELINE, keys::view_key(id).to_vec(), c)?),
+            None => ops.push(BatchOp::delete(cf::VIEW_TIMELINE, keys::view_key(id).to_vec())),
+        }
+        self.store.write_batch(ops)?;
+        Ok(cfg)
+    }
+
+    /// 起止必须是**同族**的两个不同时间型标签；相关人必须是账号型。
+    /// 判据放在服务端：前端下拉是尽力而为的引导，落库前这一关才是权威。
+    fn validate_timeline(&self, ws: Ulid, cfg: &ViewTimeline) -> Result<(), AppError> {
+        let schemas = self.schemas(ws)?;
+        let find = |name: &str| -> Result<&LabelSchema, AppError> {
+            schemas
+                .iter()
+                .find(|s| s.name == name)
+                .ok_or_else(|| AppError::InvalidQuery(format!("时间轴引用了不存在的标签: {name}")))
+        };
+        let start = find(&cfg.start)?;
+        let end = find(&cfg.end)?;
+        let (Some(sf), Some(ef)) =
+            (time_family(start.value_type.as_str()), time_family(end.value_type.as_str()))
+        else {
+            return Err(AppError::InvalidQuery(
+                "时间轴只能选日期 / 时间 / 日期时间型标签".to_string(),
+            ));
+        };
+        if sf != ef {
+            return Err(AppError::InvalidQuery(
+                "起止时间必须是同一类标签：都含日期，或都是纯时刻".to_string(),
+            ));
+        }
+        if cfg.start == cfg.end {
+            return Err(AppError::InvalidQuery("起始与结束不能是同一个标签".to_string()));
+        }
+        if let Some(p) = &cfg.person {
+            if find(p)?.value_type.as_str() != "account" {
+                return Err(AppError::InvalidQuery("相关人只能选账号型标签".to_string()));
+            }
+        }
+        Ok(())
+    }
+
     pub fn delete(&self, actor: Ulid, id: Ulid) -> Result<(), AppError> {
         let view = self.get(id)?.ok_or(AppError::NotFound)?;
         if self.default_view_id(view.workspace_id)? == Some(id) {
@@ -360,6 +451,8 @@ impl ViewService {
             cf::VIEWS_BY_WORKSPACE,
             keys::view_by_workspace_key(view.workspace_id, id).to_vec(),
         ));
+        // 配置随视图一起删：留着就是永远读不到的孤儿记录。
+        ops.push(BatchOp::delete(cf::VIEW_TIMELINE, keys::view_key(id).to_vec()));
         self.store.write_batch(ops)?;
         Ok(())
     }

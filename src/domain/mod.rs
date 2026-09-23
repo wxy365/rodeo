@@ -22,5 +22,5 @@ pub use label::{
 };
 pub use query::{Condition, EvalEnv, Field, Op, Query, RESERVED_FIELDS};
 pub use rule::{ActionTarget, AutomationRule, LabelEvent, LabelWrite, RuleAction, ValueSource, WriteOp};
-pub use view::{SortField, SortKey, SortSpec, TitleColorRule, View};
+pub use view::{SortField, SortKey, SortSpec, TitleColorRule, View, ViewTimeline};
 pub use workspace::{Invite, Workspace, WorkspaceMember, WorkspaceRole};

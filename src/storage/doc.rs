@@ -70,6 +70,11 @@ pub mod cf {
     /// 所以不进附件列表。不给 `Attachment` 加字段是因为那是 bincode 结构变更，
     /// 存量附件会读不出来——与 `ENTRIES_ARCHIVED` / `WORKSPACES_DELETED` 同一套取舍。
     pub const INLINE_ATTACHMENTS: &str = "inline_attachments";
+    /// 视图的时间轴配置：view id（16 字节）→ `ViewTimeline`（bincode）。
+    /// **键缺席即未配置**，所以存量视图不需要回填，「普通 / 时间轴」开关也就自然不出现。
+    /// 与 `ENTRIES_ARCHIVED` / `WORKSPACES_DELETED` 同理，用独立列族而不是给 `View`
+    /// 加字段——加字段会让存量视图记录反序列化读到 EOF。
+    pub const VIEW_TIMELINE: &str = "view_timeline";
 }
 
 /// 单个批量写操作：文档/索引/审计统一原子写入。

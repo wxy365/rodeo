@@ -56,6 +56,19 @@ pub struct TitleColorRule {
     pub color: String,
 }
 
+/// 时间轴配置：把**同族**的两个时间型标签当作 Entry 的起止时间，可选一个账号型标签作相关人。
+/// 落在独立列族 `VIEW_TIMELINE` 而不是 `View` 的字段上，理由见 `storage::doc::cf::VIEW_TIMELINE`。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ViewTimeline {
+    /// 起始时间标签名（`LabelSchema.name`，与 `View::columns` 同一套标识）。
+    pub start: String,
+    /// 结束时间标签名；与 `start` 同族（都含日期，或都是纯时刻）。
+    pub end: String,
+    /// 相关人标签名（Account 型）；`None` 表示不展示相关人。
+    pub person: Option<String>,
+}
+
 /// 一个排序键。`SortSpec` 按顺序依次比较，前一个不定的才看后一个。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
