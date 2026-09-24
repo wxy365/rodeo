@@ -13,7 +13,7 @@ use crate::domain::{
     Account, AccountStatus, ActionTarget, Attachment, AuditLog, AutomationRule, Comment, Entry,
     Invite,
     LabelSchema, LabelValueType, LinkKind,
-    LabelWrite, Labeling, NamedPrompt, Query as ViewQuery, SortField, SortKey, SortSpec, TitleColorRule,
+    LabelWrite, Labeling, Message, NamedPrompt, Query as ViewQuery, SortField, SortKey, SortSpec, TitleColorRule,
     ValueColor, ValueSource, View, ViewTimeline, Workspace, WorkspaceAiConfig, WorkspaceMember,
     WorkspaceRole,
     WriteOp, ATTACHMENT_URL_PREFIX,
@@ -403,6 +403,46 @@ fn gql_comment(gql: &GraphqlContext, c: Comment) -> GqlResult<GqlComment> {
         updated_at: c.updated_at.to_rfc3339(),
         created_by_account,
         updated_by_account,
+    })
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct GqlMessage {
+    id: ID,
+    workspace_id: ID,
+    workspace_name: String,
+    entry_code: String,
+    source_type: String,
+    source_id: Option<ID>,
+    actor_id: ID,
+    actor_name: String,
+    preview: String,
+    read: bool,
+    created_at: String,
+}
+
+/// 组装 GqlMessage，回填工作空间名——查不到（已软删）时退回 id 字符串。
+fn gql_message(gql: &GraphqlContext, m: Message) -> GqlResult<GqlMessage> {
+    let workspace_name = gql
+        .services
+        .workspace
+        .get_by_id(m.workspace_id)
+        .ok()
+        .flatten()
+        .map(|w| w.name)
+        .unwrap_or_else(|| m.workspace_id.to_string());
+    Ok(GqlMessage {
+        id: m.id.to_string().into(),
+        workspace_id: m.workspace_id.to_string().into(),
+        workspace_name,
+        entry_code: m.entry_code,
+        source_type: m.source_type,
+        source_id: m.source_id.map(|s| s.to_string().into()),
+        actor_id: m.actor_id.to_string().into(),
+        actor_name: m.actor_name,
+        preview: m.preview,
+        read: m.read,
+        created_at: m.created_at.to_rfc3339(),
     })
 }
 
@@ -968,6 +1008,28 @@ impl Query {
         gql.require_member(entry.workspace_id)?;
         let labels = gql.services.entry.labelings(&code)?;
         Ok(Some(gql_entry(gql, entry, labels)?))
+    }
+
+    /// 当前用户的未读消息数。
+    async fn unread_message_count(&self, ctx: &Context<'_>) -> GqlResult<i32> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let actor = ctx.data::<AuthContext>()?.account_id;
+        Ok(gql.services.message.unread_count(actor)? as i32)
+    }
+
+    /// 当前用户的消息列表（最新在前）。`limit = 0` 表示不限。
+    async fn messages(
+        &self,
+        ctx: &Context<'_>,
+        limit: Option<i32>,
+    ) -> GqlResult<Vec<GqlMessage>> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let actor = ctx.data::<AuthContext>()?.account_id;
+        let limit = limit.unwrap_or(0).max(0) as usize;
+        let rows = gql.services.message.list_for_recipient(actor, limit)?;
+        rows.into_iter()
+            .map(|m| gql_message(gql, m))
+            .collect()
     }
 
     /// 某条目的全部评论，按发表时间升序。成员即可读（与 labelSchemas 一致）。
@@ -2290,6 +2352,24 @@ impl Mutation {
         };
         gql.require_role(ws, need)?;
         gql.services.workspace.remove_member(auth.account_id, ws, target)?;
+        Ok(true)
+    }
+
+    /// 单条标已读。
+    async fn mark_message_read(&self, ctx: &Context<'_>, id: ID) -> GqlResult<bool> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let actor = ctx.data::<AuthContext>()?.account_id;
+        let id = Ulid::from_string(id.as_str())
+            .map_err(|e| AppError::Internal(format!("无效消息 id: {e}")))?;
+        gql.services.message.mark_read(actor, id)?;
+        Ok(true)
+    }
+
+    /// 全部标已读。
+    async fn mark_all_messages_read(&self, ctx: &Context<'_>) -> GqlResult<bool> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let actor = ctx.data::<AuthContext>()?.account_id;
+        gql.services.message.mark_all_read(actor)?;
         Ok(true)
     }
 }
