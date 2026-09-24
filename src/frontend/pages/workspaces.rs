@@ -8,7 +8,7 @@ use crate::frontend::graphql_client::{
     accept_invite, create_workspace, decline_invite, my_invites, restore_workspace, workspaces,
     Invite, WorkspaceItem,
 };
-use crate::frontend::icons::{ic_add, ic_folder, ic_history, ic_search};
+use crate::frontend::icons::{ic_add, ic_folder, ic_history};
 use crate::frontend::use_auth;
 
 use super::super::components::logged_out;
@@ -103,14 +103,8 @@ pub fn WorkspaceList() -> impl IntoView {
 
     view! {
         <div class="page">
-            <div class="appbar">
-                <b style="font-size:17px">"Rodeo"</b>
-                <label class="inp" style="margin-left:auto">
-                    {ic_search()}
-                    <input placeholder="全文检索：标题 / 详情 / 标签值（即将上线）" disabled />
-                </label>
-            </div>
-
+            // 顶部 appbar 取消：logo 现在挂在 SideNav 顶部，搜索框未上线也跟着砍掉。
+            // 留给未来真有全文检索能力时再做——避免现在挂一个永远 disabled 的输入框招点。
             <div style="display:flex;align-items:center;margin-bottom:16px">
                 <h2 style="font-size:20px;font-weight:500">"我的工作空间"</h2>
                 <button class="btn pri" style="margin-left:auto" on:click=move |_| show_create.set(!show_create.get())>
@@ -136,36 +130,8 @@ pub fn WorkspaceList() -> impl IntoView {
 
             {move || error.get().map(|e| view! { <p class="error">{e}</p> })}
 
-            // 邀请收件箱：别人邀请我加入的工作空间都在这里，接受 / 拒绝即从这里消失。
-            {move || {
-                let list = inbox.get();
-                if list.is_empty() {
-                    return ().into_any();
-                }
-                view! {
-                    <div class="panel" style="margin-bottom:16px">
-                        <h3 style="margin-bottom:8px">"工作空间邀请"</h3>
-                        {list.into_iter().map(|inv| {
-                            let accept_id = inv.workspace_id.clone();
-                            let slug = inv.workspace_slug.clone();
-                            let decline_id = inv.workspace_id.clone();
-                            view! {
-                                <div style="display:flex;align-items:center;gap:12px;padding:8px 0">
-                                    <div style="flex:1">
-                                        <b>{inv.workspace_name.clone()}</b>
-                                        <span class="mut" style="margin-left:8px">
-                                            {format!("邀请你以 {} 身份加入", role_label(&inv.role))}
-                                        </span>
-                                    </div>
-                                    <button class="btn pri sm" on:click=move |_| accept.run((accept_id.clone(), slug.clone()))>"接受"</button>
-                                    <button class="btn sm" on:click=move |_| decline.run(decline_id.clone())>"拒绝"</button>
-                                </div>
-                            }
-                        }).collect::<Vec<_>>()}
-                    </div>
-                }.into_any()
-            }}
-
+            // 「我的工作空间」+ 「邀请收件箱」合在同一栅格里。
+            // 邀请卡片用虚线 + 「邀请」角标与正式卡片区分；接受 / 拒绝仍随卡片就地操作。
             <div class="ws-grid">
                 {move || match data.get() {
                     None => view! { <div class="empty">"加载中…"</div> }.into_any(),
@@ -176,6 +142,32 @@ pub fn WorkspaceList() -> impl IntoView {
                             .filter(|w| w.workspace.deleted_at.is_none())
                             .collect();
                         view! {
+                            // 邀请卡片：与正式卡片同栅格、视觉用虚线 / 「邀请」角标区分。
+                            // 接受 / 拒绝按钮就地放在卡片上，避免在页面顶部再来一条横条收件箱。
+                            {inbox.get().into_iter().map(|inv| {
+                                let accept_id = inv.workspace_id.clone();
+                                let slug = inv.workspace_slug.clone();
+                                let decline_id = inv.workspace_id.clone();
+                                view! {
+                                    <div class="panel ws-card ws-invite">
+                                        <h3>{ic_folder()}<span class="invite-tag">"邀请"</span>{inv.workspace_name.clone()}</h3>
+                                        <span class="code">{inv.workspace_slug.clone()}</span>
+                                        <div class="mut">
+                                            {format!("{} 邀请你以 {} 身份加入",
+                                                inv.invited_by.trim().is_empty().then(|| inv.email.clone()).unwrap_or_else(|| inv.invited_by.clone()),
+                                                role_label(&inv.role)
+                                            )}
+                                        </div>
+                                        <div style="display:flex;gap:8px;align-items:center;margin-top:auto">
+                                            <span class=format!("chip {}", role_chip_class(&inv.role))>{role_label(&inv.role)}</span>
+                                            <button class="btn pri sm" style="margin-left:auto"
+                                                on:click=move |_| accept.run((accept_id.clone(), slug.clone()))>"接受"</button>
+                                            <button class="btn sm"
+                                                on:click=move |_| decline.run(decline_id.clone())>"拒绝"</button>
+                                        </div>
+                                    </div>
+                                }
+                            }).collect::<Vec<_>>()}
                             {live.into_iter().map(|w| {
                                 let slug = w.workspace.slug.clone();
                                 let nav = nav_grid.clone();

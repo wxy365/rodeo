@@ -1,6 +1,7 @@
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+use leptos_router::components::A;
 use leptos_router::hooks::{use_navigate, use_params_map};
 use serde_json::Value;
 
@@ -41,10 +42,8 @@ pub fn WorkspaceSettings() -> impl IntoView {
     let slug = move || params.get().get("slug").unwrap_or_default();
     let auth = use_auth();
     let navigate = use_navigate();
-    let nav_back = navigate.clone();
     // 存成 StoredValue（Copy），事件闭包才能保持 Copy 而被视图重复使用。
     let nav_store = StoredValue::new(navigate.clone());
-    let back = move |_| nav_back(&format!("/{}", slug()), Default::default());
 
     let data: RwSignal<
         Option<
@@ -408,8 +407,10 @@ pub fn WorkspaceSettings() -> impl IntoView {
 
     view! {
         <div class="page page-wide">
-            <div class="crumb" style="display:flex;align-items:center;gap:8px">
-                <button class="btn sm" on:click=back>{ic_back()}"返回工作空间"</button>
+            // crumb 改成只剩路径说明；「返回工作空间」按钮原在这一行，现在挪到 set-nav 底部——
+            // 模仿视图页 `.wside` 把「工作空间列表」挂在最下面的做法，避免按钮悬在页面顶端
+            // 挤占设置面板的纵向空间。
+            <div class="crumb">
                 <span>{move || format!("/{} · 设置（Maintainer 及以上）", slug())}</span>
             </div>
             <div class="set-layout">
@@ -448,6 +449,10 @@ pub fn WorkspaceSettings() -> impl IntoView {
                     <div class="it dgr" class:on=move || tab.get() == "danger" on:click=move |_| tab.set("danger".into())>
                         "危险操作"
                     </div>
+                    // 「返回工作空间」挪到这里：与视图页「工作空间列表」按钮同位（侧栏最底）。
+                    <A href=move || format!("/{}", slug())>
+                        <div class="it" title="返回工作空间">{ic_back()}"返回工作空间"</div>
+                    </A>
                 </aside>
 
                 <div class="panel set-body">
@@ -541,9 +546,9 @@ pub fn WorkspaceSettings() -> impl IntoView {
                                     {if can_manage {
                                         view! {
                                             <form class="invite" on:submit=create>
-                                                <input class="inp" placeholder="名称（不可改，如 Priority）" prop:value=new_name on:input=move |ev| new_name.set(event_target_value(&ev)) />
-                                                <input class="inp" placeholder="显示名称" prop:value=new_title on:input=move |ev| new_title.set(event_target_value(&ev)) />
-                                                <select class="inp" style="width:120px" prop:value=new_type on:change=move |ev| {
+                                                <input class="inp" style="width:160px" placeholder="名称（不可改，如 Priority）" prop:value=new_name on:input=move |ev| new_name.set(event_target_value(&ev)) />
+                                                <input class="inp" style="width:140px" placeholder="显示名称" prop:value=new_title on:input=move |ev| new_title.set(event_target_value(&ev)) />
+                                                <select class="inp" style="width:130px" prop:value=new_type on:change=move |ev| {
                                                     new_type.set(event_target_value(&ev));
                                                     // 默认值的形状随类型而变，切类型先清掉，免得把上一个类型的值写到新类型下。
                                                     new_default.set(Value::Null);
@@ -564,8 +569,11 @@ pub fn WorkspaceSettings() -> impl IntoView {
                                                 {move || {
                                                     let vt = new_type.get();
                                                     if vt == "enum" {
+                                                        // 枚举值这一格才是新建标签里真正需要空间的那个——
+                                                        // name / title / type 都是有限字符的标识，
+                                                        // 而枚举值列表常常是一长串，挤在小框里用户翻不到全部。
                                                         view! {
-                                                            <input class="inp" placeholder="枚举值（逗号分隔）" prop:value=new_enum
+                                                            <input class="inp" style="flex:1;min-width:280px" placeholder="枚举值（逗号分隔）" prop:value=new_enum
                                                                 on:input=move |ev| new_enum.set(event_target_value(&ev)) />
                                                             <label style="display:flex;align-items:center;gap:6px;white-space:nowrap">
                                                                 <input type="checkbox" prop:checked=move || new_multi.get()

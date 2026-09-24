@@ -177,8 +177,8 @@ fn validate_attrs(input: &LabelSchemaInput) -> Result<(), AppError> {
     {
         return Err(AppError::LabelNameReserved);
     }
-    if input.multi && input.value_type != LabelValueType::Enum {
-        return Err(AppError::InvalidQuery("「多选」仅适用于枚举标签".to_string()));
+    if input.multi && !matches!(input.value_type, LabelValueType::Enum | LabelValueType::Account) {
+        return Err(AppError::InvalidQuery("「多选」仅适用于枚举或账号标签".to_string()));
     }
     if matches!(
         input.value_type,
@@ -217,17 +217,21 @@ pub(crate) fn check_account_member(
     ws_id: Ulid,
     lv: &LabelValue,
 ) -> Result<(), AppError> {
-    let Some(account_id) = lv.account_of() else {
+    // 多选账号：逐个 id 校验；任一不是成员即整批失败，与单选同语义。
+    let ids = lv.account_ids();
+    if ids.is_empty() {
         return Ok(());
-    };
-    let member = store.get::<crate::domain::WorkspaceMember>(
-        cf::WORKSPACE_MEMBERS,
-        &keys::member_key(ws_id, account_id),
-    )?;
-    if member.is_none() {
-        return Err(AppError::InvalidQuery(
-            "账号标签的值必须是该工作空间的成员".to_string(),
-        ));
+    }
+    for account_id in ids {
+        let member = store.get::<crate::domain::WorkspaceMember>(
+            cf::WORKSPACE_MEMBERS,
+            &keys::member_key(ws_id, Ulid::from_string(account_id).map_err(|_| AppError::InvalidLabelValue)?),
+        )?;
+        if member.is_none() {
+            return Err(AppError::InvalidQuery(
+                "账号标签的值必须是该工作空间的成员".to_string(),
+            ));
+        }
     }
     Ok(())
 }

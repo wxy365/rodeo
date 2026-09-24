@@ -392,10 +392,37 @@ fn LabelRow(
             }
             .into_any()
         }
-        // 账号：只能从工作空间成员里挑（带搜索），选中即落库。
+        // 账号：从工作空间成员里挑。schema.multi 时支持多选（写数组），单选时按 id 写字符串。
         Some(s) if s.value_type == "account" => {
-            let picked = Callback::new(move |id: String| on_set.run(Value::String(id)));
-            view! { <AccountPicker members=members.clone() current=current.clone() on_pick=picked /> }
+            let picked = Callback::new(move |ids: Vec<String>| {
+                if s.multi {
+                    // 多选：清空视为移除该标签；否则写 JSON 数组。
+                    if ids.is_empty() {
+                        on_remove.run(());
+                    } else {
+                        on_set.run(Value::Array(
+                            ids.into_iter().map(Value::String).collect(),
+                        ));
+                    }
+                } else {
+                    match ids.into_iter().next() {
+                        Some(id) => on_set.run(Value::String(id)),
+                        None => on_remove.run(()),
+                    }
+                }
+            });
+            let selected: Vec<String> = if s.multi {
+                // 多选：值是字符串数组；按元素拆开。
+                current.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+            } else if current.is_empty() {
+                Vec::new()
+            } else {
+                vec![current.clone()]
+            };
+            view! {
+                <AccountPicker members=members.clone() selected=selected multi=s.multi
+                    on_change=picked />
+            }
                 .into_any()
         }
         // 邮箱：文本输入，仅做「含 @」的提示性校验（真正的校验在服务端）；清空即移除标签。

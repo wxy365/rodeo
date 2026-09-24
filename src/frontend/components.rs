@@ -1,12 +1,15 @@
+use leptos::html::Div;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use leptos_router::hooks::use_navigate;
+use leptos_router::hooks::{use_location, use_navigate};
 use serde_json::Value;
 
 use crate::frontend::graphql_client::{
     get_recent_colors, logout, push_recent_color, AuditLog, Member,
 };
-use crate::frontend::icons::{ic_check, ic_copy, ic_logout, ic_profile, ic_setting};
+use crate::frontend::icons::{
+    ic_check, ic_close, ic_copy, ic_folder, ic_history, ic_logo, ic_logout, ic_profile, ic_setting,
+};
 use crate::frontend::use_auth;
 
 /// 账号的展示名：优先姓名，缺失时退回邮箱。
@@ -21,35 +24,90 @@ pub fn member_label(m: &Member) -> String {
 /// 账号选择器的候选列表上限：够用又不至于把弹层撑得比屏幕还高。
 const ACCOUNT_HITS: usize = 8;
 
-/// 账号选择器：只能从工作空间成员里挑，带按姓名 / 邮箱的搜索。
+/// 账号选择器：搜索 + 下拉选 + 多选 chip 三件套。
 ///
-/// 值是账号 id（服务端按 id 校验成员身份），展示用姓名。选中即回调 `on_pick`，
-/// 由调用方决定是立即落库（LabelRow）还是只写本地草稿（新建 Entry）。
+/// - 单选模式（`multi=false`）：点选 / 下拉选都直接替换当前值。
+/// - 多选模式（`multi=true`）：候选逐个添加，已选变成可点 × 的 chip。
+///
+/// 值是账号 id（服务端按 id 校验成员身份），展示用姓名。`on_change` 拿到完整选
+/// 集合，由调用方决定是立即落库（LabelRow）还是只写本地草稿（新建 Entry）。
 #[component]
 pub fn AccountPicker(
     /// 候选成员（当前工作空间成员表）。
     members: Vec<Member>,
-    /// 已选账号 id，空串表示未设置；只用于展示。
-    current: String,
-    on_pick: Callback<String>,
+    /// 已选账号 id 集合（单选时长度为 0 / 1）。
+    selected: Vec<String>,
+    /// 多选模式：开启时多个候选可并存；关闭时点选替换原值。
+    #[prop(optional)] multi: bool,
+    on_change: Callback<Vec<String>>,
 ) -> impl IntoView {
     let query = RwSignal::new(String::new());
-    let label = members
-        .iter()
-        .find(|m| m.account_id == current)
-        .map(member_label)
-        // 成员已被移出工作空间时仍要把 id 显示出来，而不是假装没设置过。
-        .unwrap_or_else(|| current.clone());
+    // 多个闭包共享的输入数据先克隆一份——Callback 用 move 捕获，每个闭包都要拿到独立副本。
+    let members_owned = members.clone();
+    let members_for_label = members_owned.clone();
+    let selected_owned = selected.clone();
+    // 当前已选 → 标签展示名。已不在工作空间成员表的 id 也要显示出来，不要静默吞。
+    let label_of = move |id: &str| -> String {
+        members_for_label
+            .iter()
+            .find(|m| m.account_id == id)
+            .map(member_label)
+            .unwrap_or_else(|| id.to_string())
+    };
+    // 触发选区变更的统一入口。Closure 是 Send + 可多次调用，且不需要 Rc 包。
+    // 包装成 Callback 后 leptos 的视图引擎能正确把它分发到多个事件处理函数上。
+    let pick: Callback<String> = {
+        let selected = selected.clone();
+        let on_change = on_change.clone();
+        let query = query.clone();
+        Callback::new(move |id: String| {
+            let mut cur: Vec<String> = selected.clone();
+            if multi {
+                if !cur.iter().any(|x| x == &id) {
+                    cur.push(id);
+                }
+            } else {
+                cur = vec![id];
+            }
+            on_change.run(cur);
+            query.set(String::new());
+        })
+    };
+    let remove: Callback<String> = {
+        let selected = selected.clone();
+        let on_change = on_change.clone();
+        Callback::new(move |id: String| {
+            let cur: Vec<String> = selected.iter().filter(|x| **x != id).cloned().collect();
+            on_change.run(cur);
+        })
+    };
     view! {
-        <div style="position:relative">
-            <input class="inp" style="width:150px" placeholder="搜索账号…" prop:value=query
-                on:input=move |ev| query.set(event_target_value(&ev)) />
+        <div style="position:relative;display:flex;flex-direction:column;gap:6px">
+            <div style="display:flex;gap:6px;align-items:center">
+                <input class="inp" style="width:160px" placeholder="搜索账号…"
+                    prop:value=query
+                    on:input=move |ev| query.set(event_target_value(&ev)) />
+                // 下拉选择：列全员，便于用户不靠搜索也能直接挑。
+                // 搜索框是补充，下拉是兜底——两者并存比二选一更贴多数人习惯。
+                <select class="inp" style="width:160px"
+                    on:change=move |ev| {
+                        let v = event_target_value(&ev);
+                        if !v.is_empty() {
+                            pick.run(v);
+                        }
+                    }>
+                    <option value="">"（下拉选择）"</option>
+                    {members_owned.iter().map(|m| view! {
+                        <option value=m.account_id.clone()>{member_label(m)}</option>
+                    }).collect::<Vec<_>>()}
+                </select>
+            </div>
             {move || {
                 let q = query.get().trim().to_lowercase();
                 if q.is_empty() {
                     return ().into_any();
                 }
-                let hits: Vec<Member> = members
+                let hits: Vec<Member> = members_owned
                     .iter()
                     .filter(|m| {
                         m.name.to_lowercase().contains(&q) || m.email.to_lowercase().contains(&q)
@@ -68,10 +126,7 @@ pub fn AccountPicker(
                             .map(|m| {
                                 let id = m.account_id.clone();
                                 view! {
-                                    <div class="lblhint-it" on:click=move |_| {
-                                        on_pick.run(id.clone());
-                                        query.set(String::new());
-                                    }>
+                                    <div class="lblhint-it" on:click=move |_| pick.run(id.clone())>
                                         <span>{member_label(&m)}</span>
                                         <span class="mut">{m.email.clone()}</span>
                                     </div>
@@ -82,11 +137,24 @@ pub fn AccountPicker(
                 }
                 .into_any()
             }}
-            <div style="font-size:12px">
-                {if current.is_empty() {
+            // 已选 chip：单选只展示一个；多选每个都能 × 掉。
+            <div style="display:flex;flex-wrap:wrap;gap:4px;font-size:12px">
+                {if selected_owned.is_empty() {
                     view! { <span class="mut">"未设置"</span> }.into_any()
                 } else {
-                    view! { <span class="chip">{label.clone()}</span> }.into_any()
+                    selected_owned.iter().map(|id| {
+                        let text = label_of(id);
+                        let rm_id = id.clone();
+                        view! {
+                            <span class="chip">
+                                {text.clone()}
+                                {multi.then(|| view! {
+                                    <button class="ibtn" title="移除"
+                                        on:click=move |_| remove.run(rm_id.clone())>{ic_close()}</button>
+                                })}
+                            </span>
+                        }
+                    }).collect::<Vec<_>>().into_any()
                 }}
             </div>
         </div>
@@ -298,10 +366,16 @@ pub fn DefaultValueInput(
                 .into_any()
         }
         "account" => {
-            let picked = Callback::new(move |id: String| value.set(Value::String(id)));
+            let picked = Callback::new(move |ids: Vec<String>| {
+                // 单选：值是单个字符串 id。空数组视为不设置。
+                let v = ids.into_iter().next().map(Value::String).unwrap_or(Value::Null);
+                value.set(v);
+            });
             let current = move || value_to_string(&value.get());
             view! {
-                <AccountPicker members=members.clone() current=current() on_pick=picked />
+                <AccountPicker members=members.clone()
+                    selected=current().split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+                    on_change=picked />
             }
                 .into_any()
         }
@@ -381,6 +455,78 @@ pub fn AvatarMenu() -> impl IntoView {
                 <button class="mi" on:click=do_logout>{ic_logout()}"退出"</button>
             </div>
         </div>
+    }
+}
+
+/// 左侧全局导航栏：logo + 工作空间 / 统计 / 系统管理入口 + 底部头像。
+///
+/// 钉在视口左边固定列，已登录页面统一用它替代各页原来的 appbar；登录页与未登录态不渲染。
+/// 项 13/14 会在中段插入「新建 Entry」与消息气泡，当前只放骨架（最小可见导航），便于分批落地。
+#[component]
+pub fn SideNav() -> impl IntoView {
+    let navigate = use_navigate();
+    let location = use_location();
+    let auth = use_auth();
+
+    // `use_location` 拿到的是当前路径；用前缀匹配做高亮——导航项都是路径前缀。
+    let path = move || location.pathname.get();
+
+    let nav_ws = navigate.clone();
+    let go_ws = move |_| nav_ws("/workspaces", Default::default());
+    let nav_admin = navigate.clone();
+    let go_admin = move |_| nav_admin("/admin", Default::default());
+
+    view! {
+        <aside class="sidenav">
+            <a class="sidenav-brand" href="/workspaces" title="工作空间列表" on:click=move |ev: leptos::ev::MouseEvent| {
+                if ev.meta_key() || ev.ctrl_key() || ev.button() != 0 { return; }
+                ev.prevent_default();
+                navigate("/workspaces", Default::default());
+            }>
+                {ic_logo()}
+                <span class="sidenav-brand-name">"Rodeo"</span>
+            </a>
+            <nav class="sidenav-items">
+                <button
+                    class="sidenav-it"
+                    class:on=move || path().starts_with("/workspaces")
+                    on:click=go_ws
+                >
+                    {ic_folder()}<span>"我的工作空间"</span>
+                </button>
+                // 统计暂未实装：路由到一个占位页比较突兀，先 `disabled` 占位，等真有统计模块再挂上。
+                <button
+                    class="sidenav-it"
+                    disabled=true
+                    title="统计（即将上线）"
+                >
+                    {ic_history()}<span>"统计"</span>
+                </button>
+                // 系统管理仅管理员可见；非管理员账号整项不渲染，跟 /admin 入口的「点不动就消失」原则一致。
+                // 走 `into_any()` 把分支统一成一个 `AnyView`，view! 推类型时不会被分支分支卡住。
+                {move || {
+                    let is_admin = auth.user.get().is_some_and(|u| u.is_admin);
+                    if !is_admin {
+                        return ().into_any();
+                    }
+                    let go_admin = go_admin.clone();
+                    view! {
+                        <button
+                            class="sidenav-it"
+                            class:on=move || path().starts_with("/admin")
+                            on:click=move |_| go_admin(())
+                        >
+                            {ic_setting()}<span>"系统管理"</span>
+                        </button>
+                    }.into_any()
+                }}
+            </nav>
+            // 底部头像：与原 `.corner-user` 同一份 `AvatarMenu`，只是搬到 SideNav 的下沿。
+            // 项 13 在头像周围挂消息气泡；当前只留位置，没有计数与下拉。
+            <div class="sidenav-foot">
+                <AvatarMenu />
+            </div>
+        </aside>
     }
 }
 
@@ -539,6 +685,71 @@ fn local_parts(rfc: &str) -> Option<(u32, u32, u32, u32, u32, u32)> {
 fn local_parts(_rfc: &str) -> Option<(u32, u32, u32, u32, u32, u32)> {
     None
 }
+
+/// ColorPick 浮层方向：默认右侧，按钮左侧 `4px` 间隙；视口右侧塞不下时翻到
+/// 左侧；两侧都塞不下时退回按钮下方（保留最初的旧行为兜底）。
+///
+/// 浮层默认 `display: none`——无法直接量到尺寸，所以测量时临时改 inline 样式
+/// 让它脱离隐藏态：display=flex + position=fixed + left=-9999px 把它扔到屏外，
+/// 浏览器照常完成布局算尺寸，量完再把 inline 样式原样还回去。屏幕上看不到这次
+/// 「闪现」是因为它被钉在视口外。改回原样式后 CSS 的 `:hover` / `:focus-within`
+/// 再次接管显隐。
+#[cfg(target_arch = "wasm32")]
+fn measure_cpick_placement(pop_ref: &NodeRef<Div>, placement: &RwSignal<String>) {
+    use wasm_bindgen::JsCast;
+
+    let Some(pop_el) = pop_ref.get() else { return };
+    // Leptos 的 `HtmlElement<Div>` 不直接 Deref 到 web_sys 类型，先
+    // `unchecked_ref` 取出 `web_sys::HtmlElement`，下面用到的 DOM 方法
+    // 都从这条 web_sys 类型上拿。
+    let pop_web: &web_sys::HtmlElement = pop_el.unchecked_ref();
+
+    // 把当前 inline 样式备一份，量完还原。`display: none` 是从样式表来的，
+    // 所以没设过 inline 样式时 `prev` 是空串——还原则是「移除 inline 样式」。
+    let prev = pop_web.get_attribute("style").unwrap_or_default();
+    let style = pop_web.style();
+    let _ = style.set_property("display", "flex".into());
+    let _ = style.set_property("position", "fixed".into());
+    let _ = style.set_property("left", "-9999px".into());
+    let _ = style.set_property("top", "0".into());
+
+    let pop_rect = pop_web.get_bounding_client_rect();
+    let Some(anchor_el) = pop_web.previous_element_sibling() else { return };
+    // `previous_element_sibling` 返回的是 `web_sys::Element`，`unchecked_ref`
+    // 把它再「宽化」成 `HtmlElement`——这俩都带 `get_bounding_client_rect`，
+    // 用 HtmlElement 只是顺手。
+    let anchor_rect = anchor_el.unchecked_ref::<web_sys::HtmlElement>().get_bounding_client_rect();
+
+    // 把 inline 样式还原回测量前的样子。空串意味着原本就没 inline 样式，
+    // 直接清掉属性；否则把备份写回去。完成后 CSS 的 `:hover` / `:focus-within`
+    // 再次接管显隐。
+    if prev.is_empty() {
+        pop_web.remove_attribute("style").ok();
+    } else {
+        pop_web.set_attribute("style", &prev).ok();
+    }
+
+    let Some(win) = web_sys::window() else { return };
+    // `inner_width()` 返回 `JsValue`；用 `as_f64()` 取出底层的数字。
+    let vw = win.inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let pop_w = pop_rect.width();
+
+    // 浮层外缘到视口边缘要留 4px 间隙，跟 CSS 里 `calc(100% + 4px)` 对齐；
+    // 这里再加 4px 容错，避开亚像素取整带来的抖动。
+    let fit_right = anchor_rect.right() + pop_w + 8.0 <= vw;
+    let fit_left = anchor_rect.left() - pop_w - 8.0 >= 0.0;
+
+    placement.set(if fit_right {
+        "right".to_string()
+    } else if fit_left {
+        "left".to_string()
+    } else {
+        "below".to_string()
+    });
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn measure_cpick_placement(_pop_ref: &NodeRef<Div>, _placement: &RwSignal<String>) {}
 
 /// RFC3339 时间 → 本地时区 "YYYY-MM-DD HH:MM"。
 pub fn short_time(at: &str) -> String {
@@ -892,6 +1103,23 @@ pub fn ColorPick(
         }
     });
 
+    // 浮层方向：默认右；视口右侧放不下时翻左；两侧都放不下时退回下方。
+    // 测量函数会改写它，浮层靠 `.left` / `.below` 修饰类切换 CSS。
+    let pop_ref: NodeRef<Div> = NodeRef::new();
+    let placement = RwSignal::new("right".to_string());
+    // 初次挂载 + 最近使用列表长度变化时（浮层宽度变了）重新测量。
+    // 浏览器 resize 暂不监听——桌面单用户场景下窗口尺寸变化少见，必要时再补。
+    Effect::new(move |_| {
+        let _ = recent.get();
+        let pop_ref = pop_ref.clone();
+        let placement = placement.clone();
+        // 推到下一个宏任务：这时 DOM 已经挂好，浮层才有尺寸可读。
+        set_timeout(
+            move || measure_cpick_placement(&pop_ref, &placement),
+            std::time::Duration::from_millis(0),
+        );
+    });
+
     // 记一笔用过的颜色。标准色板里已有的不记——否则最近使用只会是标准色的副本，
     // 这一组是留给调色盘里调出来的自定义色的。
     let record = move |c: String| {
@@ -937,7 +1165,12 @@ pub fn ColorPick(
                 }
                 on:input=move |ev| record(event_target_value(&ev))
             />
-            <div class="cpick-pop">
+            <div
+                class="cpick-pop"
+                node_ref=pop_ref
+                class:left=move || placement.get() == "left"
+                class:below=move || placement.get() == "below"
+            >
                 <div class="cpick-group" title="标准色">
                     {PRESET_COLORS.iter().map(|c| dot(c.to_string())).collect::<Vec<_>>()}
                 </div>

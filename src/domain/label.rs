@@ -77,6 +77,8 @@ pub enum LabelValue {
     Email(String),
     // 追加，勿插入到上方
     Account(String),
+    // 追加，勿插入到上方：多选账号（schema.multi && Account）。
+    AccountList(Vec<String>),
 }
 
 impl LabelValue {
@@ -163,9 +165,26 @@ impl LabelValue {
             }
             // 只校验「是个账号 id」；「是不是本工作空间成员」需要读成员表，由服务层补。
             LabelValueType::Account => {
-                let s = value.as_str().ok_or(AppError::InvalidLabelValue)?;
-                Ulid::from_string(s).map_err(|_| AppError::InvalidLabelValue)?;
-                Ok(LabelValue::Account(s.to_string()))
+                if schema.multi {
+                    let vals: Vec<String> = match value {
+                        serde_json::Value::Array(a) => a
+                            .iter()
+                            .map(|x| x.as_str().map(str::to_string))
+                            .collect::<Option<Vec<_>>>()
+                            .ok_or(AppError::InvalidLabelValue)?,
+                        // 容错：单串包装成单元素数组。
+                        serde_json::Value::String(s) => vec![s.clone()],
+                        _ => return Err(AppError::InvalidLabelValue),
+                    };
+                    for v in &vals {
+                        Ulid::from_string(v).map_err(|_| AppError::InvalidLabelValue)?;
+                    }
+                    Ok(LabelValue::AccountList(vals))
+                } else {
+                    let s = value.as_str().ok_or(AppError::InvalidLabelValue)?;
+                    Ulid::from_string(s).map_err(|_| AppError::InvalidLabelValue)?;
+                    Ok(LabelValue::Account(s.to_string()))
+                }
             }
         }
     }
@@ -189,15 +208,21 @@ impl LabelValue {
             | LabelValue::DateTime(s)
             | LabelValue::Email(s)
             | LabelValue::Account(s) => serde_json::Value::String(s.clone()),
+            LabelValue::AccountList(v) => serde_json::Value::Array(
+                v.iter()
+                    .map(|s| serde_json::Value::String(s.clone()))
+                    .collect(),
+            ),
             LabelValue::Currency(f) => serde_json::json!(f),
         }
     }
 
-    /// Account 值里的账号 id；其余类型返回 None。
-    pub fn account_of(&self) -> Option<Ulid> {
+    /// Account 值里的账号 id 集合（含多选）；其余类型返回空。
+    pub fn account_ids(&self) -> Vec<&str> {
         match self {
-            LabelValue::Account(s) => Ulid::from_string(s).ok(),
-            _ => None,
+            LabelValue::Account(s) => vec![s.as_str()],
+            LabelValue::AccountList(v) => v.iter().map(String::as_str).collect(),
+            _ => Vec::new(),
         }
     }
 }
@@ -242,7 +267,7 @@ pub struct LabelSchema {
     pub value_colors: Vec<ValueColor>,
     // 追加在末尾，全部 #[serde(default)]
     #[serde(default)]
-    pub multi: bool, // 仅 Enum 有效
+    pub multi: bool, // Enum / Account 有效：允许多选
     #[serde(default)]
     pub format: Option<String>, // 时间型 = 常规模式（如 YYYY-MM-DD HH:mm:ss）
     #[serde(default)]

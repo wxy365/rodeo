@@ -2,6 +2,8 @@ use leptos::ev::SubmitEvent;
 use leptos::html::Input;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsCast;
 
 use leptos_router::components::A;
 use leptos_router::hooks::{use_navigate, use_params_map};
@@ -22,8 +24,8 @@ use crate::frontend::graphql_client::{
     Labeling, LabelSchema, Member, NamedPrompt, View, ViewSort, ViewTimeline, Workspace,
 };
 use crate::frontend::icons::{
-    ic_add, ic_back, ic_close, ic_comment, ic_folder, ic_full, ic_help, ic_search, ic_setting,
-    ic_share, ic_tag,
+    ic_add, ic_back, ic_close, ic_comment, ic_folder, ic_full, ic_help, ic_history, ic_search,
+    ic_setting, ic_share, ic_tag,
 };
 use crate::frontend::label_editor::LabelEditor;
 use crate::frontend::query_eval;
@@ -115,7 +117,9 @@ impl DraftLabel {
         } else {
             Value::Null
         };
-        // 多选 Enum 的默认值是数组，填进 `many`；其余类型都能用字符串表达。
+        // 多选 Enum / Account 的默认值是数组，填进 `many`；其余类型都能用字符串表达。
+        // Account 多选也是把账号 id 用字符串数组表达——草稿阶段不区分两者，
+        // 直接 to_value 时按 self.multi 走。
         let (mut text, many, flag) = match &default {
             Value::Null => {
                 // 自动集里的无值标签默认「打上」。
@@ -162,6 +166,18 @@ impl DraftLabel {
             "enum" => {
                 let v = self.text.get_untracked();
                 (!v.is_empty()).then_some(Value::String(v))
+            }
+            // 多选 Account：和多选 Enum 共用 `many` 缓冲，写时统一表达成字符串数组。
+            "account" if self.multi => {
+                let ids: Vec<String> = self
+                    .many
+                    .get_untracked()
+                    .into_iter()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                (!ids.is_empty())
+                    .then_some(Value::Array(ids.into_iter().map(Value::String).collect()))
             }
             "integer" => self
                 .text
@@ -245,6 +261,9 @@ pub fn WorkspaceMain() -> impl IntoView {
     let selected = RwSignal::new(String::new());
     let show_new = RwSignal::new(false);
     let new_title = RwSignal::new(String::new());
+    // 「新建 Entry」表单里的标题输入框引用：表单从关到开那一刻把焦点交过去，
+    // 用户不再需要再点一次输入框。
+    let new_title_ref: NodeRef<Input> = NodeRef::new();
     // 新建表单里待写入的标签值；打开表单时按当前 workspace 的标签 schema 重建。
     let new_labels = RwSignal::new(Vec::<DraftLabel>::new());
     let error = RwSignal::new(None::<String>);
@@ -634,6 +653,100 @@ pub fn WorkspaceMain() -> impl IntoView {
             nav_entry(&format!("/{}/entry/{}", slug(), code), Default::default());
         }
     });
+
+    // 「新建 Entry」表单打开（show_new 由 false 变 true）那一刻把焦点交给标题输入框。
+    // Effect 只在表单渲染完成后才有可用的 NodeRef——以 false → true 的边沿为信号，
+    // 而不是依赖 show_new 的当前值；避免「表单已经渲染了再打开页面」这种首挂载态抢焦点。
+    #[cfg(target_arch = "wasm32")]
+    Effect::new(move |prev: Option<bool>| {
+        let now = show_new.get();
+        if prev == Some(false) && now {
+            if let Some(el) = new_title_ref.get() {
+                let _ = el.focus();
+            }
+        }
+        now
+    });
+
+    // 上下键在 Entry 表格里切换选中条目。
+    // 跳过规则：光标在输入框 / 富文本 / 下拉里时不抢，按 Enter 走的就是这些控件的语义。
+    // 越界处理：到页首向上再翻上一页（停在末位）；到页末向下再翻下一页（停在首位）。
+    #[cfg(target_arch = "wasm32")]
+    {
+        let handle = window_event_listener(leptos::ev::keydown, move |ev| {
+            // 表格没渲染或未加载完成时也不抢：避免选中一个不存在的条目。
+            let Some(items) = data.get().and_then(|r| r.ok()).map(|(_, it, _)| it) else {
+                return;
+            };
+            if items.is_empty() {
+                return;
+            }
+            // 焦点在文本输入控件时不响应：用户可能在改表达式 / 全文检索。
+            let target = ev.target();
+            let is_text_input = target.as_ref().and_then(|t| {
+                t.dyn_ref::<leptos::web_sys::HtmlInputElement>().map(|el| {
+                    let t = el.type_();
+                    t == "text" || t == "search" || t == "email" || t == "password" || t == "url"
+                })
+            }).unwrap_or(false);
+            let is_textarea = target
+                .as_ref()
+                .and_then(|t| t.dyn_ref::<leptos::web_sys::HtmlTextAreaElement>().map(|_| true))
+                .unwrap_or(false);
+            let is_select = target
+                .as_ref()
+                .and_then(|t| t.dyn_ref::<leptos::web_sys::HtmlSelectElement>().map(|_| true))
+                .unwrap_or(false);
+            let is_ce = target
+                .as_ref()
+                .and_then(|t| t.dyn_ref::<leptos::web_sys::HtmlElement>().map(|el| el.is_content_editable()))
+                .unwrap_or(false);
+            if is_text_input || is_textarea || is_select || is_ce {
+                return;
+            }
+            let key = ev.key();
+            if key != "ArrowDown" && key != "ArrowUp" {
+                return;
+            }
+            ev.prevent_default();
+            let codes: Vec<String> = items.iter().map(|e| e.code.clone()).collect();
+            let cur = selected.get_untracked();
+            let idx = codes.iter().position(|c| c == &cur);
+            let new_idx = match (idx, key.as_str()) {
+                (Some(i), "ArrowDown") => {
+                    if i + 1 < codes.len() { i + 1 } else {
+                        // 已经在末位：尝试翻到下一页首位。
+                        let total = total_signal.get_untracked();
+                        let pages = ((total + page_size - 1) / page_size).max(1);
+                        let cur_page = page_signal.get_untracked();
+                        if cur_page < pages {
+                            page_signal.set(cur_page + 1);
+                            0
+                        } else { i }
+                    }
+                }
+                (Some(i), "ArrowUp") => {
+                    if i > 0 { i - 1 } else {
+                        let cur_page = page_signal.get_untracked();
+                        if cur_page > 1 {
+                            page_signal.set(cur_page - 1);
+                            // 翻页前 items 仍是旧页数据，等新页加载后会重新触发该判断。
+                            // 这里直接选 0 也无妨：未翻页前就是 0。
+                            0
+                        } else { i }
+                    }
+                }
+                // 表格里没有任何选中条目：从首 / 末位开始，给键盘一个落脚点。
+                (None, "ArrowDown") => 0,
+                (None, "ArrowUp") => codes.len() - 1,
+                _ => return,
+            };
+            if let Some(code) = codes.get(new_idx) {
+                selected.set(code.clone());
+            }
+        });
+        on_cleanup(move || handle.remove());
+    }
 
     // 打开批量弹窗：每次按当前标签 schema 重建草稿，抵消上一次的残留。
     let open_batch = move |_| {
@@ -1111,6 +1224,18 @@ pub fn WorkspaceMain() -> impl IntoView {
                                             show_view_dialog.set(true);
                                         });
                                     }>"另存为新视图"</button>
+                                // 重置：把当前临时过滤与全文搜索输入复原到基础视图的初始态。
+                                // 仅在确有改动时才点亮，避免空操作。
+                                <button class="ibtn" title="重置为默认"
+                                    disabled=move || !view_dirty()
+                                    on:click=move |_| {
+                                        query_ast.set(serde_json::json!({ "and": [] }));
+                                        ad_hoc_text.set(String::new());
+                                        expr_text.set(String::new());
+                                        hint_open.set(false);
+                                        time_pick.set(None);
+                                        refresh_view.update(|n| *n += 1);
+                                    }>{ic_history()}</button>
                             }.into_any()
                         } else {
                             view! {
@@ -1167,7 +1292,8 @@ pub fn WorkspaceMain() -> impl IntoView {
                     {move || if show_new.get() {
                         view! {
                             <form class="filters" on:submit=create_submit>
-                                <input class="inp" style="flex:1" placeholder="新条目标题" prop:value=new_title on:input=move |ev| new_title.set(event_target_value(&ev)) />
+                                <input class="inp" style="flex:1" placeholder="新条目标题" node_ref=new_title_ref
+                                    prop:value=new_title on:input=move |ev| new_title.set(event_target_value(&ev)) />
                                 <button class="btn pri" type="submit">"创建"</button>
                                 <button class="btn" type="button" on:click=move |_| {
                                     new_labels.set(Vec::new());
@@ -1245,23 +1371,30 @@ pub fn WorkspaceMain() -> impl IntoView {
                                             let Some(mut v) = active_view.get_untracked() else {
                                                 return;
                                             };
-                                            let pos = v.sorts.iter().position(|s| s.field == req.field);
-                                            v.sorts = match (pos, req.additive) {
-                                                // 已在链上：翻转方向，位置不变。
-                                                (Some(i), _) => {
-                                                    let mut s = v.sorts;
-                                                    s[i].desc = !s[i].desc;
-                                                    s
-                                                }
-                                                // Shift + 未在链上：追加为末位降序键。
-                                                (None, true) => {
-                                                    let mut s = v.sorts;
-                                                    s.push(ViewSort { field: req.field, desc: true });
-                                                    s
-                                                }
-                                                // 未按 Shift 且不在链上：整条链替换成这一个键，默认降序。
-                                                (None, false) => vec![ViewSort { field: req.field, desc: true }],
-                                            };
+                                            // 双击同字段：把它从排序链里剔除。链删空回到默认排序（更新时间 ↓）。
+                                            // 「链是空 → 走默认」这件事由 `SortSpec::default` 表达，
+                                            // 这里只在确实删空时把 sorts 留作空 Vec（），让下游按默认键落。
+                                            if req.remove {
+                                                v.sorts.retain(|s| s.field != req.field);
+                                            } else {
+                                                let pos = v.sorts.iter().position(|s| s.field == req.field);
+                                                v.sorts = match (pos, req.additive) {
+                                                    // 已在链上：翻转方向，位置不变。
+                                                    (Some(i), _) => {
+                                                        let mut s = v.sorts;
+                                                        s[i].desc = !s[i].desc;
+                                                        s
+                                                    }
+                                                    // Shift + 未在链上：追加为末位降序键。
+                                                    (None, true) => {
+                                                        let mut s = v.sorts;
+                                                        s.push(ViewSort { field: req.field, desc: true });
+                                                        s
+                                                    }
+                                                    // 未按 Shift 且不在链上：整条链替换成这一个键，默认降序。
+                                                    (None, false) => vec![ViewSort { field: req.field, desc: true }],
+                                                };
+                                            }
                                             // 同一批内改写 active_view 与 page_signal，Effect 只跑一次，
                                             // 避免并发两次请求、旧页码的结果乱序覆盖新结果。
                                             batch({
@@ -1470,8 +1603,57 @@ pub fn WorkspaceMain() -> impl IntoView {
                     <div class="dmodal">
                         <div class="panel dmbox">
                             <h3>{move || if view_dialog_saveas.get() { "另存为新视图" } else { "新建视图" }}</h3>
-                            <input class="inp" placeholder="视图名称" prop:value=view_name_input
+                            <input class="inp" placeholder="视图名称（用 / 分层，如 团队/迭代）" prop:value=view_name_input
                                 on:input=move |ev| view_name_input.set(event_target_value(&ev)) />
+                            // 输入「/」时弹出已有的非叶子节点提示——避免新视图游离到不存在的层级下。
+                            {move || {
+                                let cur = view_name_input.get();
+                                let prefix = cur.rfind('/').map(|i| cur[..i].to_string()).unwrap_or_default();
+                                let mut existing: Vec<String> = view_list
+                                    .get()
+                                    .into_iter()
+                                    .map(|v| v.name.clone())
+                                    .filter(|n| n != &cur && (n == &prefix || n.starts_with(&format!("{prefix}/"))))
+                                    .collect();
+                                existing.sort();
+                                existing.dedup();
+                                // 只列「非叶子」节点：那些名字本身就是另一条视图名的前缀。
+                                let groups: Vec<String> = existing
+                                    .iter()
+                                    .filter(|n| **n == prefix
+                                        || existing.iter().any(|other| other != *n && other.starts_with(&format!("{}/", n))))
+                                    .cloned()
+                                    .collect();
+                                if groups.is_empty() {
+                                    ().into_any()
+                                } else {
+                                    view! {
+                                        <div class="lblhint" style="margin-top:4px">
+                                            <div class="mut" style="font-size:11px;padding:2px 4px">"已有非叶子节点："</div>
+                                            {groups.iter().map(|g| {
+                                                let g_for_label = g.clone();
+                                                let g_for_click = g.clone();
+                                                view! {
+                                                    <div class="lblhint-it"
+                                                        on:mousedown=move |ev| ev.prevent_default()
+                                                        on:click=move |_| {
+                                                            let cur = view_name_input.get();
+                                                            let cur_prefix = cur.rfind('/').map(|i| cur[..i].to_string()).unwrap_or_default();
+                                                            let new = if cur_prefix.is_empty() {
+                                                                format!("{g_for_click}/")
+                                                            } else {
+                                                                format!("{g_for_click}/{}", cur.trim_start_matches(&format!("{cur_prefix}/")).trim_start_matches('/'))
+                                                            };
+                                                            view_name_input.set(new);
+                                                        }>
+                                                        <span>{g_for_label}</span>
+                                                    </div>
+                                                }
+                                            }).collect::<Vec<_>>()}
+                                        </div>
+                                    }.into_any()
+                                }
+                            }}
                             {move || view_dialog_saveas.get().then(|| {
                                 // 另存为会把基础视图上那份临时过滤一并落库，得让用户看见落的是什么。
                                 let e = expr_text.get();
@@ -1577,12 +1759,72 @@ pub fn WorkspaceMain() -> impl IntoView {
                                         let exc = r.expr;
                                         let col = r.color;
                                         let rid = r.id;
+                                        // 标题颜色规则的表达式输入也需要 `/` 提示：候选 = 7 个内置元数据 + 本视图列出的标签。
+                                        let hint_open = RwSignal::new(false);
+                                        let pick_label_tc = {
+                                            let exc = exc.clone();
+                                            move |name: String| {
+                                                let cur = exc.get_untracked();
+                                                exc.set(match cur.rfind('/') {
+                                                    Some(i) => format!("{}{name} ", &cur[..i]),
+                                                    None => format!("{name} "),
+                                                });
+                                                hint_open.set(false);
+                                            }
+                                        };
                                         view! {
                                             <div class="tc-row">
-                                                <input class="inp tc-expr" type="text"
-                                                    placeholder=r#"条件表达式，如：Task = "Open" AND Score >= 60"#
-                                                    prop:value=move || exc.get()
-                                                    on:input=move |ev| exc.set(event_target_value(&ev)) />
+                                                <div class="exprwrap" style="flex:1;min-width:0">
+                                                    <input class="inp tc-expr" type="text"
+                                                        placeholder=r#"条件表达式，如：Task = "Open" AND Score >= 60"#
+                                                        prop:value=move || exc.get()
+                                                        on:input=move |ev| {
+                                                            let v = event_target_value(&ev);
+                                                            hint_open.set(label_fragment(&v).is_some());
+                                                            exc.set(v);
+                                                        }
+                                                        on:blur=move |_| hint_open.set(false) />
+                                                    {move || {
+                                                        if !hint_open.get() { return ().into_any(); }
+                                                        let cur = exc.get();
+                                                        let Some(frag) = label_fragment(&cur) else {
+                                                            return ().into_any();
+                                                        };
+                                                        let frag = frag.to_lowercase();
+                                                        let schemas_now = schemas.get();
+                                                        let mut items: Vec<(String, String)> = BUILTIN_FIELDS
+                                                            .iter()
+                                                            .map(|(k, t)| (k.to_string(), t.to_string()))
+                                                            .collect();
+                                                        for s in &schemas_now {
+                                                            if !items.iter().any(|(n, _)| n.eq_ignore_ascii_case(&s.name)) {
+                                                                let t = if s.title.trim().is_empty() { s.name.clone() } else { s.title.clone() };
+                                                                items.push((s.name.clone(), t));
+                                                            }
+                                                        }
+                                                        let items: Vec<(String, String)> = items
+                                                            .into_iter()
+                                                            .filter(|(n, t)| n.to_lowercase().contains(&frag) || t.to_lowercase().contains(&frag))
+                                                            .collect();
+                                                        if items.is_empty() { return ().into_any(); }
+                                                        view! {
+                                                            <div class="lblhint">
+                                                                {items.into_iter().map(|(name, title)| {
+                                                                    let n = name.clone();
+                                                                    let pick = pick_label_tc.clone();
+                                                                    view! {
+                                                                        <div class="lblhint-it"
+                                                                            on:mousedown=move |ev| ev.prevent_default()
+                                                                            on:click=move |_| pick(n.clone())>
+                                                                            <span>{title}</span>
+                                                                            <span class="mut">{name}</span>
+                                                                        </div>
+                                                                    }
+                                                                }).collect::<Vec<_>>()}
+                                                            </div>
+                                                        }.into_any()
+                                                    }}
+                                                </div>
                                                 <ColorPick small=true title="标题颜色".to_string()
                                                     value=Signal::derive(move || col.get())
                                                     ws_id=ws_id
@@ -1715,42 +1957,103 @@ fn WorkspaceSidebar(
             .collect::<Vec<_>>()
     };
 
-    let row = move |v: View, shared_mark: bool, is_default: bool| {
-        let id = v.id.clone();
-        let name = v.name.clone();
-        let count = v.entry_count;
-        let is_active = {
-            let id = id.clone();
-            move || active.get().as_deref() == Some(id.as_str())
-        };
-        let click_id = id.clone();
-        let del_id = id.clone();
-        view! {
-            <div class=move || {
-                     let mut c = String::from("it");
-                     if is_default { c.push_str(" base"); }
-                     if is_active() { c.push_str(" on"); }
-                     c
-                 }
-                 on:click=move |_| on_select.run(click_id.clone())>
-                {if is_default {
-                    ic_tag().into_any()
-                } else if shared_mark {
-                    ic_share().into_any()
-                } else {
-                    ic_folder().into_any()
-                }}
-                <span class="lbl" style="flex:1">{name}</span>
-                <span class="n">{count}</span>
-                {(!is_default).then(|| view! {
-                    <button class="ibtn" title="删除视图" on:click=move |ev| {
-                        ev.stop_propagation();
-                        on_delete.run(del_id.clone());
-                    }>"×"</button>
-                })}
-            </div>
+    // 把视图列表按 `/` 切分层级。叶子节点的父节点（仅作为路径前缀的视图）保留为
+    // 可点击的分组标题，底下挂子视图——这样 `团队/迭代1` 与 `团队/迭代2` 能折叠在一起。
+    // `ViewNode` 是视图树上的一个节点：(视图, 深度)。`None` 视图 = 仅作为路径前缀
+    // 出现的中间节点（没有对应 View，但需要渲染分组标题）。
+    #[derive(Clone)]
+    enum ViewNode {
+        Leaf(View, usize),
+        Group(String, usize),
+    }
+    fn build_tree(items: Vec<View>) -> Vec<ViewNode> {
+        // 收集所有「路径前缀」：每个 view.name 的祖先路径都成为分组节点。
+        let mut prefixes = std::collections::BTreeSet::<String>::new();
+        let mut leaves: Vec<(View, Vec<String>)> = items
+            .into_iter()
+            .map(|v| {
+                let parts: Vec<String> = v
+                    .name
+                    .split('/')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                for i in 1..parts.len() {
+                    prefixes.insert(parts[..i].join("/"));
+                }
+                (v, parts)
+            })
+            .collect();
+        // 让分组标题按字典序排在所属叶子之前；分组按路径前缀排序。
+        leaves.sort_by(|a, b| a.1.cmp(&b.1));
+        let mut out: Vec<ViewNode> = Vec::new();
+        // 把每个前缀作为 Group 节点插入到该前缀下第一个叶子节点之前；
+        // 同样前缀只插入一次。
+        let mut inserted: std::collections::HashSet<String> = Default::default();
+        for (v, parts) in leaves {
+            for i in 1..parts.len() {
+                let prefix = parts[..i].join("/");
+                if inserted.insert(prefix.clone()) {
+                    out.push(ViewNode::Group(prefix, i.saturating_sub(1)));
+                }
+            }
+            out.push(ViewNode::Leaf(v, parts.len().saturating_sub(1)));
         }
-        .into_any()
+        out
+    }
+
+    let row = move |node: ViewNode, shared_mark: bool| {
+        match node {
+            ViewNode::Leaf(v, depth) => {
+                let id = v.id.clone();
+                let name = v.name.clone();
+                // 叶子视图的展示名只显示最后一段，全名靠 title 提示。
+                let leaf_label = name
+                    .rsplit('/')
+                    .find(|s| !s.trim().is_empty())
+                    .unwrap_or(&name)
+                    .to_string();
+                let count = v.entry_count;
+                let is_active = {
+                    let id = id.clone();
+                    move || active.get().as_deref() == Some(id.as_str())
+                };
+                let click_id = id.clone();
+                let del_id = id.clone();
+                let indent = format!("padding-left:{}px", 12 + depth * 14);
+                view! {
+                    <div class=move || {
+                             let mut c = String::from("it");
+                             if is_active() { c.push_str(" on"); }
+                             c
+                         }
+                         style=indent
+                         title=name.clone()
+                         on:click=move |_| on_select.run(click_id.clone())>
+                        {if shared_mark {
+                            ic_share().into_any()
+                        } else {
+                            ic_folder().into_any()
+                        }}
+                        <span class="lbl" style="flex:1">{leaf_label}</span>
+                        <span class="n">{count}</span>
+                        <button class="ibtn" title="删除视图" on:click=move |ev| {
+                            ev.stop_propagation();
+                            on_delete.run(del_id.clone());
+                        }>"×"</button>
+                    </div>
+                }
+                .into_any()
+            }
+            ViewNode::Group(label, depth) => {
+                // 中间路径节点：不挂 view 实体，渲染成不可点的分组标题。
+                let indent = format!("padding-left:{}px", 12 + depth * 14);
+                view! {
+                    <div class="sb-group" style=indent>{label}</div>
+                }
+                .into_any()
+            }
+        }
     };
 
     view! {
@@ -1763,11 +2066,33 @@ fn WorkspaceSidebar(
                     set_sidebar_collapsed(v);
                 }>{move || if collapsed.get() { "»" } else { "«" }}</button>
             </div>
-            {move || default_view().map(|v| row(v, true, true))}
+            {move || default_view().map(|v| {
+                let id = v.id.clone();
+                let name = v.name.clone();
+                let count = v.entry_count;
+                let is_active = {
+                    let id = id.clone();
+                    move || active.get().as_deref() == Some(id.as_str())
+                };
+                let click_id = id.clone();
+                view! {
+                    <div class=move || {
+                             let mut c = String::from("it base");
+                             if is_active() { c.push_str(" on"); }
+                             c
+                         }
+                         title=name
+                         on:click=move |_| on_select.run(click_id.clone())>
+                        {ic_tag()}
+                        <span class="lbl" style="flex:1">{name.clone()}</span>
+                        <span class="n">{count}</span>
+                    </div>
+                }.into_any()
+            })}
             <div class="grp">"我的视图"</div>
-            {move || mine().into_iter().map(|v| row(v, false, false)).collect::<Vec<_>>()}
+            {move || build_tree(mine()).into_iter().map(|n| row(n, false)).collect::<Vec<_>>()}
             <div class="grp">"共享视图"</div>
-            {move || shared().into_iter().map(|v| row(v, true, false)).collect::<Vec<_>>()}
+            {move || build_tree(shared()).into_iter().map(|n| row(n, true)).collect::<Vec<_>>()}
             <div class="it" style="color:var(--ink3)" title="新建视图" on:click=move |_| on_new.run(())>
                 {ic_add()}<span class="lbl">"新建视图"</span>
             </div>
@@ -1812,10 +2137,26 @@ fn EntryTable(
     // 列不展示的标签排序，用户看不见结果。
     let sortable_th = move |field: String, label: String| {
         let click_field = field.clone();
+        let dbl_field = field.clone();
         view! {
-            <th class="sortable" on:click=move |ev: leptos::ev::MouseEvent| {
-                on_sort.run(SortRequest { field: click_field.clone(), additive: ev.shift_key() });
-            }>
+            <th class="sortable"
+                on:click=move |ev: leptos::ev::MouseEvent| {
+                    // 双击的第二次 click（detail==2）由 dblclick 处理，否则与单击冲突。
+                    if ev.detail() > 1 { return; }
+                    on_sort.run(SortRequest {
+                        field: click_field.clone(),
+                        additive: ev.shift_key(),
+                        remove: false,
+                    });
+                }
+                on:dblclick=move |_| {
+                    on_sort.run(SortRequest {
+                        field: dbl_field.clone(),
+                        additive: false,
+                        remove: true,
+                    });
+                }
+            >
                 {move || format!("{label}{}", sort_mark(&sorts.get(), &field))}
             </th>
         }
@@ -1883,7 +2224,7 @@ fn EntryTable(
                             .unwrap_or_else(|| name.clone());
                         sortable_th(name.clone(), title)
                     }).collect::<Vec<_>>()}
-                    <th>"创建人"</th>
+                    {sortable_th("createdBy".to_string(), "创建人".to_string())}
                     {sortable_th("updatedAt".to_string(), "更新时间".to_string())}
                 </tr>
             </thead>
@@ -1902,7 +2243,10 @@ fn EntryTable(
                         let sc = schemas.get();
                         // 账号列展示用：把值里的 id 映射成成员姓名。
                         let members = members.get();
-                        items.iter().map(|e| {
+                        items.iter().enumerate().map(|(row_idx, e)| {
+                            // 当前页里的行号（从 1 起算）作为选 / 排序时回看的视觉锚点。
+                            // 行号随翻页变化——不持久化进批量勾选，与「勾选状态属于哪些条目」分离。
+                            let row_no = row_idx + 1;
                             let code_for_class = e.code.clone();
                             let code_for_click = e.code.clone();
                             let code_for_dbl = e.code.clone();
@@ -1949,20 +2293,25 @@ fn EntryTable(
                                     }
                                 >
                                     <td class="pick">
-                                        <input type="checkbox"
-                                            prop:checked=move || batch_selected.get().contains(&code_for_check)
-                                            // 勾选不应触发「打开详情」（单击）或「全屏页」（双击）。
-                                            on:click=|ev| ev.stop_propagation()
-                                            on:dblclick=|ev| ev.stop_propagation()
-                                            on:change=move |ev| {
-                                                let c = code_for_check_change.clone();
-                                                if event_target_checked(&ev) {
-                                                    batch_selected.update(|s| if !s.contains(&c) { s.push(c.clone()) });
-                                                } else {
-                                                    batch_selected.update(|s| s.retain(|x| x != &c));
+                                        <label class="pick-cell" title={format!("当前页第 {row_no} 行")}>
+                                            <input type="checkbox"
+                                                prop:checked=move || batch_selected.get().contains(&code_for_check)
+                                                // 勾选不应触发「打开详情」（单击）或「全屏页」（双击）。
+                                                on:click=|ev| ev.stop_propagation()
+                                                on:dblclick=|ev| ev.stop_propagation()
+                                                on:change=move |ev| {
+                                                    let c = code_for_check_change.clone();
+                                                    if event_target_checked(&ev) {
+                                                        batch_selected.update(|s| if !s.contains(&c) { s.push(c.clone()) });
+                                                    } else {
+                                                        batch_selected.update(|s| s.retain(|x| x != &c));
+                                                    }
                                                 }
-                                            }
-                                        />
+                                            />
+                                            // 行号：用 <span> 而不是 input 自身的 attribute，避免被读屏器念成
+                                            // 「第 1 行 可勾选 复选框 1」这种多余组合。
+                                            <span class="row-no">{row_no.to_string()}</span>
+                                        </label>
                                     </td>
                                     <td style=move || match query_eval::title_color(
                                         &title_colors.get(), &entry_for_color, &entry_for_color.labels,
@@ -2022,13 +2371,26 @@ fn EntryTable(
                                                         })
                                                         .unwrap_or_else(|| name.clone())
                                                 } else if is_account {
-                                                    // 存的是账号 id，展示成姓名；成员已退出工作空间
-                                                    // 时退回 id，好过显示成空。
-                                                    members
-                                                        .iter()
-                                                        .find(|m| m.account_id == s)
-                                                        .map(member_label)
-                                                        .unwrap_or_else(|| s.clone())
+                                                    // 单值：存的是账号 id；多值：存的字符串数组，逐元素映射。
+                                                    if let Some(arr) = v.as_array() {
+                                                        arr.iter()
+                                                            .map(|x| {
+                                                                let id = value_to_string(x);
+                                                                members
+                                                                    .iter()
+                                                                    .find(|m| m.account_id == id)
+                                                                    .map(member_label)
+                                                                    .unwrap_or_else(|| id.clone())
+                                                            })
+                                                            .collect::<Vec<_>>()
+                                                            .join(", ")
+                                                    } else {
+                                                        members
+                                                            .iter()
+                                                            .find(|m| m.account_id == s)
+                                                            .map(member_label)
+                                                            .unwrap_or_else(|| s.clone())
+                                                    }
                                                 } else {
                                                     display_enum_value(&s)
                                                 };
@@ -2491,12 +2853,27 @@ fn LabelDraft(rows: RwSignal<Vec<DraftLabel>>, members: RwSignal<Vec<Member>>) -
                             }.into_any()
                         } else if r.value_type == "account" {
                             let sel = r.text;
-                            let picked = Callback::new(move |id: String| sel.set(id));
+                            // AccountPicker 现在要的是 Vec<String>，这里把单串双向映射——
+                            // 多选时塞逗号分隔，单选时仅取首个。
+                            let picked = Callback::new(move |ids: Vec<String>| {
+                                if r.multi {
+                                    sel.set(ids.join(","));
+                                } else {
+                                    sel.set(ids.into_iter().next().unwrap_or_default());
+                                }
+                            });
+                            let selected: Vec<String> = if r.multi {
+                                sel.get().split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+                            } else if sel.get().is_empty() {
+                                Vec::new()
+                            } else {
+                                vec![sel.get()]
+                            };
                             view! {
                                 <div class="lblrow">
                                     <span class="k">{ic_tag()}{title}</span>
-                                    <AccountPicker members=members.get() current=r.text.get()
-                                        on_pick=picked />
+                                    <AccountPicker members=members.get() selected=selected multi=r.multi
+                                        on_change=picked />
                                 </div>
                             }.into_any()
                         } else {
@@ -2611,11 +2988,13 @@ fn sort_mark(sorts: &[ViewSort], field: &str) -> String {
     }
 }
 
-/// 排序字段的展示名：内置三值有固定中文名，其余按标签名查 schema 的标题。
+/// 排序字段的展示名：内置值有固定中文名，其余按标签名查 schema 的标题。
 fn sort_field_label(field: &str, schemas: &[LabelSchema]) -> String {
     match field {
         "title" => "标题".to_string(),
         "createdAt" => "创建时间".to_string(),
+        "createdBy" => "创建人".to_string(),
+        "updatedBy" => "更新人".to_string(),
         "updatedAt" => "更新时间".to_string(),
         other => schemas
             .iter()
@@ -2625,11 +3004,14 @@ fn sort_field_label(field: &str, schemas: &[LabelSchema]) -> String {
     }
 }
 
-/// 表头点击的参数：`additive` 来自 `Shift` 键（追加为次级排序键）。
+/// 表头点击的参数：`additive` 来自 `Shift` 键（追加为次级排序键），
+/// `remove` 来自双击同一字段（从排序链里剔除）。
 #[derive(Clone)]
 struct SortRequest {
     field: String,
     additive: bool,
+    /// 双击触发：把字段从排序链里拿掉。
+    remove: bool,
 }
 
 /// 时间型内置名 / 标签的值，用哪种原生控件表达。

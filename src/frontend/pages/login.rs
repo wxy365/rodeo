@@ -4,6 +4,7 @@ use leptos::task::spawn_local;
 use leptos_router::hooks::use_navigate;
 
 use crate::frontend::graphql_client::{allow_registration as fetch_allow_registration, login, register, set_token};
+use crate::frontend::icons::ic_logo;
 use crate::frontend::use_auth;
 
 #[component]
@@ -74,6 +75,7 @@ pub fn Login() -> impl IntoView {
         <div class="login-wrap">
             <form class="panel login-card" on:submit=submit>
                 <div class="logo">
+                    {ic_logo()}
                     <b>"Rodeo"</b>
                     <span class="chip dim">"任务 / 问题跟踪"</span>
                 </div>

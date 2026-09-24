@@ -175,3 +175,27 @@ pub fn ic_logout() -> impl IntoView {
         </svg>
     }
 }
+
+/// 应用 logo：竞技场主题。外圈是双层圆（围栏），场内两侧立柱 + 横梁勾勒出场地轮廓，
+/// 中央嵌一个大写 R（"Rodeo"），整体一个 svg 不靠图标 + 字母并排。
+/// 颜色：`currentColor` 让主题色直接继承，深色 / 浅色主题都不用换 logo。
+pub fn ic_logo() -> impl IntoView {
+    view! {
+        <svg class="logo-mark" viewBox="0 0 24 24" aria-hidden="true">
+            // 竞技场外圈（双层弧，强化围栏感）。
+            <circle cx="12" cy="12" r="9.2" fill="none" stroke="currentColor" stroke-width="1.4" />
+            <circle cx="12" cy="12" r="7.4" fill="none" stroke="currentColor" stroke-width="0.9" opacity="0.55" />
+            // 横梁 + 两根立柱：撑出场地分隔线的轮廓。
+            <path d="M5.2 9.5 L18.8 9.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" fill="none" />
+            <circle cx="5.5" cy="9.5" r="1.1" fill="currentColor" />
+            <circle cx="18.5" cy="9.5" r="1.1" fill="currentColor" />
+            // 中央 R：与圆形共用同一个 svg，下盘用粗笔画兜底，让「R + 圆形」不显割裂。
+            <path d="M9.3 16.5 L10.5 16.5 L10.5 7.8 L13.4 7.8
+                     Q15.2 7.85 15.2 9.6 Q15.2 11 13.7 11.2
+                     L15.5 16.5 L14.1 16.5 L12.6 11.4 L11.7 11.4 L11.7 16.5 Z
+                     M11.7 10.3 L13 10.3 Q13.9 10.25 13.9 9.55
+                     Q13.9 8.9 13 8.85 L11.7 8.85 Z"
+                fill="currentColor" />
+        </svg>
+    }
+}

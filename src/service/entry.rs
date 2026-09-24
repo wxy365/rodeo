@@ -571,9 +571,15 @@ impl EntryService {
                 None => None,
             };
 
-        // 账号解析只在查询树真的引用 CreatedBy / UpdatedBy 时才扫表。
+        // 账号解析只在查询树或排序链真的引用 CreatedBy / UpdatedBy 时才扫表。
+        // 查询侧用 `contains_account_field`（遍历 Query 树），排序侧只看 sort keys：
+        // 两路任一命中即预加载，否则不付出「全账号表扫一次」的代价。
+        let sort_needs_account = sort
+            .keys
+            .iter()
+            .any(|k| matches!(k.field, SortField::CreatedBy | SortField::UpdatedBy));
         let accounts: std::collections::HashMap<ulid::Ulid, (String, String)> =
-            if query.contains_account_field() {
+            if query.contains_account_field() || sort_needs_account {
                 let mut m = std::collections::HashMap::new();
                 for (_, v) in self.store.scan_prefix(cf::ACCOUNTS, b"")? {
                     let a: crate::domain::Account = bincode::deserialize(&v)?;
@@ -651,7 +657,7 @@ impl EntryService {
         label_names.sort();
         label_names.dedup();
 
-        sort_rows(&mut matched, sort, &labels_map, &schemas);
+        sort_rows(&mut matched, sort, &labels_map, &schemas, &accounts);
         let total = matched.len();
         let (page, page_size) = page.normalized();
         let slice: Vec<Entry> = matched
@@ -783,10 +789,13 @@ fn sort_rows(
     sort: &SortSpec,
     labels_map: &std::collections::HashMap<String, Vec<Labeling>>,
     schemas: &std::collections::HashMap<String, (LabelValueType, Option<String>)>,
+    // 账号 id → (姓名, 邮箱)，用于按 CreatedBy / UpdatedBy 排序时映射成展示名。
+    // 不引用账号字段的代码路径传空 map 即可，行为退化为按 id 比较。
+    accounts: &std::collections::HashMap<Ulid, (String, String)>,
 ) {
     rows.sort_by(|a, b| {
         for k in &sort.keys {
-            match key_ordering(a, b, k, labels_map, schemas) {
+            match key_ordering(a, b, k, labels_map, schemas, accounts) {
                 // 这两支不参与 desc 翻转：缺失永远最后。
                 KeyOrder::AMissing => return Ordering::Greater,
                 KeyOrder::BMissing => return Ordering::Less,
@@ -818,14 +827,36 @@ fn key_ordering(
     k: &SortKey,
     labels_map: &std::collections::HashMap<String, Vec<Labeling>>,
     schemas: &std::collections::HashMap<String, (LabelValueType, Option<String>)>,
+    accounts: &std::collections::HashMap<Ulid, (String, String)>,
 ) -> KeyOrder {
     let SortField::Label(name) = &k.field else {
-        // 内置三列恒有值，不存在缺失这一支。
+        // 内置列恒有值，不存在缺失这一支。
+        // 账号字段展示名做大小写不敏感比较；账号已删除时退回 id 以保次序稳定。
+        // `accounts` 里只有排序字段需要时才会被预加载（见 `query()` 的 sort 旁路），
+        // 不引用账号字段的代码路径直接拿空 map，行为退化为按 Ulid 比较——比乱排好。
+        let account_key = |e: &Entry, which: &'static str| -> String {
+            let id = match which {
+                "createdBy" => e.created_by.clone(),
+                _ => e.updated_by.clone(),
+            };
+            accounts
+                .get(&id)
+                .map(|(name, email)| {
+                    if name.trim().is_empty() {
+                        email.to_lowercase()
+                    } else {
+                        name.to_lowercase()
+                    }
+                })
+                .unwrap_or_else(|| id.to_string())
+        };
         let o = match k.field {
             SortField::UpdatedAt => a.updated_at.cmp(&b.updated_at),
             SortField::CreatedAt => a.created_at.cmp(&b.created_at),
             // 标题大小写不敏感，与改动前的行为一致。
             SortField::Title => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
+            SortField::CreatedBy => account_key(a, "createdBy").cmp(&account_key(b, "createdBy")),
+            SortField::UpdatedBy => account_key(a, "updatedBy").cmp(&account_key(b, "updatedBy")),
             SortField::Label(_) => unreachable!(),
         };
         return KeyOrder::Values(o);
@@ -909,7 +940,7 @@ fn display_key(v: &LabelValue) -> String {
         | LabelValue::DateTime(s)
         | LabelValue::Email(s)
         | LabelValue::Account(s) => s.clone(),
-        LabelValue::EnumList(xs) => xs.join(","),
+        LabelValue::EnumList(xs) | LabelValue::AccountList(xs) => xs.join(","),
     }
 }
 

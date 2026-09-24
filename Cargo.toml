@@ -71,7 +71,7 @@ gloo-storage = "0.3"
 gloo-timers = { version = "0.3", features = ["futures"] }
 js-sys = "0.3"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["Clipboard", "Navigator", "Window", "FormData", "File", "Blob"] }
+web-sys = { version = "0.3", features = ["Clipboard", "Navigator", "Window", "FormData", "File", "Blob", "Element", "HtmlElement", "CssStyleDeclaration", "DomRect"] }
 
 [features]
 default = ["ssr"]

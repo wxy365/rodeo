@@ -6,7 +6,7 @@ use leptos_meta::{
 use leptos_router::components::{Route, Router, Routes};
 use leptos_router::{ParamSegment, StaticSegment};
 
-use crate::frontend::components::AvatarMenu;
+use crate::frontend::components::SideNav;
 use crate::frontend::graphql_client::{clear_token, get_token, me};
 use crate::frontend::pages::{
     Account, Admin, EntryFullScreen, Home, Login, WorkspaceList, WorkspaceMain, WorkspaceSettings,
@@ -65,12 +65,14 @@ pub fn App() -> impl IntoView {
         <Stylesheet id="tiny-editor" href="/tiny-editor/style.css"/>
         <Script type_="module" src="/tiny-editor/glue.js"/>
         <Title text="Rodeo"/>
-        // 身份入口钉在视口右上角，全站一处。用会话的有无做闸门：登录页没有 user，自然不显示。
+        // 全局左侧导航栏：已登录页面统一挂一份，登录页没有 user 自然不渲染。
+        // 头像原钉在右上角（`.corner-user`），现在搬到 SideNav 底部，原角落入口
+        // 取消——避免同一份 `AvatarMenu` 在两个位置同时挂事件链。
         <Show when=move || auth.user.get().is_some()>
-            <div class="corner-user"><AvatarMenu /></div>
+            <SideNav />
         </Show>
         <Router>
-            <main>
+            <main class:has-sidenav=move || auth.user.get().is_some()>
                 <Routes fallback=|| view! { <p>"页面不存在"</p> }>
                     <Route path=StaticSegment("") view=Home/>
                     <Route path=StaticSegment("login") view=Login/>

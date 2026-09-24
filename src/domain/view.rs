@@ -95,8 +95,11 @@ pub enum SortField {
     UpdatedAt,
     CreatedAt,
     Title,
-    /// 追加在末尾：索引 0/1/2 是既有记录里的值，插入会毁掉所有存量视图。
-    /// 载荷是标签名（`LabelSchema.name`），与 `View::columns` 同一套标识。
+    /// 创建人账号（按创建人显示名排序；账号已删除时落到 id 上，保证次序稳定）。
+    CreatedBy,
+    /// 更新人账号（按更新人显示名排序；同上）。
+    UpdatedBy,
+    /// 标签名排序。载荷是标签名（`LabelSchema.name`），与 `View::columns` 同一套标识。
     /// 因此 `SortField` 不再是 `Copy`。
     Label(String),
 }
@@ -107,17 +110,21 @@ impl SortField {
             SortField::UpdatedAt => "updatedAt",
             SortField::CreatedAt => "createdAt",
             SortField::Title => "title",
+            SortField::CreatedBy => "createdBy",
+            SortField::UpdatedBy => "updatedBy",
             SortField::Label(name) => name,
         }
     }
 
-    /// 只认内置三值。标签名由 GraphQL 层在解析入参时单独构造 `Label(..)`——
-    /// 这样 `title` 恒按内置「标题」解释，不会被同名标签抢走。
+    /// 只认内置值。标签名由 GraphQL 层在解析入参时单独构造 `Label(..)`——
+    /// 这样 `title` / `createdBy` / `updatedBy` 恒按内置解释，不会被同名标签抢走。
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "updatedAt" => Some(SortField::UpdatedAt),
             "createdAt" => Some(SortField::CreatedAt),
             "title" => Some(SortField::Title),
+            "createdBy" => Some(SortField::CreatedBy),
+            "updatedBy" => Some(SortField::UpdatedBy),
             _ => None,
         }
     }
