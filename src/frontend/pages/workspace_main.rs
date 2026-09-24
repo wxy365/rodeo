@@ -533,6 +533,70 @@ pub fn WorkspaceMain() -> impl IntoView {
         });
     };
 
+    // 复用入口：来自视图导航栏的「配置视图」右键菜单，以及（未来移除后的）其他地方。
+    let open_config_for = Callback::new(move |id: String| {
+        let Some(v) = view_list.get_untracked().into_iter().find(|v| v.id == id) else {
+            error.set(Some("视图已被删除".to_string()));
+            return;
+        };
+        config_name_input.set(v.name.clone());
+        config_columns_input.set(v.columns.clone());
+        config_shared_input.set(v.is_shared);
+        config_tl_start.set(
+            v.timeline.as_ref().map(|t| t.start.clone()).unwrap_or_default(),
+        );
+        config_tl_end.set(
+            v.timeline.as_ref().map(|t| t.end.clone()).unwrap_or_default(),
+        );
+        config_tl_person.set(
+            v.timeline.as_ref().and_then(|t| t.person.clone()).unwrap_or_default(),
+        );
+        dialog_error.set(None);
+        let raw = v.title_colors.as_array().cloned().unwrap_or_default();
+        let rows: Vec<TitleRule> = raw.iter().enumerate().map(|(i, r)| {
+            TitleRule {
+                id: i as u32,
+                expr: RwSignal::new(String::new()),
+                color: RwSignal::new(
+                    r.get("color").and_then(|c| c.as_str())
+                        .unwrap_or("#3b82f6").to_string(),
+                ),
+                cached_expr: RwSignal::new(String::new()),
+                cached_ast: RwSignal::new(
+                    r.get("query").cloned().unwrap_or(Value::Null),
+                ),
+            }
+        }).collect();
+        next_rule_id.set(rows.len() as u32);
+        config_rules.set(rows);
+        show_config_dialog.set(true);
+        let ws_id = data.get().and_then(|r| r.ok()).map(|(w, _, _)| w.id.clone());
+        let ids: Vec<u32> = config_rules.get_untracked().iter().map(|r| r.id).collect();
+        if ids.is_empty() { return; }
+        let Some(ws_id) = ws_id else { return };
+        rules_loading.set(true);
+        spawn_local(async move {
+            for id in ids {
+                let ast = config_rules.get_untracked().iter()
+                    .find(|r| r.id == id)
+                    .map(|r| r.cached_ast.get_untracked())
+                    .unwrap_or(Value::Null);
+                if ast.is_null() { continue; }
+                if let Ok(s) = format_view_query(&ws_id, &ast).await {
+                    config_rules.update(|rows| {
+                        if let Some(r) = rows.iter_mut().find(|r| r.id == id) {
+                            if r.expr.get_untracked().is_empty() {
+                                r.expr.set(s.clone());
+                                r.cached_expr.set(s);
+                            }
+                        }
+                    });
+                }
+            }
+            rules_loading.set(false);
+        });
+    });
+
     Effect::new_sync(move |_| {
         let s = slug().to_string();
         let _ = refresh.get();
@@ -983,68 +1047,11 @@ pub fn WorkspaceMain() -> impl IntoView {
                             </div>
                         })}
                         <button class="btn" on:click=move |_| {
-                            let Some(v) = active_view.get() else {
+                            if let Some(v) = active_view.get() {
+                                open_config_for.run(v.id.clone());
+                            } else {
                                 error.set(Some("请先选择或新建一个视图".to_string()));
-                                return;
-                            };
-                            config_name_input.set(v.name.clone());
-                            config_columns_input.set(v.columns.clone());
-                            config_shared_input.set(v.is_shared);
-                            config_tl_start.set(
-                                v.timeline.as_ref().map(|t| t.start.clone()).unwrap_or_default(),
-                            );
-                            config_tl_end.set(
-                                v.timeline.as_ref().map(|t| t.end.clone()).unwrap_or_default(),
-                            );
-                            config_tl_person.set(
-                                v.timeline.as_ref().and_then(|t| t.person.clone()).unwrap_or_default(),
-                            );
-                            dialog_error.set(None);
-                            // 预填标题颜色规则：先以缓存的 AST 建行，表达式文本异步反格式化回填。
-                            let raw = v.title_colors.as_array().cloned().unwrap_or_default();
-                            let rows: Vec<TitleRule> = raw.iter().enumerate().map(|(i, r)| {
-                                TitleRule {
-                                    id: i as u32,
-                                    expr: RwSignal::new(String::new()),
-                                    color: RwSignal::new(
-                                        r.get("color").and_then(|c| c.as_str())
-                                            .unwrap_or("#3b82f6").to_string(),
-                                    ),
-                                    cached_expr: RwSignal::new(String::new()),
-                                    cached_ast: RwSignal::new(
-                                        r.get("query").cloned().unwrap_or(Value::Null),
-                                    ),
-                                }
-                            }).collect();
-                            next_rule_id.set(rows.len() as u32);
-                            config_rules.set(rows);
-                            show_config_dialog.set(true);
-                            let ws_id = data.get().and_then(|r| r.ok()).map(|(w, _, _)| w.id.clone());
-                            let ids: Vec<u32> = config_rules.get_untracked().iter().map(|r| r.id).collect();
-                            if ids.is_empty() { return; }
-                            let Some(ws_id) = ws_id else { return };
-                            rules_loading.set(true);
-                            spawn_local(async move {
-                                for id in ids {
-                                    let ast = config_rules.get_untracked().iter()
-                                        .find(|r| r.id == id)
-                                        .map(|r| r.cached_ast.get_untracked())
-                                        .unwrap_or(Value::Null);
-                                    if ast.is_null() { continue; }
-                                    if let Ok(s) = format_view_query(&ws_id, &ast).await {
-                                        config_rules.update(|rows| {
-                                            if let Some(r) = rows.iter_mut().find(|r| r.id == id) {
-                                                // 用户可能在请求返回前已开始输入，此时不覆盖。
-                                                if r.expr.get_untracked().is_empty() {
-                                                    r.expr.set(s.clone());
-                                                    r.cached_expr.set(s);
-                                                }
-                                            }
-                                        });
-                                    }
-                                }
-                                rules_loading.set(false);
-                            });
+                            }
                         }>{ic_setting()}"视图配置"</button>
                         <button class="btn pri" on:click=move |_| {
                             if !show_new.get_untracked() {
