@@ -1935,3 +1935,37 @@ main.has-sidenav {
 .newentry-split button:hover {
     background: var(--bg2);
 }
+
+/* 视图导航栏行上的右键菜单：「配置视图」「删除视图」。 */
+.vmenu {
+    position: fixed;
+    z-index: 50;
+    min-width: 140px;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: var(--r-m);
+    box-shadow: 0 6px 20px rgb(0 0 0 / 14%);
+    padding: 4px;
+}
+.vmenu button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    border: 0;
+    background: none;
+    padding: 8px 10px;
+    border-radius: var(--r-s);
+    cursor: pointer;
+    color: var(--ink);
+    font-size: 13px;
+}
+.vmenu button:hover {
+    background: var(--bg2);
+}
+.vmenu button.danger {
+    color: var(--danger, #b91c1c);
+}
+.vmenu button:disabled {
+    color: var(--ink3);
+    cursor: not-allowed;
+}
