@@ -2122,6 +2122,46 @@ fn WorkspaceSidebar(
         }
     };
 
+    // 全局最显眼的「新建」入口：左键 = 新建 Entry；hover 展开 split 面板，
+    // 面板里再有「新建 Entry / 新建视图」两个选项。「新建视图」沿用父组件传入的
+    // `on_new` 同样一份逻辑（避免重复代码）；从 sidebar 提起后，`WorkspaceSidebar`
+    // 组件自身的耦合度更干净——它只关心视图列表的渲染与选中。
+    let open_new_entry = move || {
+        if !show_new.get_untracked() {
+            let auto = auto_label_names(
+                active_view.get_untracked().map(|v| v.columns).unwrap_or_default(),
+                &query_ast.get_untracked(),
+            );
+            new_labels.set(
+                schemas
+                    .get_untracked()
+                    .into_iter()
+                    .map(|s| {
+                        if auto.iter().any(|n| n == &s.name) {
+                            DraftLabel::from_schema_preset(s)
+                        } else {
+                            DraftLabel::from_schema(s)
+                        }
+                    })
+                    .collect(),
+            );
+        }
+        show_new.set(!show_new.get_untracked());
+    };
+    let open_new_view = move || {
+        batch(move || {
+            view_dialog_saveas.set(false);
+            view_query_input.set(serde_json::json!({ "and": [] }));
+            view_sort_input.set(Vec::new());
+            view_name_input.set(String::new());
+            view_columns_input.set(Vec::new());
+            view_shared_input.set(false);
+            dialog_error.set(None);
+            show_view_dialog.set(true);
+        });
+    };
+    let newentry_hover = RwSignal::new(false);
+
     view! {
         <aside class=move || if collapsed.get() { "panel wside collapsed" } else { "panel wside" }>
             <div class="sb-head">
@@ -2131,6 +2171,31 @@ fn WorkspaceSidebar(
                     collapsed.set(v);
                     set_sidebar_collapsed(v);
                 }>{move || if collapsed.get() { "»" } else { "«" }}</button>
+            </div>
+            <div class="newentry-wrap"
+                on:mouseleave=move |_| newentry_hover.set(false)>
+                <button class="newentry-btn" title="新建 Entry / 新建视图"
+                    on:click=move |_| open_new_entry()
+                    on:mouseenter=move |_| newentry_hover.set(true)>
+                    {ic_add()}<span>"新建"</span>
+                </button>
+                {move || if newentry_hover.get() {
+                    view! {
+                        <div class="newentry-split"
+                            on:mouseenter=move |_| newentry_hover.set(true)>
+                            <button on:click=move |_| {
+                                newentry_hover.set(false);
+                                open_new_entry();
+                            }>{ic_add()}<span style="margin-left:6px">"新建 Entry"</span></button>
+                            <button on:click=move |_| {
+                                newentry_hover.set(false);
+                                open_new_view();
+                            }>{ic_folder()}<span style="margin-left:6px">"新建视图"</span></button>
+                        </div>
+                    }.into_any()
+                } else {
+                    view! { <div></div> }.into_any()
+                }}
             </div>
             {move || default_view().map(|v| {
                 let id = v.id.clone();
@@ -2159,9 +2224,6 @@ fn WorkspaceSidebar(
             {move || build_tree(mine()).into_iter().map(|n| row(n, false)).collect::<Vec<_>>()}
             <div class="grp">"共享视图"</div>
             {move || build_tree(shared()).into_iter().map(|n| row(n, true)).collect::<Vec<_>>()}
-            <div class="it" style="color:var(--ink3)" title="新建视图" on:click=move |_| on_new.run(())>
-                {ic_add()}<span class="lbl">"新建视图"</span>
-            </div>
             <div style="border-top:1px solid var(--line);margin-top:8px;padding-top:8px">
                 <div class="it" title="已归档条目" on:click=move |_| on_archived.run(())>
                     {ic_folder()}<span class="lbl">"已归档"</span>
