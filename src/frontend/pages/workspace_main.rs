@@ -1274,6 +1274,26 @@ pub fn WorkspaceMain() -> impl IntoView {
                                     } />
                             </label>
                         </div>
+                        <span class="mut">{move || {
+                            let sorts = active_view.get().map(|v| v.sorts).unwrap_or_default();
+                            if sorts.is_empty() {
+                                return "排序：默认".to_string();
+                            }
+                            let schemas_now = schemas.get();
+                            let parts: Vec<String> = sorts
+                                .iter()
+                                .enumerate()
+                                .map(|(i, s)| {
+                                    let mark = prio_mark(i);
+                                    format!(
+                                        "{mark} {} {}",
+                                        sort_field_label(&s.field, &schemas_now),
+                                        if s.desc { "↓" } else { "↑" },
+                                    )
+                                })
+                                .collect();
+                            format!("排序：{}", parts.join("  "))
+                        }}</span>
                         {move || if active_view.get().is_some_and(|v| v.is_default) {
                             // 基础视图上的过滤是临时态：不给「保存」，要留存只能另存为新视图。
                             view! {
@@ -1337,26 +1357,6 @@ pub fn WorkspaceMain() -> impl IntoView {
                                     }>"保存视图"</button>
                             }.into_any()
                         }}
-                        <span class="mut">{move || {
-                            let sorts = active_view.get().map(|v| v.sorts).unwrap_or_default();
-                            if sorts.is_empty() {
-                                return "排序：默认".to_string();
-                            }
-                            let schemas_now = schemas.get();
-                            let parts: Vec<String> = sorts
-                                .iter()
-                                .enumerate()
-                                .map(|(i, s)| {
-                                    let mark = prio_mark(i);
-                                    format!(
-                                        "{mark} {} {}",
-                                        sort_field_label(&s.field, &schemas_now),
-                                        if s.desc { "↓" } else { "↑" },
-                                    )
-                                })
-                                .collect();
-                            format!("排序：{}", parts.join("  "))
-                        }}</span>
                     </div>
 
                     {move || if show_new.get() {
