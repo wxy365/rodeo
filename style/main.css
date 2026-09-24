@@ -1963,7 +1963,7 @@ main.has-sidenav {
     background: var(--bg2);
 }
 .vmenu button.danger {
-    color: var(--danger, #b91c1c);
+    color: var(--dgr);
 }
 .vmenu button:disabled {
     color: var(--ink3);

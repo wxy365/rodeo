@@ -336,6 +336,8 @@ pub fn WorkspaceMain() -> impl IntoView {
     let active_view = RwSignal::new(None::<View>);
     // 侧栏高亮只需 id；与 active_view 一并更新，保持二者同步。
     let active_id = RwSignal::new(None::<String>);
+    // 视图导航栏右键菜单：(client_x, client_y, view_id)。None 表示关闭。
+    let vmenu: RwSignal<Option<(i32, i32, String)>> = RwSignal::new(None);
     // ---- 时间轴视图 ----
     // 是否切到时间轴渲染。切换视图时归零（见 `set_active`）；配置被清掉时
     // `tl_active` 会自行变假，不必再额外同步。
@@ -414,6 +416,27 @@ pub fn WorkspaceMain() -> impl IntoView {
             }
         });
     });
+
+    // 视图导航栏右键菜单：点菜单以外的位置即关闭。
+    // `Element::closest` 在 web-sys 里返回 `Result<Option<Element>, JsValue>`，
+    // 我们只关心有没有命中 `.vmenu` 祖先节点，失败时按"不在菜单里"处理。
+    #[cfg(target_arch = "wasm32")]
+    {
+        let close_vmenu = move |ev: leptos::ev::MouseEvent| {
+            if vmenu.get_untracked().is_none() {
+                return;
+            }
+            let in_menu = ev
+                .target()
+                .and_then(|t| t.dyn_into::<leptos::web_sys::Element>().ok())
+                .and_then(|el| el.closest(".vmenu").ok().flatten().map(|_| ()))
+                .is_some();
+            if !in_menu {
+                vmenu.set(None);
+            }
+        };
+        let _ = window_event_listener(leptos::ev::mousedown, close_vmenu);
+    }
 
     // 把表达式输入框的内容解析成查询 AST 并应用（回车触发）。空输入即清空过滤。
     // 解析交给服务端 `parse_view_query`：语法与标签 schema 校验只有一份实现。
@@ -1931,6 +1954,30 @@ pub fn WorkspaceMain() -> impl IntoView {
                     </div>
                 }.into_any()
             } else { view! { <div></div> }.into_any() }}
+
+            {move || vmenu.get().map(|(x, y, vid)| {
+                let cur = view_list.get_untracked().into_iter()
+                    .find(|v| v.id == vid);
+                let is_default = cur.as_ref().is_some_and(|v| v.is_default);
+                let vid_cfg = vid.clone();
+                let vid_del = vid.clone();
+                view! {
+                    <div class="vmenu"
+                        style=format!("left:{x}px;top:{y}px")
+                        on:contextmenu=move |ev| ev.prevent_default()>
+                        <button on:click=move |_| {
+                            vmenu.set(None);
+                            // 复用现有 show_config_dialog 打开逻辑。
+                            open_config_for.run(vid_cfg.clone());
+                        }>"配置视图"</button>
+                        <button class="danger" disabled=is_default
+                            on:click=move |_| {
+                                vmenu.set(None);
+                                delete_view_cb.run(vid_del.clone());
+                            }>"删除视图"</button>
+                    </div>
+                }.into_any()
+            })}
         </div>
     }
 }
