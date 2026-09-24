@@ -416,6 +416,12 @@ pub fn WorkspaceMain() -> impl IntoView {
             }
         });
     });
+    // 右键视图行弹出菜单：(id, client_x, client_y) 由叶子行给出；我们只负责把
+    // 坐标塞进 `vmenu` 让浮层定位。基础视图 (`is_default`) 跳过该行为，已在
+    // 叶子行的 contextmenu 闭包里就地过滤，避免每次右键都回查 view_list。
+    let on_context_view = Callback::new(move |(id, x, y): (String, i32, i32)| {
+        vmenu.set(Some((x, y, id)));
+    });
 
     // 视图导航栏右键菜单：点菜单以外的位置即关闭。
     // `Element::closest` 在 web-sys 里返回 `Result<Option<Element>, JsValue>`，
@@ -1043,6 +1049,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                     })
                     on_delete=delete_view_cb
                     on_archived=Callback::new(open_archived)
+                    on_context=on_context_view
                 />
                 <div class="panel wmain">
                     <div class="vhead">
@@ -1994,6 +2001,9 @@ fn WorkspaceSidebar(
     on_delete: Callback<String>,
     /// 「已归档」入口：打开归档条目列表弹窗。
     on_archived: Callback<()>,
+    /// 右键叶子视图行：参数为 `(view_id, client_x, client_y)`，由父组件负责把
+    /// 坐标写入 `vmenu` 让浮层定位。基础视图 (`is_default`) 不触发此回调。
+    on_context: Callback<(String, i32, i32)>,
 ) -> impl IntoView {
     let list = move || views.get();
     // 基础视图单独置顶展示，不混进「我的 / 共享」两组。
@@ -2068,12 +2078,15 @@ fn WorkspaceSidebar(
                     .unwrap_or(&name)
                     .to_string();
                 let count = v.entry_count;
+                // 右键菜单守卫：基础视图 (`is_default`) 不允许配置/删除，右键空操作。
+                let is_default = v.is_default;
                 let is_active = {
                     let id = id.clone();
                     move || active.get().as_deref() == Some(id.as_str())
                 };
                 let click_id = id.clone();
                 let del_id = id.clone();
+                let ctx_id = id.clone();
                 let indent = format!("padding-left:{}px", 12 + depth * 14);
                 view! {
                     <div class=move || {
@@ -2083,7 +2096,13 @@ fn WorkspaceSidebar(
                          }
                          style=indent
                          title=name.clone()
-                         on:click=move |_| on_select.run(click_id.clone())>
+                         on:click=move |_| on_select.run(click_id.clone())
+                         on:contextmenu=move |ev: leptos::ev::MouseEvent| {
+                             ev.prevent_default();
+                             // 基础视图不能改/删，右键给空操作。
+                             if is_default { return; }
+                             on_context.run((ctx_id.clone(), ev.client_x(), ev.client_y()));
+                         }>
                         {if shared_mark {
                             ic_share().into_any()
                         } else {
