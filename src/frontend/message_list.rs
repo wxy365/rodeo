@@ -61,8 +61,20 @@ pub fn MessageList(visible: Signal<bool>, on_close: Callback<()>) -> impl IntoVi
                                         let id = id.clone();
                                         move |_| {
                                             let id = id.clone();
+                                            // 乐观更新：先在本地把这一行标成已读再发请求，
+                                            // 否则等后端确认期间用户还能看到这条未读的高亮，
+                                            // 会觉得"点了没反应"。
                                             spawn_local(async move {
                                                 let _ = mark_message_read(&id).await;
+                                                items.update(|slot| {
+                                                    if let Some(Ok(list)) = slot.as_mut() {
+                                                        if let Some(m) =
+                                                            list.iter_mut().find(|m| m.id == id)
+                                                        {
+                                                            m.read = true;
+                                                        }
+                                                    }
+                                                });
                                             });
                                         }
                                     }>

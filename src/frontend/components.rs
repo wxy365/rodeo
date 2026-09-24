@@ -446,12 +446,29 @@ pub fn AvatarMenu() -> impl IntoView {
             });
         }) as Box<dyn FnMut()>);
         if let Some(window) = web_sys::window() {
-            let _ = window.set_interval_with_callback_and_timeout_and_arguments_0(
+            let handle = window.set_interval_with_callback_and_timeout_and_arguments_0(
                 cb.as_ref().unchecked_ref(),
                 30_000,
             );
+            // `cb.forget()` 仍要保留——闭包必须比当前作用域活得久，定时器才能反复
+            // 回调它；光在 `on_cleanup` 里 `drop(cb)` 已经来不及了（闭包此时早被
+            // 移到 JS 端）。这里再把 `handle` 存进 `on_cleanup`，组件卸载时清掉
+            // 定时器，否则登出后这个轮询还在拿未认证请求打后端。
+            cb.forget();
+            // `setInterval` 失败（极少见，例如极端节流环境）时不挂 cleanup——没有定时器
+            // 句柄可清，留个占位回调避免闭包捕获悬挂值。
+            if let Ok(handle) = handle {
+                on_cleanup(move || {
+                    if let Some(window) = web_sys::window() {
+                        window.clear_interval_with_handle(handle);
+                    }
+                });
+            }
+        } else {
+            // 没有 window（不太可能在 hydrate 时发生，但兜底）：定时器压根没注册，
+            // 直接 `drop(cb)` 正常释放闭包，避免无意义泄漏。
+            drop(cb);
         }
-        cb.forget();
     }
 
     let nav_profile = navigate.clone();
