@@ -1664,10 +1664,17 @@ impl Mutation {
         let before_detail = entry.detail.clone();
         // 乐观并发：expectedUpdatedAt 与最新 updated_at 不一致时，服务层返回
         // ConflictDetected，其 GraphQL message 为「内容已被他人修改，请刷新后重试」。
+        // 取一次用户名给消息预览/通知用，避免在 EntryService 里反向依赖 AuthService。
+        let name = gql
+            .services
+            .auth
+            .find_by_id(auth.account_id)?
+            .map(|a| a.name)
+            .unwrap_or_default();
         let updated = gql
             .services
             .entry
-            .update(auth.account_id, &code, &expected_updated_at, &title, &detail)?;
+            .update(auth.account_id, &name, &code, &expected_updated_at, &title, &detail)?;
         // 回收放在更新成功之后：冲突或条目不存在时不该动任何附件。
         gql.services
             .attachment

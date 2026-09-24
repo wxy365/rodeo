@@ -57,9 +57,8 @@ impl Services {
         let ai_client = AiClient::from_config(&config.ai)?;
         let workspace = WorkspaceService::new(store.clone());
         let message = MessageService::new(store.clone(), workspace.clone());
-        // EntryService 的构造签名会在 Task 4 改；
-        // 现在先按原签名写，等 Task 4 跑完再回来更新这一行的参数。
-        let entry = EntryService::with_search(store.clone(), search.clone());
+        // messages 必须在 workspaces 之后构造，EntryService 的 mention 派发要走它的成员表。
+        let entry = EntryService::with_search(store.clone(), search.clone(), message.clone());
         // 评论服务要与 EntryService 共用同一份实例：评论变更后要触发它的重索引。
         let comment = CommentService::new(store.clone(), entry.clone(), message.clone());
         // 附件服务同样要与 EntryService 共用同一份实例：上传后要推进条目更新时间并重索引。
