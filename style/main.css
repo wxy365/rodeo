@@ -1663,6 +1663,62 @@ main.has-sidenav {
     background: var(--bg2);
 }
 
+/* ===== 消息徽标与消息列表浮层 ===== */
+.msg-badge {
+    position: absolute;
+    top: -2px;
+    right: -2px;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 4px;
+    border-radius: 999px;
+    background: var(--danger, #d33);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    box-shadow: 0 0 0 2px var(--bg, #fff);
+}
+.avatar-menu { position: relative; }
+.msg-panel {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    right: 0;
+    width: 360px;
+    max-height: 480px;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #ddd);
+    border-radius: 8px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+    display: flex;
+    flex-direction: column;
+    z-index: 100;
+}
+.msg-panel.hidden { display: none; }
+.msg-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border, #ddd);
+}
+.msg-head > span:first-child { font-weight: 600; flex: 1; }
+.msg-head .btn.sm.icon-only { padding: 2px 6px; }
+.msg-body { overflow-y: auto; max-height: 420px; }
+.msg-item {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border-soft, #eee);
+    cursor: pointer;
+}
+.msg-item:hover { background: var(--hover, #f5f5f5); }
+.msg-item.unread { background: var(--bg-unread, #f0f7ff); }
+.msg-meta { font-size: 12px; color: var(--mut, #666); }
+.msg-actor { font-weight: 600; color: var(--fg, #222); }
+.msg-preview { margin-top: 4px; font-size: 13px; }
+
 /* ===== 富文本编辑器（tiny-editor / Quill snow） ===== */
 /* `.ql-container` 是加在 `.tiny-editor` 自身上的（同一个节点），不是它的子节点；
    写成 `.tiny-editor .ql-container` 的后代选择器匹配不到任何东西。 */
