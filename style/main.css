@@ -1835,3 +1835,47 @@ main.has-sidenav {
 .c-confirm{display:flex;align-items:center;gap:8px}
 .c-composer{display:flex;flex-direction:column;gap:6px}
 .c-badge{display:inline-flex;align-items:center;gap:3px;margin-left:6px;font-size:12px;color:var(--kimi-color-text-tertiary,#8f959e)}
+
+/* 标签表达式 + 全文搜索合并条：左 3/4 表达式，右 1/4 全文搜索，中间分隔条。 */
+.querybar {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    flex: 1;
+    min-width: 0;
+    border: 1px solid var(--line);
+    border-radius: var(--r-m);
+    background: var(--bg);
+}
+.querybar .q-expr {
+    flex: 1 1 auto;
+    min-width: 0;
+    position: relative;
+    display: flex;
+    align-items: center;
+}
+.querybar .q-sep {
+    width: 1px;
+    align-self: stretch;
+    background: var(--line);
+    margin: 4px 0;
+}
+.querybar .q-search {
+    flex: 0 0 25%;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    padding: 0 12px;
+    gap: 6px;
+}
+.querybar .q-search input {
+    border: 0;
+    outline: 0;
+    flex: 1;
+    padding: 7px 0;
+    background: none;
+    min-width: 0;
+}
+.querybar .q-expr .inp {
+    width: 100%;
+}
