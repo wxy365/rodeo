@@ -1879,3 +1879,59 @@ main.has-sidenav {
 .querybar .q-expr .inp {
     width: 100%;
 }
+
+/* 「新建 Entry」图标按钮：放在视图导航栏最上方，全局最显眼。 */
+.newentry-wrap {
+    position: relative;
+    padding: 8px 10px 6px;
+}
+.newentry-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    height: 36px;
+    border-radius: var(--r-m);
+    border: 0;
+    cursor: pointer;
+    background: var(--pri);
+    color: #fff;
+    font-size: 14px;
+    font-weight: 500;
+    box-shadow: 0 1px 2px rgb(0 0 0 / 12%);
+}
+.newentry-btn:hover {
+    filter: brightness(1.06);
+}
+.newentry-btn .ic {
+    width: 16px;
+    height: 16px;
+}
+.newentry-split {
+    position: absolute;
+    z-index: 40;
+    top: calc(100% - 4px);
+    left: 10px;
+    right: 10px;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: var(--r-m);
+    box-shadow: 0 6px 20px rgb(0 0 0 / 12%);
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+}
+.newentry-split button {
+    text-align: left;
+    border: 0;
+    background: none;
+    padding: 8px 10px;
+    border-radius: var(--r-s);
+    cursor: pointer;
+    color: var(--ink);
+    font-size: 13px;
+}
+.newentry-split button:hover {
+    background: var(--bg2);
+}
