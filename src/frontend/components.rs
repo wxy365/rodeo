@@ -418,6 +418,42 @@ pub fn AvatarMenu() -> impl IntoView {
     let auth = use_auth();
     let navigate = use_navigate();
 
+    let unread = RwSignal::new(0i32);
+    let panel_open = RwSignal::new(false);
+
+    // 首次挂载拉一次未读数。
+    if cfg!(target_arch = "wasm32") {
+        let u = unread;
+        spawn_local(async move {
+            if let Ok(n) = crate::frontend::graphql_client::unread_message_count().await {
+                u.set(n);
+            }
+        });
+    }
+
+    // 30 秒轮询。`setInterval` 直接调 `web_sys`，避免额外依赖。
+    // 闭包必须泄漏（`forget`）才不会在定时器真正触发前被回收。
+    #[cfg(target_arch = "wasm32")]
+    {
+        use wasm_bindgen::closure::Closure;
+        use wasm_bindgen::JsCast;
+        let u = unread;
+        let cb = Closure::wrap(Box::new(move || {
+            spawn_local(async move {
+                if let Ok(n) = crate::frontend::graphql_client::unread_message_count().await {
+                    u.set(n);
+                }
+            });
+        }) as Box<dyn FnMut()>);
+        if let Some(window) = web_sys::window() {
+            let _ = window.set_interval_with_callback_and_timeout_and_arguments_0(
+                cb.as_ref().unchecked_ref(),
+                30_000,
+            );
+        }
+        cb.forget();
+    }
+
     let nav_profile = navigate.clone();
     let go_profile = move |_| nav_profile("/account", Default::default());
 
@@ -443,8 +479,29 @@ pub fn AvatarMenu() -> impl IntoView {
                     .unwrap_or_default();
                 view! { <Avatar text=text /> }
             }}
+            {move || {
+                let n = unread.get();
+                if n <= 0 {
+                    return ().into_any();
+                }
+                view! {
+                    <span class="msg-badge" title=format!("{n} 条未读消息") on:click=move |ev: leptos::ev::MouseEvent| {
+                        ev.stop_propagation();
+                        panel_open.set(true);
+                        unread.set(0);
+                        spawn_local(async move {
+                            let _ = crate::frontend::graphql_client::mark_all_messages_read().await;
+                        });
+                    }>
+                        {if n > 99 { "99+".to_string() } else { n.to_string() }}
+                    </span>
+                }.into_any()
+            }}
             <div class="avatar-drop">
                 <button class="mi" on:click=go_profile>{ic_profile()}"个人信息"</button>
+                <button class="mi" on:click=move |_| panel_open.set(true)>
+                    {ic_history()}"查看历史消息"
+                </button>
                 // 非管理员整项不渲染，而不是置灰：一个点不动的管理入口只会招来「为什么点不动」。
                 {move || {
                     let nav_admin = nav_admin.clone();
@@ -455,6 +512,13 @@ pub fn AvatarMenu() -> impl IntoView {
                 <button class="mi" on:click=do_logout>{ic_logout()}"退出"</button>
             </div>
         </div>
+        {
+            let visible = Signal::from(panel_open);
+            let on_close = Callback::new(move |_| panel_open.set(false));
+            view! {
+                <crate::frontend::message_list::MessageList visible=visible on_close=on_close />
+            }
+        }
     }
 }
 
