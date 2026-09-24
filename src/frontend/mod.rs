@@ -6,6 +6,7 @@ pub mod components;
 pub mod graphql_client;
 pub mod icons;
 pub mod label_editor;
+pub mod message_list;
 pub mod pages;
 pub mod query_eval;
 pub mod timeline;
