@@ -1091,20 +1091,6 @@ pub fn WorkspaceMain() -> impl IntoView {
                 <div class="panel wmain">
                     <div class="vhead">
                         <h2>{move || active_view.get().map(|v| v.name).unwrap_or_else(|| "全部内容".to_string())}</h2>
-                        <label class="inp">
-                            {ic_search()}
-                            <input placeholder="搜索本视图，可与过滤组合" prop:value=ad_hoc_text
-                                on:input=move |ev| ad_hoc_text.set(event_target_value(&ev))
-                                on:keydown=move |ev| {
-                                    if ev.key() == "Enter" {
-                                        let mut ast = query_ast.get();
-                                        ast = with_text(&ast, &ad_hoc_text.get());
-                                        query_ast.set(ast);
-                                        page_signal.set(1);
-                                        refresh_view.update(|n| *n += 1);
-                                    }
-                                } />
-                        </label>
                         {move || active_view.get().is_some_and(|v| v.timeline.is_some()).then(|| view! {
                             <div class="seg">
                                 <button class=move || if timeline_mode.get() { "" } else { "on" }
@@ -1143,7 +1129,8 @@ pub fn WorkspaceMain() -> impl IntoView {
                         </button>
                     </div>
                     <div class="filters">
-                        <div class="exprwrap">
+                        <div class="querybar">
+                            <div class="q-expr">
                             <button class="exprhelp" title="标签表达式语法说明"
                                 on:click=move |_| expr_help.set(true)>{ic_help()}</button>
                             <input class="inp" style="width:100%;padding-right:26px"
@@ -1270,6 +1257,22 @@ pub fn WorkspaceMain() -> impl IntoView {
                                     </div>
                                 }
                             })}
+                            </div>
+                            <div class="q-sep"></div>
+                            <label class="q-search" title="全文搜索本视图">
+                                {ic_search()}
+                                <input placeholder="全文搜索本视图" prop:value=ad_hoc_text
+                                    on:input=move |ev| ad_hoc_text.set(event_target_value(&ev))
+                                    on:keydown=move |ev| {
+                                        if ev.key() == "Enter" {
+                                            let mut ast = query_ast.get();
+                                            ast = with_text(&ast, &ad_hoc_text.get());
+                                            query_ast.set(ast);
+                                            page_signal.set(1);
+                                            refresh_view.update(|n| *n += 1);
+                                        }
+                                    } />
+                            </label>
                         </div>
                         {move || if active_view.get().is_some_and(|v| v.is_default) {
                             // 基础视图上的过滤是临时态：不给「保存」，要留存只能另存为新视图。
