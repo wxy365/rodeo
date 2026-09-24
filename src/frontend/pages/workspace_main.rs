@@ -1076,13 +1076,6 @@ pub fn WorkspaceMain() -> impl IntoView {
                                     on:click=move |_| timeline_mode.set(true)>"时间轴"</button>
                             </div>
                         })}
-                        <button class="btn" on:click=move |_| {
-                            if let Some(v) = active_view.get() {
-                                open_config_for.run(v.id.clone());
-                            } else {
-                                error.set(Some("请先选择或新建一个视图".to_string()));
-                            }
-                        }>{ic_setting()}"视图配置"</button>
                         <button class="btn pri" on:click=move |_| {
                             if !show_new.get_untracked() {
                                 // 打开时按当前标签 schema 重建待填行（新建与取消都重置）。
