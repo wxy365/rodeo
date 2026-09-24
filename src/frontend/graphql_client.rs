@@ -232,6 +232,22 @@ pub struct Comment {
     pub updated_by_account: Option<AccountBrief>,
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GqlMessage {
+    pub id: String,
+    pub workspace_id: String,
+    pub workspace_name: String,
+    pub entry_code: String,
+    pub source_type: String,
+    pub source_id: Option<String>,
+    pub actor_id: String,
+    pub actor_name: String,
+    pub preview: String,
+    pub read: bool,
+    pub created_at: String,
+}
+
 #[derive(Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Attachment {
@@ -745,6 +761,45 @@ pub async fn delete_comment(entry_code: &str, id: &str) -> Result<bool, String> 
     .await?;
     Ok(data
         .get("deleteComment")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false))
+}
+
+const MESSAGE_FIELDS: &str = "id workspaceId workspaceName entryCode sourceType sourceId actorId actorName preview read createdAt";
+
+pub async fn unread_message_count() -> Result<i32, String> {
+    let q = "query { unreadMessageCount }";
+    let data = graphql(q, serde_json::json!({})).await?;
+    let n = data
+        .get("unreadMessageCount")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    Ok(n as i32)
+}
+
+pub async fn messages(limit: Option<i32>) -> Result<Vec<GqlMessage>, String> {
+    let q = format!(
+        "query($l: Int) {{ messages(limit: $l) {{ {MESSAGE_FIELDS} }} }}"
+    );
+    let data = graphql(&q, serde_json::json!({ "l": limit })).await?;
+    serde_json::from_value(data.get("messages").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+pub async fn mark_message_read(id: &str) -> Result<bool, String> {
+    let q = "mutation($i: ID!) { markMessageRead(id: $i) }";
+    let data = graphql(q, serde_json::json!({ "i": id })).await?;
+    Ok(data
+        .get("markMessageRead")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false))
+}
+
+pub async fn mark_all_messages_read() -> Result<bool, String> {
+    let q = "mutation { markAllMessagesRead }";
+    let data = graphql(q, serde_json::json!({})).await?;
+    Ok(data
+        .get("markAllMessagesRead")
         .and_then(|v| v.as_bool())
         .unwrap_or(false))
 }
