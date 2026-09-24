@@ -7,9 +7,7 @@ use serde_json::Value;
 use crate::frontend::graphql_client::{
     get_recent_colors, logout, push_recent_color, AuditLog, Member,
 };
-use crate::frontend::icons::{
-    ic_check, ic_close, ic_copy, ic_folder, ic_history, ic_logo, ic_logout, ic_profile, ic_setting,
-};
+use crate::frontend::icons::{ic_add, ic_check, ic_close, ic_copy, ic_folder, ic_history, ic_logo, ic_logout, ic_profile, ic_setting, ic_timeline};
 use crate::frontend::use_auth;
 
 /// 账号的展示名：优先姓名，缺失时退回邮箱。
@@ -18,6 +16,20 @@ pub fn member_label(m: &Member) -> String {
         m.email.clone()
     } else {
         m.name.clone()
+    }
+}
+
+/// 当前路径是不是某个工作空间内的页面（`/{slug}`、`/{slug}/settings`、
+/// `/{slug}/entry/{code}`）；是的话返回 slug，否则返回 `None`。
+///
+/// 仅看路径前缀 `/` 后到下一个 `/` 之前的非空段，匹配路由表里所有 `/<slug>...` 形式。
+/// `"/"`、`""` 这些非工作空间路径返回 `None`，让调用方走默认目标。
+fn workspace_slug_of(path: &str) -> Option<&str> {
+    let slug = path.strip_prefix('/')?.split('/').next()?;
+    if slug.is_empty() {
+        None
+    } else {
+        Some(slug)
     }
 }
 
@@ -472,9 +484,30 @@ pub fn AvatarMenu() -> impl IntoView {
     }
 
     let nav_profile = navigate.clone();
-    let go_profile = move |_| nav_profile("/account", Default::default());
-
     let nav_admin = navigate.clone();
+
+    // 头像菜单点到 `/admin` / `/account` 时带上来源：工作空间列表来的回列表，
+    // 工作空间内来的回那个工作空间。两条点击都共用同一套规则，避免之后漏改一处。
+    let location = use_location();
+    let nav_with_source = move |target: &'static str, fallback: &'static str| {
+        let loc = location.pathname.get();
+        if loc == fallback {
+            // 工作空间列表 `→` 目标页：无需 query，目标是裸路径就行。
+            target.to_string()
+        } else if let Some(slug) = workspace_slug_of(&loc) {
+            // 工作空间内（`/slug` 或 `/slug/...`）：把来源记到 query，让目标页
+            // 自己决定返回按钮的文案与目的地。
+            format!("{target}?from=ws&slug={slug}")
+        } else {
+            // 直接深链、跨页（/admin ↔ /account）等：用默认目标，由「无 from」
+            // 的目标页自己兜回 `/workspaces`。
+            target.to_string()
+        }
+    };
+    let go_profile = move |_| {
+        let t = nav_with_source("/account", "/workspaces");
+        nav_profile(&t, Default::default());
+    };
 
     let nav_logout = navigate.clone();
     let do_logout = move |_| {
@@ -523,7 +556,10 @@ pub fn AvatarMenu() -> impl IntoView {
                 {move || {
                     let nav_admin = nav_admin.clone();
                     auth.user.get().is_some_and(|u| u.is_admin).then(|| view! {
-                        <button class="mi" on:click=move |_| nav_admin("/admin", Default::default())>{ic_setting()}"系统管理"</button>
+                        <button class="mi" on:click=move |_| {
+                            let t = nav_with_source("/admin", "/workspaces");
+                            nav_admin(&t, Default::default());
+                        }>{ic_setting()}"系统管理"</button>
                     })
                 }}
                 <button class="mi" on:click=do_logout>{ic_logout()}"退出"</button>
@@ -539,75 +575,88 @@ pub fn AvatarMenu() -> impl IntoView {
     }
 }
 
-/// 左侧全局导航栏：logo + 工作空间 / 统计 / 系统管理入口 + 底部头像。
+/// 全局顶栏：左侧品牌 + 工作空间入口，右侧头像菜单。
 ///
-/// 钉在视口左边固定列，已登录页面统一用它替代各页原来的 appbar；登录页与未登录态不渲染。
-/// 项 13/14 会在中段插入「新建 Entry」与消息气泡，当前只放骨架（最小可见导航），便于分批落地。
+/// 抽成独立组件的原因：`use_navigate()` 返回的 `NavigateFn` 内部包的是
+/// `Box<dyn Fn>`，按值调用会消费掉——直接闭包被推断成 `FnOnce`，放进父级
+/// `<Show>` 的 `Fn`-compatible 边界里会炸。把 navigate 调用挪到 AppBar 自己
+/// 的 setup 阶段，跟 `AvatarMenu` 的 `do_logout` 同款写法，能复用已经走通
+/// 的 trait 推导路径。
 #[component]
-pub fn SideNav() -> impl IntoView {
+pub fn AppBar() -> impl IntoView {
     let navigate = use_navigate();
-    let location = use_location();
-    let auth = use_auth();
+    let nav_brand = navigate.clone();
+    // 闭包挪到 view! 外定义，与 AvatarMenu 的 go_profile / go_logout 同套路。
+    let go_brand = move |ev: leptos::ev::MouseEvent| {
+        if ev.meta_key() || ev.ctrl_key() || ev.button() != 0 {
+            return;
+        }
+        ev.prevent_default();
+        nav_brand("/workspaces", Default::default());
+    };
 
-    // `use_location` 拿到的是当前路径；用前缀匹配做高亮——导航项都是路径前缀。
-    let path = move || location.pathname.get();
-
-    let nav_ws = navigate.clone();
-    let go_ws = move |_| nav_ws("/workspaces", Default::default());
-    let nav_admin = navigate.clone();
-    let go_admin = move |_| nav_admin("/admin", Default::default());
+    // 工作空间「新建」按钮：只有 WorkspaceMain 写入了共享槽时才挂载——其它
+    // 已登录页面（工作空间列表、设置、全屏 Entry 等）没写过这个槽就不会渲染。
+    let new_menu = crate::frontend::use_workspace_new_menu();
+    // 工作空间「时间轴切换」按钮：同上，仅 WorkspaceMain 写过槽时挂载，且
+    // 当前视图必须配了 timeline——WorkspaceMain 已经在写槽前过滤过这一层。
+    let timeline_toggle = crate::frontend::use_workspace_timeline_toggle();
+    // hover split 状态：只在 AppBar 这一个用到，留在组件内即可。
+    let newentry_hover = RwSignal::new(false);
 
     view! {
-        <aside class="sidenav">
-            <a class="sidenav-brand" href="/workspaces" title="工作空间列表" on:click=move |ev: leptos::ev::MouseEvent| {
-                if ev.meta_key() || ev.ctrl_key() || ev.button() != 0 { return; }
-                ev.prevent_default();
-                navigate("/workspaces", Default::default());
-            }>
-                {ic_logo()}
-                <span class="sidenav-brand-name">"Rodeo"</span>
-            </a>
-            <nav class="sidenav-items">
-                <button
-                    class="sidenav-it"
-                    class:on=move || path().starts_with("/workspaces")
-                    on:click=go_ws
-                >
-                    {ic_folder()}<span>"我的工作空间"</span>
-                </button>
-                // 统计暂未实装：路由到一个占位页比较突兀，先 `disabled` 占位，等真有统计模块再挂上。
-                <button
-                    class="sidenav-it"
-                    disabled=true
-                    title="统计（即将上线）"
-                >
-                    {ic_history()}<span>"统计"</span>
-                </button>
-                // 系统管理仅管理员可见；非管理员账号整项不渲染，跟 /admin 入口的「点不动就消失」原则一致。
-                // 走 `into_any()` 把分支统一成一个 `AnyView`，view! 推类型时不会被分支分支卡住。
-                {move || {
-                    let is_admin = auth.user.get().is_some_and(|u| u.is_admin);
-                    if !is_admin {
-                        return ().into_any();
-                    }
-                    let go_admin = go_admin.clone();
-                    view! {
-                        <button
-                            class="sidenav-it"
-                            class:on=move || path().starts_with("/admin")
-                            on:click=move |_| go_admin(())
-                        >
-                            {ic_setting()}<span>"系统管理"</span>
+        <header class="appbar">
+            <div class="appbar-left">
+                <a class="appbar-brand" href="/workspaces" title="Rodeo"
+                    on:click=go_brand>
+                    {ic_logo()}
+                    <span class="appbar-brand-name">"Rodeo"</span>
+                </a>
+            </div>
+            <div class="appbar-right">
+                {new_menu.map(|m| view! {
+                    <div class="newentry-wrap"
+                        on:mouseleave=move |_| newentry_hover.set(false)>
+                        <button class="newentry-btn" title="新建 Entry / 新建视图"
+                            on:click=move |_| m.on_new_entry.run(())
+                            on:mouseenter=move |_| newentry_hover.set(true)>
+                            {ic_add()}<span>"新建"</span>
                         </button>
-                    }.into_any()
-                }}
-            </nav>
-            // 底部头像：与原 `.corner-user` 同一份 `AvatarMenu`，只是搬到 SideNav 的下沿。
-            // 项 13 在头像周围挂消息气泡；当前只留位置，没有计数与下拉。
-            <div class="sidenav-foot">
+                        {move || if newentry_hover.get() {
+                            let on_entry = m.on_new_entry;
+                            let on_view = m.on_new_view;
+                            view! {
+                                <div class="newentry-split"
+                                    on:mouseenter=move |_| newentry_hover.set(true)>
+                                    <button on:click=move |_| {
+                                        newentry_hover.set(false);
+                                        on_entry.run(());
+                                    }>{ic_add()}<span style="margin-left:6px">"新建 Entry"</span></button>
+                                    <button on:click=move |_| {
+                                        newentry_hover.set(false);
+                                        on_view.run(());
+                                    }>{ic_folder()}<span style="margin-left:6px">"新建视图"</span></button>
+                                </div>
+                            }.into_any()
+                        } else {
+                            view! { <div></div> }.into_any()
+                        }}
+                    </div>
+                })}
+                {timeline_toggle.map(|t| {
+                    let on_toggle = t.on_toggle;
+                    let is_timeline_mode = t.is_timeline_mode;
+                    view! {
+                        <button class=move || if is_timeline_mode.get() { "timeline-btn on" } else { "timeline-btn" }
+                            title=move || if is_timeline_mode.get() { "切换到普通视图" } else { "切换到时间轴视图" }
+                            on:click=move |_| on_toggle.run(())>
+                            {ic_timeline()}
+                        </button>
+                    }
+                })}
                 <AvatarMenu />
             </div>
-        </aside>
+        </header>
     }
 }
 

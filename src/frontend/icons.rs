@@ -90,6 +90,17 @@ pub fn ic_history() -> impl IntoView {
     }
 }
 
+/// 重置：左上方的弧形回退箭头。语义是把当前过滤态倒回「初始 / 默认」，
+/// 跟 `ic_history`（时钟）相比，这个箭头更直白：往回走。
+pub fn ic_undo() -> impl IntoView {
+    view! {
+        <svg class="ic" viewBox="0 0 24 24">
+            <path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+            <path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M3 3v5h5"/>
+        </svg>
+    }
+}
+
 pub fn ic_download() -> impl IntoView {
     view! {
         <svg class="ic" viewBox="0 0 24 24">
@@ -196,6 +207,20 @@ pub fn ic_logo() -> impl IntoView {
                      M11.7 10.3 L13 10.3 Q13.9 10.25 13.9 9.55
                      Q13.9 8.9 13 8.85 L11.7 8.85 Z"
                 fill="currentColor" />
+        </svg>
+    }
+}
+
+/// 时间轴：三条横轨 + 三个错落的块，呼应视图配置的 start / end / person 字段。
+pub fn ic_timeline() -> impl IntoView {
+    view! {
+        <svg class="ic" viewBox="0 0 24 24">
+            <rect x="3" y="4" width="4" height="4" rx="1" />
+            <rect x="11" y="10" width="4" height="4" rx="1" />
+            <rect x="3" y="16" width="4" height="4" rx="1" />
+            <path d="M8 6h10" />
+            <path d="M16 12h5" />
+            <path d="M8 18h13" />
         </svg>
     }
 }

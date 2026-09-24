@@ -555,31 +555,37 @@ select:focus {
     flex: 1;
     min-width: 260px;
 }
-/* 表达式输入框右上角的小帮助图标：点开语法说明弹窗。 */
-.exprhelp {
-    position: absolute;
-    top: 3px;
-    right: 6px;
-    z-index: 21;
-    width: 20px;
+/* 表达式输入框左侧的工具列：上方帮助按钮（点开语法说明）+ 下方重置按钮（清空过滤态）。
+   与原先把 exprhelp 绝对定位到右上角相比，左侧竖排更符合「输入框自带工具」的直觉。 */
+.exprhelp,
+.exprreset {
+    width: 22px;
     height: 20px;
     padding: 0;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     border: none;
-    border-radius: 50%;
+    border-radius: var(--r-s);
     background: none;
     color: var(--ink3);
     cursor: pointer;
 }
-.exprhelp:hover {
+.exprhelp:hover,
+.exprreset:hover:not(:disabled) {
     color: var(--ink);
     background: var(--bg2);
 }
-.exprhelp .ic {
-    width: 15px;
-    height: 15px;
+.exprhelp:disabled,
+.exprreset:disabled {
+    color: var(--ink3);
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+.exprhelp .ic,
+.exprreset .ic {
+    width: 14px;
+    height: 14px;
 }
 /* 语法说明弹窗正文。 */
 .exprdoc {
@@ -1327,26 +1333,6 @@ input[type="color"].sw:disabled {
     font-size: 12px;
 }
 
-/* 视图渲染模式开关（普通 / 时间轴）。 */
-.seg {
-    display: inline-flex;
-    border: 1px solid var(--line);
-    border-radius: var(--r-s);
-    overflow: hidden;
-}
-.seg button {
-    border: 0;
-    background: none;
-    padding: 5px 12px;
-    font-size: 13px;
-    color: var(--ink2);
-    cursor: pointer;
-}
-.seg button.on {
-    background: var(--ink);
-    color: var(--bg);
-}
-
 /* ===== 时间轴视图 ===== */
 /* 根类名用 `.tlv` 而不是 `.tl`：`.tl` 已是审计日志行的横向布局（见上文），同类名同优先级
    会互相覆盖。`.tl-*` 子类此前不存在，无冲突。 */
@@ -1503,111 +1489,62 @@ input[type="color"].sw:disabled {
     color: var(--ink3);
     padding: 4px 2px 12px;
 }
-/* ===== 全局左侧导航栏（SideNav） ===== */
-/* 钉在视口左缘、固定列宽；中间是可滚动的导航项，底部钉头像。
-   配 `.has-sidenav` 的 <main> 会自动让出 220px，避免内容被遮。 */
-.sidenav {
-    position: fixed;
+/* ===== 全局顶栏（appbar）===== */
+/* 已登录页面顶部一条横栏：左品牌 + 工作空间入口，右头像菜单。
+   登录页与未登录态不渲染；未登录时 <main> 撑满。 */
+.appbar {
+    position: sticky;
     top: 0;
-    left: 0;
-    bottom: 0;
-    width: 220px;
     z-index: 30;
     display: flex;
-    flex-direction: column;
+    align-items: center;
+    justify-content: space-between;
+    height: 50px;
+    padding: 0 16px;
     background: var(--bg);
-    border-right: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    gap: 16px;
 }
-.sidenav-brand {
+.appbar-left,
+.appbar-right {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 14px 16px;
+    gap: 8px;
+}
+.appbar-right {
+    margin-left: auto;
+}
+.appbar-brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     text-decoration: none;
     color: var(--ink);
-    border-bottom: 1px solid var(--line);
-}
-.sidenav-brand-name {
     font: 600 15px var(--font, system-ui);
     letter-spacing: 0.3px;
 }
-/* 中段是可滚动的导航项列表；底部头像靠 flex 推到底。 */
-.sidenav-items {
-    flex: 1;
-    min-height: 0;
-    overflow-y: auto;
-    padding: 8px;
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
+.appbar-brand-name {
+    line-height: 1;
 }
-.sidenav-it {
-    display: flex;
+/* 工作空间按钮：图标 + 文字，与普通导航项同风格；后续真有更多入口再扩。 */
+.appbar-nav {
+    display: inline-flex;
     align-items: center;
-    gap: 10px;
-    width: 100%;
-    padding: 9px 12px;
+    gap: 6px;
+    padding: 6px 10px;
     border: 0;
     border-radius: var(--r-s);
     background: none;
     color: var(--ink2);
-    text-align: left;
     font: 14px var(--font, system-ui);
     cursor: pointer;
 }
-.sidenav-it:hover:not(:disabled) {
+.appbar-nav:hover {
     background: var(--bg2);
     color: var(--ink);
 }
-.sidenav-it.on {
-    background: color-mix(in srgb, var(--blue) 12%, var(--bg));
-    color: var(--ink);
-}
-.sidenav-it:disabled {
-    color: var(--ink3);
-    cursor: not-allowed;
-}
-.sidenav-it svg {
-    flex: 0 0 auto;
-}
-.sidenav-foot {
-    flex: 0 0 auto;
-    padding: 10px;
-    border-top: 1px solid var(--line);
-    display: flex;
-    justify-content: flex-start;
-}
-/* <main> 拿到 `.has-sidenav` 时把左缘让给 SideNav；登录页没有这个类，左右撑满。 */
-main.has-sidenav {
-    margin-left: 220px;
-}
-/* `position: fixed` 的 SideNav 在小视口里（横向 < 700px）会挤压主区，这种尺寸下退回到
-   文档流顶部的一条横栏而不是左侧固定列。220px 让出来比把内容挤到看不见强。 */
-@media (max-width: 700px) {
-    .sidenav {
-        position: static;
-        width: 100%;
-        border-right: 0;
-        border-bottom: 1px solid var(--line);
-    }
-    .sidenav-items {
-        flex-direction: row;
-        overflow-x: auto;
-    }
-    main.has-sidenav {
-        margin-left: 0;
-    }
-}
 
 /* ===== 头像悬停菜单 ===== */
-/* 旧版右上角固定入口（`.corner-user`）：已被 SideNav 底部的 `AvatarMenu` 取代，
-   样式保留是为了万一有遗留脚本还在引用；正常渲染路径不再挂这个类。 */
-.corner-user {
-    position: fixed;
-    top: 10px;
-    right: 18px;
-    z-index: 40;
-}
 .avatar-menu {
     position: relative;
     display: inline-flex;
@@ -1892,11 +1829,14 @@ main.has-sidenav {
 .c-composer{display:flex;flex-direction:column;gap:6px}
 .c-badge{display:inline-flex;align-items:center;gap:3px;margin-left:6px;font-size:12px;color:var(--kimi-color-text-tertiary,#8f959e)}
 
-/* 标签表达式 + 全文搜索合并条：左 3/4 表达式，右 1/4 全文搜索，中间分隔条。 */
+/* 标签表达式 + 全文搜索合并条：左右两个独立的输入框共享一个圆角外框，
+   内部不再画分隔线，靠左工具列 + 输入框 + 右侧搜索栏自然分段；
+   视觉上是「同一个搜索条的两部分」，但语义上各自保留独立 AST。 */
 .querybar {
     display: flex;
     align-items: stretch;
-    gap: 0;
+    gap: 8px;
+    padding: 0 8px;
     flex: 1;
     min-width: 0;
     border: 1px solid var(--line);
@@ -1906,22 +1846,26 @@ main.has-sidenav {
 .querybar .q-expr {
     flex: 1 1 auto;
     min-width: 0;
-    position: relative;
     display: flex;
     align-items: center;
+    gap: 6px;
 }
-.querybar .q-sep {
-    width: 1px;
-    align-self: stretch;
-    background: var(--line);
-    margin: 4px 0;
+/* 工具列：help 在上、reset 在下，垂直堆叠在输入框最左侧。 */
+.querybar .q-expr .q-expr-tools {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1px;
+    padding-left: 2px;
 }
 .querybar .q-search {
     flex: 0 0 25%;
     min-width: 0;
     display: flex;
     align-items: center;
-    padding: 0 12px;
+    padding: 0 4px;
     gap: 6px;
 }
 .querybar .q-search input {
@@ -1936,24 +1880,23 @@ main.has-sidenav {
     width: 100%;
 }
 
-/* 「新建 Entry」图标按钮：放在视图导航栏最上方，全局最显眼。 */
+/* 顶栏「新建 Entry」按钮：放在 .appbar-right 里，hover 弹 split 面板。 */
 .newentry-wrap {
     position: relative;
-    padding: 8px 10px 6px;
 }
 .newentry-btn {
-    display: flex;
+    display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: 6px;
-    width: 100%;
-    height: 36px;
+    height: 32px;
+    padding: 0 12px;
     border-radius: var(--r-m);
     border: 0;
     cursor: pointer;
     background: var(--pos);
     color: #fff;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 500;
     box-shadow: 0 1px 2px rgb(0 0 0 / 12%);
 }
@@ -1961,15 +1904,15 @@ main.has-sidenav {
     filter: brightness(1.06);
 }
 .newentry-btn .ic {
-    width: 16px;
-    height: 16px;
+    width: 14px;
+    height: 14px;
 }
 .newentry-split {
     position: absolute;
     z-index: 40;
-    top: calc(100% - 4px);
-    left: 10px;
-    right: 10px;
+    top: calc(100% + 4px);
+    right: 0;
+    min-width: 160px;
     background: var(--bg);
     border: 1px solid var(--line);
     border-radius: var(--r-m);
@@ -1990,6 +1933,37 @@ main.has-sidenav {
 }
 .newentry-split button:hover {
     background: var(--bg2);
+}
+
+/* 顶栏「时间轴切换」按钮：方形图标按钮，跟着新建按钮右侧排开。`.on` 态
+   表示当前已在时间轴模式——填上主题色告诉用户「点一下会切走」。 */
+.timeline-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border-radius: var(--r-m);
+    border: 0;
+    cursor: pointer;
+    background: transparent;
+    color: var(--ink);
+    transition: background 120ms ease, color 120ms ease;
+}
+.timeline-btn:hover {
+    background: var(--bg2);
+}
+.timeline-btn.on {
+    background: var(--pos);
+    color: #fff;
+}
+.timeline-btn.on:hover {
+    filter: brightness(1.06);
+}
+.timeline-btn .ic {
+    width: 16px;
+    height: 16px;
 }
 
 /* 视图导航栏行上的右键菜单：「配置视图」「删除视图」。 */

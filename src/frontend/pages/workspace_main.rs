@@ -21,11 +21,11 @@ use crate::frontend::graphql_client::{
     parse_view_query, query_all_entries, query_entries, set_labeling, set_labelings,
     set_sidebar_collapsed, set_view_timeline, summarize_entries, unarchive_entry, update_entry,
     update_view, views, workspace_ai_config, workspace_by_slug, AccountBrief, AuditLog, Entry,
-    Labeling, LabelSchema, Member, NamedPrompt, View, ViewSort, ViewTimeline, Workspace,
+    LabelSchema, Labeling, Member, NamedPrompt, View, ViewSort, ViewTimeline, Workspace,
 };
 use crate::frontend::icons::{
-    ic_add, ic_back, ic_close, ic_comment, ic_folder, ic_full, ic_help, ic_history, ic_search,
-    ic_setting, ic_share, ic_tag,
+    ic_back, ic_close, ic_comment, ic_folder, ic_full, ic_help, ic_search, ic_setting,
+    ic_share, ic_tag, ic_undo,
 };
 use crate::frontend::label_editor::LabelEditor;
 use crate::frontend::query_eval;
@@ -155,7 +155,11 @@ impl DraftLabel {
     fn to_value(&self) -> Option<Value> {
         match self.value_type {
             // 无值标签：勾上即写 `null`，用来表示「打上了」。
-            "null" => self.flag.get_untracked().filter(|b| *b).map(|_| Value::Null),
+            "null" => self
+                .flag
+                .get_untracked()
+                .filter(|b| *b)
+                .map(|_| Value::Null),
             "boolean" => self.flag.get_untracked().map(Value::Bool),
             // 多选 Enum：整体写成一个字符串数组；一个都没选则视为未设置。
             "enum" if self.multi => {
@@ -197,7 +201,9 @@ impl DraftLabel {
             // 时间类默认布局用原生控件，写下的是浏览器格式（time 为 "14:30"，
             // datetime-local 为 "2026-09-15T14:30"），落库前补成 Go 存储布局；
             // 自定义布局走文本输入，用户给的已是存储串，落到下面的原样上报。
-            "time" | "datetime" if is_native_time_layout(self.value_type, self.format.as_deref()) => {
+            "time" | "datetime"
+                if is_native_time_layout(self.value_type, self.format.as_deref()) =>
+            {
                 from_native(self.value_type, &self.text.get_untracked()).map(Value::String)
             }
             _ => {
@@ -448,7 +454,11 @@ pub fn WorkspaceMain() -> impl IntoView {
     // 解析交给服务端 `parse_view_query`：语法与标签 schema 校验只有一份实现。
     let apply_expr = move || {
         let expr = expr_text.get_untracked();
-        let Some(ws_id) = data.get().and_then(|r| r.ok()).map(|(w, _, _)| w.id.clone()) else {
+        let Some(ws_id) = data
+            .get()
+            .and_then(|r| r.ok())
+            .map(|(w, _, _)| w.id.clone())
+        else {
             error.set(Some("工作空间尚未加载完成".to_string()));
             return;
         };
@@ -475,9 +485,14 @@ pub fn WorkspaceMain() -> impl IntoView {
         time_pick.set(None);
     };
 
-    // 已落库的查询条件与当前编辑态有差异即视为有未保存改动。
+    // 已落库的查询条件与当前编辑态有差异，或者两个输入框里还残留未应用的文本，都视为有未保存改动。
+    // 只看 AST 不够：用户在输入框里敲完未回车时 `query_ast` 还没变，但「重置」按钮该亮，
+    // 否则用户想一键还原就只能挨个清输入框。
     let view_dirty = move || {
-        active_view.get().is_some() && query_ast.get() != saved_baseline.get()
+        active_view.get().is_some()
+            && (query_ast.get() != saved_baseline.get()
+                || !expr_text.get_untracked().trim().is_empty()
+                || !ad_hoc_text.get_untracked().trim().is_empty())
     };
 
     // 排序自动落库，不再依赖「保存视图」按钮。两条约束：
@@ -502,7 +517,17 @@ pub fn WorkspaceMain() -> impl IntoView {
         spawn_local(async move {
             let mut next = Some(v);
             while let Some(v) = next {
-                match update_view(&v.id, &v.name, &v.query, &v.sorts, &v.columns, v.is_shared, &v.title_colors).await {
+                match update_view(
+                    &v.id,
+                    &v.name,
+                    &v.query,
+                    &v.sorts,
+                    &v.columns,
+                    v.is_shared,
+                    &v.title_colors,
+                )
+                .await
+                {
                     Ok(saved) => {
                         // 上一次失败可能留下横幅，成功后清掉。
                         error.set(None);
@@ -531,7 +556,7 @@ pub fn WorkspaceMain() -> impl IntoView {
     let view_name_input = RwSignal::new(String::new());
     let view_shared_input = RwSignal::new(false);
     let view_columns_input = RwSignal::new(Vec::<String>::new()); // 选中展示为列的标签 name
-    // 要落库的条件与排序：「新建视图」给空条件，「另存为新视图」继承当前视图的排序链。
+                                                                  // 要落库的条件与排序：「新建视图」给空条件，「另存为新视图」继承当前视图的排序链。
     let view_query_input = RwSignal::new(serde_json::json!({ "and": [] }));
     let view_sort_input = RwSignal::new(Vec::<ViewSort>::new());
 
@@ -572,45 +597,65 @@ pub fn WorkspaceMain() -> impl IntoView {
         config_columns_input.set(v.columns.clone());
         config_shared_input.set(v.is_shared);
         config_tl_start.set(
-            v.timeline.as_ref().map(|t| t.start.clone()).unwrap_or_default(),
+            v.timeline
+                .as_ref()
+                .map(|t| t.start.clone())
+                .unwrap_or_default(),
         );
         config_tl_end.set(
-            v.timeline.as_ref().map(|t| t.end.clone()).unwrap_or_default(),
+            v.timeline
+                .as_ref()
+                .map(|t| t.end.clone())
+                .unwrap_or_default(),
         );
         config_tl_person.set(
-            v.timeline.as_ref().and_then(|t| t.person.clone()).unwrap_or_default(),
+            v.timeline
+                .as_ref()
+                .and_then(|t| t.person.clone())
+                .unwrap_or_default(),
         );
         dialog_error.set(None);
         let raw = v.title_colors.as_array().cloned().unwrap_or_default();
-        let rows: Vec<TitleRule> = raw.iter().enumerate().map(|(i, r)| {
-            TitleRule {
+        let rows: Vec<TitleRule> = raw
+            .iter()
+            .enumerate()
+            .map(|(i, r)| TitleRule {
                 id: i as u32,
                 expr: RwSignal::new(String::new()),
                 color: RwSignal::new(
-                    r.get("color").and_then(|c| c.as_str())
-                        .unwrap_or("#3b82f6").to_string(),
+                    r.get("color")
+                        .and_then(|c| c.as_str())
+                        .unwrap_or("#3b82f6")
+                        .to_string(),
                 ),
                 cached_expr: RwSignal::new(String::new()),
-                cached_ast: RwSignal::new(
-                    r.get("query").cloned().unwrap_or(Value::Null),
-                ),
-            }
-        }).collect();
+                cached_ast: RwSignal::new(r.get("query").cloned().unwrap_or(Value::Null)),
+            })
+            .collect();
         next_rule_id.set(rows.len() as u32);
         config_rules.set(rows);
         show_config_dialog.set(true);
-        let ws_id = data.get().and_then(|r| r.ok()).map(|(w, _, _)| w.id.clone());
+        let ws_id = data
+            .get()
+            .and_then(|r| r.ok())
+            .map(|(w, _, _)| w.id.clone());
         let ids: Vec<u32> = config_rules.get_untracked().iter().map(|r| r.id).collect();
-        if ids.is_empty() { return; }
+        if ids.is_empty() {
+            return;
+        }
         let Some(ws_id) = ws_id else { return };
         rules_loading.set(true);
         spawn_local(async move {
             for id in ids {
-                let ast = config_rules.get_untracked().iter()
+                let ast = config_rules
+                    .get_untracked()
+                    .iter()
                     .find(|r| r.id == id)
                     .map(|r| r.cached_ast.get_untracked())
                     .unwrap_or(Value::Null);
-                if ast.is_null() { continue; }
+                if ast.is_null() {
+                    continue;
+                }
                 if let Ok(s) = format_view_query(&ws_id, &ast).await {
                     config_rules.update(|rows| {
                         if let Some(r) = rows.iter_mut().find(|r| r.id == id) {
@@ -776,23 +821,39 @@ pub fn WorkspaceMain() -> impl IntoView {
             }
             // 焦点在文本输入控件时不响应：用户可能在改表达式 / 全文检索。
             let target = ev.target();
-            let is_text_input = target.as_ref().and_then(|t| {
-                t.dyn_ref::<leptos::web_sys::HtmlInputElement>().map(|el| {
-                    let t = el.type_();
-                    t == "text" || t == "search" || t == "email" || t == "password" || t == "url"
+            let is_text_input = target
+                .as_ref()
+                .and_then(|t| {
+                    t.dyn_ref::<leptos::web_sys::HtmlInputElement>().map(|el| {
+                        let t = el.type_();
+                        t == "text"
+                            || t == "search"
+                            || t == "email"
+                            || t == "password"
+                            || t == "url"
+                    })
                 })
-            }).unwrap_or(false);
+                .unwrap_or(false);
             let is_textarea = target
                 .as_ref()
-                .and_then(|t| t.dyn_ref::<leptos::web_sys::HtmlTextAreaElement>().map(|_| true))
+                .and_then(|t| {
+                    t.dyn_ref::<leptos::web_sys::HtmlTextAreaElement>()
+                        .map(|_| true)
+                })
                 .unwrap_or(false);
             let is_select = target
                 .as_ref()
-                .and_then(|t| t.dyn_ref::<leptos::web_sys::HtmlSelectElement>().map(|_| true))
+                .and_then(|t| {
+                    t.dyn_ref::<leptos::web_sys::HtmlSelectElement>()
+                        .map(|_| true)
+                })
                 .unwrap_or(false);
             let is_ce = target
                 .as_ref()
-                .and_then(|t| t.dyn_ref::<leptos::web_sys::HtmlElement>().map(|el| el.is_content_editable()))
+                .and_then(|t| {
+                    t.dyn_ref::<leptos::web_sys::HtmlElement>()
+                        .map(|el| el.is_content_editable())
+                })
                 .unwrap_or(false);
             if is_text_input || is_textarea || is_select || is_ce {
                 return;
@@ -807,7 +868,9 @@ pub fn WorkspaceMain() -> impl IntoView {
             let idx = codes.iter().position(|c| c == &cur);
             let new_idx = match (idx, key.as_str()) {
                 (Some(i), "ArrowDown") => {
-                    if i + 1 < codes.len() { i + 1 } else {
+                    if i + 1 < codes.len() {
+                        i + 1
+                    } else {
                         // 已经在末位：尝试翻到下一页首位。
                         let total = total_signal.get_untracked();
                         let pages = ((total + page_size - 1) / page_size).max(1);
@@ -815,18 +878,24 @@ pub fn WorkspaceMain() -> impl IntoView {
                         if cur_page < pages {
                             page_signal.set(cur_page + 1);
                             0
-                        } else { i }
+                        } else {
+                            i
+                        }
                     }
                 }
                 (Some(i), "ArrowUp") => {
-                    if i > 0 { i - 1 } else {
+                    if i > 0 {
+                        i - 1
+                    } else {
                         let cur_page = page_signal.get_untracked();
                         if cur_page > 1 {
                             page_signal.set(cur_page - 1);
                             // 翻页前 items 仍是旧页数据，等新页加载后会重新触发该判断。
                             // 这里直接选 0 也无妨：未翻页前就是 0。
                             0
-                        } else { i }
+                        } else {
+                            i
+                        }
                     }
                 }
                 // 表格里没有任何选中条目：从首 / 末位开始，给键盘一个落脚点。
@@ -894,7 +963,11 @@ pub fn WorkspaceMain() -> impl IntoView {
         ai_error.set(None);
         ai_scenario.set(String::new());
         ai_tone.set(String::new());
-        let Some(ws_id) = data.get_untracked().and_then(|r| r.ok()).map(|(w, _, _)| w.id) else {
+        let Some(ws_id) = data
+            .get_untracked()
+            .and_then(|r| r.ok())
+            .map(|(w, _, _)| w.id)
+        else {
             return;
         };
         ai_loading.set(true);
@@ -915,7 +988,11 @@ pub fn WorkspaceMain() -> impl IntoView {
         if codes.is_empty() {
             return;
         }
-        let Some(ws_id) = data.get_untracked().and_then(|r| r.ok()).map(|(w, _, _)| w.id) else {
+        let Some(ws_id) = data
+            .get_untracked()
+            .and_then(|r| r.ok())
+            .map(|(w, _, _)| w.id)
+        else {
             return;
         };
         let scenario = ai_scenario.get_untracked();
@@ -950,7 +1027,11 @@ pub fn WorkspaceMain() -> impl IntoView {
 
     // 拉取已归档条目列表（弹窗打开时 + 归档/取消归档后刷新）。
     let load_archived = move || {
-        let Some(ws_id) = data.get().and_then(|r| r.ok()).map(|(w, _, _)| w.id.clone()) else {
+        let Some(ws_id) = data
+            .get()
+            .and_then(|r| r.ok())
+            .map(|(w, _, _)| w.id.clone())
+        else {
             return;
         };
         archived_busy.set(true);
@@ -1019,6 +1100,68 @@ pub fn WorkspaceMain() -> impl IntoView {
         });
     };
 
+    // 「新建」按钮的两个回调：原先由侧栏传入，现在顶栏 AppBar 通过共享槽
+    // 读走——其它页面不在 WorkspaceMain 这个 slot 里就不会渲染这个按钮。
+    // 提到 `view!` 之外是为了既能写槽、也能本地复用。
+    let on_new_entry = Callback::new(move |_| {
+        // 打开时按当前标签 schema 重建待填行（新建与取消都重置）。
+        // 视图列与视图表达式里用到的标签预填默认值：这两类标签
+        // 是当前视图关心的，新条目本来就该带着它们。
+        if !show_new.get_untracked() {
+            let auto = auto_label_names(
+                active_view.get_untracked().map(|v| v.columns).unwrap_or_default(),
+                &query_ast.get_untracked(),
+            );
+            new_labels.set(
+                schemas
+                    .get_untracked()
+                    .into_iter()
+                    .map(|s| {
+                        if auto.iter().any(|n| n == &s.name) {
+                            DraftLabel::from_schema_preset(s)
+                        } else {
+                            DraftLabel::from_schema(s)
+                        }
+                    })
+                    .collect(),
+            );
+        }
+        show_new.set(!show_new.get_untracked());
+    });
+    let on_new_view = Callback::new(move |_| {
+        batch(move || {
+            view_dialog_saveas.set(false);
+            view_query_input.set(serde_json::json!({ "and": [] }));
+            view_sort_input.set(Vec::new());
+            view_name_input.set(String::new());
+            view_columns_input.set(Vec::new());
+            view_shared_input.set(false);
+            dialog_error.set(None);
+            show_view_dialog.set(true);
+        });
+    });
+    if let Some(slot) = crate::frontend::use_context::<crate::frontend::WorkspaceNewMenuSlot>() {
+        slot.current.set(Some(crate::frontend::WorkspaceNewMenu {
+            on_new_entry,
+            on_new_view,
+        }));
+        // 离开 WorkspaceMain（切到 /workspaces、登录页等）时清掉槽，
+        // 否则切走之后 AppBar 还会显示按钮——回调闭包里有本页信号，
+        // 留着它指向死数据也没意义。
+        on_cleanup(move || slot.current.set(None));
+    }
+    // 「时间轴切换」按钮：仅当前激活视图配了时间轴时才往 AppBar 推——普通视图
+    // 强行塞个切换按钮毫无意义。`timeline_mode` 已经是本页的状态源，直接
+    // 把信号搬过去当视觉态驱动即可。
+    if let Some(slot) = crate::frontend::use_context::<crate::frontend::WorkspaceTimelineSlot>() {
+        let on_toggle = Callback::new(move |_| timeline_mode.set(!timeline_mode.get()));
+        slot.current.set(Some(crate::frontend::WorkspaceTimelineToggle {
+            on_toggle,
+            is_timeline_mode: timeline_mode,
+        }));
+        on_cleanup(move || slot.current.set(None));
+    }
+
     view! {
         <div class="page page-app">
             <div class="crumb">
@@ -1035,43 +1178,6 @@ pub fn WorkspaceMain() -> impl IntoView {
                     active=active_id
                     collapsed=sidebar_collapsed
                     on_select=select_view
-                    on_new_entry=Callback::new(move |_| {
-                        // 打开时按当前标签 schema 重建待填行（新建与取消都重置）。
-                        // 视图列与视图表达式里用到的标签预填默认值：这两类标签
-                        // 是当前视图关心的，新条目本来就该带着它们。
-                        if !show_new.get_untracked() {
-                            let auto = auto_label_names(
-                                active_view.get_untracked().map(|v| v.columns).unwrap_or_default(),
-                                &query_ast.get_untracked(),
-                            );
-                            new_labels.set(
-                                schemas
-                                    .get_untracked()
-                                    .into_iter()
-                                    .map(|s| {
-                                        if auto.iter().any(|n| n == &s.name) {
-                                            DraftLabel::from_schema_preset(s)
-                                        } else {
-                                            DraftLabel::from_schema(s)
-                                        }
-                                    })
-                                    .collect(),
-                            );
-                        }
-                        show_new.set(!show_new.get_untracked());
-                    })
-                    on_new_view=Callback::new(move |_| {
-                        batch(move || {
-                            view_dialog_saveas.set(false);
-                            view_query_input.set(serde_json::json!({ "and": [] }));
-                            view_sort_input.set(Vec::new());
-                            view_name_input.set(String::new());
-                            view_columns_input.set(Vec::new());
-                            view_shared_input.set(false);
-                            dialog_error.set(None);
-                            show_view_dialog.set(true);
-                        });
-                    })
                     on_delete=delete_view_cb
                     on_archived=Callback::new(open_archived)
                     on_context=on_context_view
@@ -1079,21 +1185,34 @@ pub fn WorkspaceMain() -> impl IntoView {
                 <div class="panel wmain">
                     <div class="vhead">
                         <h2>{move || active_view.get().map(|v| v.name).unwrap_or_else(|| "全部内容".to_string())}</h2>
-                        {move || active_view.get().is_some_and(|v| v.timeline.is_some()).then(|| view! {
-                            <div class="seg">
-                                <button class=move || if timeline_mode.get() { "" } else { "on" }
-                                    on:click=move |_| timeline_mode.set(false)>"普通视图"</button>
-                                <button class=move || if timeline_mode.get() { "on" } else { "" }
-                                    on:click=move |_| timeline_mode.set(true)>"时间轴"</button>
-                            </div>
-                        })}
                     </div>
                     <div class="filters">
                         <div class="querybar">
                             <div class="q-expr">
-                            <button class="exprhelp" title="标签表达式语法说明"
-                                on:click=move |_| expr_help.set(true)>{ic_help()}</button>
-                            <input class="inp" style="width:100%;padding-right:26px"
+                            <div class="q-expr-tools">
+                                <button class="exprhelp" title="标签表达式语法说明"
+                                    on:click=move |_| expr_help.set(true)>{ic_help()}</button>
+                                // 重置按钮：仅在「基础视图」下出现；非默认视图里不存在「重置」概念，
+                                // 用户改了过滤就该「保存视图」，不该一键抹掉。`view_dirty` 同时看 AST
+                                // 与两个输入框里的未应用文本，确保敲完未回车也能一键还原。
+                                {move || if active_view.get().is_some_and(|v| v.is_default) {
+                                    view! {
+                                        <button class="exprreset" title="重置为默认"
+                                            disabled=move || !view_dirty()
+                                            on:click=move |_| {
+                                                query_ast.set(serde_json::json!({ "and": [] }));
+                                                ad_hoc_text.set(String::new());
+                                                expr_text.set(String::new());
+                                                hint_open.set(false);
+                                                time_pick.set(None);
+                                                refresh_view.update(|n| *n += 1);
+                                            }>{ic_undo()}</button>
+                                    }.into_any()
+                                } else {
+                                    ().into_any()
+                                }}
+                            </div>
+                            <input class="inp" style="flex:1;min-width:0"
                                 placeholder=r#"标签表达式：Task AND !Bug（回车应用；输入 / 选标签）"#
                                 prop:value=expr_text
                                 on:input=move |ev| {
@@ -1218,7 +1337,6 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 }
                             })}
                             </div>
-                            <div class="q-sep"></div>
                             <label class="q-search" title="全文搜索本视图">
                                 {ic_search()}
                                 <input placeholder="全文搜索本视图" prop:value=ad_hoc_text
@@ -1234,26 +1352,6 @@ pub fn WorkspaceMain() -> impl IntoView {
                                     } />
                             </label>
                         </div>
-                        <span class="mut">{move || {
-                            let sorts = active_view.get().map(|v| v.sorts).unwrap_or_default();
-                            if sorts.is_empty() {
-                                return "排序：默认".to_string();
-                            }
-                            let schemas_now = schemas.get();
-                            let parts: Vec<String> = sorts
-                                .iter()
-                                .enumerate()
-                                .map(|(i, s)| {
-                                    let mark = prio_mark(i);
-                                    format!(
-                                        "{mark} {} {}",
-                                        sort_field_label(&s.field, &schemas_now),
-                                        if s.desc { "↓" } else { "↑" },
-                                    )
-                                })
-                                .collect();
-                            format!("排序：{}", parts.join("  "))
-                        }}</span>
                         {move || if active_view.get().is_some_and(|v| v.is_default) {
                             // 基础视图上的过滤是临时态：不给「保存」，要留存只能另存为新视图。
                             view! {
@@ -1274,18 +1372,6 @@ pub fn WorkspaceMain() -> impl IntoView {
                                             show_view_dialog.set(true);
                                         });
                                     }>"另存为新视图"</button>
-                                // 重置：把当前临时过滤与全文搜索输入复原到基础视图的初始态。
-                                // 仅在确有改动时才点亮，避免空操作。
-                                <button class="ibtn" title="重置为默认"
-                                    disabled=move || !view_dirty()
-                                    on:click=move |_| {
-                                        query_ast.set(serde_json::json!({ "and": [] }));
-                                        ad_hoc_text.set(String::new());
-                                        expr_text.set(String::new());
-                                        hint_open.set(false);
-                                        time_pick.set(None);
-                                        refresh_view.update(|n| *n += 1);
-                                    }>{ic_history()}</button>
                             }.into_any()
                         } else {
                             view! {
@@ -1990,11 +2076,6 @@ fn WorkspaceSidebar(
     active: RwSignal<Option<String>>,
     collapsed: RwSignal<bool>,
     on_select: Callback<String>,
-    /// Sidebar 顶部「新建 Entry」按钮回调：放在父组件作用域里以便拿 `show_new`、
-    /// `active_view`、`query_ast`、`schemas`、`new_labels` 这些信号。
-    on_new_entry: Callback<()>,
-    /// Sidebar 顶部 split 面板里的「新建视图」回调。
-    on_new_view: Callback<()>,
     on_delete: Callback<String>,
     /// 「已归档」入口：打开归档条目列表弹窗。
     on_archived: Callback<()>,
@@ -2126,10 +2207,6 @@ fn WorkspaceSidebar(
         }
     };
 
-    // 「新建」按钮的 hover split 状态：只有 sidebar 自己的 markup 用到，留在
-    // 组件内部即可。
-    let newentry_hover = RwSignal::new(false);
-
     view! {
         <aside class=move || if collapsed.get() { "panel wside collapsed" } else { "panel wside" }>
             <div class="sb-head">
@@ -2139,31 +2216,6 @@ fn WorkspaceSidebar(
                     collapsed.set(v);
                     set_sidebar_collapsed(v);
                 }>{move || if collapsed.get() { "»" } else { "«" }}</button>
-            </div>
-            <div class="newentry-wrap"
-                on:mouseleave=move |_| newentry_hover.set(false)>
-                <button class="newentry-btn" title="新建 Entry / 新建视图"
-                    on:click=move |_| on_new_entry.run(())
-                    on:mouseenter=move |_| newentry_hover.set(true)>
-                    {ic_add()}<span>"新建"</span>
-                </button>
-                {move || if newentry_hover.get() {
-                    view! {
-                        <div class="newentry-split"
-                            on:mouseenter=move |_| newentry_hover.set(true)>
-                            <button on:click=move |_| {
-                                newentry_hover.set(false);
-                                on_new_entry.run(());
-                            }>{ic_add()}<span style="margin-left:6px">"新建 Entry"</span></button>
-                            <button on:click=move |_| {
-                                newentry_hover.set(false);
-                                on_new_view.run(());
-                            }>{ic_folder()}<span style="margin-left:6px">"新建视图"</span></button>
-                        </div>
-                    }.into_any()
-                } else {
-                    view! { <div></div> }.into_any()
-                }}
             </div>
             {move || default_view().map(|v| {
                 let id = v.id.clone();
@@ -2543,8 +2595,11 @@ fn EntryTable(
 }
 
 /// 右侧详情面板的三个页签。
-const DETAIL_TABS: &[(&str, &str)] =
-    &[("detail", "详情"), ("attachments", "附件"), ("history", "历史")];
+const DETAIL_TABS: &[(&str, &str)] = &[
+    ("detail", "详情"),
+    ("attachments", "附件"),
+    ("history", "历史"),
+];
 
 /// 右侧详情面板：标题、详情与标签都可编辑，保存走乐观并发。
 #[component]
@@ -3081,22 +3136,6 @@ fn sort_mark(sorts: &[ViewSort], field: &str) -> String {
             format!(" {mark} {}", if sorts[i].desc { "↓" } else { "↑" })
         }
         None => String::new(),
-    }
-}
-
-/// 排序字段的展示名：内置值有固定中文名，其余按标签名查 schema 的标题。
-fn sort_field_label(field: &str, schemas: &[LabelSchema]) -> String {
-    match field {
-        "title" => "标题".to_string(),
-        "createdAt" => "创建时间".to_string(),
-        "createdBy" => "创建人".to_string(),
-        "updatedBy" => "更新人".to_string(),
-        "updatedAt" => "更新时间".to_string(),
-        other => schemas
-            .iter()
-            .find(|s| s.name == other)
-            .map(|s| s.title.clone())
-            .unwrap_or_else(|| other.to_string()),
     }
 }
 
