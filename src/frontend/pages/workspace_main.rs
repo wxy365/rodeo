@@ -1035,18 +1035,6 @@ pub fn WorkspaceMain() -> impl IntoView {
                     active=active_id
                     collapsed=sidebar_collapsed
                     on_select=select_view
-                    on_new=Callback::new(move |_| {
-                        batch(move || {
-                            view_dialog_saveas.set(false);
-                            view_query_input.set(serde_json::json!({ "and": [] }));
-                            view_sort_input.set(Vec::new());
-                            view_name_input.set(String::new());
-                            view_columns_input.set(Vec::new());
-                            view_shared_input.set(false);
-                            dialog_error.set(None);
-                            show_view_dialog.set(true);
-                        });
-                    })
                     on_new_entry=Callback::new(move |_| {
                         // 打开时按当前标签 schema 重建待填行（新建与取消都重置）。
                         // 视图列与视图表达式里用到的标签预填默认值：这两类标签
@@ -1099,34 +1087,6 @@ pub fn WorkspaceMain() -> impl IntoView {
                                     on:click=move |_| timeline_mode.set(true)>"时间轴"</button>
                             </div>
                         })}
-                        <button class="btn pri" on:click=move |_| {
-                            if !show_new.get_untracked() {
-                                // 打开时按当前标签 schema 重建待填行（新建与取消都重置）。
-                                // 视图列与视图表达式里用到的标签预填默认值：这两类标签
-                                // 是当前视图关心的，新条目本来就该带着它们。
-                                let auto = auto_label_names(
-                                    active_view.get_untracked().map(|v| v.columns).unwrap_or_default(),
-                                    &query_ast.get_untracked(),
-                                );
-                                new_labels.set(
-                                    schemas
-                                        .get_untracked()
-                                        .into_iter()
-                                        .map(|s| {
-                                            if auto.iter().any(|n| n == &s.name) {
-                                                DraftLabel::from_schema_preset(s)
-                                            } else {
-                                                DraftLabel::from_schema(s)
-                                            }
-                                        })
-                                        .collect(),
-                                );
-                            }
-                            show_new.set(!show_new.get_untracked());
-                        }>
-                            {ic_add()}
-                            "新建 Entry"
-                        </button>
                     </div>
                     <div class="filters">
                         <div class="querybar">
@@ -2030,14 +1990,10 @@ fn WorkspaceSidebar(
     active: RwSignal<Option<String>>,
     collapsed: RwSignal<bool>,
     on_select: Callback<String>,
-    /// 保留的入口参数：将来若需要「主面板顶部按钮」与「sidebar 新建按钮」逻辑
-    /// 出现分支，再启用。当前实现统一走 `on_new_entry` / `on_new_view`。
-    #[allow(unused_variables)]
-    on_new: Callback<()>,
     /// Sidebar 顶部「新建 Entry」按钮回调：放在父组件作用域里以便拿 `show_new`、
     /// `active_view`、`query_ast`、`schemas`、`new_labels` 这些信号。
     on_new_entry: Callback<()>,
-    /// Sidebar 顶部 split 面板里的「新建视图」回调，与 `on_new` 同样一份逻辑。
+    /// Sidebar 顶部 split 面板里的「新建视图」回调。
     on_new_view: Callback<()>,
     on_delete: Callback<String>,
     /// 「已归档」入口：打开归档条目列表弹窗。
