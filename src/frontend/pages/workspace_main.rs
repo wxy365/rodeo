@@ -1047,6 +1047,43 @@ pub fn WorkspaceMain() -> impl IntoView {
                             show_view_dialog.set(true);
                         });
                     })
+                    on_new_entry=Callback::new(move |_| {
+                        // 打开时按当前标签 schema 重建待填行（新建与取消都重置）。
+                        // 视图列与视图表达式里用到的标签预填默认值：这两类标签
+                        // 是当前视图关心的，新条目本来就该带着它们。
+                        if !show_new.get_untracked() {
+                            let auto = auto_label_names(
+                                active_view.get_untracked().map(|v| v.columns).unwrap_or_default(),
+                                &query_ast.get_untracked(),
+                            );
+                            new_labels.set(
+                                schemas
+                                    .get_untracked()
+                                    .into_iter()
+                                    .map(|s| {
+                                        if auto.iter().any(|n| n == &s.name) {
+                                            DraftLabel::from_schema_preset(s)
+                                        } else {
+                                            DraftLabel::from_schema(s)
+                                        }
+                                    })
+                                    .collect(),
+                            );
+                        }
+                        show_new.set(!show_new.get_untracked());
+                    })
+                    on_new_view=Callback::new(move |_| {
+                        batch(move || {
+                            view_dialog_saveas.set(false);
+                            view_query_input.set(serde_json::json!({ "and": [] }));
+                            view_sort_input.set(Vec::new());
+                            view_name_input.set(String::new());
+                            view_columns_input.set(Vec::new());
+                            view_shared_input.set(false);
+                            dialog_error.set(None);
+                            show_view_dialog.set(true);
+                        });
+                    })
                     on_delete=delete_view_cb
                     on_archived=Callback::new(open_archived)
                     on_context=on_context_view
@@ -1990,7 +2027,15 @@ fn WorkspaceSidebar(
     active: RwSignal<Option<String>>,
     collapsed: RwSignal<bool>,
     on_select: Callback<String>,
+    /// 保留的入口参数：将来若需要「主面板顶部按钮」与「sidebar 新建按钮」逻辑
+    /// 出现分支，再启用。当前实现统一走 `on_new_entry` / `on_new_view`。
+    #[allow(unused_variables)]
     on_new: Callback<()>,
+    /// Sidebar 顶部「新建 Entry」按钮回调：放在父组件作用域里以便拿 `show_new`、
+    /// `active_view`、`query_ast`、`schemas`、`new_labels` 这些信号。
+    on_new_entry: Callback<()>,
+    /// Sidebar 顶部 split 面板里的「新建视图」回调，与 `on_new` 同样一份逻辑。
+    on_new_view: Callback<()>,
     on_delete: Callback<String>,
     /// 「已归档」入口：打开归档条目列表弹窗。
     on_archived: Callback<()>,
@@ -2122,44 +2167,8 @@ fn WorkspaceSidebar(
         }
     };
 
-    // 全局最显眼的「新建」入口：左键 = 新建 Entry；hover 展开 split 面板，
-    // 面板里再有「新建 Entry / 新建视图」两个选项。「新建视图」沿用父组件传入的
-    // `on_new` 同样一份逻辑（避免重复代码）；从 sidebar 提起后，`WorkspaceSidebar`
-    // 组件自身的耦合度更干净——它只关心视图列表的渲染与选中。
-    let open_new_entry = move || {
-        if !show_new.get_untracked() {
-            let auto = auto_label_names(
-                active_view.get_untracked().map(|v| v.columns).unwrap_or_default(),
-                &query_ast.get_untracked(),
-            );
-            new_labels.set(
-                schemas
-                    .get_untracked()
-                    .into_iter()
-                    .map(|s| {
-                        if auto.iter().any(|n| n == &s.name) {
-                            DraftLabel::from_schema_preset(s)
-                        } else {
-                            DraftLabel::from_schema(s)
-                        }
-                    })
-                    .collect(),
-            );
-        }
-        show_new.set(!show_new.get_untracked());
-    };
-    let open_new_view = move || {
-        batch(move || {
-            view_dialog_saveas.set(false);
-            view_query_input.set(serde_json::json!({ "and": [] }));
-            view_sort_input.set(Vec::new());
-            view_name_input.set(String::new());
-            view_columns_input.set(Vec::new());
-            view_shared_input.set(false);
-            dialog_error.set(None);
-            show_view_dialog.set(true);
-        });
-    };
+    // 「新建」按钮的 hover split 状态：只有 sidebar 自己的 markup 用到，留在
+    // 组件内部即可。
     let newentry_hover = RwSignal::new(false);
 
     view! {
@@ -2175,7 +2184,7 @@ fn WorkspaceSidebar(
             <div class="newentry-wrap"
                 on:mouseleave=move |_| newentry_hover.set(false)>
                 <button class="newentry-btn" title="新建 Entry / 新建视图"
-                    on:click=move |_| open_new_entry()
+                    on:click=move |_| on_new_entry.run(())
                     on:mouseenter=move |_| newentry_hover.set(true)>
                     {ic_add()}<span>"新建"</span>
                 </button>
@@ -2185,11 +2194,11 @@ fn WorkspaceSidebar(
                             on:mouseenter=move |_| newentry_hover.set(true)>
                             <button on:click=move |_| {
                                 newentry_hover.set(false);
-                                open_new_entry();
+                                on_new_entry.run(());
                             }>{ic_add()}<span style="margin-left:6px">"新建 Entry"</span></button>
                             <button on:click=move |_| {
                                 newentry_hover.set(false);
-                                open_new_view();
+                                on_new_view.run(());
                             }>{ic_folder()}<span style="margin-left:6px">"新建视图"</span></button>
                         </div>
                     }.into_any()
