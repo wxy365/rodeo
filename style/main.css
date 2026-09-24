@@ -1895,7 +1895,7 @@ main.has-sidenav {
     border-radius: var(--r-m);
     border: 0;
     cursor: pointer;
-    background: var(--pri);
+    background: var(--pos);
     color: #fff;
     font-size: 14px;
     font-weight: 500;
