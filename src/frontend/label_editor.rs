@@ -490,7 +490,7 @@ fn LabelRow(
 
     view! {
         <div class="lblrow" style=style>
-            <span class="k">{ic_tag()}{title}</span>
+            <span class="k">{title}</span>
             {control}
             <button class="ibtn" title="移除标签" on:click=move |_| on_remove.run(())>{ic_close()}</button>
         </div>

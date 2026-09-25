@@ -36,9 +36,12 @@ fn workspace_slug_of(path: &str) -> Option<&str> {
 /// 账号选择器的候选列表上限：够用又不至于把弹层撑得比屏幕还高。
 const ACCOUNT_HITS: usize = 8;
 
-/// 账号选择器：搜索 + 下拉选 + 多选 chip 三件套。
+/// 账号选择器：搜索框 + 候选项一体化（combobox）。
 ///
-/// - 单选模式（`multi=false`）：点选 / 下拉选都直接替换当前值。
+/// 输入框里打字即过滤下方候选；不输入时直接展示全部成员可点选。点中后
+/// 候选项消失，输入框清空，等待下一次选择。
+///
+/// - 单选模式（`multi=false`）：点选即替换当前值。
 /// - 多选模式（`multi=true`）：候选逐个添加，已选变成可点 × 的 chip。
 ///
 /// 值是账号 id（服务端按 id 校验成员身份），展示用姓名。`on_change` 拿到完整选
@@ -54,6 +57,8 @@ pub fn AccountPicker(
     on_change: Callback<Vec<String>>,
 ) -> impl IntoView {
     let query = RwSignal::new(String::new());
+    // 输入框聚焦状态：聚焦 + 输入非空时都展开候选项；空输入时仅聚焦才展开。
+    let focused = RwSignal::new(false);
     // 多个闭包共享的输入数据先克隆一份——Callback 用 move 捕获，每个闭包都要拿到独立副本。
     let members_owned = members.clone();
     let members_for_label = members_owned.clone();
@@ -95,34 +100,24 @@ pub fn AccountPicker(
     };
     view! {
         <div style="position:relative;display:flex;flex-direction:column;gap:6px">
-            <div style="display:flex;gap:6px;align-items:center">
-                <input class="inp" style="width:160px" placeholder="搜索账号…"
-                    prop:value=query
-                    on:input=move |ev| query.set(event_target_value(&ev)) />
-                // 下拉选择：列全员，便于用户不靠搜索也能直接挑。
-                // 搜索框是补充，下拉是兜底——两者并存比二选一更贴多数人习惯。
-                <select class="inp" style="width:160px"
-                    on:change=move |ev| {
-                        let v = event_target_value(&ev);
-                        if !v.is_empty() {
-                            pick.run(v);
-                        }
-                    }>
-                    <option value="">"（下拉选择）"</option>
-                    {members_owned.iter().map(|m| view! {
-                        <option value=m.account_id.clone()>{member_label(m)}</option>
-                    }).collect::<Vec<_>>()}
-                </select>
-            </div>
+            <input class="inp" style="width:200px" placeholder="选择或搜索账号…"
+                prop:value=query
+                on:input=move |ev| query.set(event_target_value(&ev))
+                on:focus=move |_| focused.set(true)
+                on:blur=move |_| focused.set(false) />
             {move || {
+                // 输入非空、聚焦任一时展开候选；空输入且失焦则收起，免得占用行高。
                 let q = query.get().trim().to_lowercase();
-                if q.is_empty() {
+                let is_focused = focused.get();
+                if q.is_empty() && !is_focused {
                     return ().into_any();
                 }
                 let hits: Vec<Member> = members_owned
                     .iter()
                     .filter(|m| {
-                        m.name.to_lowercase().contains(&q) || m.email.to_lowercase().contains(&q)
+                        q.is_empty()
+                            || m.name.to_lowercase().contains(&q)
+                            || m.email.to_lowercase().contains(&q)
                     })
                     .take(ACCOUNT_HITS)
                     .cloned()
@@ -137,8 +132,13 @@ pub fn AccountPicker(
                             .into_iter()
                             .map(|m| {
                                 let id = m.account_id.clone();
+                                // on:mousedown + preventDefault 让候选点击不会先触发 input blur，
+                                // 候选面板在点击瞬间就消失的闪烁问题就消失了。
                                 view! {
-                                    <div class="lblhint-it" on:click=move |_| pick.run(id.clone())>
+                                    <div class="lblhint-it" on:mousedown=move |ev| {
+                                        ev.prevent_default();
+                                        pick.run(id.clone());
+                                    }>
                                         <span>{member_label(&m)}</span>
                                         <span class="mut">{m.email.clone()}</span>
                                     </div>

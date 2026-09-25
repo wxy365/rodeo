@@ -18,11 +18,11 @@ use crate::frontend::graphql_client::{
     update_workspace_ai_config, views, workspace_ai_config, workspace_by_slug, AuditLog, Invite,
     LabelSchema, Member, View, Workspace,
 };
-use crate::frontend::use_auth;
 use crate::frontend::icons::{
     ic_add, ic_back, ic_close, ic_comment, ic_history, ic_link, ic_profile, ic_setting, ic_share,
     ic_tag,
 };
+use crate::frontend::use_auth;
 
 fn is_builtin(schema: &LabelSchema) -> bool {
     schema.name == "Task" || schema.name == "Bug"
@@ -111,7 +111,9 @@ pub fn WorkspaceSettings() -> impl IntoView {
         }
         spawn_local(async move {
             let result = async {
-                let ws = workspace_by_slug(&s).await?.ok_or("工作空间不存在".to_string())?;
+                let ws = workspace_by_slug(&s)
+                    .await?
+                    .ok_or("工作空间不存在".to_string())?;
                 let role = my_role(&ws.id).await?;
                 let schemas = label_schemas(&ws.id).await?;
                 let logs = audit_logs(&ws.id).await?;
@@ -200,9 +202,21 @@ pub fn WorkspaceSettings() -> impl IntoView {
             let u = uv.trim();
             label_attrs(
                 vt == "enum" && new_multi.get(),
-                if is_time && !f.is_empty() { Some(f) } else { None },
-                if is_currency && !sy.is_empty() { Some(sy) } else { None },
-                if is_currency && !u.is_empty() { Some(u) } else { None },
+                if is_time && !f.is_empty() {
+                    Some(f)
+                } else {
+                    None
+                },
+                if is_currency && !sy.is_empty() {
+                    Some(sy)
+                } else {
+                    None
+                },
+                if is_currency && !u.is_empty() {
+                    Some(u)
+                } else {
+                    None
+                },
                 // 默认值随类型走：切类型时已清空（见类型下拉框的 on:change）。
                 &new_default.get(),
                 // 新建时没有关系可建：对方标签要先存在，故只能在建好之后于行内补。
@@ -210,7 +224,18 @@ pub fn WorkspaceSettings() -> impl IntoView {
             )
         };
         spawn_local(async move {
-            match create_label_schema(&ws_id, &n, &t, &vt, &evals, &attrs, None, &serde_json::json!([])).await {
+            match create_label_schema(
+                &ws_id,
+                &n,
+                &t,
+                &vt,
+                &evals,
+                &attrs,
+                None,
+                &serde_json::json!([]),
+            )
+            .await
+            {
                 Ok(_) => {
                     new_name.set(String::new());
                     new_title.set(String::new());
@@ -407,10 +432,13 @@ pub fn WorkspaceSettings() -> impl IntoView {
 
     view! {
         <div class="page page-wide">
-            // crumb 改成只剩路径说明；「返回工作空间」按钮原在这一行，现在挪到 set-nav 底部——
-            // 模仿视图页 `.wside` 把「工作空间列表」挂在最下面的做法，避免按钮悬在页面顶端
-            // 挤占设置面板的纵向空间。
-            <div class="crumb">
+            // 返回按钮放回 crumb 顶部，与 /admin、/account 的「工作空间列表」按钮同位：
+            // 路径说明前挂一个带箭头的轻量按钮，避免按钮悬在页面顶端挤占设置面板的纵向空间
+            // 这一点交由 `.crumb` 行高自己解决，不再塞进 set-nav。
+            <div class="crumb" style="display:flex;align-items:center;gap:8px">
+                <A href=move || format!("/{}", slug())>
+                    <button class="btn sm">{ic_back()}"工作空间"</button>
+                </A>
                 <span>{move || format!("/{} · 设置（Maintainer 及以上）", slug())}</span>
             </div>
             <div class="set-layout">
@@ -449,10 +477,6 @@ pub fn WorkspaceSettings() -> impl IntoView {
                     <div class="it dgr" class:on=move || tab.get() == "danger" on:click=move |_| tab.set("danger".into())>
                         "危险操作"
                     </div>
-                    // 「返回工作空间」挪到这里：与视图页「工作空间列表」按钮同位（侧栏最底）。
-                    <A href=move || format!("/{}", slug())>
-                        <div class="it" title="返回工作空间">{ic_back()}"返回工作空间"</div>
-                    </A>
                 </aside>
 
                 <div class="panel set-body">
@@ -1012,11 +1036,7 @@ fn link_value_text(v: &Value) -> String {
         Value::String(s) => s.clone(),
         Value::Bool(b) => b.to_string(),
         Value::Number(n) => fmt_num(n),
-        Value::Array(a) => a
-            .iter()
-            .map(link_value_text)
-            .collect::<Vec<_>>()
-            .join(","),
+        Value::Array(a) => a.iter().map(link_value_text).collect::<Vec<_>>().join(","),
         other => other.to_string(),
     }
 }
@@ -1082,7 +1102,10 @@ fn build_links(rows: Vec<LinkRow>, metas: &[LabelMeta], own: Option<&LabelMeta>)
             if other.is_empty() {
                 return None;
             }
-            let other_meta = metas.iter().find(|m| m.name == other).filter(|m| m.has_value());
+            let other_meta = metas
+                .iter()
+                .find(|m| m.name == other)
+                .filter(|m| m.has_value());
             let own_meta = own.filter(|m| m.has_value());
             Some(serde_json::json!({
                 "kind": r.kind.get(),

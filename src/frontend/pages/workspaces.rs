@@ -107,10 +107,6 @@ pub fn WorkspaceList() -> impl IntoView {
             // 留给未来真有全文检索能力时再做——避免现在挂一个永远 disabled 的输入框招点。
             <div style="display:flex;align-items:center;margin-bottom:16px">
                 <h2 style="font-size:20px;font-weight:500">"我的工作空间"</h2>
-                <button class="btn pri" style="margin-left:auto" on:click=move |_| show_create.set(!show_create.get())>
-                    {ic_add()}
-                    "新建工作空间"
-                </button>
             </div>
 
             {move || if show_create.get() {

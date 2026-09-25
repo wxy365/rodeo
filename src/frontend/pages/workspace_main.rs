@@ -24,7 +24,7 @@ use crate::frontend::graphql_client::{
     LabelSchema, Labeling, Member, NamedPrompt, View, ViewSort, ViewTimeline, Workspace,
 };
 use crate::frontend::icons::{
-    ic_back, ic_close, ic_comment, ic_folder, ic_full, ic_help, ic_search, ic_setting,
+    ic_back, ic_close, ic_comment, ic_copy, ic_folder, ic_full, ic_help, ic_search, ic_setting,
     ic_share, ic_tag, ic_undo,
 };
 use crate::frontend::label_editor::LabelEditor;
@@ -318,6 +318,9 @@ pub fn WorkspaceMain() -> impl IntoView {
     // 基础视图没有这个按钮（它上面的过滤只作临时用途），但基线仍要维护——「视图配置」
     // 保存后会用它重新对齐。
     let saved_baseline: RwSignal<Value> = RwSignal::new(serde_json::json!({ "and": [] }));
+    // 基线表达式的文本形态，与 `saved_baseline` 同步；用于「重置为默认」按钮
+    // 把表达式输入框（expr_text）一并还原——免去按需调用 `format_view_query`。
+    let saved_baseline_expr: RwSignal<String> = RwSignal::new(String::new());
     let expr_text = RwSignal::new(String::new());
     // 输入 `/` 时弹出的标签候选列表开关。
     let hint_open = RwSignal::new(false);
@@ -375,6 +378,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                     .map(|v| v.query.clone())
                     .unwrap_or_else(|| serde_json::json!({ "and": [] })),
             );
+            saved_baseline_expr.set(expr.clone());
             query_ast.set(
                 v.as_ref()
                     .map(|v| v.query.clone())
@@ -488,10 +492,12 @@ pub fn WorkspaceMain() -> impl IntoView {
     // 已落库的查询条件与当前编辑态有差异，或者两个输入框里还残留未应用的文本，都视为有未保存改动。
     // 只看 AST 不够：用户在输入框里敲完未回车时 `query_ast` 还没变，但「重置」按钮该亮，
     // 否则用户想一键还原就只能挨个清输入框。
+    // 对普通视图（即已保存表达式的视图）：基线非空时只看输入框是否非空会把
+    // 刚加载完的视图也判脏——所以改为对比 expr_text 与 saved_baseline_expr。
     let view_dirty = move || {
         active_view.get().is_some()
             && (query_ast.get() != saved_baseline.get()
-                || !expr_text.get_untracked().trim().is_empty()
+                || expr_text.get_untracked() != saved_baseline_expr.get()
                 || !ad_hoc_text.get_untracked().trim().is_empty())
     };
 
@@ -1164,11 +1170,14 @@ pub fn WorkspaceMain() -> impl IntoView {
 
     view! {
         <div class="page page-app">
-            <div class="crumb">
-                {move || match active_view.get() {
+            <div class="crumb" style="display:flex;align-items:center;gap:8px">
+                <A href="/workspaces">
+                    <button class="btn sm">{ic_back()}"工作空间列表"</button>
+                </A>
+                <span>{move || match active_view.get() {
                     Some(v) => format!("/{} · 视图「{}」", slug(), v.name),
                     None => format!("/{} · 基础视图「全部内容」", slug()),
-                }}
+                }}</span>
             </div>
             <div class=move || if sidebar_collapsed.get() { "ws-layout collapsed" } else { "ws-layout" }>
                 <WorkspaceSidebar
@@ -1178,31 +1187,28 @@ pub fn WorkspaceMain() -> impl IntoView {
                     active=active_id
                     collapsed=sidebar_collapsed
                     on_select=select_view
-                    on_delete=delete_view_cb
                     on_archived=Callback::new(open_archived)
                     on_context=on_context_view
                 />
                 <div class="panel wmain">
-                    <div class="vhead">
-                        <h2>{move || active_view.get().map(|v| v.name).unwrap_or_else(|| "全部内容".to_string())}</h2>
-                    </div>
                     <div class="filters">
                         <div class="querybar">
                             <div class="q-expr">
                             <div class="q-expr-tools">
                                 <button class="exprhelp" title="标签表达式语法说明"
                                     on:click=move |_| expr_help.set(true)>{ic_help()}</button>
-                                // 重置按钮：仅在「基础视图」下出现；非默认视图里不存在「重置」概念，
-                                // 用户改了过滤就该「保存视图」，不该一键抹掉。`view_dirty` 同时看 AST
-                                // 与两个输入框里的未应用文本，确保敲完未回车也能一键还原。
-                                {move || if active_view.get().is_some_and(|v| v.is_default) {
+                                // 重置按钮：把表达式与 ad-hoc 全文词还原到「视图已落库的基线」。
+                                // 基础视图的基线恒为空；普通视图的基线是上次保存的 query_expr。
+                                // `view_dirty` 同时看 AST 与两个输入框里的未应用文本，
+                                // 确保敲完未回车也能一键还原；与基线一致时按钮置灰。
+                                {move || if active_view.get().is_some() {
                                     view! {
                                         <button class="exprreset" title="重置为默认"
                                             disabled=move || !view_dirty()
                                             on:click=move |_| {
-                                                query_ast.set(serde_json::json!({ "and": [] }));
+                                                query_ast.set(saved_baseline.get_untracked());
                                                 ad_hoc_text.set(String::new());
-                                                expr_text.set(String::new());
+                                                expr_text.set(saved_baseline_expr.get_untracked());
                                                 hint_open.set(false);
                                                 time_pick.set(None);
                                                 refresh_view.update(|n| *n += 1);
@@ -1354,25 +1360,30 @@ pub fn WorkspaceMain() -> impl IntoView {
                         </div>
                         {move || if active_view.get().is_some_and(|v| v.is_default) {
                             // 基础视图上的过滤是临时态：不给「保存」，要留存只能另存为新视图。
-                            view! {
-                                <button class="btn" style="margin-left:auto"
-                                    on:click=move |_| {
-                                        let Some(v) = active_view.get() else { return };
-                                        let ast = query_ast.get_untracked();
-                                        let sorts = v.sorts.clone();
-                                        let cols = v.columns.clone();
-                                        dialog_error.set(None);
-                                        batch(move || {
-                                            view_dialog_saveas.set(true);
-                                            view_query_input.set(ast);
-                                            view_sort_input.set(sorts);
-                                            view_name_input.set(String::new());
-                                            view_columns_input.set(cols);
-                                            view_shared_input.set(false);
-                                            show_view_dialog.set(true);
-                                        });
-                                    }>"另存为新视图"</button>
-                            }.into_any()
+                            // 仅在表达式 / 全文搜索有未落库改动时才点亮，否则按钮无意义。
+                            if !view_dirty() {
+                                ().into_any()
+                            } else {
+                                view! {
+                                    <button class="ibtn" style="margin-left:auto" title="另存为新视图"
+                                        on:click=move |_| {
+                                            let Some(v) = active_view.get() else { return };
+                                            let ast = query_ast.get_untracked();
+                                            let sorts = v.sorts.clone();
+                                            let cols = v.columns.clone();
+                                            dialog_error.set(None);
+                                            batch(move || {
+                                                view_dialog_saveas.set(true);
+                                                view_query_input.set(ast);
+                                                view_sort_input.set(sorts);
+                                                view_name_input.set(String::new());
+                                                view_columns_input.set(cols);
+                                                view_shared_input.set(false);
+                                                show_view_dialog.set(true);
+                                            });
+                                        }>{ic_copy()}</button>
+                                }.into_any()
+                            }
                         } else {
                             view! {
                                 <button class="btn" style="margin-left:auto" disabled=move || !view_dirty()
@@ -1385,9 +1396,13 @@ pub fn WorkspaceMain() -> impl IntoView {
                                         let id = v.id.clone();
                                         let name = v.name.clone();
                                         let title_colors = v.title_colors.clone();
+                                        // 保存后用服务端权威的 query_expr 同步基线文本——比
+                                        // 直接拿 expr_text 更稳，规避两端规范化差异导致重置按钮残留亮起。
+                                        let saved_expr_text = expr_text.get_untracked();
                                         spawn_local(async move {
                                             match update_view(&id, &name, &ast, &sorts, &cols, shared, &title_colors).await {
                                                 Ok(saved) => {
+                                                    let new_expr_text = saved.query_expr.clone();
                                                     view_list.update(|l| {
                                                         if let Some(slot) = l.iter_mut().find(|x| x.id == saved.id) {
                                                             *slot = saved.clone();
@@ -1395,6 +1410,12 @@ pub fn WorkspaceMain() -> impl IntoView {
                                                     });
                                                     active_view.set(Some(saved));
                                                     saved_baseline.set(ast);
+                                                    saved_baseline_expr.set(new_expr_text);
+                                                    // 保存后输入框文本也应与服务端一致，否则 expr_text
+                                                    // 与基线分歧会让「重置」按钮误亮。
+                                                    if expr_text.get_untracked() != saved_expr_text {
+                                                        expr_text.set(saved_expr_text);
+                                                    }
                                                     error.set(None);
                                                 }
                                                 Err(e) => error.set(Some(e)),
@@ -2056,11 +2077,19 @@ pub fn WorkspaceMain() -> impl IntoView {
                             // 复用现有 show_config_dialog 打开逻辑。
                             open_config_for.run(vid_cfg.clone());
                         }>"配置视图"</button>
-                        <button class="danger" disabled=is_default
-                            on:click=move |_| {
-                                vmenu.set(None);
-                                delete_view_cb.run(vid_del.clone());
-                            }>"删除视图"</button>
+                        // 删除只对非基础视图开放——基础视图固定存在、不可删。
+                        {move || if is_default {
+                            ().into_any()
+                        } else {
+                            let vid_del_btn = vid_del.clone();
+                            view! {
+                                <button class="danger"
+                                    on:click=move |_| {
+                                        vmenu.set(None);
+                                        delete_view_cb.run(vid_del_btn.clone());
+                                    }>"删除视图"</button>
+                            }.into_any()
+                        }}
                     </div>
                 }.into_any()
             })}
@@ -2076,11 +2105,10 @@ fn WorkspaceSidebar(
     active: RwSignal<Option<String>>,
     collapsed: RwSignal<bool>,
     on_select: Callback<String>,
-    on_delete: Callback<String>,
     /// 「已归档」入口：打开归档条目列表弹窗。
     on_archived: Callback<()>,
     /// 右键叶子视图行：参数为 `(view_id, client_x, client_y)`，由父组件负责把
-    /// 坐标写入 `vmenu` 让浮层定位。基础视图 (`is_default`) 不触发此回调。
+    /// 坐标写入 `vmenu` 让浮层定位。
     on_context: Callback<(String, i32, i32)>,
 ) -> impl IntoView {
     let list = move || views.get();
@@ -2156,14 +2184,11 @@ fn WorkspaceSidebar(
                     .unwrap_or(&name)
                     .to_string();
                 let count = v.entry_count;
-                // 右键菜单守卫：基础视图 (`is_default`) 不允许配置/删除，右键空操作。
-                let is_default = v.is_default;
                 let is_active = {
                     let id = id.clone();
                     move || active.get().as_deref() == Some(id.as_str())
                 };
                 let click_id = id.clone();
-                let del_id = id.clone();
                 let ctx_id = id.clone();
                 let indent = format!("padding-left:{}px", 12 + depth * 14);
                 view! {
@@ -2177,8 +2202,6 @@ fn WorkspaceSidebar(
                          on:click=move |_| on_select.run(click_id.clone())
                          on:contextmenu=move |ev: leptos::ev::MouseEvent| {
                              ev.prevent_default();
-                             // 基础视图不能改/删，右键给空操作。
-                             if is_default { return; }
                              on_context.run((ctx_id.clone(), ev.client_x(), ev.client_y()));
                          }>
                         {if shared_mark {
@@ -2188,10 +2211,6 @@ fn WorkspaceSidebar(
                         }}
                         <span class="lbl" style="flex:1">{leaf_label}</span>
                         <span class="n">{count}</span>
-                        <button class="ibtn" title="删除视图" on:click=move |ev| {
-                            ev.stop_propagation();
-                            on_delete.run(del_id.clone());
-                        }>"×"</button>
                     </div>
                 }
                 .into_any()
@@ -2226,6 +2245,7 @@ fn WorkspaceSidebar(
                     move || active.get().as_deref() == Some(id.as_str())
                 };
                 let click_id = id.clone();
+                let ctx_id = id.clone();
                 view! {
                     <div class=move || {
                              let mut c = String::from("it base");
@@ -2233,7 +2253,11 @@ fn WorkspaceSidebar(
                              c
                          }
                          title=name
-                         on:click=move |_| on_select.run(click_id.clone())>
+                         on:click=move |_| on_select.run(click_id.clone())
+                         on:contextmenu=move |ev: leptos::ev::MouseEvent| {
+                             ev.prevent_default();
+                             on_context.run((ctx_id.clone(), ev.client_x(), ev.client_y()));
+                         }>
                         {ic_tag()}
                         <span class="lbl" style="flex:1">{name.clone()}</span>
                         <span class="n">{count}</span>
@@ -2250,9 +2274,6 @@ fn WorkspaceSidebar(
                 </div>
                 <A href=format!("/{slug}/settings")>
                     <div class="it" title="工作空间设置">{ic_setting()}<span class="lbl">"工作空间设置"</span></div>
-                </A>
-                <A href="/workspaces">
-                    <div class="it" title="工作空间列表">{ic_back()}<span class="lbl">"工作空间列表"</span></div>
                 </A>
             </div>
         </aside>
@@ -2336,6 +2357,7 @@ fn EntryTable(
     });
 
     view! {
+        <div class="tbl-scroll">
         <table class="tbl">
             <thead>
                 <tr>
@@ -2591,6 +2613,7 @@ fn EntryTable(
                 }}
             </tbody>
         </table>
+        </div>
     }
 }
 

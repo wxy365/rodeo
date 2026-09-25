@@ -1,7 +1,7 @@
 use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use leptos_router::hooks::use_navigate;
+use leptos_router::hooks::{use_navigate, use_query_map};
 
 use crate::frontend::components::logged_out;
 use crate::frontend::graphql_client::change_password;
@@ -16,8 +16,25 @@ use crate::frontend::use_auth;
 pub fn Account() -> impl IntoView {
     let auth = use_auth();
     let navigate = use_navigate();
-    let nav_back = navigate.clone();
-    let back = move |_| nav_back("/workspaces", Default::default());
+    // 返回按钮的文案与目的地看来源：来自工作空间（`?from=ws&slug=…`）就回那个工作
+    // 空间并写「工作空间」；其它（包括工作空间列表 `→` 默认）走 `/workspaces` 并写
+    // 「工作空间列表」。query 在 SSR 阶段可读，无需 wasm 分支。
+    let query = use_query_map();
+    let back_label = move || match query.get().get("from").as_deref() {
+        Some("ws") => "工作空间",
+        _ => "工作空间列表",
+    };
+    let back_href = move || match (query.get().get("from").as_deref(), query.get().get("slug")) {
+        (Some("ws"), Some(slug)) if !slug.is_empty() => format!("/{slug}"),
+        _ => "/workspaces".to_string(),
+    };
+    let back = {
+        let nav = navigate.clone();
+        move |_| {
+            let href = back_href();
+            nav(&href, Default::default());
+        }
+    };
 
     let old = RwSignal::new(String::new());
     let new = RwSignal::new(String::new());
@@ -35,10 +52,7 @@ pub fn Account() -> impl IntoView {
     });
 
     let can_submit = move || {
-        !busy.get()
-            && !old.get().is_empty()
-            && !new.get().is_empty()
-            && !confirm.get().is_empty()
+        !busy.get() && !old.get().is_empty() && !new.get().is_empty() && !confirm.get().is_empty()
     };
 
     let submit = move |ev: SubmitEvent| {
@@ -75,7 +89,7 @@ pub fn Account() -> impl IntoView {
     view! {
         <div class="page">
             <div class="crumb" style="display:flex;align-items:center;gap:8px">
-                <button class="btn sm" on:click=back>{ic_back()}"返回工作空间"</button>
+                <button class="btn sm" on:click=back>{ic_back()}{back_label}</button>
                 <span>"/account · 账号"</span>
             </div>
 

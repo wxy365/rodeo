@@ -1,6 +1,6 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use leptos_router::hooks::use_navigate;
+use leptos_router::hooks::{use_navigate, use_query_map};
 
 use crate::frontend::components::{copy_to_clipboard, logged_out, short_time};
 use crate::frontend::graphql_client::{
@@ -79,7 +79,11 @@ pub fn Admin() -> impl IntoView {
             match update_account(&id, &name, is_admin).await {
                 Ok(updated) => {
                     // 改的若是自己，右上角头像菜单里的名字也得跟着变——否则要刷新页面才更新。
-                    if auth.user.get_untracked().is_some_and(|u| u.id == updated.id) {
+                    if auth
+                        .user
+                        .get_untracked()
+                        .is_some_and(|u| u.id == updated.id)
+                    {
                         auth.user.set(Some(User {
                             id: updated.id.clone(),
                             email: updated.email.clone(),
@@ -150,17 +154,33 @@ pub fn Admin() -> impl IntoView {
     // 未登录、或本地令牌已被服务端判死，都回登录页。与 entry.rs 用同一条路径：
     // `logged_out()` 在 SSR 阶段恒为 true，所以只在 wasm 上跳转，否则服务端渲染会直接跳走。
     let navigate = use_navigate();
-    let nav_back = navigate.clone();
-    let back = move |_| nav_back("/workspaces", Default::default());
+    // 返回按钮的文案与目的地看来源：来自工作空间（`?from=ws&slug=…`）就回那个工作
+    // 空间并写「工作空间」；其它（包括工作空间列表 `→` 默认）走 `/workspaces` 并写
+    // 「工作空间列表」。query 在 SSR 阶段可读，无需 wasm 分支。
+    let query = use_query_map();
+    let back_label = move || match query.get().get("from").as_deref() {
+        Some("ws") => "工作空间",
+        _ => "工作空间列表",
+    };
+    let back_href = move || match (query.get().get("from").as_deref(), query.get().get("slug")) {
+        (Some("ws"), Some(slug)) if !slug.is_empty() => format!("/{slug}"),
+        _ => "/workspaces".to_string(),
+    };
+    let back = {
+        let nav = navigate.clone();
+        move |_| {
+            let href = back_href();
+            nav(&href, Default::default());
+        }
+    };
     Effect::new(move |_| {
         if cfg!(target_arch = "wasm32") && (logged_out() || auth.session_lost.get()) {
             navigate("/login", Default::default());
         }
     });
 
-    let can_submit = move || {
-        !busy.get() && !email.get().trim().is_empty() && !name.get().trim().is_empty()
-    };
+    let can_submit =
+        move || !busy.get() && !email.get().trim().is_empty() && !name.get().trim().is_empty();
 
     let submit = move |_| {
         let e = email.get().trim().to_string();
@@ -195,7 +215,7 @@ pub fn Admin() -> impl IntoView {
     view! {
         <div class="page">
             <div class="crumb" style="display:flex;align-items:center;gap:8px">
-                <button class="btn sm" on:click=back>{ic_back()}"返回工作空间"</button>
+                <button class="btn sm" on:click=back>{ic_back()}{back_label}</button>
                 <span>"/admin · 仅系统管理员"</span>
             </div>
             <div class="stats">

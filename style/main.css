@@ -205,6 +205,25 @@ select:focus {
     width: 100%;
     border-collapse: collapse;
 }
+/* 横向滚动容器：列很多（标签列多 + 时间/创建人）或窄屏时给出水平滚动条。
+   `min-width: 0` 让 flexbox 把它当成可压缩节点而不是按内容撑开；
+   `flex: 1 1 auto` 让它填满 wmain 的剩余竖直高度。 */
+.tbl-scroll {
+    overflow-x: auto;
+    overflow-y: auto;
+    min-width: 0;
+    flex: 1 1 auto;
+}
+.tbl th,
+.tbl td {
+    /* 单元格最小宽度：标签 / 时间戳 / 人员名等都不该被压到 0。
+       表格按内容撑开后由 `.tbl-scroll` 出滚动条。 */
+    min-width: 110px;
+}
+.tbl th.pick,
+.tbl td.pick {
+    min-width: 34px;
+}
 .tbl th {
     font-size: 12px;
     color: var(--ink3);
@@ -514,32 +533,6 @@ select:focus {
     gap: 6px;
     min-height: 0;
     overflow: hidden;
-}
-.vhead {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 6px 16px;
-    flex-wrap: wrap;
-}
-.vhead h2 {
-    font-size: 17px;
-    font-weight: 500;
-    margin-right: auto;
-}
-.vhead .inp {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    width: 240px;
-    padding: 0 12px;
-}
-.vhead .inp input {
-    border: 0;
-    outline: 0;
-    flex: 1;
-    padding: 7px 0;
-    background: none;
 }
 .filters {
     display: flex;
@@ -1739,7 +1732,6 @@ input[type="color"].sw:disabled {
     align-items: stretch;
     overflow: hidden;
 }
-.page-app .wmain > .vhead,
 .page-app .wmain > .filters {
     flex: 0 0 auto;
 }
