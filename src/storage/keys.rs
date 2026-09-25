@@ -160,6 +160,36 @@ pub fn labeling_by_workspace_key(workspace_id: Ulid, code: &str, name: &str) -> 
     key
 }
 
+/// 标签值二级索引键：`workspace_id ‖ label_name ‖ 0x00 ‖ encoded_value ‖ entry_code`。
+/// `label_name` 是不定长字符串，中间用 `\x00` 作分隔——它不会出现在合法名字里，
+/// 这样 `(ws, name)` 前缀下所有 value 按字典序连成一段，可直接 scan_prefix 取值集合。
+/// `encoded_value` 来自 `crate::domain::label::encode_label_value_for_index`，
+/// 字节序与领域序一致以支持范围扫描；列表类型每个元素各占一条记录。
+pub fn labeling_by_label_value_key(
+    workspace_id: Ulid,
+    label_name: &str,
+    encoded_value: &[u8],
+    code: &str,
+) -> Vec<u8> {
+    let mut key = Vec::with_capacity(16 + label_name.len() + 1 + encoded_value.len() + code.len());
+    key.extend_from_slice(&workspace_id.to_bytes());
+    key.extend_from_slice(label_name.as_bytes());
+    key.push(0);
+    key.extend_from_slice(encoded_value);
+    key.extend_from_slice(code.as_bytes());
+    key
+}
+
+/// 给定 `(ws, label_name)` 前缀扫描所需的字节：workspace_id + 名字 + 分隔符。
+/// 真正的 value 边界在调用方按 `encode_label_value_for_index` 拼上。
+pub fn labeling_by_label_prefix(workspace_id: Ulid, label_name: &str) -> Vec<u8> {
+    let mut key = Vec::with_capacity(16 + label_name.len() + 1);
+    key.extend_from_slice(&workspace_id.to_bytes());
+    key.extend_from_slice(label_name.as_bytes());
+    key.push(0);
+    key
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,5 +206,16 @@ mod tests {
         let lk = labeling_by_workspace_key(ws, "CODE0001", "Task");
         assert!(lk.starts_with(&ws.to_bytes()));
         assert_eq!(&lk[16..], b"CODE0001Task");
+    }
+
+    #[test]
+    fn label_value_index_key_layout() {
+        let ws = ulid::Ulid::new();
+        let key = labeling_by_label_value_key(ws, "Task", b"\x05Open", "CODE0000000000001");
+        let prefix = labeling_by_label_prefix(ws, "Task");
+        assert!(key.starts_with(&prefix));
+        let after = &key[prefix.len()..];
+        assert_eq!(&after[..5], b"\x05Open");
+        assert_eq!(&after[5..], b"CODE0000000000001");
     }
 }

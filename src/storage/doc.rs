@@ -44,6 +44,11 @@ pub mod cf {
     pub const ENTRIES_ARCHIVED: &str = "entries_archived";
     pub const LABEL_SCHEMAS: &str = "label_schemas";
     pub const LABELINGS: &str = "labelings";
+    /// 按 (workspace_id, label_name, value, entry_code) 的二级索引，让
+    /// 「Task = Open」「Score > 50」这类标签条件无需扫全工作空间条目即可收窄候选。
+    /// 值按 schema 的 value_type 编码为字节，编码顺序与领域序一致以支持范围扫描；
+    /// 列表类型（EnumList / AccountList）的每个元素各占一条记录，天然支持包含语义。
+    pub const LABELINGS_BY_LABEL: &str = "labelings_by_label";
     pub const AUDIT_LOGS: &str = "audit_logs";
     pub const AUDIT_LOGS_BY_RESOURCE: &str = "audit_logs_by_resource";
     pub const AUDIT_LOGS_BY_WORKSPACE: &str = "audit_logs_by_workspace";

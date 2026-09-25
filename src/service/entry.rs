@@ -1,13 +1,16 @@
 use std::cmp::Ordering;
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use chrono::Utc;
 use ulid::Ulid;
 
+use crate::domain::label::{encode_label_value_for_index, explode_label_value_for_index};
+use crate::domain::query::{extract_index_hints, IndexHint};
 use crate::domain::view::{SortField, SortKey, SortSpec};
 use crate::domain::{
     generate_entry_code, AuditAction, AuditLog, DerivedLabel, Entry, EvalEnv, InheritanceGraph,
-    LabelSchema, LabelValue, LabelValueType, Labeling, Query,
+    LabelSchema, LabelValue, LabelValueType, Labeling, Op, Query,
 };
 use crate::error::AppError;
 use crate::service::audit::audit_ops;
@@ -390,7 +393,13 @@ impl EntryService {
         let before = self
             .store
             .get::<Labeling>(cf::LABELINGS, &keys::labeling_key(entry_code, label_name))?;
-        let mut ops = labeling_set_ops(entry.workspace_id, &labeling, actor, before.as_ref())?;
+        let mut ops = labeling_set_ops(
+            entry.workspace_id,
+            &labeling,
+            schema.value_type,
+            actor,
+            before.as_ref(),
+        )?;
         // plan 必须在提交前算：引擎从库里取前像，用户写入先落库的话它就看不到变更了。
         let staged = StagedWrite {
             entry_code: entry_code.to_string(),
@@ -459,12 +468,20 @@ impl EntryService {
         let mut ops = Vec::new();
         for entry in &entries {
             for (name, lv) in &resolved {
+                let vt = self
+                    .store
+                    .get::<LabelSchema>(
+                        cf::LABEL_SCHEMAS,
+                        &keys::label_schema_key(ws_id, name),
+                    )?
+                    .map(|s| s.value_type)
+                    .unwrap_or(LabelValueType::Null);
                 let labeling =
                     Labeling::new(entry.code.clone(), name.clone(), lv.clone(), actor);
                 let before = self
                     .store
                     .get::<Labeling>(cf::LABELINGS, &keys::labeling_key(&entry.code, name))?;
-                ops.extend(labeling_set_ops(ws_id, &labeling, actor, before.as_ref())?);
+                ops.extend(labeling_set_ops(ws_id, &labeling, vt, actor, before.as_ref())?);
             }
         }
         let written = entries.len() * resolved.len();
@@ -506,10 +523,19 @@ impl EntryService {
         let before = self
             .store
             .get::<Labeling>(cf::LABELINGS, &keys::labeling_key(entry_code, label_name))?;
+        let vt = self
+            .store
+            .get::<LabelSchema>(
+                cf::LABEL_SCHEMAS,
+                &keys::label_schema_key(entry.workspace_id, label_name),
+            )?
+            .map(|s| s.value_type)
+            .unwrap_or(LabelValueType::Null);
         let mut ops = labeling_ops(
             entry.workspace_id,
             entry_code,
             label_name,
+            vt,
             None,
             actor,
             before.as_ref(),
@@ -590,6 +616,51 @@ impl EntryService {
         Ok(count)
     }
 
+    /// `LABELINGS_BY_LABEL` 列族为空时重建：遍历 `LABELINGS` 取每条打标，
+    /// 按工作空间的 schema 查 `value_type` 后编码成索引键。已填充则直接返回 0（幂等）。
+    /// 找不到 schema 或编码失败（NaN 等）跳过对应条目——宁可漏索引，也不让回填整批失败。
+    /// 返回成功写入的索引条数。
+    pub fn labelings_by_label_backfill(&self, store: &DocStore) -> Result<usize, AppError> {
+        if !store.scan_prefix(cf::LABELINGS_BY_LABEL, b"")?.is_empty() {
+            return Ok(0);
+        }
+        // 按工作空间缓存 schema，避免同一个 workspace 内每条打标都回查一次。
+        let mut schema_cache: std::collections::HashMap<Ulid, std::collections::HashMap<String, LabelValueType>> =
+            std::collections::HashMap::new();
+        let mut ops = Vec::new();
+        let mut count = 0;
+        for (_, lv) in store.scan_prefix(cf::LABELINGS, b"")? {
+            let l: Labeling = bincode::deserialize(&lv)?;
+            let entry: Entry = match store.get::<Entry>(cf::ENTRIES, l.entry_code.as_bytes())? {
+                Some(e) => e,
+                None => continue,
+            };
+            let ws = entry.workspace_id;
+            let cache = schema_cache
+                .entry(ws)
+                .or_insert_with(|| match store.scan_prefix(cf::LABEL_SCHEMAS, &ws.to_bytes()) {
+                    Ok(rows) => rows
+                        .into_iter()
+                        .filter_map(|(_, sv)| bincode::deserialize::<LabelSchema>(&sv).ok())
+                        .map(|s| (s.name.clone(), s.value_type))
+                        .collect(),
+                    Err(_) => std::collections::HashMap::new(),
+                });
+            let vt = match cache.get(&l.label_name) {
+                Some(vt) => *vt,
+                None => continue,
+            };
+            for op in label_index_puts(ws, &l.entry_code, &l.label_name, &l.value, vt) {
+                ops.push(op);
+                count += 1;
+            }
+        }
+        if !ops.is_empty() {
+            store.write_batch(ops)?;
+        }
+        Ok(count)
+    }
+
     /// 侧栏计数：复用 `query` 的 total（只取一页一条，避免重复过滤逻辑）。
     pub fn count(&self, ws: Ulid, query: &Query) -> Result<usize, AppError> {
         let r = self.query(
@@ -609,7 +680,23 @@ impl EntryService {
         sort: &SortSpec,
         page: PageInput,
     ) -> Result<QueryResult, AppError> {
-        let rows: Vec<Entry> = self.list(ws)?;
+        // 取出顶层 AND 里全部可被二级索引加速的标签条件。
+        let hints = extract_index_hints(query);
+        let all_rows: Vec<Entry> = self.list(ws)?;
+        // 先按 hints 计算候选 entry_code 集合；多个 hint 取交集。
+        // 集合与全量等大时跳过过滤（退化回原路径），集合为空时 `query` 自然没命中。
+        let rows: Vec<Entry> = if hints.is_empty() {
+            all_rows
+        } else {
+            let base: HashSet<String> = all_rows.iter().map(|e| e.code.clone()).collect();
+            match resolve_candidates_from_hints(&self.store, ws, &hints, &base)? {
+                Some(codes) if codes.len() < base.len() => all_rows
+                    .into_iter()
+                    .filter(|e| codes.contains(&e.code))
+                    .collect(),
+                _ => all_rows,
+            }
+        };
 
         // 一次取回工作空间全部打标：既给过滤用，也用来汇总「本视图条目带到的标签」。
         let labels_map = self.labelings_by_workspace(ws)?;
@@ -756,13 +843,174 @@ pub fn list_entries(store: &DocStore, workspace_id: Ulid) -> Result<Vec<Entry>, 
     Ok(entries)
 }
 
-/// 构造「写 / 删一个标签」的全套 ops：Labeling 两条（主键 + 工作空间索引）+ 一条标签审计。
+/// 把 `IndexHint` 列表转成 entry_code 候选集合：多个 hint 取交集。
+/// schema 缺失 / 值与类型不匹配 / Float NaN 时该 hint 跳过（视作不约束）。
+/// 返回 `None` 表示 hints 为空或全部跳过，调用方应走全扫。
+fn resolve_candidates_from_hints(
+    store: &DocStore,
+    ws: Ulid,
+    hints: &[IndexHint],
+    base_codes: &HashSet<String>,
+) -> Result<Option<HashSet<String>>, AppError> {
+    if hints.is_empty() {
+        return Ok(None);
+    }
+    let mut combined: Option<HashSet<String>> = None;
+    for hint in hints {
+        let schema = match store.get::<LabelSchema>(
+            cf::LABEL_SCHEMAS,
+            &keys::label_schema_key(ws, &hint.label_name),
+        )? {
+            Some(s) => s,
+            None => continue,
+        };
+        let codes = codes_for_hint(store, ws, hint, &schema, base_codes);
+        combined = Some(match combined {
+            None => codes,
+            Some(prev) => prev.intersection(&codes).cloned().collect(),
+        });
+        if matches!(&combined, Some(s) if s.is_empty()) {
+            return Ok(combined);
+        }
+    }
+    Ok(combined)
+}
+
+fn codes_for_hint(
+    store: &DocStore,
+    ws: Ulid,
+    hint: &IndexHint,
+    schema: &LabelSchema,
+    base_codes: &HashSet<String>,
+) -> HashSet<String> {
+    match hint.op {
+        Op::Eq => match resolve_value_for_index(&hint.value, schema) {
+            Ok(enc) => codes_with_exact_value(store, ws, &hint.label_name, &enc),
+            Err(_) => HashSet::new(),
+        },
+        Op::Ne => match resolve_value_for_index(&hint.value, schema) {
+            Ok(enc) => {
+                let hits = codes_with_exact_value(store, ws, &hint.label_name, &enc);
+                base_codes - &hits
+            }
+            Err(_) => base_codes.clone(),
+        },
+        Op::In => {
+            let mut out = HashSet::new();
+            if let Some(arr) = hint.value.as_array() {
+                for v in arr {
+                    if let Ok(enc) = resolve_value_for_index(v, schema) {
+                        out.extend(codes_with_exact_value(store, ws, &hint.label_name, &enc));
+                    }
+                }
+            }
+            out
+        }
+        Op::NotIn => {
+            let mut hits = HashSet::new();
+            if let Some(arr) = hint.value.as_array() {
+                for v in arr {
+                    if let Ok(enc) = resolve_value_for_index(v, schema) {
+                        hits.extend(codes_with_exact_value(store, ws, &hint.label_name, &enc));
+                    }
+                }
+            }
+            base_codes - &hits
+        }
+        Op::Gt | Op::Ge | Op::Lt | Op::Le => {
+            match resolve_value_for_index(&hint.value, schema) {
+                Ok(threshold) => codes_in_range(store, ws, &hint.label_name, hint.op, &threshold),
+                Err(_) => HashSet::new(),
+            }
+        }
+        _ => HashSet::new(),
+    }
+}
+
+/// 把查询里的 JSON 值按 schema 转成 `LabelValue`，再编码成索引字节。
+fn resolve_value_for_index(
+    v: &serde_json::Value,
+    schema: &LabelSchema,
+) -> Result<Vec<u8>, AppError> {
+    let lv = LabelValue::from_json(v, schema)?;
+    encode_label_value_for_index(&lv, schema.value_type)
+}
+
+/// 严格相等：键前缀到编码后的字节完全匹配；scan_prefix 返回的 key 末尾 16 字节即 entry_code。
+fn codes_with_exact_value(
+    store: &DocStore,
+    ws: Ulid,
+    name: &str,
+    enc: &[u8],
+) -> HashSet<String> {
+    let mut prefix = keys::labeling_by_label_prefix(ws, name);
+    prefix.extend_from_slice(enc);
+    let mut out = HashSet::new();
+    if let Ok(rows) = store.scan_prefix(cf::LABELINGS_BY_LABEL, &prefix) {
+        for (k, _) in rows {
+            if let Some(c) = extract_entry_code_from_key(&k) {
+                out.insert(c);
+            }
+        }
+    }
+    out
+}
+
+/// 范围扫描：取整个 `(ws, name)` 前缀，内存里按编码字节序比较。
+/// 索引条目量远小于工作空间条目量时这是 O(标签值集合)；比逐条 evaluate 仍快得多。
+fn codes_in_range(
+    store: &DocStore,
+    ws: Ulid,
+    name: &str,
+    op: Op,
+    threshold: &[u8],
+) -> HashSet<String> {
+    let prefix = keys::labeling_by_label_prefix(ws, name);
+    let mut out = HashSet::new();
+    if let Ok(rows) = store.scan_prefix(cf::LABELINGS_BY_LABEL, &prefix) {
+        for (k, _) in rows {
+            if k.len() < prefix.len() + 16 {
+                continue;
+            }
+            let code_start = k.len() - 16;
+            let enc = &k[prefix.len()..code_start];
+            let matched = match op {
+                Op::Gt => enc > threshold,
+                Op::Ge => enc >= threshold,
+                Op::Lt => enc < threshold,
+                Op::Le => enc <= threshold,
+                _ => false,
+            };
+            if matched {
+                if let Ok(c) = std::str::from_utf8(&k[code_start..]) {
+                    out.insert(c.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+fn extract_entry_code_from_key(key: &[u8]) -> Option<String> {
+    if key.len() < 16 {
+        return None;
+    }
+    std::str::from_utf8(&key[key.len() - 16..])
+        .ok()
+        .map(String::from)
+}
+
+/// 构造「写 / 删一个标签」的全套 ops：Labeling 两条（主键 + 工作空间索引）+ 一条标签审计
+/// + LABELINGS_BY_LABEL 的 Put/Delete。索引键依赖 schema 的 `value_type`，调用方必须传入。
+/// 索引写入失败（如 NaN、值与类型不匹配）只跳过索引条目，主写入照常完成——
+/// 没索引的标签最多退回全扫，不会丢数据。
 /// `before` 由调用方给定：`EntryService` 从库里读，`RuleEngine` 从内存后置状态读——
 /// 引擎的写入尚未提交，读库拿到的是前像。
 pub fn labeling_ops(
     ws: Ulid,
     code: &str,
     label_name: &str,
+    value_type: LabelValueType,
     value: Option<&LabelValue>,
     actor: Ulid,
     before: Option<&Labeling>,
@@ -771,6 +1019,7 @@ pub fn labeling_ops(
         Some(lv) => labeling_set_ops(
             ws,
             &Labeling::new(code.to_string(), label_name.to_string(), lv.clone(), actor),
+            value_type,
             actor,
             before,
         ),
@@ -790,6 +1039,12 @@ pub fn labeling_ops(
                 cf::LABELINGS_BY_WORKSPACE,
                 keys::labeling_by_workspace_key(ws, code, label_name),
             ));
+            // `before` 已知旧值，按其编码算出旧索引键逐条删；编码失败时跳过对应条目。
+            if let Some(prev) = before {
+                for op in label_index_deletes(ws, code, label_name, &prev.value, value_type) {
+                    ops.push(op);
+                }
+            }
             Ok(ops)
         }
     }
@@ -800,6 +1055,7 @@ pub fn labeling_ops(
 fn labeling_set_ops(
     ws: Ulid,
     labeling: &Labeling,
+    value_type: LabelValueType,
     actor: Ulid,
     before: Option<&Labeling>,
 ) -> Result<Vec<BatchOp>, AppError> {
@@ -823,7 +1079,65 @@ fn labeling_set_ops(
         keys::labeling_by_workspace_key(ws, &labeling.entry_code, &labeling.label_name),
         labeling,
     )?);
+    // 旧值不同则先把旧索引键删掉（更新场景下编码不同会变成「写入新的 + 漏删旧的」）。
+    if let Some(prev) = before {
+        if prev.value != labeling.value {
+            for op in label_index_deletes(ws, &labeling.entry_code, &labeling.label_name, &prev.value, value_type) {
+                ops.push(op);
+            }
+        }
+    }
+    for op in label_index_puts(
+        ws,
+        &labeling.entry_code,
+        &labeling.label_name,
+        &labeling.value,
+        value_type,
+    ) {
+        ops.push(op);
+    }
     Ok(ops)
+}
+
+/// 新打标对应的索引 Put 集合：列表类型每个元素一条记录，编码失败时静默跳过。
+fn label_index_puts(
+    ws: Ulid,
+    code: &str,
+    name: &str,
+    lv: &LabelValue,
+    vt: LabelValueType,
+) -> Vec<BatchOp> {
+    let mut ops = Vec::new();
+    for item in explode_label_value_for_index(lv) {
+        if let Ok(encoded) = encode_label_value_for_index(&item, vt) {
+            ops.push(BatchOp::put_raw(
+                cf::LABELINGS_BY_LABEL,
+                keys::labeling_by_label_value_key(ws, name, &encoded, code),
+                Vec::new(),
+            ));
+        }
+    }
+    ops
+}
+
+/// 旧打标对应的索引 Delete 集合：与 `label_index_puts` 对称。
+fn label_index_deletes(
+    ws: Ulid,
+    code: &str,
+    name: &str,
+    lv: &LabelValue,
+    vt: LabelValueType,
+) -> Vec<BatchOp> {
+    let mut ops = Vec::new();
+    for item in explode_label_value_for_index(lv) {
+        if let Ok(encoded) = encode_label_value_for_index(&item, vt) {
+            ops.push(BatchOp::delete(
+                cf::LABELINGS_BY_LABEL,
+                keys::labeling_by_label_value_key(ws, name, &encoded, code),
+            ));
+        }
+    }
+    ops
 }
 
 /// 归档审计快照：条目本身不变，只是补上/清掉 archived_at，便于前端 diff 出

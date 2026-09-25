@@ -499,10 +499,15 @@ impl RuleEngine {
             let mut next_events = Vec::new();
             for (_, w) in &collapsed {
                 let before = overlay.get(&w.entry_code, &w.label_name).cloned();
+                let vt = schemas
+                    .get(&w.label_name)
+                    .map(|s| s.value_type)
+                    .unwrap_or(crate::domain::LabelValueType::Null);
                 ops.extend(labeling_ops(
                     ws,
                     &w.entry_code,
                     &w.label_name,
+                    vt,
                     w.value.as_ref(),
                     w.actor,
                     before.as_ref(),

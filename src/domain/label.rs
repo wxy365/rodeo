@@ -227,6 +227,92 @@ impl LabelValue {
     }
 }
 
+/// 把单个 `LabelValue` 编码成二级索引键里的字节段。编码顺序与领域序一致以支持
+/// `scan_prefix` 范围扫描；列表类型不在此函数里处理，调用方应迭代列表逐元素调用。
+/// 返回 `Err` 表示该值无法参与索引（NaN、值与 schema 类型不匹配），调用方应
+/// 选择跳过索引写入而非整体失败——主写入照常完成。
+pub fn encode_label_value_for_index(
+    lv: &LabelValue,
+    vt: LabelValueType,
+) -> Result<Vec<u8>, AppError> {
+    use LabelValueType::*;
+    match (vt, lv) {
+        (Null, _) => Ok(Vec::new()),
+        (Boolean, LabelValue::Bool(b)) => Ok(vec![if *b { 0x02 } else { 0x01 }]),
+        (Integer, LabelValue::Int(i)) => Ok(encode_i64(*i)),
+        // Float / Currency 走同一套 IEEE 754 + 符号翻转编码；
+        // schema 与值类型只要两边都是数值就接受——`from_json` 已经校验过同构。
+        (Float, LabelValue::Float(f))
+        | (Float, LabelValue::Currency(f))
+        | (Currency, LabelValue::Float(f))
+        | (Currency, LabelValue::Currency(f)) => encode_f64(*f),
+        // 字符串族：Date / Time / DateTime 都按规范化布局写入，字典序等于时间序；
+        // Email / Account 不参与范围但等值需要能区分条目。
+        (String | Enum | Date | Time | DateTime | Email | Account, lv) => match lv_as_str(lv) {
+            Some(s) => Ok(encode_str(s)),
+            None => Err(AppError::InvalidLabelValue),
+        },
+        _ => Err(AppError::InvalidLabelValue),
+    }
+}
+
+/// 列表类型 `LabelValue` 拆成多个可独立索引的标量元素。返回的每个元素都按
+/// `encode_label_value_for_index` 单独编码。非列表类型直接返回 `vec![lv.clone()]`。
+pub fn explode_label_value_for_index(lv: &LabelValue) -> Vec<LabelValue> {
+    match lv {
+        LabelValue::EnumList(items) => items.iter().map(|s| LabelValue::Enum(s.clone())).collect(),
+        LabelValue::AccountList(items) => {
+            items.iter().map(|s| LabelValue::Account(s.clone())).collect()
+        }
+        other => vec![other.clone()],
+    }
+}
+
+fn lv_as_str(lv: &LabelValue) -> Option<&str> {
+    match lv {
+        LabelValue::String(s)
+        | LabelValue::Enum(s)
+        | LabelValue::Date(s)
+        | LabelValue::Time(s)
+        | LabelValue::DateTime(s)
+        | LabelValue::Email(s)
+        | LabelValue::Account(s) => Some(s.as_str()),
+        _ => None,
+    }
+}
+
+fn encode_i64(i: i64) -> Vec<u8> {
+    // 翻转最高位让有符号 i64 的字节序等于数值序：负数小、正数大。
+    let bits = (i as u64) ^ 0x8000_0000_0000_0000;
+    bits.to_be_bytes().to_vec()
+}
+
+fn encode_f64(f: f64) -> Result<Vec<u8>, AppError> {
+    // NaN 不能放进有序索引——它的位模式无序且 `to_bits` 实现各异。
+    if f.is_nan() {
+        return Err(AppError::InvalidLabelValue);
+    }
+    let bits = f.to_bits();
+    // 翻转符号位让正数排在负数之后；负数再按位取反保证 `-Inf` < 任何负有限值。
+    let encoded = if bits & 0x8000_0000_0000_0000 != 0 {
+        !bits
+    } else {
+        bits | 0x8000_0000_0000_0000
+    };
+    Ok(encoded.to_be_bytes().to_vec())
+}
+
+fn encode_str(s: &str) -> Vec<u8> {
+    // 4 字节长度前缀 + UTF-8 字节。长度前缀让变长字符串与 `\x00` 分隔符共存无歧义；
+    // u32 足够覆盖任何合理标签值。
+    let bytes = s.as_bytes();
+    let len = bytes.len() as u32;
+    let mut out = Vec::with_capacity(4 + bytes.len());
+    out.extend_from_slice(&len.to_be_bytes());
+    out.extend_from_slice(bytes);
+    out
+}
+
 /// 时间型标签的默认展示布局（schema.format 缺省时使用，Go 布局）。
 pub fn default_layout(vt: LabelValueType) -> &'static str {
     match vt {

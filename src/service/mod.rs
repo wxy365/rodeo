@@ -86,6 +86,8 @@ impl Services {
         services.label.repair_legacy_schemas()?;
         services.search.backfill(&services.store)?;
         services.entry.labelings_by_workspace_backfill(&services.store)?;
+        // 标签值二级索引：仅在首次启动 / 新装时灌，幂等；已经存在就跳过。
+        services.entry.labelings_by_label_backfill(&services.store)?;
         // 视图排序的转码修复必须排在 repair_default_view_name 之前：
         // 后者用 `self.get(id)?` 读视图，而 `DocStore::get` 在 bincode 解码失败时返回
         // `Err` 而非 `None`，旧编码的记录会让启动直接失败。

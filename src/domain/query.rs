@@ -64,6 +64,55 @@ pub const RESERVED_FIELDS: [&str; 7] = [
     "Code", "Title", "Detail", "CreatedBy", "CreatedAt", "UpdatedBy", "UpdatedAt",
 ];
 
+/// 可被 `LABELINGS_BY_LABEL` 二级索引加速的标签条件。
+#[derive(Debug, Clone)]
+pub struct IndexHint {
+    pub label_name: String,
+    pub op: Op,
+    /// `Eq`/`Ne`/`Gt`/`Ge`/`Lt`/`Le` 是单值；`In`/`NotIn` 是 JSON 数组。
+    pub value: serde_json::Value,
+}
+
+/// 顶层为 `And` 时挑出全部可被索引加速的 Cond；其他形状（`Or`/`Not`/嵌套）返回空。
+/// 继承标签（`LabelInherited`，语法上写为 `L4+`）与 `Contains`/`NotContains`/
+/// `Present`/`Absent` 都不索引——前者必须先做继承推导，后者没有等值语义。
+/// 限制在 `And` 顶层的原因：`Or`/`Not` 的集合运算成本大于收益，宁可走全扫。
+pub fn extract_index_hints(query: &Query) -> Vec<IndexHint> {
+    let Query::And(children) = query else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for child in children {
+        let Query::Cond(cond) = child else {
+            continue;
+        };
+        let Field::Label(name) = &cond.field else {
+            continue;
+        };
+        let Some(value) = &cond.value else {
+            continue;
+        };
+        match cond.op {
+            Op::Eq | Op::Ne | Op::Gt | Op::Ge | Op::Lt | Op::Le => {
+                out.push(IndexHint {
+                    label_name: name.clone(),
+                    op: cond.op,
+                    value: value.clone(),
+                });
+            }
+            Op::In | Op::NotIn if value.is_array() => {
+                out.push(IndexHint {
+                    label_name: name.clone(),
+                    op: cond.op,
+                    value: value.clone(),
+                });
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Op {
