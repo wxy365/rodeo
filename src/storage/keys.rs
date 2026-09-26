@@ -160,6 +160,31 @@ pub fn labeling_by_workspace_key(workspace_id: Ulid, code: &str, name: &str) -> 
     key
 }
 
+/// Agent 会话。user 键 < ws 键 < session 键：所有读都强制走 user 前缀，
+/// 跨用户读取不到任何 session（不存在性也不暴露）。
+pub fn agent_session_key(user_id: Ulid, workspace_id: Ulid, id: Ulid) -> Vec<u8> {
+    let mut out = Vec::with_capacity(48);
+    out.extend_from_slice(&user_id.to_bytes());
+    out.extend_from_slice(&workspace_id.to_bytes());
+    out.extend_from_slice(&id.to_bytes());
+    out
+}
+
+pub fn agent_session_prefix(user_id: Ulid) -> [u8; 16] {
+    user_id.to_bytes()
+}
+
+pub fn agent_message_key(session_id: Ulid, message_id: Ulid) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    out[..16].copy_from_slice(&session_id.to_bytes());
+    out[16..].copy_from_slice(&message_id.to_bytes());
+    out
+}
+
+pub fn agent_message_prefix(session_id: Ulid) -> [u8; 16] {
+    session_id.to_bytes()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

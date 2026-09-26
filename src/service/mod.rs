@@ -1,3 +1,4 @@
+pub mod agent;
 pub mod ai;
 pub mod attachment;
 pub mod audit;
@@ -18,6 +19,7 @@ use crate::config::Config;
 use crate::error::AppError;
 use crate::storage::{BlobStore, DocStore};
 
+pub use agent::AgentService;
 pub use ai::{AiClient, AiService};
 pub use attachment::AttachmentService;
 pub use audit::AuditService;
@@ -48,6 +50,7 @@ pub struct Services {
     pub ai: AiService,
     pub ai_client: Option<AiClient>,
     pub rule: RuleService,
+    pub agent: AgentService,
 }
 
 impl Services {
@@ -78,6 +81,7 @@ impl Services {
             ai: AiService::new(store.clone()),
             ai_client,
             rule: RuleService::new(store.clone()),
+            agent: AgentService::new(store.clone(), config.clone()),
             search,
             store,
             config,

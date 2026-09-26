@@ -39,6 +39,8 @@ const ALL_CFS: &[&str] = &[
     cf::INLINE_ATTACHMENTS,
     cf::VIEW_TIMELINE,
     cf::MESSAGES_BY_RECIPIENT,
+    cf::AGENT_SESSIONS,
+    cf::AGENT_MESSAGES,
 ];
 
 /// RocksDB 文档存储：每个 CF 存一类文档（bincode 序列化）或二级索引（裸字节）。
