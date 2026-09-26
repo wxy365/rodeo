@@ -1568,6 +1568,7 @@ impl Mutation {
         Ok(true)
     }
 
+    /// 新建条目（Worker+）。返回新条目的 id / code / title。
     async fn create_entry(
         &self,
         ctx: &Context<'_>,
@@ -1710,6 +1711,8 @@ impl Mutation {
         Ok(written as i32)
     }
 
+    /// 编辑条目（Worker+）。`expectedUpdatedAt` 用于乐观并发：
+    /// 与服务端最新 `updatedAt` 不一致时报「内容已被他人修改」。
     async fn update_entry(
         &self,
         ctx: &Context<'_>,
@@ -1746,6 +1749,7 @@ impl Mutation {
         gql_entry(gql, updated, labels)
     }
 
+    /// 软删除条目（Worker+）。数据保留，可恢复（archive_entry / unarchive_entry）。
     async fn delete_entry(&self, ctx: &Context<'_>, code: String) -> GqlResult<bool> {
         let gql = ctx.data::<GraphqlContext>()?;
         let auth = gql.require_auth()?;
@@ -1947,6 +1951,8 @@ impl Mutation {
         Ok(true)
     }
 
+    /// 在工作空间里新建一条标签定义（Maintainer+）。
+    /// `valueType` 为 `"string" | "number" | "date" | "single" | "multi"` 之一。
     async fn create_label_schema(
         &self,
         ctx: &Context<'_>,
@@ -1971,6 +1977,8 @@ impl Mutation {
         Ok(schema.into())
     }
 
+    /// 按 `name` 更新一条已存在的标签定义（Maintainer+）。
+    /// `valueType` 不可改；要换类型请删了重建。
     async fn update_label_schema(
         &self,
         ctx: &Context<'_>,
@@ -2021,6 +2029,8 @@ impl Mutation {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// 新建视图（Worker+ 个人视图 / Maintainer+ 共享视图）。
+    /// `query` 是按 `parseViewQuery` / `formatViewQuery` 规则编排的查询条件 JSON。
     async fn create_view(
         &self,
         ctx: &Context<'_>,
@@ -2058,6 +2068,8 @@ impl Mutation {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// 改视图（共享视图需 Maintainer；本人个人视图 Worker 即可）。
+    /// 不动时间轴配置，时间轴走 `setViewTimeline`。
     async fn update_view(
         &self,
         ctx: &Context<'_>,
@@ -2138,6 +2150,7 @@ impl Mutation {
         Ok(saved.map(GqlViewTimeline::from))
     }
 
+    /// 删除视图（共享视图或别人的视图需 Maintainer；自己的 Worker 即可）。
     async fn delete_view(&self, ctx: &Context<'_>, id: ID) -> GqlResult<bool> {
         let gql = ctx.data::<GraphqlContext>()?;
         let auth = gql.require_auth()?;
