@@ -1,9 +1,13 @@
+use std::pin::Pin;
 use std::sync::Arc;
 
+use futures_util::{Stream, StreamExt};
+use serde::Serialize;
 use ulid::Ulid;
 
 use crate::domain::{AuditAction, AuditLog, Entry, Labeling, NamedPrompt, WorkspaceAiConfig};
 use crate::error::AppError;
+use crate::service::agent::templates::ToolSchema;
 use crate::service::audit::audit_ops;
 use crate::service::search::strip_rich_text;
 use crate::storage::{cf, BatchOp, DocStore};
@@ -141,6 +145,49 @@ pub struct AiClient {
     model: String,
 }
 
+/// 流式对话消息：role + content，可选附带 tool_call_id（tool 结果回传）
+/// 或 tool_calls（assistant 已发起的工具调用，向模型回放历史时需要）。
+#[derive(Debug, Clone, Serialize)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<ToolCallRequest>>,
+}
+
+/// 单个完整 tool call：id + name + arguments 原始 JSON 字符串。
+/// 流式累加后由调用方自行 `serde_json::from_str` 解析 parameters。
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolCallRequest {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub kind: String, // 固定 "function"
+    pub function: ToolCallRequestFn,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ToolCallRequestFn {
+    pub name: String,
+    pub arguments: String, // 字符串，让 OpenAI 自己解析
+}
+
+/// 流式响应的单帧：
+/// - `Delta`：assistant 文本增量；
+/// - `ToolCallsPartial`：单帧只携带了某个 tool_call 的部分字段，调用方应
+///   据此更新自己的累积状态，不要立刻视为完整 tool call；
+/// - `ToolCalls`：流结束时一次性吐出的完整 tool calls；
+/// - `Done`：流结束。
+#[derive(Debug, Clone)]
+pub enum StreamChunk {
+    Delta(String),
+    #[allow(dead_code)]
+    ToolCallsPartial(Vec<(u32, String, String, String)>),
+    ToolCalls(Vec<ToolCallRequest>),
+    Done,
+}
+
 impl AiClient {
     /// 未配置密钥或模型时返回 `None`：调用方据此报 `AiNotConfigured`，
     /// 而不是发一个注定 401 的请求。
@@ -196,6 +243,132 @@ impl AiClient {
         }
         parse_completion(&text)
     }
+
+    /// 流式调用 Chat Completions。
+    ///
+    /// 把整段响应拆成一个 `StreamChunk` 流：
+    /// - 每个 `Delta` 是一次 assistant 文本增量；
+    /// - 每个 `ToolCallsPartial` 是某帧 `tool_calls` 数组里某个 index 的部分
+    ///   字段——调用方应当用它去更新自己的累积状态（id / name / 累加 arguments）；
+    /// - `ToolCalls` 仅在流结束时一次性吐出，把所有已完成的 tool_call 整合为
+    ///   `ToolCallRequest`（含完整 arguments 字符串）；
+    /// - `Done` 表示流结束。
+    ///
+    /// 错误一律落在 `Stream::Err(AppError::Ai(_))` 上——带尽量可读的上游信息。
+    pub async fn complete_stream(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolSchema],
+    ) -> Result<
+        Pin<Box<dyn Stream<Item = Result<StreamChunk, AppError>> + Send>>,
+        AppError,
+    > {
+        use async_stream::try_stream;
+
+        let url = format!("{}/chat/completions", self.base_url);
+        // 把工具描述转成 OpenAI 协议的 JSON：每个 tool 一层
+        // `{type:"function", function:{name, description, parameters}}`。
+        let tools_json: Vec<serde_json::Value> = tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "type": "function",
+                    "function": {
+                        "name": t.name,
+                        "description": t.description,
+                        "parameters": t.parameters,
+                    }
+                })
+            })
+            .collect();
+
+        let mut body = serde_json::json!({
+            "model": self.model,
+            "stream": true,
+            "messages": messages,
+        });
+        // 没工具就不发 tools 字段——OpenAI 在空数组上的行为各家网关不一致，
+        // 最稳的做法是不带这个字段。
+        if !tools_json.is_empty() {
+            body["tools"] = serde_json::Value::Array(tools_json);
+        }
+
+        let resp = self
+            .http
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Content-Type", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| AppError::Ai(format!("调用模型失败: {e}")))?;
+
+        let status = resp.status();
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::Ai(format!(
+                "模型返回 {status}: {}",
+                upstream_error(&text)
+            )));
+        }
+
+        let mut stream = resp.bytes_stream();
+        let s: Pin<Box<dyn Stream<Item = Result<StreamChunk, AppError>> + Send>> =
+            Box::pin(try_stream! {
+                use std::collections::HashMap;
+                // 已完成字段：(id, name, 累加过的 arguments 字符串)
+                let mut pending: HashMap<u32, (String, String, String)> = HashMap::new();
+                // SSE 帧之间的未完整数据——按 \n\n 切事件，多出来的尾巴留到下次。
+                let mut buffer = String::new();
+                while let Some(chunk) = stream.next().await.transpose()
+                    .map_err(|e| AppError::Ai(format!("读取流失败: {e}")))? {
+                    buffer.push_str(std::str::from_utf8(&chunk)
+                        .map_err(|e| AppError::Ai(format!("SSE 不是 UTF-8: {e}")))?);
+                    // 按 \n\n 切 SSE 事件：一次可能切到多个，靠 while 循环剥完。
+                    while let Some(split) = buffer.find("\n\n") {
+                        let event = buffer[..split].to_string();
+                        buffer = buffer[split + 2..].to_string();
+                        match parse_sse_event(&event)? {
+                            Some(StreamChunk::Delta(s)) => yield StreamChunk::Delta(s),
+                            Some(StreamChunk::ToolCallsPartial(partials)) => {
+                                // OpenAI 流式协议：每个 delta 只携带变化的部分
+                                // （id / function.name 各自出现一次，function.arguments
+                                //  是 JSON 字符串的逐片片段），所以这里做就地合并。
+                                for (index, id, name, args_fragment) in partials {
+                                    let entry = pending.entry(index).or_insert_with(|| {
+                                        (String::new(), String::new(), String::new())
+                                    });
+                                    if !id.is_empty() {
+                                        entry.0 = id;
+                                    }
+                                    if !name.is_empty() {
+                                        entry.1 = name;
+                                    }
+                                    entry.2.push_str(&args_fragment);
+                                }
+                                // 不在这里 yield：等流末统一吐完整 ToolCalls，
+                                // 调用方可以一次性拿到所有 arguments 累加结果。
+                            }
+                            Some(StreamChunk::ToolCalls(_)) | Some(StreamChunk::Done) | None => {}
+                        }
+                    }
+                }
+                // 流末：把累积好的 tool_calls 一次性吐出去；空就直接 Done。
+                if !pending.is_empty() {
+                    let tcs: Vec<ToolCallRequest> = pending
+                        .into_iter()
+                        .map(|(_, (id, name, args))| ToolCallRequest {
+                            id,
+                            kind: "function".into(),
+                            function: ToolCallRequestFn { name, arguments: args },
+                        })
+                        .collect();
+                    yield StreamChunk::ToolCalls(tcs);
+                }
+                yield StreamChunk::Done;
+            });
+        Ok(s)
+    }
 }
 
 /// 解析 Chat Completions 响应：取 `choices[0].message.content`。
@@ -219,6 +392,75 @@ fn parse_completion(text: &str) -> Result<String, AppError> {
         .filter(|s| !s.is_empty())
         .ok_or_else(|| AppError::Ai("模型没有返回内容".to_string()))?;
     Ok(content.to_string())
+}
+
+/// 解析单条 SSE 事件（已剥离 `\n\n`）。只关心 `data:` 行；
+/// 其他字段（event/id/retry）忽略。
+///
+/// 返回：
+/// - `Ok(None)` —— 这一事件无内容（仅 `[DONE]`、空、或全是元数据）
+/// - `Ok(Some(StreamChunk::Delta(s)))` —— 增量文本
+/// - `Ok(Some(StreamChunk::ToolCallsPartial(partials)))` —— 工具调用 delta；
+///   调用方需就地累积
+///
+/// OpenAI 流式协议下，单次 chunk 的 `delta.tool_calls` 数组里每个元素只携带
+/// 变化的部分（id / function.name / function.arguments 各自出现一次），所以
+/// 这里返回「这一帧的变化」，由 `complete_stream` 的外层循环做就地合并。
+fn parse_sse_event(event: &str) -> Result<Option<StreamChunk>, AppError> {
+    // 多个 `data:` 行属于同一 payload，按 SSE 规范用 `\n` 拼接。
+    let mut data_lines = Vec::new();
+    for line in event.lines() {
+        if let Some(rest) = line.strip_prefix("data:") {
+            data_lines.push(rest.trim_start());
+        }
+    }
+    if data_lines.is_empty() {
+        return Ok(None);
+    }
+    let payload = data_lines.join("\n");
+    // 流结束哨兵：OpenAI 协议用 `[DONE]` 表示流尾。
+    if payload == "[DONE]" {
+        return Ok(None);
+    }
+    let v: serde_json::Value = serde_json::from_str(&payload)
+        .map_err(|_| AppError::Ai("SSE chunk 不是 JSON".to_string()))?;
+    let choice = v
+        .get("choices")
+        .and_then(|c| c.as_array())
+        .and_then(|a| a.first())
+        .ok_or_else(|| AppError::Ai("SSE chunk 缺少 choices".to_string()))?;
+    let delta = choice.get("delta");
+    if let Some(content) = delta.and_then(|d| d.get("content")).and_then(|c| c.as_str()) {
+        return Ok(Some(StreamChunk::Delta(content.to_string())));
+    }
+    if let Some(tcs) = delta
+        .and_then(|d| d.get("tool_calls"))
+        .and_then(|c| c.as_array())
+    {
+        // 每条 entry 都按 index 索引：同一 tool_call 的多个 delta 共享一个 index。
+        // id / function.name 只在首个 delta 出现；function.arguments 是 JSON
+        // 字符串的逐片片段，需要按 index 累加。这里只把这一帧的变化透传出去。
+        let mut out = Vec::with_capacity(tcs.len());
+        for tc in tcs {
+            let index = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
+            let id = tc.get("id").and_then(|s| s.as_str()).unwrap_or("").to_string();
+            let name = tc
+                .get("function")
+                .and_then(|f| f.get("name"))
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string();
+            let args_fragment = tc
+                .get("function")
+                .and_then(|f| f.get("arguments"))
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string();
+            out.push((index, id, name, args_fragment));
+        }
+        return Ok(Some(StreamChunk::ToolCallsPartial(out)));
+    }
+    Ok(None)
 }
 
 fn error_message(err: &serde_json::Value) -> Option<String> {

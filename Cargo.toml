@@ -66,6 +66,12 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 # 服务端 SSE 流式生成器（仅 ssr）。axum::response::sse 需要 Stream<Item = Result<Event, _>>，
 # 手写状态机不如 async-stream! 宏清晰。
 async-stream = { version = "0.3", optional = true }
+# `Stream` trait + `StreamExt::next`。async-stream 与 reqwest 的 bytes_stream() 都
+# 实现前者但都不直接 re-export；后者要写 `stream.next().await` 就必须在作用域内。
+# 已经是间接依赖（async-stream / axum-core / async-graphql 都依赖它），体积零增量。
+# default-features = false：关掉它的 allocator / channel / io 特性，只留
+# stream 适配器，避免把 tokio 的 io-util / sync 再次拉进来。
+futures-util = { version = "0.3", optional = true, default-features = false, features = ["std"] }
 
 # 仅 WASM 目标
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -110,6 +116,7 @@ ssr = [
     "dep:tantivy",
     "dep:reqwest",
     "dep:async-stream",
+    "dep:futures-util",
     "leptos/ssr",
     "leptos_meta/ssr",
     "leptos_router/ssr",

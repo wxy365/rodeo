@@ -3262,6 +3262,7 @@ dependencies = [
  "bincode",
  "chrono",
  "console_error_panic_hook",
+ "futures-util",
  "gloo-net",
  "gloo-storage",
  "gloo-timers",
