@@ -58,3 +58,15 @@ base_url = "https://api.openai.com/v1"
 api_key = ""
 model = ""
 timeout_seconds = 60
+
+[agent]
+# 是否启用 Agent 功能。关闭后 SSE 路由直接返回 503。
+enabled = true
+# 单 turn 工具调用硬上限
+max_tool_calls_per_turn = 8
+# 单 turn 整体超时（秒）
+turn_timeout_seconds = 60
+# 上下文超阈值时触发摘要截断
+context_truncate_tokens = 16384
+# 保留的历史轮数（user-assistant 一对 = 1 turn）
+max_history_turns = 40
