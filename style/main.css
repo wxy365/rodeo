@@ -1958,6 +1958,36 @@ input[type="color"].sw:disabled {
     height: 16px;
 }
 
+/* 顶栏「AI」入口：与时间轴按钮同款方形按钮，"AI" 字样代替图标。
+   `.on` 态填主题色——面板展开时一眼能看出来开关已切。 */
+.agent-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border-radius: var(--r-m);
+    border: 0;
+    cursor: pointer;
+    background: transparent;
+    color: var(--ink);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.5px;
+    transition: background 120ms ease, color 120ms ease;
+}
+.agent-btn:hover {
+    background: var(--bg2);
+}
+.agent-btn.on {
+    background: var(--pos);
+    color: #fff;
+}
+.agent-btn.on:hover {
+    filter: brightness(1.06);
+}
+
 /* 视图导航栏行上的右键菜单：「配置视图」「删除视图」。 */
 .vmenu {
     position: fixed;

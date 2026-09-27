@@ -6,6 +6,8 @@ use leptos_meta::{
 use leptos_router::components::{Route, Router, Routes};
 use leptos_router::{ParamSegment, StaticSegment};
 
+use crate::frontend::agent_panel::{provide_agent_panel_open, AgentPanel};
+use crate::frontend::agent_side_effects::provide_agent_side_effects;
 use crate::frontend::components::AppBar;
 use crate::frontend::graphql_client::{clear_token, get_token, me};
 use crate::frontend::pages::{
@@ -43,6 +45,10 @@ pub fn App() -> impl IntoView {
     // 工作空间「时间轴切换」按钮的共享槽，与「新建」同源问题——AppBar 兄弟
     // 与 Router 后代共享一份读写。
     let _timeline_slot = crate::frontend::provide_workspace_timeline_slot();
+    // Agent 面板开关：AppBar 里的 AI 按钮与 `<AgentPanel/>` 各自取用同一份信号。
+    let _agent_panel_open = provide_agent_panel_open();
+    // Agent 副作用 store：服务端 SSE 写入（Task 7/8）后由面板订阅刷新。
+    let _agent_side_effects = provide_agent_side_effects();
 
     // 应用挂载时若已登录（有 token）则拉取当前账号，供头像/昵称展示。
     //
@@ -91,5 +97,9 @@ pub fn App() -> impl IntoView {
                 </Routes>
             </main>
         </Router>
+        // Agent 面板挂在 Router 同级、AppBar 同侧：可见性由 `AgentPanelOpen`
+        // 内部 `<Show>` 控制，这里不再额外包一层 auth 判定，免得 user 信号
+        // 闪动时面板也跟着消失。
+        <AgentPanel/>
     }
 }
