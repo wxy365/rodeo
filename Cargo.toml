@@ -44,7 +44,7 @@ postgres = { version = "0.19", optional = true }
 # ServerConfig::builder() 在双 provider 下会 panic（详见上面 rustls 的注释）。
 # default-features = false 后显式列出 fs：对象存储自己的本地后端在 fs 特性里。
 object_store = { version = "0.12", default-features = false, features = ["fs", "aws"], optional = true }
-async-graphql = { version = "7", optional = true }
+async-graphql = { version = "7", optional = true, features = ["chrono"] }
 async-graphql-axum = { version = "7", optional = true }
 argon2 = { version = "0.5", optional = true }
 rand_core = { version = "0.6", features = ["getrandom"], optional = true }
@@ -63,6 +63,19 @@ tantivy = { version = "0.26", optional = true, default-features = false, feature
 # 服务端调用大模型（仅 ssr）。default-features = false 是为了不引入 openssl，
 # 与仓库其余依赖一样走 rustls。
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+# 服务端 SSE 流式生成器（仅 ssr）。axum::response::sse 需要 Stream<Item = Result<Event, _>>，
+# 手写状态机不如 async-stream! 宏清晰。
+async-stream = { version = "0.3", optional = true }
+# `Stream` trait + `StreamExt::next`。async-stream 与 reqwest 的 bytes_stream() 都
+# 实现前者但都不直接 re-export；后者要写 `stream.next().await` 就必须在作用域内。
+# 已经是间接依赖（async-stream / axum-core / async-graphql 都依赖它），体积零增量。
+# default-features = false：关掉它的 allocator / channel / io 特性，只留
+# stream 适配器，避免把 tokio 的 io-util / sync 再次拉进来。
+futures-util = { version = "0.3", optional = true, default-features = false, features = ["std"] }
+# Agent turn 注册表使用的同步互斥（避免 async 锁在同步临界区的可取消性问题）。
+parking_lot = { version = "0.12", optional = true }
+# Agent runner 用 `CancellationToken` 让 SSE 断连时干净地中止 turn。
+tokio-util = { version = "0.7", features = ["rt"], optional = true }
 
 # 仅 WASM 目标
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -106,6 +119,10 @@ ssr = [
     "dep:tower-http",
     "dep:tantivy",
     "dep:reqwest",
+    "dep:async-stream",
+    "dep:futures-util",
+    "dep:parking_lot",
+    "dep:tokio-util",
     "leptos/ssr",
     "leptos_meta/ssr",
     "leptos_router/ssr",

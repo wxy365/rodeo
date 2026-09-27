@@ -1,4 +1,6 @@
 pub mod account;
+pub mod agent;
+pub mod agent_events;
 pub mod ai;
 pub mod attachment;
 pub mod audit;
@@ -12,6 +14,8 @@ pub mod view;
 pub mod workspace;
 
 pub use account::{Account, AccountStatus};
+pub use agent::{AgentMessage, AgentSession, EntryAction, Role, SideEffect, ToolCall};
+pub use agent_events::AgentEvent;
 pub use ai::{NamedPrompt, WorkspaceAiConfig};
 pub use audit::{AuditAction, AuditLog};
 pub use attachment::{Attachment, ATTACHMENT_URL_PREFIX};

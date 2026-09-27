@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
+use crate::frontend::agent_side_effects::AgentSideEffects;
 use crate::frontend::components::{logged_out, role_at_least, short_time, Avatar};
 use crate::frontend::graphql_client::{
     comments, create_comment, delete_comment, me, my_role, update_comment, Comment,
@@ -109,6 +110,18 @@ pub fn CommentList(
         }
         load();
     });
+
+    // AI 写了新评论（comment 域）→ 当前组件的列表要拉一次。`load` 自身有
+    // `code`/`workspace_id` 防御，未挂载（`code` 为空）时早返。
+    if let Some(eff) = use_context::<AgentSideEffects>() {
+        Effect::new(move |_| {
+            eff.tick.track();
+            let Some(hint) = eff.last.get_untracked() else { return; };
+            if hint.domain == "comment" {
+                load();
+            }
+        });
+    }
 
     let on_composer_change = Callback::new(move |d: String| draft.set(d));
     let on_edit_change = Callback::new(move |d: String| edit_body.set(d));

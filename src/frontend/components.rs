@@ -601,6 +601,10 @@ pub fn AppBar() -> impl IntoView {
     // 工作空间「时间轴切换」按钮：同上，仅 WorkspaceMain 写过槽时挂载，且
     // 当前视图必须配了 timeline——WorkspaceMain 已经在写槽前过滤过这一层。
     let timeline_toggle = crate::frontend::use_workspace_timeline_toggle();
+    // Agent 面板开关：在 setup 阶段取出，下面 `on:click` 闭包直接读写它。
+    // `use_context` 必须放在组件 setup，不能放进事件闭包里——那是 Leptos
+    // 上下文解析规则的硬约束。
+    let panel_open = crate::frontend::agent_panel::use_agent_panel_open();
     // hover split 状态：只在 AppBar 这一个用到，留在组件内即可。
     let newentry_hover = RwSignal::new(false);
 
@@ -654,6 +658,13 @@ pub fn AppBar() -> impl IntoView {
                         </button>
                     }
                 })}
+                // Agent 面板入口：复用 `timeline-btn` 的方形图标按钮样式，加 `.on`
+                // 态在面板展开时填主题色——与时间轴按钮视觉一致、好辨认。
+                <button class=move || if panel_open.0.get() { "agent-btn on" } else { "agent-btn" }
+                    title="AI 助手"
+                    on:click=move |_| panel_open.0.update(|n| *n = !*n)>
+                    "AI"
+                </button>
                 <AvatarMenu />
             </div>
         </header>

@@ -84,6 +84,8 @@ pub mod cf {
     /// recipient_id 作前缀，每位用户的消息天然分区。
     /// 用 i64::MAX - millis 倒序键让最新消息排在前。
     pub const MESSAGES_BY_RECIPIENT: &str = "messages_by_recipient";
+    pub const AGENT_SESSIONS: &str = "agent_sessions";
+    pub const AGENT_MESSAGES: &str = "agent_messages";
 }
 
 /// 单个批量写操作：文档/索引/审计统一原子写入。

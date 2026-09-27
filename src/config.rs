@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::path::Path;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -13,6 +13,8 @@ pub struct Config {
     pub storage: StorageConfig,
     #[serde(default)]
     pub ai: AiConfig,
+    #[serde(default)]
+    pub agent: AgentConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -124,6 +126,28 @@ pub struct AiConfig {
     pub timeout_seconds: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct AgentConfig {
+    pub enabled: bool,
+    pub max_tool_calls_per_turn: usize,
+    pub turn_timeout_seconds: u64,
+    pub context_truncate_tokens: usize,
+    pub max_history_turns: usize,
+}
+
+impl Default for AgentConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            max_tool_calls_per_turn: 8,
+            turn_timeout_seconds: 60,
+            context_truncate_tokens: 16384,
+            max_history_turns: 40,
+        }
+    }
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -211,6 +235,7 @@ impl Default for Config {
             auth: AuthConfig::default(),
             storage: StorageConfig::default(),
             ai: AiConfig::default(),
+            agent: AgentConfig::default(),
         }
     }
 }

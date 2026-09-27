@@ -1,24 +1,30 @@
 use std::sync::Arc;
 
 use async_graphql::{
-    Context, EmptySubscription, ID, Json, Object, Result as GqlResult, Schema, SimpleObject, Upload,
+    Context, EmptySubscription, Enum, ID, Json, Object, Result as GqlResult, Schema, SimpleObject,
+    Upload,
 };
 use async_graphql_axum::{GraphQLRequest, GraphQLResponse};
 use axum::extract::Extension;
 use axum::http::header::{AUTHORIZATION, COOKIE};
 use axum::http::HeaderMap;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
 use crate::domain::{
-    Account, AccountStatus, ActionTarget, Attachment, AuditLog, AutomationRule, Comment, Entry,
+    Account, AccountStatus, ActionTarget, AgentMessage, Attachment, AuditLog, AutomationRule,
+    Comment, Entry,
     Invite,
     LabelSchema, LabelValueType, LinkKind,
-    LabelWrite, Labeling, Message, NamedPrompt, Query as ViewQuery, SortField, SortKey, SortSpec, TitleColorRule,
+    LabelWrite, Labeling, Message, NamedPrompt, Query as ViewQuery, Role, SortField, SortKey,
+    SortSpec, TitleColorRule,
     ValueColor, ValueSource, View, ViewTimeline, Workspace, WorkspaceAiConfig, WorkspaceMember,
     WorkspaceRole,
     WriteOp, ATTACHMENT_URL_PREFIX,
 };
 use crate::error::AppError;
+use crate::service::agent::runner::run_turn;
 use crate::service::ai::derive_title;
 use crate::service::entry::PageInput as EntryPageInput;
 use crate::service::{AuthContext, Services};
@@ -861,6 +867,53 @@ fn parse_query_json(value: Option<Json<serde_json::Value>>) -> GqlResult<ViewQue
     }
 }
 
+// ---------- Agent 类型 ----------
+
+#[derive(SimpleObject, Clone, Serialize, Deserialize)]
+#[graphql(name = "AgentSession")]
+pub struct GqlAgentSession {
+    pub id: String,
+    pub workspace_id: String,
+    pub title: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub last_message_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[graphql(name = "AgentRole")]
+pub enum GqlAgentRole { System, User, Assistant, Tool }
+
+#[derive(SimpleObject, Clone, Serialize, Deserialize)]
+#[graphql(name = "AgentToolCallRecord")]
+pub struct GqlAgentToolCallRecord {
+    pub id: String,
+    pub name: String,
+    pub args: serde_json::Value,           // graphql::JSON scalar
+    pub result_preview: String,
+    pub ok: bool,
+}
+
+#[derive(SimpleObject, Clone, Serialize, Deserialize)]
+#[graphql(name = "AgentMessage")]
+pub struct GqlAgentMessage {
+    pub id: String,
+    pub session_id: String,
+    pub role: GqlAgentRole,
+    pub content: String,
+    pub tool_calls: Vec<GqlAgentToolCallRecord>,
+    pub tool_call_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(SimpleObject, Clone, Serialize, Deserialize)]
+#[graphql(name = "AgentTurn")]
+pub struct GqlAgentTurn {
+    pub id: String,
+    pub session_id: String,
+    pub started_at: DateTime<Utc>,
+}
+
 // ---------- Context ----------
 
 #[derive(Clone)]
@@ -1030,6 +1083,75 @@ impl Query {
         rows.into_iter()
             .map(|m| gql_message(gql, m))
             .collect()
+    }
+
+    /// 当前工作空间里属于当前用户的 agent 会话，按 `updated_at` 倒序。
+    /// 双因子：`account_id` 决定可见集合，`workspace_id` 二次过滤；非成员直接 Forbidden。
+    async fn agent_sessions(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: String,
+        limit: Option<i32>,
+    ) -> GqlResult<Vec<GqlAgentSession>> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let ws = parse_ulid(&workspace_id)?;
+        gql.require_member(ws)?;
+        let limit = limit.unwrap_or(20).max(0).min(100) as usize;
+        let rows = gql.services.agent.list_sessions(auth.account_id, ws, limit)?;
+        Ok(rows
+            .into_iter()
+            .map(|s| GqlAgentSession {
+                id: s.id.to_string(),
+                workspace_id: s.workspace_id.to_string(),
+                title: s.title,
+                created_at: s.created_at,
+                updated_at: s.updated_at,
+                last_message_at: s.last_message_at,
+            })
+            .collect())
+    }
+
+    /// 某个 agent 会话的消息，按 `created_at` 升序。
+    /// 服务层用 `account_id` 前缀扫 session 表校验所有权；越权即 NotFound。
+    async fn agent_messages(
+        &self,
+        ctx: &Context<'_>,
+        session_id: String,
+        limit: Option<i32>,
+    ) -> GqlResult<Vec<GqlAgentMessage>> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let sid = parse_ulid(&session_id)?;
+        let limit = limit.unwrap_or(200).max(0).min(1000) as usize;
+        let rows = gql.services.agent.list_messages(auth.account_id, sid, limit)?;
+        Ok(rows
+            .into_iter()
+            .map(|m| GqlAgentMessage {
+                id: m.id.to_string(),
+                session_id: m.session_id.to_string(),
+                role: match m.role {
+                    crate::domain::Role::System => GqlAgentRole::System,
+                    crate::domain::Role::User => GqlAgentRole::User,
+                    crate::domain::Role::Assistant => GqlAgentRole::Assistant,
+                    crate::domain::Role::Tool => GqlAgentRole::Tool,
+                },
+                content: m.content,
+                tool_calls: m
+                    .tool_calls
+                    .into_iter()
+                    .map(|tc| GqlAgentToolCallRecord {
+                        id: tc.id,
+                        name: tc.name,
+                        args: tc.args,
+                        result_preview: tc.result_preview,
+                        ok: tc.ok,
+                    })
+                    .collect(),
+                tool_call_id: m.tool_call_id,
+                created_at: m.created_at,
+            })
+            .collect())
     }
 
     /// 某条目的全部评论，按发表时间升序。成员即可读（与 labelSchemas 一致）。
@@ -1568,6 +1690,7 @@ impl Mutation {
         Ok(true)
     }
 
+    /// 新建条目（Worker+）。返回新条目的 id / code / title。
     async fn create_entry(
         &self,
         ctx: &Context<'_>,
@@ -1710,6 +1833,8 @@ impl Mutation {
         Ok(written as i32)
     }
 
+    /// 编辑条目（Worker+）。`expectedUpdatedAt` 用于乐观并发：
+    /// 与服务端最新 `updatedAt` 不一致时报「内容已被他人修改」。
     async fn update_entry(
         &self,
         ctx: &Context<'_>,
@@ -1746,6 +1871,7 @@ impl Mutation {
         gql_entry(gql, updated, labels)
     }
 
+    /// 软删除条目（Worker+）。数据保留，可恢复（archive_entry / unarchive_entry）。
     async fn delete_entry(&self, ctx: &Context<'_>, code: String) -> GqlResult<bool> {
         let gql = ctx.data::<GraphqlContext>()?;
         let auth = gql.require_auth()?;
@@ -1947,6 +2073,8 @@ impl Mutation {
         Ok(true)
     }
 
+    /// 在工作空间里新建一条标签定义（Maintainer+）。
+    /// `valueType` 为 `"string" | "number" | "date" | "single" | "multi"` 之一。
     async fn create_label_schema(
         &self,
         ctx: &Context<'_>,
@@ -1971,6 +2099,8 @@ impl Mutation {
         Ok(schema.into())
     }
 
+    /// 按 `name` 更新一条已存在的标签定义（Maintainer+）。
+    /// `valueType` 不可改；要换类型请删了重建。
     async fn update_label_schema(
         &self,
         ctx: &Context<'_>,
@@ -2021,6 +2151,8 @@ impl Mutation {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// 新建视图（Worker+ 个人视图 / Maintainer+ 共享视图）。
+    /// `query` 是按 `parseViewQuery` / `formatViewQuery` 规则编排的查询条件 JSON。
     async fn create_view(
         &self,
         ctx: &Context<'_>,
@@ -2058,6 +2190,8 @@ impl Mutation {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// 改视图（共享视图需 Maintainer；本人个人视图 Worker 即可）。
+    /// 不动时间轴配置，时间轴走 `setViewTimeline`。
     async fn update_view(
         &self,
         ctx: &Context<'_>,
@@ -2138,6 +2272,7 @@ impl Mutation {
         Ok(saved.map(GqlViewTimeline::from))
     }
 
+    /// 删除视图（共享视图或别人的视图需 Maintainer；自己的 Worker 即可）。
     async fn delete_view(&self, ctx: &Context<'_>, id: ID) -> GqlResult<bool> {
         let gql = ctx.data::<GraphqlContext>()?;
         let auth = gql.require_auth()?;
@@ -2372,6 +2507,99 @@ impl Mutation {
         gql.services.message.mark_all_read(actor)?;
         Ok(true)
     }
+
+    /// 新建 agent 会话（Worker+ 即可，会话是个人维度的）。
+    /// 服务层按 `account_id` 前缀落 key，会话归属当前用户；非成员直接 Forbidden。
+    async fn create_agent_session(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: String,
+    ) -> GqlResult<GqlAgentSession> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let ws = parse_ulid(&workspace_id)?;
+        gql.require_member(ws)?;
+        let s = gql.services.agent.create_session(auth.account_id, ws)?;
+        Ok(GqlAgentSession {
+            id: s.id.to_string(),
+            workspace_id: s.workspace_id.to_string(),
+            title: s.title,
+            created_at: s.created_at,
+            updated_at: s.updated_at,
+            last_message_at: s.last_message_at,
+        })
+    }
+
+    /// 删除 agent 会话（同时级联删所有消息）。
+    /// 服务层用 `account_id` 前缀扫 session 表校验所有权：越权即返回 false。
+    async fn delete_agent_session(
+        &self,
+        ctx: &Context<'_>,
+        id: String,
+    ) -> GqlResult<bool> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let sid = parse_ulid(&id)?;
+        Ok(gql.services.agent.delete_session(auth.account_id, sid)?)
+    }
+
+    /// 给 agent 会话追加一条 user 消息，并起一个 turn 由 `run_turn` 异步跑 LLM。
+    /// 返回 turn 元信息，前端用它开 SSE 订阅 `AgentEvent` 流（Task 7 的 handler）。
+    ///
+    /// 校验：session 必须属于当前用户；content 不能为空。
+    async fn send_agent_message(
+        &self,
+        ctx: &Context<'_>,
+        session_id: String,
+        content: String,
+    ) -> GqlResult<GqlAgentTurn> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let sid = parse_ulid(&session_id)?;
+        if content.trim().is_empty() {
+            return Err(AppError::InvalidQuery("content 不能为空".into()).into());
+        }
+        // 校验 session 归属：get_session 找不到（跨 user / 不存在）就 NotFound。
+        let _ = gql
+            .services
+            .agent
+            .get_session(auth.account_id, sid)?
+            .ok_or(AppError::NotFound)?;
+
+        // 落库 user 消息
+        let user_msg = AgentMessage {
+            id: Ulid::new(),
+            session_id: sid,
+            role: Role::User,
+            content: content.clone(),
+            tool_calls: vec![],
+            tool_call_id: None,
+            created_at: Utc::now(),
+        };
+        gql.services.agent.append_message(user_msg)?;
+
+        let turn_id = Ulid::new();
+        let services = gql.services.clone();
+        let auth_for_runner = auth.clone();
+        // cancel_token_for 必须在 start_or_replace 之前调用——start_or_replace
+        // 内部会用新 token 覆盖注册表项，先插入再克隆能保证 runner 拿到的那一份
+        // 与注册表里的指针关联上。
+        let cancel = services.agent_turns.cancel_token_for(turn_id);
+        let services_for_runner = services.clone();
+        services.agent_turns.start_or_replace(
+            sid,
+            turn_id,
+            async move {
+                run_turn(services_for_runner, auth_for_runner, sid, turn_id, cancel).await;
+            },
+        )?;
+
+        Ok(GqlAgentTurn {
+            id: turn_id.to_string(),
+            session_id: sid.to_string(),
+            started_at: Utc::now(),
+        })
+    }
 }
 
 // ---------- 请求处理 ----------
@@ -2401,7 +2629,7 @@ pub async fn graphql_handler(
     state.schema.execute(req.into_inner().data(gql_ctx)).await.into()
 }
 
-fn extract_auth(services: &Services, headers: &HeaderMap) -> Option<AuthContext> {
+pub(crate) fn extract_auth(services: &Services, headers: &HeaderMap) -> Option<AuthContext> {
     // 优先 cookie，其次 Authorization: Bearer 头。
     if let Some(token) = cookie_value(headers, "jwt") {
         if let Ok(auth) = services.auth.verify_token(&token) {
