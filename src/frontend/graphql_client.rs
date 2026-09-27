@@ -1507,6 +1507,112 @@ pub async fn delete_automation_rule(id: &str) -> Result<bool, String> {
         .unwrap_or(false))
 }
 
+// ---------- Agent 会话 ----------
+
+#[derive(Clone, serde::Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSession {
+    pub id: String,
+    pub workspace_id: String,
+    pub title: String,
+    pub created_at: String,
+    pub updated_at: String,
+    /// 服务端 `Option<DateTime<Utc>>`：未发过消息的会话里字段为 None；
+    /// `#[serde(default)]` 防止老查询忘了请求该字段时整条反序列化失败。
+    #[serde(default)]
+    pub last_message_at: Option<String>,
+}
+
+const AGENT_SESSION_FIELDS: &str =
+    "id workspaceId title createdAt updatedAt lastMessageAt";
+
+#[derive(Clone, serde::Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentToolCallRecord {
+    pub id: String,
+    pub name: String,
+    /// 服务端 `Json<serde_json::Value>` scalar，原样到达。
+    pub args: serde_json::Value,
+    pub result_preview: String,
+    pub ok: bool,
+}
+
+#[derive(Clone, serde::Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentMessage {
+    pub id: String,
+    pub session_id: String,
+    /// 服务端 `AgentRole` enum，async-graphql 默认以字符串（`"USER"` 等）序列化。
+    pub role: String,
+    pub content: String,
+    pub tool_calls: Vec<AgentToolCallRecord>,
+    /// 仅 role=Tool 时有值。`#[serde(default)]` 同上，防止字段缺失炸反序列化。
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
+    pub created_at: String,
+}
+
+const AGENT_MESSAGE_FIELDS: &str =
+    "id sessionId role content toolCalls { id name args resultPreview ok } \
+     toolCallId createdAt";
+
+#[derive(Clone, serde::Deserialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTurn {
+    pub id: String,
+    pub session_id: String,
+    pub started_at: String,
+}
+
+const AGENT_TURN_FIELDS: &str = "id sessionId startedAt";
+
+pub async fn list_agent_sessions(workspace_id: &str) -> Result<Vec<AgentSession>, String> {
+    let q = format!(
+        "query($id: ID!) {{ agentSessions(workspaceId: $id) {{ {AGENT_SESSION_FIELDS} }} }}"
+    );
+    let data = graphql(&q, json!({ "id": workspace_id })).await?;
+    serde_json::from_value(data.get("agentSessions").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+pub async fn list_agent_messages(session_id: &str) -> Result<Vec<AgentMessage>, String> {
+    let q = format!(
+        "query($id: ID!) {{ agentMessages(sessionId: $id) {{ {AGENT_MESSAGE_FIELDS} }} }}"
+    );
+    let data = graphql(&q, json!({ "id": session_id })).await?;
+    serde_json::from_value(data.get("agentMessages").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+pub async fn create_agent_session(workspace_id: &str) -> Result<AgentSession, String> {
+    let q = format!(
+        "mutation($id: ID!) {{ createAgentSession(workspaceId: $id) {{ {AGENT_SESSION_FIELDS} }} }}"
+    );
+    let data = graphql(&q, json!({ "id": workspace_id })).await?;
+    serde_json::from_value(data.get("createAgentSession").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+pub async fn delete_agent_session(id: &str) -> Result<bool, String> {
+    let q = "mutation($id: ID!) { deleteAgentSession(id: $id) }";
+    let data = graphql(q, json!({ "id": id })).await?;
+    Ok(data
+        .get("deleteAgentSession")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false))
+}
+
+pub async fn send_agent_message(session_id: &str, content: String) -> Result<AgentTurn, String> {
+    // content 走 GraphQL 变量（项目约定）：转义、引号、换行都交给服务端变量解析，
+    // 不在 query 字符串里手工转义。
+    let q = format!(
+        "mutation($id: ID!, $c: String!) {{ sendAgentMessage(sessionId: $id, content: $c) {{ {AGENT_TURN_FIELDS} }} }}"
+    );
+    let data = graphql(&q, json!({ "id": session_id, "c": content })).await?;
+    serde_json::from_value(data.get("sendAgentMessage").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::Workspace;
