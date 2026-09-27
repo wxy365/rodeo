@@ -1,12 +1,15 @@
 use std::sync::Arc;
 
 use async_graphql::{
-    Context, EmptySubscription, ID, Json, Object, Result as GqlResult, Schema, SimpleObject, Upload,
+    Context, EmptySubscription, Enum, ID, Json, Object, Result as GqlResult, Schema, SimpleObject,
+    Upload, scalar,
 };
 use async_graphql_axum::{GraphQLRequest, GraphQLResponse};
 use axum::extract::Extension;
 use axum::http::header::{AUTHORIZATION, COOKIE};
 use axum::http::HeaderMap;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
 use crate::domain::{
@@ -859,6 +862,55 @@ fn parse_query_json(value: Option<Json<serde_json::Value>>) -> GqlResult<ViewQue
         Some(Json(v)) => serde_json::from_value(v)
             .map_err(|e| AppError::InvalidQuery(format!("查询条件格式错误: {e}")).into()),
     }
+}
+
+// ---------- Agent 类型 ----------
+
+scalar!(serde_json::Value, "JSON", "任意 JSON 值");
+
+#[derive(SimpleObject, Clone, Serialize, Deserialize)]
+#[graphql(name = "AgentSession")]
+pub struct GqlAgentSession {
+    pub id: String,
+    pub workspace_id: String,
+    pub title: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub last_message_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Enum, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[graphql(name = "AgentRole")]
+pub enum GqlAgentRole { System, User, Assistant, Tool }
+
+#[derive(SimpleObject, Clone, Serialize, Deserialize)]
+#[graphql(name = "AgentToolCallRecord")]
+pub struct GqlAgentToolCallRecord {
+    pub id: String,
+    pub name: String,
+    pub args: serde_json::Value,           // graphql::JSON scalar
+    pub result_preview: String,
+    pub ok: bool,
+}
+
+#[derive(SimpleObject, Clone, Serialize, Deserialize)]
+#[graphql(name = "AgentMessage")]
+pub struct GqlAgentMessage {
+    pub id: String,
+    pub session_id: String,
+    pub role: GqlAgentRole,
+    pub content: String,
+    pub tool_calls: Vec<GqlAgentToolCallRecord>,
+    pub tool_call_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(SimpleObject, Clone, Serialize, Deserialize)]
+#[graphql(name = "AgentTurn")]
+pub struct GqlAgentTurn {
+    pub id: String,
+    pub session_id: String,
+    pub started_at: DateTime<Utc>,
 }
 
 // ---------- Context ----------
