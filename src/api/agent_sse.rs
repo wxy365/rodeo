@@ -13,16 +13,39 @@ use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::{Path, State};
+use axum::extract::{Extension, Path};
 use axum::http::header::COOKIE;
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::{IntoResponse, Response};
 use futures_util::Stream;
 use ulid::Ulid;
 
+use crate::api::AppState;
 use crate::domain::agent_events::AgentEvent;
 use crate::error::AppError;
 use crate::service::Services;
+
+/// 把 `AppError` 映射成 SSE 接入前的拒绝响应——只覆盖鉴权/查找/解析路径，
+/// 映射表刻意保守（Internal 一律 500），不与 GraphQL 错误流耦合；其它路径
+/// （Agent 业务失败）会先通过 run_turn 的 `AgentEvent::Error` 推送给客户端，
+/// 不会落到这里。
+///
+/// 写在本文件而不是 `error.rs`：本任务限定只能改 `agent_sse.rs` / `mod.rs`
+/// / `main.rs` 三个文件，跨模块加 trait 实现会破坏隔离。SSE 路由独有的需求
+/// 不值得污染通用错误类型。
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        let status = match &self {
+            AppError::Unauthorized | AppError::InvalidCredentials => StatusCode::UNAUTHORIZED,
+            AppError::Forbidden => StatusCode::FORBIDDEN,
+            AppError::NotFound => StatusCode::NOT_FOUND,
+            AppError::InvalidQuery(_) => StatusCode::BAD_REQUEST,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        (status, self.code()).into_response()
+    }
+}
 
 /// Agent SSE 流：把 `broadcast::Receiver<AgentEvent>` 转成 Axum 的 `Sse<Stream>`。
 ///
@@ -36,25 +59,27 @@ use crate::service::Services;
 /// 那次 cancel 是「对称式保险」，并不真的能跑到 runner（`cancel_token_for` 与
 /// `start_or_replace` 之间存在替换），无副作用，但也不指望它生效。
 pub async fn agent_stream_handler(
-    State(services): State<Arc<Services>>,
+    Extension(state): Extension<Arc<AppState>>,
     Path(turn_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, AppError> {
-    let auth = auth_from_cookie(&services, &headers)?;
+    let auth = auth_from_cookie(&state.services, &headers)?;
     let turn_id = parse_turn_id(&turn_id)?;
-    let session_id = services
+    let session_id = state
+        .services
         .agent_turns
         .session_of(turn_id)
         .ok_or(AppError::NotFound)?;
-    services
+    state
+        .services
         .agent
         .get_session(auth.account_id, session_id)?
         .ok_or(AppError::NotFound)?;
 
     // cancel 是「对称式」：实际靠 broadcast 关闭触发流结束，这里只是
     // 跟着 drop 跑一次 cancel()。保留是为了和 brief / 后续重构预期对齐。
-    let cancel = services.agent_turns.cancel_token(turn_id);
-    let mut rx = services.agent_turns.subscribe(turn_id)?;
+    let cancel = state.services.agent_turns.cancel_token(turn_id);
+    let mut rx = state.services.agent_turns.subscribe(turn_id)?;
     let cancel_for_drop = cancel.clone();
 
     let stream = async_stream::stream! {
