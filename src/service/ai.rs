@@ -5,7 +5,9 @@ use futures_util::{Stream, StreamExt};
 use serde::Serialize;
 use ulid::Ulid;
 
-use crate::domain::{AuditAction, AuditLog, Entry, Labeling, NamedPrompt, WorkspaceAiConfig};
+use crate::domain::{
+    AgentMessage, AuditAction, AuditLog, Entry, Labeling, NamedPrompt, Role, WorkspaceAiConfig,
+};
 use crate::error::AppError;
 use crate::service::agent::templates::ToolSchema;
 use crate::service::audit::audit_ops;
@@ -580,5 +582,65 @@ fn scalar_text(v: &serde_json::Value) -> String {
     match v {
         serde_json::Value::String(s) => s.clone(),
         other => other.to_string(),
+    }
+}
+
+/// 把领域层 `AgentMessage` 列表转 OpenAI Chat Completions 的 messages 数组。
+/// 历史里 assistant 已经发起过的 tool_calls 也必须原样回放给模型——不然它下一次
+/// 不知道上一轮自己已经调用过哪些工具。
+pub fn to_chat_messages(history: &[AgentMessage]) -> Vec<ChatMessage> {
+    history
+        .iter()
+        .map(|m| {
+            let tool_calls = if m.tool_calls.is_empty() {
+                None
+            } else {
+                Some(
+                    m.tool_calls
+                        .iter()
+                        .map(|tc| ToolCallRequest {
+                            id: tc.id.clone(),
+                            kind: "function".into(),
+                            function: ToolCallRequestFn {
+                                name: tc.name.clone(),
+                                arguments: serde_json::to_string(&tc.args)
+                                    .unwrap_or_default(),
+                            },
+                        })
+                        .collect(),
+                )
+            };
+            ChatMessage {
+                role: match m.role {
+                    Role::System => "system",
+                    Role::User => "user",
+                    Role::Assistant => "assistant",
+                    Role::Tool => "tool",
+                }
+                .to_string(),
+                content: m.content.clone(),
+                tool_call_id: m.tool_call_id.clone(),
+                tool_calls,
+            }
+        })
+        .collect()
+}
+
+/// 通用 system 提示 + 工作空间附加段。返回单条 system 消息；
+/// 调用方自行拼到 messages 数组头部。
+pub fn agent_system_prompt(ws_title: &str, ws_id: &str) -> ChatMessage {
+    ChatMessage {
+        role: "system".to_string(),
+        content: format!(
+            "你是 Rodeo 工作空间内的对话式 Agent。你可以调用工具查询和修改条目、标签、评论、视图等数据。\
+             所有工具调用都在当前用户权限下执行——管理员才能改的，你查不到也改不了。\
+             执行多条工具调用时，按依赖顺序串行：先 list 再 update，避免基于过期信息修改。\
+             一次工具调用失败就停下来告诉用户，不要反复重试同一参数。\
+             回答使用 Markdown，简洁优先。\n\n\
+             当前工作空间：{ws_title}\n\
+             工作空间 ID：{ws_id}"
+        ),
+        tool_call_id: None,
+        tool_calls: None,
     }
 }

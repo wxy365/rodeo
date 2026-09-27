@@ -13,15 +13,18 @@ use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
 use crate::domain::{
-    Account, AccountStatus, ActionTarget, Attachment, AuditLog, AutomationRule, Comment, Entry,
+    Account, AccountStatus, ActionTarget, AgentMessage, Attachment, AuditLog, AutomationRule,
+    Comment, Entry,
     Invite,
     LabelSchema, LabelValueType, LinkKind,
-    LabelWrite, Labeling, Message, NamedPrompt, Query as ViewQuery, SortField, SortKey, SortSpec, TitleColorRule,
+    LabelWrite, Labeling, Message, NamedPrompt, Query as ViewQuery, Role, SortField, SortKey,
+    SortSpec, TitleColorRule,
     ValueColor, ValueSource, View, ViewTimeline, Workspace, WorkspaceAiConfig, WorkspaceMember,
     WorkspaceRole,
     WriteOp, ATTACHMENT_URL_PREFIX,
 };
 use crate::error::AppError;
+use crate::service::agent::runner::run_turn;
 use crate::service::ai::derive_title;
 use crate::service::entry::PageInput as EntryPageInput;
 use crate::service::{AuthContext, Services};
@@ -2538,6 +2541,64 @@ impl Mutation {
         let auth = gql.require_auth()?;
         let sid = parse_ulid(&id)?;
         Ok(gql.services.agent.delete_session(auth.account_id, sid)?)
+    }
+
+    /// 给 agent 会话追加一条 user 消息，并起一个 turn 由 `run_turn` 异步跑 LLM。
+    /// 返回 turn 元信息，前端用它开 SSE 订阅 `AgentEvent` 流（Task 7 的 handler）。
+    ///
+    /// 校验：session 必须属于当前用户；content 不能为空。
+    async fn send_agent_message(
+        &self,
+        ctx: &Context<'_>,
+        session_id: String,
+        content: String,
+    ) -> GqlResult<GqlAgentTurn> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let sid = parse_ulid(&session_id)?;
+        if content.trim().is_empty() {
+            return Err(AppError::InvalidQuery("content 不能为空".into()).into());
+        }
+        // 校验 session 归属：get_session 找不到（跨 user / 不存在）就 NotFound。
+        let _ = gql
+            .services
+            .agent
+            .get_session(auth.account_id, sid)?
+            .ok_or(AppError::NotFound)?;
+
+        // 落库 user 消息
+        let user_msg = AgentMessage {
+            id: Ulid::new(),
+            session_id: sid,
+            role: Role::User,
+            content: content.clone(),
+            tool_calls: vec![],
+            tool_call_id: None,
+            created_at: Utc::now(),
+        };
+        gql.services.agent.append_message(user_msg)?;
+
+        let turn_id = Ulid::new();
+        let services = gql.services.clone();
+        let auth_for_runner = auth.clone();
+        // cancel_token_for 必须在 start_or_replace 之前调用——start_or_replace
+        // 内部会用新 token 覆盖注册表项，先插入再克隆能保证 runner 拿到的那一份
+        // 与注册表里的指针关联上。
+        let cancel = services.agent_turns.cancel_token_for(turn_id);
+        let services_for_runner = services.clone();
+        services.agent_turns.start_or_replace(
+            sid,
+            turn_id,
+            async move {
+                run_turn(services_for_runner, auth_for_runner, sid, turn_id, cancel).await;
+            },
+        )?;
+
+        Ok(GqlAgentTurn {
+            id: turn_id.to_string(),
+            session_id: sid.to_string(),
+            started_at: Utc::now(),
+        })
     }
 }
 
