@@ -311,6 +311,18 @@ pub fn WorkspaceMain() -> impl IntoView {
         }
     });
 
+    // ---- Agent 副作用 → 列表刷新 ----
+    // SSE 推过来的 `SideEffectHint`（entry / labeling / comment 等）只要让 `tick`
+    // 涨一格，主视图就要重查条目列表：用户改完才看到「AI 帮我新建的那一条」是体验底线。
+    // 不按 domain 过滤——标签或评论的写入通常会顺带 bump 条目 `updated_at`，列表列
+    // 不刷就显不一致。
+    if let Some(eff) = use_context::<crate::frontend::agent_side_effects::AgentSideEffects>() {
+        Effect::new(move |_| {
+            eff.tick.track();
+            refresh.update(|n| *n += 1);
+        });
+    }
+
     // ---- 筛选查询状态 ----
     let query_ast = RwSignal::new(serde_json::json!({ "and": [] }));
     // 已落库的视图查询条件基线。排序改动会自动落库（见 `persist_sort`），所以不再进基线——
@@ -2714,6 +2726,19 @@ fn EntryPanel(
         refresh.update(|n| *n += 1);
     });
     let on_editor_change = Callback::new(move |d: String| detail.set(d));
+
+    // AI 改了当前条目上的标签（labeling 域）→ 面板里那一份 `labels` 也得跟着刷。
+    // 仅当 `code` 非空（面板已挂载）时才有意义，空码时 load 会早返；`load(false)`
+    // 保留未保存的详情编辑。
+    if let Some(eff) = use_context::<crate::frontend::agent_side_effects::AgentSideEffects>() {
+        Effect::new(move |_| {
+            eff.tick.track();
+            let Some(hint) = eff.last.get_untracked() else { return; };
+            if hint.domain == "labeling" {
+                load(false);
+            }
+        });
+    }
 
     // 进入标题编辑态后把焦点交给输入框，否则用户还得再点一次。
     #[cfg(target_arch = "wasm32")]
