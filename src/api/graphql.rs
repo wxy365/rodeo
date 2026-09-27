@@ -2629,7 +2629,7 @@ pub async fn graphql_handler(
     state.schema.execute(req.into_inner().data(gql_ctx)).await.into()
 }
 
-fn extract_auth(services: &Services, headers: &HeaderMap) -> Option<AuthContext> {
+pub(crate) fn extract_auth(services: &Services, headers: &HeaderMap) -> Option<AuthContext> {
     // 优先 cookie，其次 Authorization: Bearer 头。
     if let Some(token) = cookie_value(headers, "jwt") {
         if let Ok(auth) = services.auth.verify_token(&token) {

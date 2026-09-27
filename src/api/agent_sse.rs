@@ -5,16 +5,17 @@
 //! `AgentEvent` 被序列化成一行 `data: {...}\n\n`，`Done` / `Error` 之后再额外
 //! 发一条 `event: close\ndata: end` 通知前端 `source.close()`。
 //!
-//! **鉴权**：复用现有 cookie 约定——浏览器登录后 Set-Cookie 写入 `jwt=...`，
-//! 这里从请求头里取、和 `src/api/graphql.rs` 的 `extract_auth` 一致。不复用
-//! `extract_auth` 是因为它是私有的；本文件自带一份等价的 4 行解析。
+//! **鉴权**：复用 `src/api/graphql.rs` 的 `extract_auth`——cookie 优先、
+//! `Authorization: Bearer` 头 fallback。`new EventSource(url)` 是浏览器硬性
+//! 无法设自定义 header，因此 token 走 cookie；其它客户端（curl / 服务端对
+//! 调）则走 Bearer 头。两条路径收敛在同一处，对齐 spec §12「SSE 与 Mutation
+//! 都走同一份 auth_from_cookie」。
 
 use std::convert::Infallible;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::{Extension, Path};
-use axum::http::header::COOKIE;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
@@ -24,7 +25,6 @@ use ulid::Ulid;
 use crate::api::AppState;
 use crate::domain::agent_events::AgentEvent;
 use crate::error::AppError;
-use crate::service::Services;
 
 /// 把 `AppError` 映射成 SSE 接入前的拒绝响应——只覆盖鉴权/查找/解析路径，
 /// 映射表刻意保守（Internal 一律 500），不与 GraphQL 错误流耦合；其它路径
@@ -50,7 +50,7 @@ impl IntoResponse for AppError {
 /// Agent SSE 流：把 `broadcast::Receiver<AgentEvent>` 转成 Axum 的 `Sse<Stream>`。
 ///
 /// 流程：
-/// 1. 解析 `jwt` cookie → `verify_token` → `AuthContext`；
+/// 1. 复用 `extract_auth` 解析 cookie / Bearer 头 → `verify_token` → `AuthContext`；
 /// 2. `turn_id` → `session_id`（注册表里查归属）→ 校验当前账号拥有这个 session；
 /// 3. `subscribe(turn_id)` 拿 receiver，包成 `async_stream::stream!` 喂给 Axum。
 ///
@@ -63,7 +63,8 @@ pub async fn agent_stream_handler(
     Path(turn_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, AppError> {
-    let auth = auth_from_cookie(&state.services, &headers)?;
+    let auth = crate::api::graphql::extract_auth(state.services.as_ref(), &headers)
+        .ok_or(AppError::Unauthorized)?;
     let turn_id = parse_turn_id(&turn_id)?;
     let session_id = state
         .services
@@ -115,25 +116,6 @@ pub async fn agent_stream_handler(
             .interval(Duration::from_secs(15))
             .text("keep-alive"),
     ))
-}
-
-fn auth_from_cookie(
-    services: &Arc<Services>,
-    headers: &HeaderMap,
-) -> Result<crate::service::AuthContext, AppError> {
-    let token = cookie_value(headers, "jwt").ok_or(AppError::Unauthorized)?;
-    services.auth.verify_token(&token)
-}
-
-fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
-    let cookie = headers.get(COOKIE)?.to_str().ok()?;
-    for pair in cookie.split(';') {
-        let mut kv = pair.trim().splitn(2, '=');
-        if kv.next() == Some(name) {
-            return kv.next().map(|s| s.trim().to_string());
-        }
-    }
-    None
 }
 
 fn parse_turn_id(s: &str) -> Result<Ulid, AppError> {
