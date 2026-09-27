@@ -27,9 +27,13 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::hooks::use_params_map;
-use serde_json::{json, Value};
 
-use crate::frontend::agent_side_effects::{AgentSideEffects, SideEffectHint};
+#[cfg(target_arch = "wasm32")]
+use serde_json::Value;
+
+use crate::frontend::agent_side_effects::AgentSideEffects;
+#[cfg(target_arch = "wasm32")]
+use crate::frontend::agent_side_effects::SideEffectHint;
 #[cfg(target_arch = "wasm32")]
 use crate::frontend::graphql_client::get_token;
 use crate::frontend::graphql_client::{
@@ -459,10 +463,4 @@ fn handle_event(parsed: &Value, messages: &RwSignal<Vec<AgentMessage>>, effects:
         }
         _ => {}
     }
-}
-
-/// 让外部不直接依赖 `json!`；当前文件用不到，留着避免后续修改引发未用警告。
-#[allow(dead_code)]
-fn _force_use_json() -> Value {
-    json!({})
 }
