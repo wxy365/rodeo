@@ -44,7 +44,7 @@ postgres = { version = "0.19", optional = true }
 # ServerConfig::builder() 在双 provider 下会 panic（详见上面 rustls 的注释）。
 # default-features = false 后显式列出 fs：对象存储自己的本地后端在 fs 特性里。
 object_store = { version = "0.12", default-features = false, features = ["fs", "aws"], optional = true }
-async-graphql = { version = "7", optional = true }
+async-graphql = { version = "7", optional = true, features = ["chrono"] }
 async-graphql-axum = { version = "7", optional = true }
 argon2 = { version = "0.5", optional = true }
 rand_core = { version = "0.6", features = ["getrandom"], optional = true }

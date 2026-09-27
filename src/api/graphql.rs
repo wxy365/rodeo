@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use async_graphql::{
     Context, EmptySubscription, Enum, ID, Json, Object, Result as GqlResult, Schema, SimpleObject,
-    Upload, scalar,
+    Upload,
 };
 use async_graphql_axum::{GraphQLRequest, GraphQLResponse};
 use axum::extract::Extension;
@@ -865,8 +865,6 @@ fn parse_query_json(value: Option<Json<serde_json::Value>>) -> GqlResult<ViewQue
 }
 
 // ---------- Agent 类型 ----------
-
-scalar!(serde_json::Value, "JSON", "任意 JSON 值");
 
 #[derive(SimpleObject, Clone, Serialize, Deserialize)]
 #[graphql(name = "AgentSession")]
@@ -2505,6 +2503,41 @@ impl Mutation {
         let actor = ctx.data::<AuthContext>()?.account_id;
         gql.services.message.mark_all_read(actor)?;
         Ok(true)
+    }
+
+    /// 新建 agent 会话（Worker+ 即可，会话是个人维度的）。
+    /// 服务层按 `account_id` 前缀落 key，会话归属当前用户；非成员直接 Forbidden。
+    async fn create_agent_session(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: String,
+    ) -> GqlResult<GqlAgentSession> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let ws = parse_ulid(&workspace_id)?;
+        gql.require_member(ws)?;
+        let s = gql.services.agent.create_session(auth.account_id, ws)?;
+        Ok(GqlAgentSession {
+            id: s.id.to_string(),
+            workspace_id: s.workspace_id.to_string(),
+            title: s.title,
+            created_at: s.created_at,
+            updated_at: s.updated_at,
+            last_message_at: s.last_message_at,
+        })
+    }
+
+    /// 删除 agent 会话（同时级联删所有消息）。
+    /// 服务层用 `account_id` 前缀扫 session 表校验所有权：越权即返回 false。
+    async fn delete_agent_session(
+        &self,
+        ctx: &Context<'_>,
+        id: String,
+    ) -> GqlResult<bool> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let sid = parse_ulid(&id)?;
+        Ok(gql.services.agent.delete_session(auth.account_id, sid)?)
     }
 }
 
