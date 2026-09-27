@@ -1084,6 +1084,75 @@ impl Query {
             .collect()
     }
 
+    /// 当前工作空间里属于当前用户的 agent 会话，按 `updated_at` 倒序。
+    /// 双因子：`account_id` 决定可见集合，`workspace_id` 二次过滤；非成员直接 Forbidden。
+    async fn agent_sessions(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: String,
+        limit: Option<i32>,
+    ) -> GqlResult<Vec<GqlAgentSession>> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let ws = parse_ulid(&workspace_id)?;
+        gql.require_member(ws)?;
+        let limit = limit.unwrap_or(20).max(0).min(100) as usize;
+        let rows = gql.services.agent.list_sessions(auth.account_id, ws, limit)?;
+        Ok(rows
+            .into_iter()
+            .map(|s| GqlAgentSession {
+                id: s.id.to_string(),
+                workspace_id: s.workspace_id.to_string(),
+                title: s.title,
+                created_at: s.created_at,
+                updated_at: s.updated_at,
+                last_message_at: s.last_message_at,
+            })
+            .collect())
+    }
+
+    /// 某个 agent 会话的消息，按 `created_at` 升序。
+    /// 服务层用 `account_id` 前缀扫 session 表校验所有权；越权即 NotFound。
+    async fn agent_messages(
+        &self,
+        ctx: &Context<'_>,
+        session_id: String,
+        limit: Option<i32>,
+    ) -> GqlResult<Vec<GqlAgentMessage>> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let sid = parse_ulid(&session_id)?;
+        let limit = limit.unwrap_or(200).max(0).min(1000) as usize;
+        let rows = gql.services.agent.list_messages(auth.account_id, sid, limit)?;
+        Ok(rows
+            .into_iter()
+            .map(|m| GqlAgentMessage {
+                id: m.id.to_string(),
+                session_id: m.session_id.to_string(),
+                role: match m.role {
+                    crate::domain::Role::System => GqlAgentRole::System,
+                    crate::domain::Role::User => GqlAgentRole::User,
+                    crate::domain::Role::Assistant => GqlAgentRole::Assistant,
+                    crate::domain::Role::Tool => GqlAgentRole::Tool,
+                },
+                content: m.content,
+                tool_calls: m
+                    .tool_calls
+                    .into_iter()
+                    .map(|tc| GqlAgentToolCallRecord {
+                        id: tc.id,
+                        name: tc.name,
+                        args: tc.args,
+                        result_preview: tc.result_preview,
+                        ok: tc.ok,
+                    })
+                    .collect(),
+                tool_call_id: m.tool_call_id,
+                created_at: m.created_at,
+            })
+            .collect())
+    }
+
     /// 某条目的全部评论，按发表时间升序。成员即可读（与 labelSchemas 一致）。
     async fn comments(
         &self,
