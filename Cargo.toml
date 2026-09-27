@@ -72,6 +72,10 @@ async-stream = { version = "0.3", optional = true }
 # default-features = false：关掉它的 allocator / channel / io 特性，只留
 # stream 适配器，避免把 tokio 的 io-util / sync 再次拉进来。
 futures-util = { version = "0.3", optional = true, default-features = false, features = ["std"] }
+# Agent turn 注册表使用的同步互斥（避免 async 锁在同步临界区的可取消性问题）。
+parking_lot = { version = "0.12", optional = true }
+# Agent runner 用 `CancellationToken` 让 SSE 断连时干净地中止 turn。
+tokio-util = { version = "0.7", features = ["rt"], optional = true }
 
 # 仅 WASM 目标
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -117,6 +121,8 @@ ssr = [
     "dep:reqwest",
     "dep:async-stream",
     "dep:futures-util",
+    "dep:parking_lot",
+    "dep:tokio-util",
     "leptos/ssr",
     "leptos_meta/ssr",
     "leptos_router/ssr",

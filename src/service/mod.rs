@@ -15,8 +15,12 @@ pub mod workspace;
 
 use std::sync::Arc;
 
+use crate::api::graphql::{build_schema, AppSchema};
 use crate::config::Config;
 use crate::error::AppError;
+use crate::service::agent::runner::SessionTurns;
+use crate::service::agent::templates::{validate_templates, ToolSchema};
+use crate::service::agent::tools::build_tools;
 use crate::storage::{BlobStore, DocStore};
 
 pub use agent::AgentService;
@@ -51,6 +55,9 @@ pub struct Services {
     pub ai_client: Option<AiClient>,
     pub rule: RuleService,
     pub agent: AgentService,
+    pub schema: Arc<AppSchema>,
+    pub agent_tools: Arc<Vec<ToolSchema>>,
+    pub agent_turns: Arc<SessionTurns>,
 }
 
 impl Services {
@@ -68,6 +75,12 @@ impl Services {
         // 附件后端在启动期就把根目录建好 / 客户端初始化好，配置写错在这里就暴露。
         let blobs = BlobStore::from_config(&config.storage)?;
         let attachment = AttachmentService::new(store.clone(), entry.clone(), blobs);
+        let schema = Arc::new(build_schema());
+        let tools = build_tools(&schema)
+            .map_err(|e| AppError::Ai(format!("build_tools 失败: {e}")))?;
+        validate_templates(&schema)
+            .map_err(|e| AppError::Ai(format!("validate_templates 失败: {e}")))?;
+        let agent_turns = Arc::new(SessionTurns::default());
         let services = Self {
             auth: AuthService::new(store.clone(), config.clone()),
             workspace,
@@ -85,6 +98,9 @@ impl Services {
             search,
             store,
             config,
+            schema,
+            agent_tools: tools,
+            agent_turns,
         };
         // 先修标签定义：搜索与打标回填都按当前结构读数据，让它们看到一致的 schema。
         services.label.repair_legacy_schemas()?;
