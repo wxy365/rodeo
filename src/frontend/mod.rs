@@ -1,3 +1,4 @@
+pub mod agent_side_effects;
 pub mod ai_prompt_editor;
 pub mod attachment_list;
 pub mod automation_tab;
