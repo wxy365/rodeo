@@ -215,6 +215,55 @@ pub fn agent_message_prefix(session_id: Ulid) -> [u8; 16] {
     session_id.to_bytes()
 }
 
+/// 关联主键：(workspace_id, relation_id) → Relation。前 16 字节即工作空间
+/// 前缀，扫「某 workspace 全部关联」用 `relation_prefix(workspace_id)`。
+pub fn relation_key(workspace_id: Ulid, relation_id: Ulid) -> Vec<u8> {
+    let mut out = Vec::with_capacity(32);
+    out.extend_from_slice(&workspace_id.to_bytes());
+    out.extend_from_slice(&relation_id.to_bytes());
+    out
+}
+
+/// 工作空间前缀：扫整 workspace 的全部关联。
+pub fn relation_prefix(workspace_id: Ulid) -> [u8; 16] {
+    workspace_id.to_bytes()
+}
+
+/// FROM 索引键：(workspace_id, from_code, relation_id)。from_code 是不定长
+/// 字符串，前缀扫描按 entry_code 收窄到单个条目。
+pub fn relation_by_from_key(workspace_id: Ulid, from_code: &str, relation_id: Ulid) -> Vec<u8> {
+    let mut out = Vec::with_capacity(16 + from_code.len() + 16);
+    out.extend_from_slice(&workspace_id.to_bytes());
+    out.extend_from_slice(from_code.as_bytes());
+    out.extend_from_slice(&relation_id.to_bytes());
+    out
+}
+
+/// FROM 索引的前缀：`(workspace_id, from_code)`，扫「来自此条目的关联」用。
+pub fn relation_by_from_prefix(workspace_id: Ulid, from_code: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(16 + from_code.len());
+    out.extend_from_slice(&workspace_id.to_bytes());
+    out.extend_from_slice(from_code.as_bytes());
+    out
+}
+
+/// TO 索引键：(workspace_id, to_code, relation_id)。
+pub fn relation_by_to_key(workspace_id: Ulid, to_code: &str, relation_id: Ulid) -> Vec<u8> {
+    let mut out = Vec::with_capacity(16 + to_code.len() + 16);
+    out.extend_from_slice(&workspace_id.to_bytes());
+    out.extend_from_slice(to_code.as_bytes());
+    out.extend_from_slice(&relation_id.to_bytes());
+    out
+}
+
+/// TO 索引的前缀：`(workspace_id, to_code)`，扫「指向此条目的关联」用。
+pub fn relation_by_to_prefix(workspace_id: Ulid, to_code: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(16 + to_code.len());
+    out.extend_from_slice(&workspace_id.to_bytes());
+    out.extend_from_slice(to_code.as_bytes());
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -597,10 +597,15 @@ pub fn AppBar() -> impl IntoView {
 
     // 工作空间「新建」按钮：只有 WorkspaceMain 写入了共享槽时才挂载——其它
     // 已登录页面（工作空间列表、设置、全屏 Entry 等）没写过这个槽就不会渲染。
-    let new_menu = crate::frontend::use_workspace_new_menu();
-    // 工作空间「时间轴切换」按钮：同上，仅 WorkspaceMain 写过槽时挂载，且
-    // 当前视图必须配了 timeline——WorkspaceMain 已经在写槽前过滤过这一层。
-    let timeline_toggle = crate::frontend::use_workspace_timeline_toggle();
+    //
+    // 取值必须放在 `move ||` 闭包里，让 view! 在每次信号变化时重算：AppBar
+    // 挂在 `<Router>` 之外、WorkspaceMain 挂在 `<Router>` 之内，前者 setup 时
+    // 后者尚未挂载，槽还停在 `None`——一次性快照直接 `.map(...)` 的话按钮永远
+    // 不会出来，得跟着 slot.current 一起重渲。
+    let new_menu_slot = use_context::<crate::frontend::WorkspaceNewMenuSlot>()
+        .expect("WorkspaceNewMenuSlot 未在 App 层 provide");
+    let timeline_slot = use_context::<crate::frontend::WorkspaceTimelineSlot>()
+        .expect("WorkspaceTimelineSlot 未在 App 层 provide");
     // Agent 面板开关：在 setup 阶段取出，下面 `on:click` 闭包直接读写它。
     // `use_context` 必须放在组件 setup，不能放进事件闭包里——那是 Leptos
     // 上下文解析规则的硬约束。
@@ -618,7 +623,7 @@ pub fn AppBar() -> impl IntoView {
                 </a>
             </div>
             <div class="appbar-right">
-                {new_menu.map(|m| view! {
+                {move || new_menu_slot.current.get().map(|m| view! {
                     <div class="newentry-wrap"
                         on:mouseleave=move |_| newentry_hover.set(false)>
                         <button class="newentry-btn" title="新建 Entry / 新建视图"
@@ -647,7 +652,7 @@ pub fn AppBar() -> impl IntoView {
                         }}
                     </div>
                 })}
-                {timeline_toggle.map(|t| {
+                {move || timeline_slot.current.get().map(|t| {
                     let on_toggle = t.on_toggle;
                     let is_timeline_mode = t.is_timeline_mode;
                     view! {
@@ -661,7 +666,7 @@ pub fn AppBar() -> impl IntoView {
                 // Agent 面板入口：复用 `timeline-btn` 的方形图标按钮样式，加 `.on`
                 // 态在面板展开时填主题色——与时间轴按钮视觉一致、好辨认。
                 <button class=move || if panel_open.0.get() { "agent-btn on" } else { "agent-btn" }
-                    title="AI 助手"
+                    title="Buckaroo 助手"
                     on:click=move |_| panel_open.0.update(|n| *n = !*n)>
                     "AI"
                 </button>

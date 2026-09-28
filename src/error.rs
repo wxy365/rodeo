@@ -60,6 +60,14 @@ impl AppError {
     }
 }
 
+/// AppError 的 `code()` 表是该任务的 single source of truth：tool 错误
+/// 分类（service/agent/exec.rs::classify_tool_error）目前按 message 关键字
+/// 做兜底分类，没有走 extensions.code 路径——async-graphql 7 的 blanket
+/// `From<T: Display> for Error` 不调 `ErrorExtensions::extend`，所以
+/// 在 ServerError 的 extensions 里塞 code 收效甚微。这里保留 `code()`
+/// 给前端 / 日志直接调，留作未来如果换用 `custom-error-conversion`
+/// feature 或在 resolver 站点手动 `extend_err` 时的入口。
+
 impl From<rocksdb::Error> for AppError {
     fn from(e: rocksdb::Error) -> Self {
         AppError::Storage(e.to_string())

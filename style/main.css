@@ -1382,7 +1382,18 @@ input[type="color"].sw:disabled {
     outline: 2px solid currentColor;
     outline-offset: 1px;
 }
+/* 标题在色块里居中，相关人缩到字号 11px 贴在标题右侧。
+   `flex: 1 1 0` + `min-width: 0` 让标题占满除人之外的全部空间，
+   `text-align: center` 把文字推到那块空间的正中，溢出时 ellipsis 兜底。 */
+.tl-title {
+    flex: 1 1 0;
+    min-width: 0;
+    text-align: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
 .tl-person {
+    flex: 0 0 auto;
     font-size: 11px;
     opacity: 0.8;
 }
@@ -1821,6 +1832,68 @@ input[type="color"].sw:disabled {
 .c-composer{display:flex;flex-direction:column;gap:6px}
 .c-badge{display:inline-flex;align-items:center;gap:3px;margin-left:6px;font-size:12px;color:var(--kimi-color-text-tertiary,#8f959e)}
 
+/* 条目关联侧栏：每行一个关联，badge + 箭头 + 目标条目 + 删除按钮。 */
+.relations{display:flex;flex-direction:column;gap:10px}
+.rel-list{display:flex;flex-direction:column;gap:8px;list-style:none;padding:0;margin:0}
+.rel-item{
+    display:flex;align-items:center;gap:8px;
+    padding:6px 8px;
+    border:1px solid var(--line);
+    border-radius:var(--r-s);
+    background:var(--panel-2);
+    flex-wrap:wrap;
+}
+.rel-badge{
+    display:inline-flex;align-items:center;
+    padding:2px 8px;
+    border-radius:999px;
+    font-size:12px;
+    font-weight:600;
+    color:#fff;
+    background:var(--accent);
+}
+.rel-contains{background:#3b82f6}
+.rel-derives{background:#22c55e}
+.rel-belongs{background:#a855f7}
+.rel-blocks{background:#ef4444}
+.rel-relates{background:#64748b}
+.rel-custom{background:#f59e0b}
+.rel-arrow{
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+    font-size:14px;
+    color:var(--kimi-color-text-tertiary,#8f959e);
+    min-width:1em;
+    text-align:center;
+}
+.rel-target{
+    flex:1 1 auto;min-width:0;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    font-weight:500;
+}
+.rel-acts{display:flex;gap:6px;margin-left:auto}
+.rel-composer{
+    display:flex;gap:6px;flex-wrap:wrap;align-items:center;
+    padding-top:8px;
+    border-top:1px dashed var(--line);
+}
+.rel-input{
+    flex:1 1 120px;min-width:0;
+    padding:6px 8px;
+    border:1px solid var(--line);
+    border-radius:var(--r-s);
+    background:var(--bg);
+    color:inherit;
+    font:inherit;
+}
+.rel-select{
+    padding:6px 8px;
+    border:1px solid var(--line);
+    border-radius:var(--r-s);
+    background:var(--bg);
+    color:inherit;
+    font:inherit;
+}
+
 /* 标签表达式 + 全文搜索合并条：左右两个独立的输入框共享一个圆角外框，
    内部不再画分隔线，靠左工具列 + 输入框 + 右侧搜索栏自然分段；
    视觉上是「同一个搜索条的两部分」，但语义上各自保留独立 AST。 */
@@ -1986,6 +2059,255 @@ input[type="color"].sw:disabled {
 }
 .agent-btn.on:hover {
     filter: brightness(1.06);
+}
+
+/* ===== AI Agent 浮动面板（Buckaroo）===== */
+/* 从「贴右侧全高」改成「视口里可拖 / 可缩的浮窗」：位置 + 尺寸都走内联 style，
+   这里只负责「浮窗」本身的框、阴影、圆角、布局方向。默认右下角（10px 边距）
+   是组件在 wasm32 端按视口尺寸算出来的；首次打开会把当前位置写 localStorage
+   并在下次访问恢复。 */
+.agent-panel {
+    position: fixed;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: var(--r-m);
+    box-shadow: -6px 0 20px rgb(0 0 0 / 8%), 0 6px 24px rgb(0 0 0 / 10%);
+    z-index: 35; /* 高于 .appbar 内的下拉，但低于 .dmodal（弹窗） */
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    /* 拖拽 / 缩放期间关掉过渡：位移一像素一像素跟随才不滞后。 */
+    transition: box-shadow 0.15s ease;
+}
+.agent-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+    flex: 0 0 auto;
+    cursor: move;
+    user-select: none; /* 拖拽时不选中「Buckaroo」文字 */
+}
+/* 牛仔帽头像：24x24，与 14px 标题字号视觉平衡。
+   currentColor 跟随 .agent-header 的 color，深色主题下随主题翻转。 */
+.agent-avatar {
+    display: inline-flex;
+    width: 24px;
+    height: 24px;
+    color: var(--ink);
+    flex: 0 0 auto;
+}
+.agent-avatar svg {
+    width: 100%;
+    height: 100%;
+    display: block;
+}
+.agent-title {
+    font: 500 14px system-ui;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.agent-new,
+.agent-close {
+    border: 0;
+    background: none;
+    color: var(--ink2);
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: var(--r-s);
+    font-size: 13px;
+}
+/* 右下角缩放手柄：12x12 三角，朝右下指。
+   不用 SVG / 旋转字符：CSS 边框三角最轻，hover 时背景加深提示可拖。 */
+.agent-resize-handle {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    width: 14px;
+    height: 14px;
+    cursor: nwse-resize;
+    background:
+        linear-gradient(135deg,
+            transparent 0%, transparent 50%,
+            var(--ink3) 50%, var(--ink3) 60%,
+            transparent 60%, transparent 70%,
+            var(--ink3) 70%, var(--ink3) 80%,
+            transparent 80%);
+    opacity: 0.5;
+}
+.agent-resize-handle:hover {
+    opacity: 0.85;
+}
+.agent-new:hover,
+.agent-close:hover {
+    background: var(--bg2);
+    color: var(--ink);
+}
+.agent-close {
+    font-size: 16px;
+    line-height: 1;
+}
+.agent-loading {
+    padding: 24px;
+    color: var(--ink3);
+    text-align: center;
+    font-size: 13px;
+}
+.agent-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+}
+.agent-sessions {
+    width: 160px;
+    border-right: 1px solid var(--line);
+    padding: 6px;
+    overflow-y: auto;
+    flex: 0 0 auto;
+}
+.agent-chat {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+.agent-messages {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+.agent-input {
+    flex: 0 0 auto;
+    border-top: 1px solid var(--line);
+    padding: 8px;
+    display: flex;
+    gap: 6px;
+    align-items: flex-end;
+}
+.agent-textarea {
+    flex: 1 1 auto;
+    min-height: 60px;
+    max-height: 200px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-m);
+    padding: 6px 8px;
+    font: 13px system-ui;
+    resize: vertical;
+}
+.agent-send {
+    border: 0;
+    background: var(--ink);
+    color: var(--bg);
+    padding: 6px 12px;
+    border-radius: var(--r-s);
+    cursor: pointer;
+    font-size: 13px;
+}
+.agent-send:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* 会话列表里每行的标题 + 删除按钮：标题撑满，删除按钮贴右。item 本身是
+   flex 行，删除按钮不撑开，但按下时高亮——避免误删（点标题 = 切会话，点
+   "×" = 删，且 "×" 走 stop_propagation 不切会话）。 */
+.agent-session-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    border-radius: var(--r-s);
+    cursor: pointer;
+}
+.agent-session-item:hover {
+    background: var(--bg2);
+}
+.agent-session-active {
+    background: var(--bg2);
+    color: var(--pos);
+}
+.agent-session-title {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.agent-session-del {
+    flex: none;
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    line-height: 1;
+    border: 0;
+    border-radius: var(--r-s);
+    background: transparent;
+    color: var(--ink3);
+    cursor: pointer;
+    opacity: 0;
+}
+.agent-session-item:hover .agent-session-del,
+.agent-session-active .agent-session-del {
+    opacity: 1;
+}
+.agent-session-del:hover {
+    background: var(--dgr);
+    color: #fff;
+}
+
+/* agent 消息气泡：行内 markdown（render_markdown 的产物）。`.agent-msg` 本身
+   是 div，行内 `<strong>` `<em>` `<code>` `<a>` 直接继承文字色；`<pre><code>`
+   走等宽 + 内嵌浅灰底，跟整段 prose 区分开。`.agent-msg pre` 是退化路径：
+   未来如果切回 raw text 渲染，仍能保证等宽显示。 */
+.agent-msg {
+    padding: 8px 12px;
+    border-radius: var(--r-m);
+    line-height: 1.5;
+    word-break: break-word;
+}
+.agent-msg-user {
+    background: var(--bg2);
+    margin-left: 24px;
+}
+.agent-msg-assistant {
+    background: var(--bg);
+    margin-right: 24px;
+}
+.agent-msg-tool_call,
+.agent-msg-tool_result,
+.agent-msg-tool_result_bad_args,
+.agent-msg-tool_result_rejected,
+.agent-msg-tool_result_server_error {
+    background: var(--bg3);
+    font-size: 12px;
+    color: var(--ink2);
+    margin: 4px 0;
+}
+.agent-msg pre {
+    background: var(--bg3);
+    padding: 8px 10px;
+    border-radius: var(--r-s);
+    overflow-x: auto;
+    font-size: 12px;
+    line-height: 1.4;
+    margin: 4px 0;
+}
+.agent-msg code {
+    background: var(--bg3);
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 0.92em;
+}
+.agent-msg a {
+    color: var(--blue);
+    text-decoration: underline;
 }
 
 /* 视图导航栏行上的右键菜单：「配置视图」「删除视图」。 */

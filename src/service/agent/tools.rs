@@ -88,7 +88,9 @@ pub fn build_tools(schema: &AppSchema) -> Result<Arc<Vec<ToolSchema>>, AppError>
             if let Some((name, desc, args)) = current.take() {
                 tools.push(build_tool(&name, &desc, &args));
             }
-            let name = trimmed.split_whitespace().next().unwrap_or("").to_string();
+            let name = super::templates::first_identifier(trimmed)
+                .unwrap_or("")
+                .to_string();
             // 字段前的 description：累积的多行文本，去掉末尾空行再 join。
             let desc = join_desc_lines(&desc_lines);
             desc_lines.clear();

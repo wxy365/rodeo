@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use async_graphql::{
-    Context, EmptySubscription, Enum, ID, Json, Object, Result as GqlResult, Schema, SimpleObject,
-    Upload,
+    Context, EmptySubscription, Enum, ID, InputObject, Json, Object, Result as GqlResult, Schema,
+    SimpleObject, Upload,
 };
 use async_graphql_axum::{GraphQLRequest, GraphQLResponse};
 use axum::extract::Extension;
@@ -17,7 +17,7 @@ use crate::domain::{
     Comment, Entry,
     Invite,
     LabelSchema, LabelValueType, LinkKind,
-    LabelWrite, Labeling, Message, NamedPrompt, Query as ViewQuery, Role, SortField, SortKey,
+    LabelWrite, Labeling, Message, NamedPrompt, Query as ViewQuery, Relation, RelationSemantic, Role, SortField, SortKey,
     SortSpec, TitleColorRule,
     ValueColor, ValueSource, View, ViewTimeline, Workspace, WorkspaceAiConfig, WorkspaceMember,
     WorkspaceRole,
@@ -410,6 +410,95 @@ fn gql_comment(gql: &GraphqlContext, c: Comment) -> GqlResult<GqlComment> {
         created_by_account,
         updated_by_account,
     })
+}
+
+/// 关联语义图谱展示：
+/// - `kind` 是稳定的内置 slug（`contains` / `derives` / ... / `relates_to` / `custom`），
+///   前端按它分流渲染图标与文案。
+/// - `display` 给中文展示名。
+/// - `value` 仅自定义语义有值；内置语义为 null，前端走 `kind` 即可。
+#[derive(SimpleObject, Clone)]
+pub struct GqlRelationSemantic {
+    kind: String,
+    display: String,
+    value: Option<String>,
+}
+
+impl From<RelationSemantic> for GqlRelationSemantic {
+    fn from(s: RelationSemantic) -> Self {
+        let (kind, value) = match &s {
+            RelationSemantic::Contains => ("contains".to_string(), None),
+            RelationSemantic::Derives => ("derives".to_string(), None),
+            RelationSemantic::BelongsTo => ("belongs_to".to_string(), None),
+            RelationSemantic::Blocks => ("blocks".to_string(), None),
+            RelationSemantic::RelatesTo => ("relates_to".to_string(), None),
+            RelationSemantic::Custom(v) => ("custom".to_string(), Some(v.clone())),
+        };
+        Self { kind, display: s.display().to_string(), value }
+    }
+}
+
+/// 用户表单里提交关联语义的形态：内置语义用 kind，自定义语义走 custom_value。
+/// 允许 `kind = "custom"` 时 `custom_value` 非空，否则 `custom_value` 必须是 None。
+#[derive(InputObject)]
+pub struct GqlRelationSemanticInput {
+    kind: String,
+    custom_value: Option<String>,
+}
+
+impl GqlRelationSemanticInput {
+    fn into_semantic(self) -> RelationSemantic {
+        let kind = self.kind.trim();
+        if kind == "custom" {
+            let v = self.custom_value.unwrap_or_default().trim().to_string();
+            RelationSemantic::from_input(&v)
+        } else {
+            RelationSemantic::from_input(kind)
+        }
+    }
+}
+
+#[derive(SimpleObject, Clone)]
+pub struct GqlRelation {
+    id: ID,
+    workspace_id: ID,
+    from_code: String,
+    to_code: String,
+    semantic: GqlRelationSemantic,
+    created_by: ID,
+    created_at: String,
+    updated_at: String,
+    /// 反向观察：当前条目是「from」还是「to」，`null` 表示既不属 from 也不属 to
+    /// （条目的关联查询同时返回两侧，UI 可据此标注箭头方向）。具体规则：
+    /// - 该条目 == from_code → "outgoing"
+    /// - 该条目 == to_code   → "incoming"
+    /// - 都不等（如查询者身份权限不全时）→ null
+    direction: Option<String>,
+}
+
+fn gql_relation(rel: Relation, viewer_code: Option<&str>) -> GqlRelation {
+    let direction = viewer_code.map(|cond| {
+        if rel.from_code == cond {
+            "outgoing"
+        } else if rel.to_code == cond {
+            "incoming"
+        } else {
+            ""
+        }
+        .to_string()
+    });
+    let direction = direction.filter(|d| !d.is_empty());
+    GqlRelation {
+        id: rel.id.to_string().into(),
+        workspace_id: rel.workspace_id.to_string().into(),
+        from_code: rel.from_code,
+        to_code: rel.to_code,
+        semantic: rel.semantic.into(),
+        created_by: rel.created_by.to_string().into(),
+        created_at: rel.created_at.to_rfc3339(),
+        updated_at: rel.updated_at.to_rfc3339(),
+        direction,
+    }
 }
 
 #[derive(SimpleObject, Clone)]
@@ -1175,6 +1264,28 @@ impl Query {
             .collect()
     }
 
+    /// 某条目的全部关联（from 它 + 指向它），按 created_at 升序。成员即可读。
+    /// `direction` 字段标注当前条目是 outgoing（from 它）还是 incoming（指向它），
+    /// 方便 UI 决定画左箭头还是右箭头。
+    async fn entry_relations(
+        &self,
+        ctx: &Context<'_>,
+        entry_code: String,
+    ) -> GqlResult<Vec<GqlRelation>> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let entry = gql
+            .services
+            .entry
+            .get(&entry_code)?
+            .ok_or(AppError::NotFound)?;
+        gql.require_member(entry.workspace_id)?;
+        let rels = gql.services.relation.list_for_entry(entry.workspace_id, &entry_code)?;
+        Ok(rels
+            .into_iter()
+            .map(|r| gql_relation(r, Some(&entry_code)))
+            .collect())
+    }
+
     /// 某条目的全部附件，按上传时间升序。成员即可读（与 `comments` 一致）。
     async fn attachments(
         &self,
@@ -1763,6 +1874,8 @@ impl Mutation {
         gql_entry(gql, entry, vec![])
     }
 
+    /// 给单个条目写单个标签值。value 须符合该标签 schema 的 `value_type`；
+    /// Null 标签传 `null`，列表类型传 JSON 数组。返回写入的 Labeling。
     async fn set_labeling(
         &self,
         ctx: &Context<'_>,
@@ -1987,6 +2100,74 @@ impl Mutation {
         Ok(true)
     }
 
+    /// 新建条目关联（Worker+）。`from_code -> to_code`，同一对条目 + 同一语义
+    /// 是幂等的——避免用户点两次按钮就刷两条审计。同对条目可允许不同语义并存。
+    async fn add_entry_relation(
+        &self,
+        ctx: &Context<'_>,
+        from_code: String,
+        to_code: String,
+        semantic: GqlRelationSemanticInput,
+    ) -> GqlResult<GqlRelation> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        // 拿到 from 这一侧就够校验工作空间成员了——`RelationService::create`
+        // 内部还会二次校验 from / to 同工作空间。
+        let from = gql
+            .services
+            .entry
+            .get(&from_code)?
+            .ok_or(AppError::NotFound)?;
+        gql.require_role(from.workspace_id, WorkspaceRole::Worker)?;
+        let rel = gql.services.relation.create(
+            auth.account_id,
+            &from_code,
+            &to_code,
+            semantic.into_semantic(),
+        )?;
+        Ok(gql_relation(rel, Some(&from_code)))
+    }
+
+    /// 改语义（Worker+）。方向 / 端点锁死，只能换语义。
+    async fn update_entry_relation(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: ID,
+        relation_id: ID,
+        semantic: GqlRelationSemanticInput,
+    ) -> GqlResult<GqlRelation> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let ws = parse_ulid(workspace_id.as_str())?;
+        let rid = parse_ulid(relation_id.as_str())?;
+        gql.require_role(ws, WorkspaceRole::Worker)?;
+        let updated = gql.services.relation.update_semantic(
+            auth.account_id,
+            ws,
+            rid,
+            semantic.into_semantic(),
+        )?;
+        Ok(gql_relation(updated, None))
+    }
+
+    /// 删除关联（Worker+）。返回是否真删了一行——前端用它给用户 undo 提示。
+    async fn delete_entry_relation(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: ID,
+        relation_id: ID,
+    ) -> GqlResult<bool> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let ws = parse_ulid(workspace_id.as_str())?;
+        let rid = parse_ulid(relation_id.as_str())?;
+        gql.require_role(ws, WorkspaceRole::Worker)?;
+        gql.services
+            .relation
+            .delete(auth.account_id, ws, rid)?;
+        Ok(true)
+    }
+
     /// 上传附件（Worker+）。multipart 由 async-graphql 的 `Upload` scalar 承载。
     async fn upload_attachment(
         &self,
@@ -2130,6 +2311,7 @@ impl Mutation {
         Ok(schema.into())
     }
 
+    /// 删除单个条目上的单个标签。返回删除是否真的命中（不存在返回 false）。
     async fn remove_labeling(
         &self,
         ctx: &Context<'_>,
@@ -2350,6 +2532,7 @@ impl Mutation {
         Ok(rule.into())
     }
 
+    /// 删除单条自动化规则。返回是否真的删了一条（不存在返回 false）。
     async fn delete_automation_rule(&self, ctx: &Context<'_>, id: ID) -> GqlResult<bool> {
         let gql = ctx.data::<GraphqlContext>()?;
         let auth = gql.require_auth()?;
@@ -2581,16 +2764,12 @@ impl Mutation {
         let turn_id = Ulid::new();
         let services = gql.services.clone();
         let auth_for_runner = auth.clone();
-        // cancel_token_for 必须在 start_or_replace 之前调用——start_or_replace
-        // 内部会用新 token 覆盖注册表项，先插入再克隆能保证 runner 拿到的那一份
-        // 与注册表里的指针关联上。
-        let cancel = services.agent_turns.cancel_token_for(turn_id);
         let services_for_runner = services.clone();
         services.agent_turns.start_or_replace(
             sid,
             turn_id,
             async move {
-                run_turn(services_for_runner, auth_for_runner, sid, turn_id, cancel).await;
+                run_turn(services_for_runner, auth_for_runner, sid, turn_id).await;
             },
         )?;
 

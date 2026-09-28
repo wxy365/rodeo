@@ -32,16 +32,12 @@ pub static TEMPLATES: &[(&str, &str)] = &[
         "mutation($id: ID!) { deleteEntry(id: $id) }",
     ),
     (
-        "createLabeling",
-        "mutation($input: LabelingInput!) { createLabeling(input: $input) { id } }",
+        "setLabeling",
+        "mutation($entryCode: String!, $name: String!, $value: JSON!) { setLabeling(entryCode: $entryCode, name: $name, value: $value) { id } }",
     ),
     (
-        "updateLabeling",
-        "mutation($input: LabelingInput!) { updateLabeling(input: $input) { id } }",
-    ),
-    (
-        "deleteLabeling",
-        "mutation($entryCode: String!, $name: String!) { deleteLabeling(entryCode: $entryCode, name: $name) }",
+        "removeLabeling",
+        "mutation($entryCode: String!, $name: String!) { removeLabeling(entryCode: $entryCode, name: $name) }",
     ),
     (
         "createComment",
@@ -72,44 +68,70 @@ pub static TEMPLATES: &[(&str, &str)] = &[
 use crate::api::graphql::AppSchema;
 use crate::error::AppError;
 
-/// 启动期校验：schema 里每个 mutation 都在 TEMPLATES；TEMPLATES 里每个名字都在 schema。
+/// 启动期校验：TEMPLATES 里的每个 mutation 名都在 schema 中——防止 templates 引用
+/// 已删/重命名的 mutation。
+///
+/// 只做单方向（templates ⊆ schema）。反向（schema ⊆ templates）是有意不检查的——
+/// agent 工具表是 GraphQL mutation 的子集，新加 mutation 不会自动升级为 tool。
+///
+/// 解析逻辑与 `tools::build_tools` 对齐：跳过 `"""..."""` description 块，
+/// 只挑 `<name>(<args>): <ReturnType>` 的字段行、取首段标识符（字母数字下划线）
+/// 作为 mutation 名。
 pub fn validate_templates(schema: &AppSchema) -> Result<(), AppError> {
-    // 用 introspection 取 schema 里的所有 mutation 名
     let sdl = schema.sdl();
-    // 简易正则：抓 `type Mutation { ... }` 块里的字段名
-    // 这里用 SDL 而非 __schema 是因为 build_tools 也要做同样的解析，避免两套解析。
-    let mutation_block = sdl
+    let body = sdl
         .split("type Mutation")
         .nth(1)
         .and_then(|s| s.split('{').nth(1).and_then(|s| s.split('}').next()))
         .ok_or_else(|| AppError::Ai("introspection 解析失败".into()))?;
-    let schema_names: std::collections::HashSet<&str> = mutation_block
-        .lines()
-        .filter_map(|l| l.split_whitespace().next())
-        .filter(|s| !s.is_empty() && !s.starts_with('#'))
-        .collect();
-    let template_names: std::collections::HashSet<&str> =
-        TEMPLATES.iter().map(|(n, _)| *n).collect();
 
-    let missing_in_template: Vec<&&str> = schema_names.difference(&template_names).collect();
-    let missing_in_schema: Vec<&&str> = template_names.difference(&schema_names).collect();
-    if !missing_in_template.is_empty() || !missing_in_schema.is_empty() {
-        let mut msg = String::from("agent templates 与 GraphQL schema 不一致: ");
-        if !missing_in_template.is_empty() {
-            msg.push_str(&format!(
-                "schema 有但 templates 缺: {:?}; ",
-                missing_in_template
-            ));
+    let mut schema_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut in_desc = false;
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed == "\"\"\"" {
+            in_desc = !in_desc;
+            continue;
         }
-        if !missing_in_schema.is_empty() {
-            msg.push_str(&format!(
-                "templates 有但 schema 缺: {:?}",
-                missing_in_schema
-            ));
+        if in_desc || trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
         }
-        return Err(AppError::Ai(msg));
+        // 字段行：`<name>(<args>): <ReturnType>`
+        if !trimmed.starts_with('(') && trimmed.contains('(') {
+            if let Some(name) = first_identifier(trimmed) {
+                schema_names.insert(name.to_string());
+            }
+        }
+    }
+    let template_names: Vec<&str> = TEMPLATES.iter().map(|(n, _)| *n).collect();
+    let missing: Vec<&&str> = template_names
+        .iter()
+        .filter(|n| !schema_names.contains(**n))
+        .collect();
+    if !missing.is_empty() {
+        return Err(AppError::Ai(format!(
+            "agent templates 引用了 schema 中不存在的 mutation: {:?}",
+            missing
+        )));
     }
     Ok(())
+}
+
+/// 取 trimmed 行首的 identifier（字母数字下划线），跳过任何前导字符。
+/// `createEntry(input: CreateEntryInput!): Entry!` → `createEntry`。
+/// 返回 None 如果行首没有合法 identifier。`tools.rs::build_tools` 复用同款，
+/// 解析同一份 SDL——单点维护避免两个模块各自实现同一 helper 又漂移。
+pub(super) fn first_identifier(s: &str) -> Option<&str> {
+    let start = s.find(|c: char| c.is_alphanumeric() || c == '_')?;
+    let rest = &s[start..];
+    let end = rest
+        .find(|c: char| !c.is_alphanumeric() && c != '_')
+        .unwrap_or(rest.len());
+    if end == 0 {
+        None
+    } else {
+        Some(&rest[..end])
+    }
 }
 
 // brief 注释里提到 `pub type Schema = AppSchema;` 的别名形态；为避免与

@@ -22,6 +22,8 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
             <head>
                 <meta charset="utf-8"/>
                 <meta name="viewport" content="width=device-width, initial-scale=1"/>
+                // 浏览器页签图标：SVG 现代浏览器都吃，静态资源走 `assets-dir = "public"`。
+                <link rel="icon" type="image/svg+xml" href="/favicon.svg"/>
                 // 主样式表走 cargo-leptos 的内容哈希；`Stylesheet` 不解析哈希，必须用这个。
                 <HashedStylesheet id="leptos" options=options.clone() />
                 <AutoReload options=options.clone() />
@@ -96,10 +98,11 @@ pub fn App() -> impl IntoView {
                     <Route path=ParamSegment("slug") view=WorkspaceMain/>
                 </Routes>
             </main>
+            // Agent 面板挂在 Router 内、main 外：use_params_map() 需要 Router context
+            // （不能放在 </Router> 之外，否则启动期 panic）。可见性由 `AgentPanelOpen`
+            // 内部 `<Show>` 控制；不再额外包一层 auth 判定，免得 user 信号闪动时
+            // 面板也跟着消失。
+            <AgentPanel/>
         </Router>
-        // Agent 面板挂在 Router 同级、AppBar 同侧：可见性由 `AgentPanelOpen`
-        // 内部 `<Show>` 控制，这里不再额外包一层 auth 判定，免得 user 信号
-        // 闪动时面板也跟着消失。
-        <AgentPanel/>
     }
 }

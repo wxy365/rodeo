@@ -8,6 +8,7 @@ pub mod entry;
 pub mod label;
 pub mod mention;
 pub mod message;
+pub mod relation;
 pub mod rule;
 pub mod search;
 pub mod view;
@@ -32,6 +33,7 @@ pub use comment::CommentService;
 pub use entry::EntryService;
 pub use label::LabelService;
 pub use message::MessageService;
+pub use relation::RelationService;
 pub use rule::{RuleEngine, RuleService};
 pub use search::SearchIndex;
 pub use view::ViewService;
@@ -54,6 +56,7 @@ pub struct Services {
     pub ai: AiService,
     pub ai_client: Option<AiClient>,
     pub rule: RuleService,
+    pub relation: RelationService,
     pub agent: AgentService,
     pub schema: Arc<AppSchema>,
     pub agent_tools: Arc<Vec<ToolSchema>>,
@@ -67,8 +70,11 @@ impl Services {
         let ai_client = AiClient::from_config(&config.ai)?;
         let workspace = WorkspaceService::new(store.clone());
         let message = MessageService::new(store.clone(), workspace.clone());
+        // RelationService 在 EntryService 之前：条目软删除要把关联清理拼进自己的
+        // write_batch，必须先有 instance 才能传引用。
+        let relation = RelationService::new(store.clone());
         // messages 必须在 workspaces 之后构造，EntryService 的 mention 派发要走它的成员表。
-        let entry = EntryService::with_search(store.clone(), search.clone(), message.clone());
+        let entry = EntryService::with_search(store.clone(), search.clone(), message.clone(), relation.clone());
         // 评论服务要与 EntryService 共用同一份实例：评论变更后要触发它的重索引。
         let comment = CommentService::new(store.clone(), entry.clone(), message.clone());
         // 附件服务同样要与 EntryService 共用同一份实例：上传后要推进条目更新时间并重索引。
@@ -94,6 +100,7 @@ impl Services {
             ai: AiService::new(store.clone()),
             ai_client,
             rule: RuleService::new(store.clone()),
+            relation,
             agent: AgentService::new(store.clone(), config.clone()),
             search,
             store,

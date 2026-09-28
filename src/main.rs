@@ -75,7 +75,7 @@ async fn main() {
         )
         .route("/api/health", get(|| async { "ok" }))
         .route("/api/attachments/{id}", get(download_attachment))
-        .route("/api/agent/turns/:turn_id/stream", get(agent_stream_handler))
+        .route("/api/agent/turns/{turn_id}/stream", get(agent_stream_handler))
         .leptos_routes(&leptos_options, routes, {
             let leptos_options = leptos_options.clone();
             move || shell(leptos_options.clone())

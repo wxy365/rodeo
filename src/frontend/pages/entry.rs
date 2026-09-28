@@ -14,6 +14,7 @@ use crate::frontend::icons::{
     ic_back, ic_check, ic_share, ic_tag,
 };
 use crate::frontend::label_editor::LabelEditor;
+use crate::frontend::relations_panel::RelationsPanel;
 use crate::frontend::tiny_editor::TinyEditor;
 use crate::frontend::use_auth;
 
@@ -301,6 +302,23 @@ pub fn EntryFullScreen() -> impl IntoView {
                         <div class="grp-h">{ic_tag()}"标签（变更即保存）"</div>
                         <LabelEditor code=Signal::derive(code) schemas labels members=ws_members on_changed />
                     </div>
+
+                    {move || {
+                        let mut index: std::collections::HashMap<String, String> =
+                            std::collections::HashMap::new();
+                        if let Some(Ok((_, e, _, _, _))) = data.get() {
+                            index.insert(e.code.clone(), e.title.clone());
+                        }
+                        let title_index = Signal::derive(move || index.clone());
+                        view! {
+                            <RelationsPanel
+                                code=Signal::derive(code)
+                                workspace_id=ws_id
+                                title_index
+                                on_changed=on_changed
+                            />
+                        }
+                    }}
 
                     <div>
                         <TabBar tabs=SIDE_TABS active=side_tab />

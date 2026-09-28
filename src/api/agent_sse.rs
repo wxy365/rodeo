@@ -55,9 +55,9 @@ impl IntoResponse for AppError {
 /// 3. `subscribe(turn_id)` 拿 receiver，包成 `async_stream::stream!` 喂给 Axum。
 ///
 /// 终止路径（与 Task 6 进度文档一致）：`run_turn` 跑到 `finish(turn_id)` 时把
-/// `Sender` drop，receiver 端 `recv()` 返回 `Err(Closed)` → 流结束。`OnDrop` 里
-/// 那次 cancel 是「对称式保险」，并不真的能跑到 runner（`cancel_token_for` 与
-/// `start_or_replace` 之间存在替换），无副作用，但也不指望它生效。
+/// `Sender` drop，receiver 端 `recv()` 返回 `Err(Closed)` → 流结束。早期版本
+/// 还有 `OnDrop` 调 cancel 的对称式保险，已并入 broadcast 关闭这一条主路径后
+/// 删除——参见 SDD plan 终评 parked follow-up #7。
 pub async fn agent_stream_handler(
     Extension(state): Extension<Arc<AppState>>,
     Path(turn_id): Path<String>,
@@ -77,19 +77,9 @@ pub async fn agent_stream_handler(
         .get_session(auth.account_id, session_id)?
         .ok_or(AppError::NotFound)?;
 
-    // cancel 是「对称式」：实际靠 broadcast 关闭触发流结束，这里只是
-    // 跟着 drop 跑一次 cancel()。保留是为了和 brief / 后续重构预期对齐。
-    let cancel = state.services.agent_turns.cancel_token(turn_id);
     let mut rx = state.services.agent_turns.subscribe(turn_id)?;
-    let cancel_for_drop = cancel.clone();
 
     let stream = async_stream::stream! {
-        struct OnDrop<F: FnOnce()>(Option<F>);
-        impl<F: FnOnce()> Drop for OnDrop<F> {
-            fn drop(&mut self) { if let Some(f) = self.0.take() { f(); } }
-        }
-        let _on_drop = OnDrop(Some(move || cancel_for_drop.cancel()));
-
         loop {
             match rx.recv().await {
                 Ok(ev) => {
@@ -106,9 +96,6 @@ pub async fn agent_stream_handler(
                 Err(_) => break,
             }
         }
-        // 真正退出由上面的 `Err(_)` 分支走到（broadcast 关闭）。`cancel` 自身
-        // 不等待：它从不被 select，仅通过 OnDrop 在流被 drop 时跑一次。
-        let _ = cancel;
     };
 
     Ok(Sse::new(stream).keep_alive(

@@ -9,6 +9,7 @@ pub mod graphql_client;
 pub mod icons;
 pub mod label_editor;
 pub mod message_list;
+pub mod relations_panel;
 pub mod pages;
 pub mod query_eval;
 pub mod timeline;
@@ -76,10 +77,6 @@ pub fn provide_workspace_new_menu_slot() -> WorkspaceNewMenuSlot {
     slot
 }
 
-pub fn use_workspace_new_menu() -> Option<WorkspaceNewMenu> {
-    use_context::<WorkspaceNewMenuSlot>().and_then(|s| s.current.get())
-}
-
 /// 工作空间顶栏时间轴切换按钮的回调与当前态。
 ///
 /// 与 `WorkspaceNewMenu` 同样的兄弟槽问题，所以单开一个槽而不是合并进去——
@@ -105,8 +102,4 @@ pub fn provide_workspace_timeline_slot() -> WorkspaceTimelineSlot {
     };
     provide_context(slot);
     slot
-}
-
-pub fn use_workspace_timeline_toggle() -> Option<WorkspaceTimelineToggle> {
-    use_context::<WorkspaceTimelineSlot>().and_then(|s| s.current.get())
 }

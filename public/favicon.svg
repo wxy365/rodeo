@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Rodeo 应用图标。
+  主题沿用 `ic_logo()` 的「竞技场 + R」造型：双层圆环围出场地轮廓，
+  横梁 + 立柱点画出门栏，下盘粗笔「R」点题。
+  配色固定下来（不靠 currentColor）：主题色用西部牛仔棕 + 暖沙金，
+  让 favicon 在浅色 / 深色浏览器页签下都清晰。
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Rodeo">
+    <defs>
+        <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#a8552a"/>
+            <stop offset="100%" stop-color="#7c3f17"/>
+        </linearGradient>
+    </defs>
+    <!-- 圆角底板：让图标在白色页签里也有自己的形状轮廓。 -->
+    <rect width="64" height="64" rx="12" fill="url(#bg)"/>
+    <!-- 竞技场外圈 -->
+    <circle cx="32" cy="32" r="22" fill="none" stroke="#f5dca8" stroke-width="2.4" opacity="0.95"/>
+    <!-- 竞技场内圈（虚化的围栏感） -->
+    <circle cx="32" cy="32" r="17" fill="none" stroke="#f5dca8" stroke-width="1.4" opacity="0.55"/>
+    <!-- 横梁（门栏上沿）+ 两根立柱点 -->
+    <line x1="14" y1="26" x2="50" y2="26" stroke="#f5dca8" stroke-width="2" stroke-linecap="round"/>
+    <circle cx="14.5" cy="26" r="2.4" fill="#f5dca8"/>
+    <circle cx="49.5" cy="26" r="2.4" fill="#f5dca8"/>
+    <!-- 居中的 R：粗笔画，加一点沙金高光，让 R + 圆环整体协调。 -->
+    <path d="M23.5 41 L29.5 41 L29.5 23 L36.5 23
+             Q41 23 41 27 Q41 30.5 37.2 31 L42 41 L35.5 41
+             L31.6 31.4 L31.5 31.4 L31.5 41 Z
+             M31.5 28.5 L34.5 28.5 Q36.5 28.5 36.5 27
+             Q36.5 25.5 34.5 25.5 L31.5 25.5 Z"
+          fill="#f5dca8"/>
+</svg>

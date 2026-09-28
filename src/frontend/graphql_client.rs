@@ -232,6 +232,34 @@ pub struct Comment {
     pub updated_by_account: Option<AccountBrief>,
 }
 
+/// 关联语义：服务端内部 tag 形态是 `{"type":"custom","value":"..."}`，
+/// 内置形态只有 `{"type":"contains"}` 等。这里反过来只暴露前端用得到的字段：
+/// `kind` 用于图标与配色，`display` 用于中文文案，`value` 仅自定义有值。
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RelationSemantic {
+    pub kind: String,
+    pub display: String,
+    #[serde(default)]
+    pub value: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Relation {
+    pub id: String,
+    pub workspace_id: String,
+    pub from_code: String,
+    pub to_code: String,
+    pub semantic: RelationSemantic,
+    pub created_by: String,
+    pub created_at: String,
+    pub updated_at: String,
+    /// 服务端按查询条目是 from / to 给出方向："outgoing" / "incoming" / null。
+    #[serde(default)]
+    pub direction: Option<String>,
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GqlMessage {
@@ -320,6 +348,10 @@ const ENTRY_FIELDS: &str = "code title detail createdAt updatedAt createdBy upda
 
 const COMMENT_FIELDS: &str = "id entryCode body createdAt updatedAt createdBy updatedBy \
      createdByAccount { id name email } updatedByAccount { id name email }";
+
+const RELATION_FIELDS: &str =
+    "id workspaceId fromCode toCode direction createdBy createdAt updatedAt \
+     semantic { kind display value }";
 
 const LABEL_SCHEMA_FIELDS: &str =
     "name title valueType enumValues color valueColors multi format currencySymbol unit defaultValue links";
@@ -761,6 +793,83 @@ pub async fn delete_comment(entry_code: &str, id: &str) -> Result<bool, String> 
     .await?;
     Ok(data
         .get("deleteComment")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false))
+}
+
+/// 拉某个条目的全部关联（from + to 两侧合并）。
+pub async fn entry_relations(entry_code: &str) -> Result<Vec<Relation>, String> {
+    let q = format!(
+        "query($c: String!) {{ entryRelations(entryCode: $c) {{ {RELATION_FIELDS} }} }}"
+    );
+    let data = graphql(&q, json!({ "c": entry_code })).await?;
+    serde_json::from_value(data.get("entryRelations").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+/// 新建条目关联。`semantic_kind` 是 "contains" / "derives" / ... / "relates_to"
+/// 或 "custom"；后者需额外给 `custom_value`。幂等：同 from + to + semantic
+/// 已存在时返回已有那条，不会重复建。
+#[allow(clippy::too_many_arguments)]
+pub async fn add_entry_relation(
+    from_code: &str,
+    to_code: &str,
+    semantic_kind: &str,
+    custom_value: Option<&str>,
+) -> Result<Relation, String> {
+    let q = format!(
+        "mutation($f: String!, $t: String!, $s: GqlRelationSemanticInput!) {{ \
+         addEntryRelation(fromCode: $f, toCode: $t, semantic: $s) {{ {RELATION_FIELDS} }} }}"
+    );
+    let data = graphql(
+        &q,
+        json!({
+            "f": from_code,
+            "t": to_code,
+            "s": { "kind": semantic_kind, "customValue": custom_value },
+        }),
+    )
+    .await?;
+    serde_json::from_value(data.get("addEntryRelation").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+/// 改关联语义。方向 / 端点锁死，只能换语义。
+pub async fn update_entry_relation(
+    workspace_id: &str,
+    relation_id: &str,
+    semantic_kind: &str,
+    custom_value: Option<&str>,
+) -> Result<Relation, String> {
+    let q = format!(
+        "mutation($w: ID!, $r: ID!, $s: GqlRelationSemanticInput!) {{ \
+         updateEntryRelation(workspaceId: $w, relationId: $r, semantic: $s) \
+         {{ {RELATION_FIELDS} }} }}"
+    );
+    let data = graphql(
+        &q,
+        json!({
+            "w": workspace_id,
+            "r": relation_id,
+            "s": { "kind": semantic_kind, "customValue": custom_value },
+        }),
+    )
+    .await?;
+    serde_json::from_value(data.get("updateEntryRelation").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+pub async fn delete_entry_relation(
+    workspace_id: &str,
+    relation_id: &str,
+) -> Result<bool, String> {
+    let data = graphql(
+        "mutation($w: ID!, $r: ID!) { deleteEntryRelation(workspaceId: $w, relationId: $r) }",
+        json!({ "w": workspace_id, "r": relation_id }),
+    )
+    .await?;
+    Ok(data
+        .get("deleteEntryRelation")
         .and_then(|v| v.as_bool())
         .unwrap_or(false))
 }

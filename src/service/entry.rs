@@ -25,6 +25,9 @@ pub struct EntryService {
     search: Option<Arc<SearchIndex>>,
     rules: RuleEngine,
     messages: crate::service::message::MessageService,
+    /// 条目侧调用 `purge_for_entry_ops` 把关联清理拼进自己的 write_batch，
+    /// 保证「条目软删除 + 关联清理」原子提交——避免悬空关联行指向已删条目。
+    relations: crate::service::relation::RelationService,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -55,18 +58,23 @@ pub struct QueryResult {
 }
 
 impl EntryService {
-    pub fn new(store: Arc<DocStore>, messages: crate::service::message::MessageService) -> Self {
+    pub fn new(
+        store: Arc<DocStore>,
+        messages: crate::service::message::MessageService,
+        relations: crate::service::relation::RelationService,
+    ) -> Self {
         let rules = RuleEngine::new(store.clone());
-        Self { store, search: None, rules, messages }
+        Self { store, search: None, rules, messages, relations }
     }
 
     pub fn with_search(
         store: Arc<DocStore>,
         search: Arc<SearchIndex>,
         messages: crate::service::message::MessageService,
+        relations: crate::service::relation::RelationService,
     ) -> Self {
         let rules = RuleEngine::new(store.clone());
-        Self { store, search: Some(search), rules, messages }
+        Self { store, search: Some(search), rules, messages, relations }
     }
 
     fn reindex(&self, entry: &Entry) {
@@ -270,6 +278,11 @@ impl EntryService {
         );
         let mut ops = audit_ops(&audit)?;
         ops.push(BatchOp::put(cf::ENTRIES, code.as_bytes().to_vec(), &entry)?);
+        // 把条目关联清理一并拼进同一批：避免悬空关联行指向已删条目。
+        let (_count, rel_purge) =
+            self.relations
+                .purge_for_entry_ops(actor, entry.workspace_id, code)?;
+        ops.extend(rel_purge);
         self.store.write_batch(ops)?;
         self.reindex(&entry);
         Ok(())
@@ -1337,7 +1350,8 @@ mod tests {
         let (dir, store, _svc, ws_id, actor) = setup();
         let (_sdir, search) = temp_search();
         let msg_svc = crate::service::message::MessageService::new(store.clone(), WorkspaceService::new(store.clone()));
-        let svc = EntryService::with_search(store.clone(), search, msg_svc);
+        let rel_svc = crate::service::relation::RelationService::new(store.clone());
+        let svc = EntryService::with_search(store.clone(), search, msg_svc, rel_svc);
         for i in 0..5 {
             let e = svc.create(actor, ws_id, &format!("条目{i}")).unwrap();
             if i % 2 == 0 {
@@ -1360,7 +1374,8 @@ mod tests {
         let (dir, store, _svc, ws_id, actor) = setup();
         let (_sdir, search) = temp_search();
         let msg_svc = crate::service::message::MessageService::new(store.clone(), WorkspaceService::new(store.clone()));
-        let svc = EntryService::with_search(store.clone(), search, msg_svc);
+        let rel_svc = crate::service::relation::RelationService::new(store.clone());
+        let svc = EntryService::with_search(store.clone(), search, msg_svc, rel_svc);
         let a = svc.create(actor, ws_id, "找回密码失败").unwrap();
         svc.update(actor, "tester", &a.code, &a.updated_at.to_rfc3339(), "找回密码失败", "验证码收不到").unwrap();
         let b = svc.create(actor, ws_id, "找回密码失败").unwrap();
@@ -1382,7 +1397,8 @@ mod tests {
         let (dir, store, _svc, ws_id, actor) = setup();
         let (_sdir, search) = temp_search();
         let msg_svc = crate::service::message::MessageService::new(store.clone(), WorkspaceService::new(store.clone()));
-        let svc = EntryService::with_search(store.clone(), search, msg_svc);
+        let rel_svc = crate::service::relation::RelationService::new(store.clone());
+        let svc = EntryService::with_search(store.clone(), search, msg_svc, rel_svc);
         let a = svc.create(actor, ws_id, "甲").unwrap();
         svc.set_labeling(actor, &a.code, "Task", &serde_json::json!(null)).unwrap();
         svc.set_labeling(actor, &a.code, "Bug", &serde_json::json!(null)).unwrap();
@@ -1408,7 +1424,8 @@ mod tests {
         let (dir, store, _svc, ws_id, actor) = setup();
         let (_sdir, search) = temp_search();
         let msg_svc = crate::service::message::MessageService::new(store.clone(), WorkspaceService::new(store.clone()));
-        let svc = EntryService::with_search(store.clone(), search, msg_svc);
+        let rel_svc = crate::service::relation::RelationService::new(store.clone());
+        let svc = EntryService::with_search(store.clone(), search, msg_svc, rel_svc);
         for t in ["b", "a", "c"] {
             svc.create(actor, ws_id, t).unwrap();
         }
@@ -1438,7 +1455,8 @@ mod tests {
         let actor = Ulid::new();
         let ws = ws_svc.create(actor, "测试", None, "").unwrap();
         let msg_svc = crate::service::message::MessageService::new(store.clone(), ws_svc);
-        let entry_svc = EntryService::new(store.clone(), msg_svc);
+        let rel_svc = crate::service::relation::RelationService::new(store.clone());
+        let entry_svc = EntryService::new(store.clone(), msg_svc, rel_svc);
         (dir, store, entry_svc, ws.id, actor)
     }
 
@@ -1550,7 +1568,8 @@ mod tests {
         let (dir, store, _svc, ws_id, actor) = setup();
         let (_sdir, search) = temp_search();
         let msg_svc = crate::service::message::MessageService::new(store.clone(), WorkspaceService::new(store.clone()));
-        let svc = EntryService::with_search(store.clone(), search.clone(), msg_svc);
+        let rel_svc = crate::service::relation::RelationService::new(store.clone());
+        let svc = EntryService::with_search(store.clone(), search.clone(), msg_svc, rel_svc);
         let e = svc.create(actor, ws_id, "独一无二的关键词").unwrap();
         assert_eq!(search.num_docs(), 1);
 
@@ -1569,7 +1588,8 @@ mod tests {
     fn search_backfill_skips_archived_entries() {
         let (dir, store, _svc, ws_id, actor) = setup();
         let msg_svc = crate::service::message::MessageService::new(store.clone(), WorkspaceService::new(store.clone()));
-        let svc = EntryService::new(store.clone(), msg_svc);
+        let rel_svc = crate::service::relation::RelationService::new(store.clone());
+        let svc = EntryService::new(store.clone(), msg_svc, rel_svc);
         let keep = svc.create(actor, ws_id, "保留的条目").unwrap();
         let gone = svc.create(actor, ws_id, "归档的条目").unwrap();
         svc.archive(actor, &gone.code).unwrap();

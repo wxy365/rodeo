@@ -8,7 +8,7 @@ use crate::frontend::graphql_client::{
     accept_invite, create_workspace, decline_invite, my_invites, restore_workspace, workspaces,
     Invite, WorkspaceItem,
 };
-use crate::frontend::icons::{ic_add, ic_folder, ic_history};
+use crate::frontend::icons::{ic_add, ic_folder, ic_history, ic_search};
 use crate::frontend::use_auth;
 
 use super::super::components::logged_out;
@@ -103,10 +103,15 @@ pub fn WorkspaceList() -> impl IntoView {
 
     view! {
         <div class="page">
-            // 顶部 appbar 取消：logo 现在挂在 SideNav 顶部，搜索框未上线也跟着砍掉。
-            // 留给未来真有全文检索能力时再做——避免现在挂一个永远 disabled 的输入框招点。
-            <div style="display:flex;align-items:center;margin-bottom:16px">
-                <h2 style="font-size:20px;font-weight:500">"我的工作空间"</h2>
+            // 顶栏（logo + 全局操作）现在由 `<AppBar/>` 统一渲染，不在本页面画一遍。
+            // 这里的「我的工作空间」标题行只承担页面级 H1 与右侧搜索框——后者在 spec §14
+            // 里被定成「全文检索本视图」的占位，未来服务端接通后用同一个 query bar 即可。
+            <div style="display:flex;align-items:center;margin-bottom:16px;gap:12px">
+                <h2 style="font-size:20px;font-weight:500;margin:0">"我的工作空间"</h2>
+                <label class="inp" style="margin-left:auto;display:flex;align-items:center;gap:6px;padding:0 12px;min-width:260px">
+                    {ic_search()}
+                    <input placeholder="搜索工作空间名称 / 描述（即将上线）" disabled />
+                </label>
             </div>
 
             {move || if show_create.get() {

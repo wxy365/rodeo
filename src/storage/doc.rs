@@ -86,6 +86,16 @@ pub mod cf {
     pub const MESSAGES_BY_RECIPIENT: &str = "messages_by_recipient";
     pub const AGENT_SESSIONS: &str = "agent_sessions";
     pub const AGENT_MESSAGES: &str = "agent_messages";
+    /// 条目关联主键：(workspace_id, relation_id) → `Relation`（bincode）。
+    /// 用 workspace_id 作前缀，让「拉某工作空间全部关联」直接 prefix 扫描；
+    /// 与 VIEW_TIMELINE 同款「键缺席即未配置」的反例——关联一旦写就常驻。
+    pub const ENTRY_RELATIONS: &str = "entry_relations";
+    /// FROM 索引：(workspace_id, from_code, relation_id) → 空值。前缀扫描取
+    /// 「来自某条目的全部关联」。
+    pub const ENTRY_RELATIONS_BY_FROM: &str = "entry_relations_by_from";
+    /// TO 索引：(workspace_id, to_code, relation_id) → 空值。前缀扫描取
+    /// 「指向某条目的全部关联」——反向查询的关键索引。
+    pub const ENTRY_RELATIONS_BY_TO: &str = "entry_relations_by_to";
 }
 
 /// 单个批量写操作：文档/索引/审计统一原子写入。
