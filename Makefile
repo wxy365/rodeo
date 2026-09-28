@@ -61,7 +61,7 @@ LEPTOS_BIN_ENVS := \
 	LEPTOS_HASH_FILES=true \
 	LEPTOS_ENV=DEV
 
-.PHONY: help dev watch serve build build-release build-linux build-linux-host package-linux test check fmt clippy clean reset-data
+.PHONY: help dev watch serve build build-release build-linux build-linux-host package-linux package-linux-host test check fmt clippy clean reset-data
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -107,6 +107,35 @@ build-linux-host: ## 交叉编译 Linux x86_64 静态可执行文件到 dist/rod
 	cp target/$(LINUX_TARGET)/release/rodeo dist/rodeo
 	@file dist/rodeo
 	@ls -lh dist/rodeo
+
+# 同一 tar 包里既有 musl 静态二进制又有 site/，所以除了 build-linux-host 还得跑一份
+# cargo-leptos 出 site/ 与 hash.txt；这一步顺带把 host 的 gnu server 也重编一遍，
+# 但 cargo-leptos 必须 server + wasm 一起编，没法只编 wasm——编完只取 site/ 与 hash.txt。
+package-linux-host: build-linux-host ## 打包 musl 静态二进制 + site/ 到 dist/rodeo-<arch>.tar.gz
+	$(MAKE) build-release
+	rm -rf dist/site dist/hash.txt
+	mkdir -p dist/site
+	cp -r target/site/. dist/site/
+	cp target/release/hash.txt dist/hash.txt
+	rm -rf dist/rodeo-$(DIST_ARCH)
+	mkdir -p dist/rodeo-$(DIST_ARCH)
+	cp dist/rodeo dist/rodeo-$(DIST_ARCH)/rodeo
+	cp dist/hash.txt dist/rodeo-$(DIST_ARCH)/hash.txt
+	cp -r dist/site dist/rodeo-$(DIST_ARCH)/site
+	cp config.example.toml dist/rodeo-$(DIST_ARCH)/config.example.toml
+	printf '%s\n' \
+		'#!/bin/sh' \
+		'set -e' \
+		'cd "$$(dirname "$$0")"' \
+		'export LEPTOS_SITE_ROOT=site' \
+		'export LEPTOS_HASH_FILES=true' \
+		'exec ./rodeo config.toml' \
+		> dist/rodeo-$(DIST_ARCH)/start.sh
+	chmod +x dist/rodeo-$(DIST_ARCH)/start.sh
+	tar -czf dist/rodeo-$(DIST_ARCH).tar.gz -C dist rodeo-$(DIST_ARCH)
+	@ls -lh dist/rodeo-$(DIST_ARCH).tar.gz
+	@shasum -a 256 dist/rodeo-$(DIST_ARCH).tar.gz 2>/dev/null \
+		|| sha256sum dist/rodeo-$(DIST_ARCH).tar.gz
 
 # 非容器部署用：把 dist/ 打成一个自带启动脚本的 tar.gz，scp 到生产机解压即跑。
 # start.sh 设 LEPTOS_SITE_ROOT 与 LEPTOS_HASH_FILES，不设 LEPTOS_SITE_ADDR——后者优先级
