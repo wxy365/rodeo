@@ -10,7 +10,7 @@ use leptos::task::spawn_local;
 
 use crate::frontend::components::{logged_out, role_at_least};
 use crate::frontend::graphql_client::{
-    add_entry_relation, delete_entry_relation, entry_relations, Relation, RelationSemantic,
+    add_entry_relation, delete_entry_relation, entry_relations, my_role, Relation, RelationSemantic,
 };
 
 /// 与服务端语义枚举一一对应：内置 key + 中文展示名。自定义形态 key="custom"，
@@ -91,11 +91,22 @@ pub fn RelationsPanel(
 
     Effect::new(move |_| {
         code.get();
-        workspace_id.get();
+        let ws = workspace_id.get();
         if logged_out() {
             return;
         }
         load();
+        // 取一下当前用户在该工作空间的角色：「添加 / 删除关联」按钮按角色门控，
+        // 否则 owner 才能改就太窄了（worker 也该能写）。后端 mutation 已自带
+        // 角色校验，前端先屏蔽 UI 比让用户点完再撞 403 体验更好。
+        if !ws.is_empty() && cfg!(target_arch = "wasm32") {
+            let role_for_async = role;
+            spawn_local(async move {
+                if let Ok(r) = my_role(&ws).await {
+                    role_for_async.set(r);
+                }
+            });
+        }
     });
 
     let submit = move |_| {

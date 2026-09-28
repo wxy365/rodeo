@@ -42,6 +42,9 @@ const ALL_CFS: &[&str] = &[
     cf::MESSAGES_BY_RECIPIENT,
     cf::AGENT_SESSIONS,
     cf::AGENT_MESSAGES,
+    cf::ENTRY_RELATIONS,
+    cf::ENTRY_RELATIONS_BY_FROM,
+    cf::ENTRY_RELATIONS_BY_TO,
 ];
 
 /// RocksDB 文档存储：每个 CF 存一类文档（bincode 序列化）或二级索引（裸字节）。
