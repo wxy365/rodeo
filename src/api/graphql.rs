@@ -17,7 +17,7 @@ use crate::domain::{
     Comment, Entry,
     Invite,
     LabelSchema, LabelValueType, LinkKind,
-    LabelWrite, Labeling, Message, NamedPrompt, Query as ViewQuery, Relation, RelationSemantic, Role, SortField, SortKey,
+    LabelWrite, Labeling, Message, NamedPrompt, Query as ViewQuery, Relation, RelationSemantic, Role, SemanticKind, SortField, SortKey,
     SortSpec, TitleColorRule,
     ValueColor, ValueSource, View, ViewTimeline, Workspace, WorkspaceAiConfig, WorkspaceMember,
     WorkspaceRole,
@@ -426,15 +426,20 @@ pub struct GqlRelationSemantic {
 
 impl From<RelationSemantic> for GqlRelationSemantic {
     fn from(s: RelationSemantic) -> Self {
-        let (kind, value) = match &s {
-            RelationSemantic::Contains => ("contains".to_string(), None),
-            RelationSemantic::Derives => ("derives".to_string(), None),
-            RelationSemantic::BelongsTo => ("belongs_to".to_string(), None),
-            RelationSemantic::Blocks => ("blocks".to_string(), None),
-            RelationSemantic::RelatesTo => ("relates_to".to_string(), None),
-            RelationSemantic::Custom(v) => ("custom".to_string(), Some(v.clone())),
-        };
-        Self { kind, display: s.display().to_string(), value }
+        let kind = match s.kind {
+            SemanticKind::Contains => "contains",
+            SemanticKind::Derives => "derives",
+            SemanticKind::BelongsTo => "belongs_to",
+            SemanticKind::Blocks => "blocks",
+            SemanticKind::RelatesTo => "relates_to",
+            SemanticKind::Custom => "custom",
+        }
+        .to_string();
+        Self {
+            kind,
+            display: s.display().to_string(),
+            value: s.value,
+        }
     }
 }
 

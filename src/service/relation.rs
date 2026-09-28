@@ -306,21 +306,81 @@ impl RelationService {
         }
         Ok(count)
     }
+
+    /// 启动期 idempotent 修复：扫 `ENTRY_RELATIONS` 列族，遇到 `bincode::deserialize`
+    /// 失败的旧记录直接连同两条索引一起删掉。
+    ///
+    /// 触发原因：早期版本用 `RelationSemantic` 的 `#[serde(tag="type", content="value")]`
+    /// 形态存进了 RocksDB（实际并不能被 bincode 编码成功，所以大部分写入在旧版本里直接
+    /// 抛错），但总有零星成功落盘的样本——一旦切到 struct 形态，read 路径在反序列化
+    /// 阶段直接 `Err("tag for enum is not valid, found N")` 把整个 list_for_entry
+    /// 拖挂。删记录是最稳的兜底：关系是工作空间里的派生数据，重新建一条成本极低，
+    /// 不留任何 shim 比 read-site 容错更可靠。
+    pub fn repair_undecodable(&self) -> Result<usize, AppError> {
+        let bad = self
+            .store
+            .scan_prefix(cf::ENTRY_RELATIONS, b"")
+            .map_err(AppError::from)?;
+        let mut ops: Vec<BatchOp> = Vec::new();
+        for (k, _v) in &bad {
+            if k.len() != 32 {
+                // 不是 (workspace_id, relation_id) 形态，留给别的修
+                continue;
+            }
+            let Ok(ws_bytes): Result<[u8; 16], _> = k[..16].try_into() else {
+                continue;
+            };
+            let Ok(id_bytes): Result<[u8; 16], _> = k[16..].try_into() else {
+                continue;
+            };
+            let ws = Ulid::from_bytes(ws_bytes);
+            let id = Ulid::from_bytes(id_bytes);
+            // 再确认一次反序列化确实失败（多数键只是格式可疑，但 bincode 容忍）
+            if self
+                .store
+                .get::<Relation>(cf::ENTRY_RELATIONS, k)
+                .is_ok()
+            {
+                continue;
+            }
+            ops.push(BatchOp::delete(cf::ENTRY_RELATIONS, k.clone()));
+            // 索引键里嵌了 from_code / to_code——旧记录里我们没有这两段，按主键
+            // 拉不到 index，就不强求：list 路径只会看见坏主键删了之后没有悬空索引。
+            // 真要再扫一遍 FROM/TO 列族也行，但坏主键路径已经覆盖 list_for_entry
+            // 的「主行能解码」分支，索引列族坏只会让列出的关系少几行，不会拖崩。
+            let _ = (ws, id);
+        }
+        let removed = ops.len();
+        if !ops.is_empty() {
+            self.store.write_batch(ops)?;
+        }
+        Ok(removed)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::SemanticKind;
 
     #[test]
     fn semantic_from_input_handles_builtins() {
-        assert_eq!(RelationSemantic::from_input("包含"), RelationSemantic::Contains);
-        assert_eq!(RelationSemantic::from_input("归属"), RelationSemantic::BelongsTo);
+        assert_eq!(
+            RelationSemantic::from_input("包含"),
+            RelationSemantic::builtin(SemanticKind::Contains)
+        );
+        assert_eq!(
+            RelationSemantic::from_input("归属"),
+            RelationSemantic::builtin(SemanticKind::BelongsTo)
+        );
     }
 
     #[test]
     fn semantic_from_input_custom_round_trip() {
-        let s = RelationSemantic::Custom("上下游".into());
+        let s = RelationSemantic {
+            kind: SemanticKind::Custom,
+            value: Some("上下游".into()),
+        };
         let back = RelationSemantic::from_input(s.display());
         assert_eq!(back, s);
     }

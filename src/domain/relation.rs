@@ -23,22 +23,38 @@ pub struct Relation {
     pub updated_at: DateTime<Utc>,
 }
 
-/// 关联语义。
+/// 内置语义的稳定 slug。`Custom` 不带数据，词面走 `RelationSemantic.value`。
 ///
-/// 前五个是「常用业务语义」单选项；`Custom(String)` 兜住用户手输入的任何词——
-/// 一旦选定自定义语义就当字符串存，不做规范化（避免「自定义标签」这类
-/// 域外概念污染语义枚举）。serde 用 tag = "type" + content = "value"：
-/// 内置形态平铺为 `"type": "contains"`，自定义形态是
-/// `"type": "custom", "value": "上下游"`。这样前端按 type 分流渲染即可。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", content = "value", rename_all = "snake_case")]
-pub enum RelationSemantic {
+/// 拆 enum + struct 而不是把 `Custom(String)` 做成 enum 变体：bincode 无法
+/// 编码「internally tagged enum + data variant」，会抛
+/// `Bincode does not support Deserializer::deserialize_identifier`。结构体形式
+/// 两个字段固定可预测，bincode / postcard / 后端存储都干净。
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticKind {
     Contains,
     Derives,
     BelongsTo,
     Blocks,
     RelatesTo,
-    Custom(String),
+    Custom,
+}
+
+/// 关联语义：`kind` 是稳定 slug，`value` 仅自定义语义带值。
+///
+/// JSON 形态故意做成平铺：
+/// - 内置：`{"kind":"contains","display":"包含","value":null}`
+/// - 自定义：`{"kind":"custom","display":"上下游","value":"上下游"}`
+///
+/// **不要** 给 `value` 加 `skip_serializing_if = "Option::is_none"`——bincode
+/// 写时跳过 None，读时却依然按字段顺序读一个 varint tag，builtins 反序列化
+/// 会以 `Io(Kind(UnexpectedEof))` 失败（写 4 字节、读 5 字节，对不上）。
+/// 留着 None 走满 5 字节是稳的；bincode 里冗余 tag 比漏写更安全。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RelationSemantic {
+    pub kind: SemanticKind,
+    #[serde(default)]
+    pub value: Option<String>,
 }
 
 impl RelationSemantic {
@@ -50,15 +66,16 @@ impl RelationSemantic {
         ("relates_to", "关联"),
     ];
 
-    /// 展示名：内置给中文标签，custom 原样回显。
+    /// 展示名：内置给中文标签，custom 原样回显 `value`。
     pub fn display(&self) -> &str {
-        match self {
-            Self::Contains => "包含",
-            Self::Derives => "派生",
-            Self::BelongsTo => "归属",
-            Self::Blocks => "阻塞",
-            Self::RelatesTo => "关联",
-            Self::Custom(s) => s.as_str(),
+        match (&self.kind, self.value.as_deref()) {
+            (SemanticKind::Contains, _) => "包含",
+            (SemanticKind::Derives, _) => "派生",
+            (SemanticKind::BelongsTo, _) => "归属",
+            (SemanticKind::Blocks, _) => "阻塞",
+            (SemanticKind::RelatesTo, _) => "关联",
+            (SemanticKind::Custom, Some(v)) => v,
+            (SemanticKind::Custom, None) => "",
         }
     }
 
@@ -67,18 +84,25 @@ impl RelationSemantic {
     pub fn from_input(s: &str) -> Self {
         let trimmed = s.trim();
         match trimmed {
-            "" => Self::RelatesTo,
-            "contains" | "包含" => Self::Contains,
-            "derives" | "派生" => Self::Derives,
-            "belongs_to" | "归属" => Self::BelongsTo,
-            "blocks" | "阻塞" => Self::Blocks,
-            "relates_to" | "关联" => Self::RelatesTo,
-            other => Self::Custom(other.to_string()),
+            "" => Self::builtin(SemanticKind::RelatesTo),
+            "contains" | "包含" => Self::builtin(SemanticKind::Contains),
+            "derives" | "派生" => Self::builtin(SemanticKind::Derives),
+            "belongs_to" | "归属" => Self::builtin(SemanticKind::BelongsTo),
+            "blocks" | "阻塞" => Self::builtin(SemanticKind::Blocks),
+            "relates_to" | "关联" => Self::builtin(SemanticKind::RelatesTo),
+            other => Self {
+                kind: SemanticKind::Custom,
+                value: Some(other.to_string()),
+            },
         }
     }
 
+    pub(crate) fn builtin(kind: SemanticKind) -> Self {
+        Self { kind, value: None }
+    }
+
     pub fn is_custom(&self) -> bool {
-        matches!(self, Self::Custom(_))
+        matches!(self.kind, SemanticKind::Custom)
     }
 }
 
@@ -108,50 +132,81 @@ impl Relation {
 mod tests {
     use super::*;
 
+    fn contains() -> RelationSemantic {
+        RelationSemantic::builtin(SemanticKind::Contains)
+    }
+    fn custom(s: &str) -> RelationSemantic {
+        RelationSemantic {
+            kind: SemanticKind::Custom,
+            value: Some(s.to_string()),
+        }
+    }
+
     #[test]
     fn from_input_maps_builtins_in_both_languages() {
-        assert_eq!(RelationSemantic::from_input("包含"), RelationSemantic::Contains);
-        assert_eq!(RelationSemantic::from_input("contains"), RelationSemantic::Contains);
-        assert_eq!(RelationSemantic::from_input("归属"), RelationSemantic::BelongsTo);
-        assert_eq!(RelationSemantic::from_input("派生"), RelationSemantic::Derives);
-        assert_eq!(RelationSemantic::from_input("阻塞"), RelationSemantic::Blocks);
-        assert_eq!(RelationSemantic::from_input("关联"), RelationSemantic::RelatesTo);
+        assert_eq!(RelationSemantic::from_input("包含"), contains());
+        assert_eq!(RelationSemantic::from_input("contains"), contains());
+        assert_eq!(
+            RelationSemantic::from_input("归属"),
+            RelationSemantic::builtin(SemanticKind::BelongsTo)
+        );
+        assert_eq!(
+            RelationSemantic::from_input("派生"),
+            RelationSemantic::builtin(SemanticKind::Derives)
+        );
+        assert_eq!(
+            RelationSemantic::from_input("阻塞"),
+            RelationSemantic::builtin(SemanticKind::Blocks)
+        );
+        assert_eq!(
+            RelationSemantic::from_input("关联"),
+            RelationSemantic::builtin(SemanticKind::RelatesTo)
+        );
     }
 
     #[test]
     fn from_input_falls_back_to_custom() {
-        assert_eq!(
-            RelationSemantic::from_input("上下游"),
-            RelationSemantic::Custom("上下游".to_string())
-        );
+        assert_eq!(RelationSemantic::from_input("上下游"), custom("上下游"));
         // 大小写敏感，避免误吃 "Relates_To" / "RELATES_TO" 之类方言
-        assert!(matches!(
-            RelationSemantic::from_input("上下游"),
-            RelationSemantic::Custom(_)
-        ));
+        assert!(RelationSemantic::from_input("上下游").is_custom());
     }
 
     #[test]
     fn from_input_empty_defaults_to_relates() {
-        assert_eq!(RelationSemantic::from_input(""), RelationSemantic::RelatesTo);
-        assert_eq!(RelationSemantic::from_input("   "), RelationSemantic::RelatesTo);
+        assert_eq!(
+            RelationSemantic::from_input(""),
+            RelationSemantic::builtin(SemanticKind::RelatesTo)
+        );
+        assert_eq!(
+            RelationSemantic::from_input("   "),
+            RelationSemantic::builtin(SemanticKind::RelatesTo)
+        );
     }
 
     #[test]
     fn custom_display_round_trips() {
-        let s = RelationSemantic::Custom("上下游".to_string());
+        let s = custom("上下游");
         assert_eq!(s.display(), "上下游");
+    }
+
+    #[test]
+    fn builtin_display_chinese() {
+        assert_eq!(contains().display(), "包含");
+        assert_eq!(
+            RelationSemantic::builtin(SemanticKind::BelongsTo).display(),
+            "归属"
+        );
     }
 
     #[test]
     fn serde_round_trips_through_json() {
         let cases = [
-            RelationSemantic::Contains,
-            RelationSemantic::Derives,
-            RelationSemantic::BelongsTo,
-            RelationSemantic::Blocks,
-            RelationSemantic::RelatesTo,
-            RelationSemantic::Custom("上下游".into()),
+            contains(),
+            RelationSemantic::builtin(SemanticKind::Derives),
+            RelationSemantic::builtin(SemanticKind::BelongsTo),
+            RelationSemantic::builtin(SemanticKind::Blocks),
+            RelationSemantic::builtin(SemanticKind::RelatesTo),
+            custom("上下游"),
         ];
         for s in cases {
             let j = serde_json::to_string(&s).unwrap();
@@ -161,15 +216,48 @@ mod tests {
     }
 
     #[test]
-    fn serde_uses_internal_tag_with_builtins_and_custom_value() {
-        // 内置：内部 tag，只有 `type`，无 `value`
-        let j = serde_json::to_string(&RelationSemantic::Contains).unwrap();
-        assert_eq!(j, "{\"type\":\"contains\"}");
-        let j = serde_json::to_string(&RelationSemantic::BelongsTo).unwrap();
-        assert_eq!(j, "{\"type\":\"belongs_to\"}");
-        // 自定义：tag + value
-        let j = serde_json::to_string(&RelationSemantic::Custom("上下游".into())).unwrap();
-        assert!(j.contains("\"type\":\"custom\""));
-        assert!(j.contains("\"value\":\"上下游\""));
+    fn serde_keeps_value_field_for_builtins() {
+        // 内置语义 value 是 None，但 bincode 不能 skip_serializing_if（读端仍按
+        // 字段顺序读 varint tag，skip 后写少读多会 Io(UnexpectedEof)）。JSON
+        // 也保持 value 字段，避免双编码器走两条路——稳定性优先。
+        let j = serde_json::to_string(&contains()).unwrap();
+        assert!(j.contains("\"kind\":\"contains\""), "{j}");
+        assert!(j.contains("\"value\":null"), "{j}");
+    }
+
+    #[test]
+    fn serde_keeps_value_field_for_custom() {
+        let j = serde_json::to_string(&custom("上下游")).unwrap();
+        assert!(j.contains("\"kind\":\"custom\""), "{j}");
+        assert!(j.contains("\"value\":\"上下游\""), "{j}");
+    }
+
+    #[test]
+    fn bincode_round_trips_through_relation_record() {
+        // 直接走 Relation 整条记录的 bincode 编解码——list_for_entry 是这条路，
+        // 不应该出现任何 InvalidTagEncoding。
+        let rel = Relation {
+            id: Ulid::new(),
+            workspace_id: Ulid::new(),
+            from_code: "AAA".into(),
+            to_code: "BBB".into(),
+            semantic: RelationSemantic::from_input("包含"),
+            created_by: Ulid::new(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let bytes = bincode::serialize(&rel).unwrap();
+        let back: Relation = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(back.from_code, "AAA");
+        assert_eq!(back.semantic.kind, SemanticKind::Contains);
+
+        let rel2 = Relation {
+            semantic: custom("上下游"),
+            ..rel.clone()
+        };
+        let bytes2 = bincode::serialize(&rel2).unwrap();
+        let back2: Relation = bincode::deserialize(&bytes2).unwrap();
+        assert_eq!(back2.semantic.kind, SemanticKind::Custom);
+        assert_eq!(back2.semantic.value.as_deref(), Some("上下游"));
     }
 }

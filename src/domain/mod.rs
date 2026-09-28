@@ -22,7 +22,7 @@ pub use audit::{AuditAction, AuditLog};
 pub use attachment::{Attachment, ATTACHMENT_URL_PREFIX};
 pub use comment::Comment;
 pub use entry::{generate_entry_code, Entry};
-pub use relation::{Relation, RelationSemantic};
+pub use relation::{Relation, RelationSemantic, SemanticKind};
 pub use label::{
     default_layout, default_pattern, resolve_color, resolve_layout, DerivedLabel, InheritanceGraph,
     LabelLink, LabelSchema, LabelValue, LabelValueType, Labeling, LinkKind, ValueColor,

@@ -120,6 +120,10 @@ impl Services {
         // `Err` 而非 `None`，旧编码的记录会让启动直接失败。
         services.view.repair_legacy_view_sort()?;
         services.view.repair_default_view_name()?;
+        // 关联：早期版本 RelationSemantic 用 internally-tagged enum + data variant
+        // 形态，bincode 不能解；切到 struct 形态后旧记录会让 entryRelations 整个挂掉。
+        // 启动期把读不出来的删掉，幂等，再启动就清干净了。
+        services.relation.repair_undecodable()?;
         Ok(services)
     }
 }
