@@ -247,7 +247,7 @@ fn label_options(schemas: Vec<LabelSchema>, time: bool) -> Vec<impl IntoView> {
 #[component]
 pub fn WorkspaceMain() -> impl IntoView {
     let params = use_params_map();
-    let slug = move || params.get().get("slug").unwrap_or_default();
+    let slug = move || params.get_untracked().get("slug").unwrap_or_default();
     let navigate = use_navigate();
     let auth = use_auth();
     let refresh = RwSignal::new(0u32);

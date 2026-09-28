@@ -39,7 +39,7 @@ fn enum_values_of(raw: &str) -> Vec<String> {
 #[component]
 pub fn WorkspaceSettings() -> impl IntoView {
     let params = use_params_map();
-    let slug = move || params.get().get("slug").unwrap_or_default();
+    let slug = move || params.get_untracked().get("slug").unwrap_or_default();
     let auth = use_auth();
     let navigate = use_navigate();
     // 存成 StoredValue（Copy），事件闭包才能保持 Copy 而被视图重复使用。

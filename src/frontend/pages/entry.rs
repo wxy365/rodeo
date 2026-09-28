@@ -24,8 +24,8 @@ const SIDE_TABS: &[(&str, &str)] = &[("attachments", "附件"), ("history", "历
 #[component]
 pub fn EntryFullScreen() -> impl IntoView {
     let params = use_params_map();
-    let slug = move || params.get().get("slug").unwrap_or_default();
-    let code = move || params.get().get("code").unwrap_or_default();
+    let slug = move || params.get_untracked().get("slug").unwrap_or_default();
+    let code = move || params.get_untracked().get("code").unwrap_or_default();
     let navigate = use_navigate();
     let auth = use_auth();
 

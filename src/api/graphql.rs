@@ -1160,7 +1160,7 @@ impl Query {
     /// 当前用户的未读消息数。
     async fn unread_message_count(&self, ctx: &Context<'_>) -> GqlResult<i32> {
         let gql = ctx.data::<GraphqlContext>()?;
-        let actor = ctx.data::<AuthContext>()?.account_id;
+        let actor = gql.require_auth()?.account_id;
         Ok(gql.services.message.unread_count(actor)? as i32)
     }
 
@@ -1171,7 +1171,7 @@ impl Query {
         limit: Option<i32>,
     ) -> GqlResult<Vec<GqlMessage>> {
         let gql = ctx.data::<GraphqlContext>()?;
-        let actor = ctx.data::<AuthContext>()?.account_id;
+        let actor = gql.require_auth()?.account_id;
         let limit = limit.unwrap_or(0).max(0) as usize;
         let rows = gql.services.message.list_for_recipient(actor, limit)?;
         rows.into_iter()
@@ -2681,7 +2681,7 @@ impl Mutation {
     /// 单条标已读。
     async fn mark_message_read(&self, ctx: &Context<'_>, id: ID) -> GqlResult<bool> {
         let gql = ctx.data::<GraphqlContext>()?;
-        let actor = ctx.data::<AuthContext>()?.account_id;
+        let actor = gql.require_auth()?.account_id;
         let id = Ulid::from_string(id.as_str())
             .map_err(|e| AppError::Internal(format!("无效消息 id: {e}")))?;
         gql.services.message.mark_read(actor, id)?;
@@ -2691,7 +2691,7 @@ impl Mutation {
     /// 全部标已读。
     async fn mark_all_messages_read(&self, ctx: &Context<'_>) -> GqlResult<bool> {
         let gql = ctx.data::<GraphqlContext>()?;
-        let actor = ctx.data::<AuthContext>()?.account_id;
+        let actor = gql.require_auth()?.account_id;
         gql.services.message.mark_all_read(actor)?;
         Ok(true)
     }
