@@ -33,6 +33,7 @@ pub fn family(start_vt: &str, end_vt: &str) -> Option<Family> {
 }
 
 /// 一个已排期的条目。
+#[derive(Clone)]
 pub struct Placed {
     /// 在 `data` 的条目列表里的下标。
     pub idx: usize,
@@ -44,6 +45,7 @@ pub struct Placed {
 }
 
 /// 整套排布结果。
+#[derive(Clone)]
 pub struct Plan {
     pub family: Family,
     /// 轴的秒区间。
@@ -247,6 +249,48 @@ pub fn plan(entries: &[Entry], schemas: &[LabelSchema], cfg: &ViewTimeline) -> O
     })
 }
 
+/// 把「用户选中的子区间」叠到原 `Plan` 上：丢掉不重叠的块、把 `lo..hi` 缩到
+/// 选中区间、重算横向比例与刻度步长。`picked = None` 时原样返回。
+/// 不动 `unscheduled`——缺起止时间的条目本来就画在轴外，与缩放无关。
+fn apply_pick(p: &Plan, picked: Option<(i64, i64)>) -> Plan {
+    let Some((a, b)) = picked else { return p.clone() };
+    let (a, b) = (a.min(b), a.max(b));
+    let filtered: Vec<Placed> = p
+        .placed
+        .iter()
+        .filter(|pl| pl.end >= a && pl.start <= b)
+        .cloned()
+        .collect();
+    let lo = a.max(p.lo);
+    let hi = b.min(p.hi);
+    let (lo, hi) = if hi - lo < 1 {
+        // 退化区间：撑成 2 秒，避免 0 像素的轴触发除零。
+        let mid = (a + b) / 2;
+        (mid.saturating_sub(1), mid + 1)
+    } else {
+        (lo, hi)
+    };
+    let span_secs = (hi - lo) as f64;
+    let px = (1200.0 / span_secs).max(0.001);
+    let step = tick_step(hi - lo, p.family, px);
+    let lanes = filtered
+        .iter()
+        .map(|pl| pl.lane)
+        .max()
+        .map(|m| m + 1)
+        .unwrap_or(0);
+    Plan {
+        family: p.family,
+        lo,
+        hi,
+        step,
+        px_per_sec: px,
+        placed: filtered,
+        lanes,
+        unscheduled: p.unscheduled.clone(),
+    }
+}
+
 /// 刻度所在的秒位：`lo` 之后第一个 step 的整数倍开始，到 `hi`。
 pub fn ticks(lo: i64, hi: i64, step: i64) -> Vec<i64> {
     let mut out = Vec::new();
@@ -311,6 +355,70 @@ const PICK_ARM_MS: u64 = 800;
 /// 落点重合的容差（像素）：两次点击的坐标差在这之内才算「同一处的第二下」。
 const PICK_SAME_PX: i32 = 4;
 
+/// 时间轴上拖动选区时，开始到当前指针位置的轴内像素坐标。
+/// 提交时换算成绝对秒需要当时的 `px_per_sec`，所以 commit 这一刻再换，不在 mousedown 时冻。
+#[derive(Clone, Copy)]
+struct DragState {
+    start_x: f64,
+    cur_x: f64,
+}
+
+/// 拖动起止相距这么远才算「真的在拖」，否则归到单击。
+const PICK_DRAG_PX: f64 = 4.0;
+
+// DOM 测量只在 wasm 下编译（web-sys 与 wasm-bindgen 都是 hydrate-only），
+// 独立成函数并按 target 切两套——native 那侧永远返回 None，调用方无需分支。
+#[cfg(target_arch = "wasm32")]
+fn axis_x_of_impl(
+    axis_ref: &NodeRef<leptos::html::Div>,
+    client_x: i32,
+) -> Option<f64> {
+    use wasm_bindgen::JsCast;
+    let el = axis_ref.get()?;
+    let r: &web_sys::HtmlElement = el.unchecked_ref();
+    let rect = r.get_bounding_client_rect();
+    let left = rect.left();
+    let width = rect.width();
+    let x = client_x as f64 - left;
+    Some(x.clamp(0.0, width))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn axis_x_of_impl(
+    _axis_ref: &NodeRef<leptos::html::Div>,
+    _client_x: i32,
+) -> Option<f64> {
+    None
+}
+
+#[cfg(target_arch = "wasm32")]
+fn axis_contains_impl(
+    axis_ref: &NodeRef<leptos::html::Div>,
+    client_x: i32,
+    client_y: i32,
+) -> bool {
+    use wasm_bindgen::JsCast;
+    let Some(el) = axis_ref.get() else { return false };
+    let r: &web_sys::HtmlElement = el.unchecked_ref();
+    let rect = r.get_bounding_client_rect();
+    let cx = client_x as f64;
+    let cy = client_y as f64;
+    let l = rect.left();
+    let ri = rect.right();
+    let t = rect.top();
+    let bo = rect.bottom();
+    cx >= l && cx <= ri && cy >= t && cy <= bo
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn axis_contains_impl(
+    _axis_ref: &NodeRef<leptos::html::Div>,
+    _client_x: i32,
+    _client_y: i32,
+) -> bool {
+    false
+}
+
 /// 时间轴渲染。外层只在「该视图配了时间轴」且开关切到时间轴时才挂载。
 #[component]
 pub fn TimelineView(
@@ -363,6 +471,85 @@ pub fn TimelineView(
         });
         on_cleanup(move || handle.remove());
     }
+
+    // ---- 时间范围选择 ----
+    // `live_plan` 是「当前可见」的 `Plan`：渲染闭包里按 `picked` 重算后写进来，
+    // 让指针事件能把轴内像素换算成绝对秒。每当 `picked` 变、视图重渲染，`px_per_sec`
+    // 就跟着变——所以不能把像素冻在 mousedown，得在 commit 那一刻再换。
+    let live_plan: RwSignal<Option<Plan>> = RwSignal::new(None);
+    // 提交后的缩放区间（绝对秒）。None = 显示完整轴。
+    let picked: RwSignal<Option<(i64, i64)>> = RwSignal::new(None);
+    // LMB 单击（或 RMB 在没有 anchor 时）记下的起点秒位，等 RMB 来配对 / 等拖动来提交。
+    let anchor_secs: RwSignal<Option<i64>> = RwSignal::new(None);
+    // 当前拖动期间的轴内像素起止，仅用于画选区矩形。
+    let drag: RwSignal<Option<DragState>> = RwSignal::new(None);
+    let axis_ref: NodeRef<leptos::html::Div> = NodeRef::new();
+
+    // 视口 x → 轴内像素。clamp 到轴宽内，越界直接落到最近端点。
+    let axis_x_of = move |client_x: i32| -> Option<f64> {
+        axis_x_of_impl(&axis_ref, client_x)
+    };
+
+    // 轴内像素 → 绝对秒。用当前可见 plan 的比例——picked 一变，比例就变。
+    let px_to_secs = move |axis_x: f64| -> Option<i64> {
+        let p = live_plan.get_untracked()?;
+        if p.px_per_sec <= 0.0 {
+            return None;
+        }
+        Some(p.lo + (axis_x / p.px_per_sec).round() as i64)
+    };
+
+    let commit_pick = move |a_secs: i64, b_secs: i64| {
+        let (a, b) = (a_secs.min(b_secs), a_secs.max(b_secs));
+        if b - a < 1 {
+            return;
+        }
+        picked.set(Some((a, b)));
+        anchor_secs.set(None);
+    };
+
+    // 拖动期间挂窗口级指针事件：mousemove 要追着指针走、mouseup 可能在轴外松手。
+    // 仅在 wasm 挂，SSR 编译时这些闭包不会生成。
+    if cfg!(target_arch = "wasm32") {
+        let move_handle = window_event_listener(leptos::ev::pointermove, move |ev| {
+            if drag.get_untracked().is_none() {
+                return;
+            }
+            let Some(x) = axis_x_of(ev.client_x()) else {
+                return;
+            };
+            if let Some(d) = drag.get_untracked() {
+                drag.set(Some(DragState {
+                    start_x: d.start_x,
+                    cur_x: x,
+                }));
+            }
+        });
+        let up_handle = window_event_listener(leptos::ev::pointerup, move |ev| {
+            let Some(d) = drag.get_untracked() else {
+                return;
+            };
+            // 只在轴内松手才算提交：在轴外松手相当于取消当次拖动。
+            let on_axis = axis_contains_impl(&axis_ref, ev.client_x(), ev.client_y());
+            if on_axis {
+                if (d.cur_x - d.start_x).abs() >= PICK_DRAG_PX {
+                    if let (Some(anchor), Some(secs2)) =
+                        (anchor_secs.get_untracked(), px_to_secs(d.cur_x))
+                    {
+                        commit_pick(anchor, secs2);
+                    }
+                } else if picked.get_untracked().is_some() {
+                    // 单击落点：把已缩放的视图退回完整轴。anchor 留给可能的 RMB 配对。
+                    picked.set(None);
+                }
+            }
+            drag.set(None);
+        });
+        on_cleanup(move || {
+            move_handle.remove();
+            up_handle.remove();
+        });
+    }
     view! {
         // 根类名是 `.tlv`：`.tl` 已归审计日志行（`AuditTimeline`）所有，不能复用。
         <div class="tlv">
@@ -387,7 +574,18 @@ pub fn TimelineView(
                     }
                     .into_any();
                 };
-                let Plan { family, lo, hi, step, px_per_sec, placed, lanes, unscheduled } = p;
+                let Plan { family, lo, hi, step, px_per_sec, placed, lanes, unscheduled } =
+                    apply_pick(&p, picked.get());
+                live_plan.set(Some(Plan {
+                    family,
+                    lo,
+                    hi,
+                    step,
+                    px_per_sec,
+                    placed: placed.clone(),
+                    lanes,
+                    unscheduled: unscheduled.clone(),
+                }));
                 let width = ((hi - lo) as f64 * px_per_sec).max(1.0);
                 let lanes_h = lanes.max(1) as f64 * LANE_H;
 
@@ -503,7 +701,51 @@ pub fn TimelineView(
                 view! {
                     <div class="tl-scroll">
                         <div class="tl-canvas" style=format!("width:{width:.1}px")>
-                            <div class="tl-axis">{tick_rows}</div>
+                            <div
+                                class="tl-axis"
+                                node_ref=axis_ref
+                                on:pointerdown=move |ev| {
+                                    if ev.button() != 0 {
+                                        return;
+                                    }
+                                    let Some(x) = axis_x_of(ev.client_x()) else {
+                                        return;
+                                    };
+                                    ev.prevent_default();
+                                    if let Some(secs) = px_to_secs(x) {
+                                        anchor_secs.set(Some(secs));
+                                    }
+                                    drag.set(Some(DragState { start_x: x, cur_x: x }));
+                                }
+                                on:contextmenu=move |ev| {
+                                    ev.prevent_default();
+                                    let Some(x) = axis_x_of(ev.client_x()) else {
+                                        return;
+                                    };
+                                    let Some(secs) = px_to_secs(x) else {
+                                        return;
+                                    };
+                                    if let Some(anchor) = anchor_secs.get_untracked() {
+                                        commit_pick(anchor, secs);
+                                    } else {
+                                        anchor_secs.set(Some(secs));
+                                    }
+                                }
+                            >
+                                {tick_rows}
+                                {move || {
+                                    drag.get().map(|d| {
+                                        let left = d.start_x.min(d.cur_x);
+                                        let w = (d.start_x - d.cur_x).abs();
+                                        view! {
+                                            <div
+                                                class="tl-sel-rect"
+                                                style=format!("left:{left:.1}px;width:{w:.1}px")
+                                            />
+                                        }
+                                    })
+                                }}
+                            </div>
                             <div class="tl-lanes" style=format!("height:{lanes_h:.1}px")>{blocks}</div>
                         </div>
                     </div>

@@ -1350,7 +1350,10 @@ input[type="color"].sw:disabled {
     position: relative;
     height: 26px;
     border-bottom: 1px solid var(--line);
+    cursor: crosshair;
+    user-select: none;
 }
+/* 刻度不接管指针事件，让点击 / 拖动都落到 `.tl-axis` 上统一处理。 */
 .tl-tick {
     position: absolute;
     top: 0;
@@ -1360,6 +1363,17 @@ input[type="color"].sw:disabled {
     font-size: 11px;
     color: var(--ink3);
     white-space: nowrap;
+    pointer-events: none;
+}
+/* 拖动选区矩形：仅在 pointerdown → pointerup 之间出现，颜色取主色淡 80%。 */
+.tl-sel-rect {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: color-mix(in srgb, var(--accent, #3b82f6) 20%, transparent);
+    border-left: 1px solid var(--accent, #3b82f6);
+    border-right: 1px solid var(--accent, #3b82f6);
+    pointer-events: none;
 }
 .tl-lanes {
     position: relative;
