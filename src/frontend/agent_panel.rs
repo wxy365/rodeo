@@ -533,13 +533,17 @@ pub fn AgentPanel() -> impl IntoView {
 
 /// 占位的 id 生成器。前端给乐观写入的消息一个本地点 id，让 `<For key>`
 /// 稳定。`list_agent_messages` 重新拉到真消息后这条会被自然替换掉。
+///
+/// 必须是 wasm32-safe：之前用 `SystemTime::now()` 在 hydrate 后会 panic
+///（wasm32 的 `std::time` 后端是 `unsupported.rs`，`time not implemented on
+/// this platform`），正好踩在 `on_send` 里乐观写入之前——结果用户消息
+/// 永远推不进 `messages` 信号。改用进程级单调计数器，跨刷新不需要持久
+///（占位只在客户端活到 SSE 之后的 list_agent_messages 覆盖为止）。
 fn ulid_compat_id() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let t = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
-    format!("local-{t}")
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("local-{n}")
 }
 
 /// HTML escape：把 `&` / `<` / `>` / `"` / `'` 转成 entities。
@@ -898,10 +902,7 @@ async fn open_stream(
             return;
         }
     };
-    let reader = match stream
-        .dyn_into::<ReadableStreamDefaultReader>()
-        .map_err(|_| ())
-    {
+    let reader: ReadableStreamDefaultReader = match stream.get_reader().dyn_into() {
         Ok(r) => r,
         Err(_) => {
             web_sys::console::warn_1(&"SSE reader dyn_into failed".into());
