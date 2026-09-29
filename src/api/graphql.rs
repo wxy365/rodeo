@@ -2854,6 +2854,24 @@ impl Mutation {
             selected_entry_codes: selected_codes.clone(),
         };
 
+        // 取 session 拿到 workspace_id（auth 校验已通过）；顺便构建 ctx_md。
+        let session = gql
+            .services
+            .agent
+            .get_session(auth.account_id, sid)?
+            .ok_or(AppError::NotFound)?;
+        let workspace_id = session.workspace_id;
+        let turn_id = Ulid::new();
+        let ctx_md = build_agent_context_md(
+            &gql.services,
+            &auth,
+            workspace_id,
+            ctx_view,
+            &selected_codes,
+        )
+        .await?;
+        gql.services.agent_turns.put_context_md(turn_id, ctx_md);
+
         // 落库 user 消息（content = 用户原始 content；附件文本由 runner 在 system
         // 之后另起一条 user 消息注入，不污染持久化的 user 消息——历史回放看到
         // 的就是用户原本输入）。
@@ -2868,7 +2886,6 @@ impl Mutation {
         };
         gql.services.agent.append_message(user_msg)?;
 
-        let turn_id = Ulid::new();
         let services = gql.services.clone();
         let auth_for_runner = auth.clone();
         let services_for_runner = services.clone();
@@ -2897,6 +2914,54 @@ impl Mutation {
 }
 
 // ---------- 请求处理 ----------
+
+/// 把 view + 选中条目组装成「## 任务上下文」markdown，给 runner 注入到 system
+/// 之后的第一条 user 消息。view_id / selected_entry_codes 任一缺失就跳过
+/// 对应小节（spec §6.1）。
+async fn build_agent_context_md(
+    services: &Arc<crate::service::Services>,
+    _auth: &crate::service::AuthContext,
+    workspace_id: Ulid,
+    view_id: Option<Ulid>,
+    selected_codes: &[String],
+) -> Result<String, AppError> {
+    let mut md = String::from("## 任务上下文（系统注入，无需回复）\n\n");
+
+    // 当前视图
+    md.push_str("### 当前视图\n");
+    match view_id {
+        Some(vid) => match services.view.get(vid)? {
+            Some(v) if v.workspace_id == workspace_id => {
+                let count = services.entry.count(workspace_id, &v.query).unwrap_or(0);
+                md.push_str(&format!(
+                    "名称：{}  表达式：`{}`  排序：默认  条目数：{}\n",
+                    v.name,
+                    v.query.to_expr(),
+                    count,
+                ));
+            }
+            _ => md.push_str("(视图 id 无效或不属于当前工作空间)\n"),
+        },
+        None => md.push_str("(当前未选视图 / 基础视图)\n"),
+    }
+    md.push('\n');
+
+    // 选中条目
+    md.push_str(&format!("### 已选中条目 ({}/{})\n", selected_codes.len(), 20));
+    if selected_codes.is_empty() {
+        md.push_str("(本轮无选中条目)\n\n");
+    } else {
+        for code in selected_codes {
+            let Ok(Some(entry)) = services.entry.get(code) else { continue };
+            if entry.workspace_id != workspace_id { continue; }
+            let snippet = crate::service::mention::preview(&entry.detail, 400);
+            md.push_str(&format!("- {}: {}\n  {}\n", entry.code, entry.title, snippet));
+        }
+        md.push('\n');
+    }
+
+    Ok(md)
+}
 
 pub type AppSchema = Schema<Query, Mutation, EmptySubscription>;
 

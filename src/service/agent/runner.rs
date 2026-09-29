@@ -34,6 +34,9 @@ struct TurnHandle {
 pub struct SessionTurns {
     turns: Mutex<HashMap<Ulid, TurnHandle>>,
     by_session: Mutex<HashMap<Ulid, Ulid>>,
+    /// turn_id → 注入到 system 之后的「任务上下文」markdown 文本。
+    /// 一次性消费（runner 读完即删），避免长会话内存累积。
+    context_md: Mutex<HashMap<Ulid, String>>,
 }
 
 impl Default for SessionTurns {
@@ -41,6 +44,7 @@ impl Default for SessionTurns {
         Self {
             turns: Mutex::new(HashMap::new()),
             by_session: Mutex::new(HashMap::new()),
+            context_md: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -75,6 +79,17 @@ impl SessionTurns {
 
     pub fn turn_sender(&self, turn_id: Ulid) -> Option<broadcast::Sender<AgentEvent>> {
         self.turns.lock().get(&turn_id).map(|h| h.sender.clone())
+    }
+
+    /// 给 turn 投递「任务上下文」markdown，由 resolver 在 start_or_replace 之前
+    /// 调用；runner 在第一轮历史组装时通过 take_context_md 取回。
+    pub fn put_context_md(&self, turn_id: Ulid, md: String) {
+        self.context_md.lock().insert(turn_id, md);
+    }
+
+    /// 一次性取出 turn 的上下文 markdown；runner 取完即删。
+    pub fn take_context_md(&self, turn_id: Ulid) -> Option<String> {
+        self.context_md.lock().remove(&turn_id)
     }
 
     pub fn session_of(&self, turn_id: Ulid) -> Option<Ulid> {
