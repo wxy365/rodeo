@@ -16,6 +16,81 @@ pub struct ToolOutcome {
     pub side_effect: Option<SideEffect>,
 }
 
+/// queryEntries 工具专用的预处理：把 LLM 写的 `queryExpr` 字符串先走一次
+/// parse_view_query 转成 JSON AST，再拼成现有 queryEntries resolver 期望的
+/// 形状。`parse_view_query` 失败时不静默退化，直接返回 `BadArgs` 让 LLM
+/// 自己改表达式（spec §7 错误处理）。
+async fn prepare_query_entries_args(
+    services: &Arc<Services>,
+    auth: &AuthContext,
+    workspace_id: Ulid,
+    args: serde_json::Value,
+) -> Result<serde_json::Value, ToolOutcome> {
+    let query_expr = args
+        .get("queryExpr")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let Some(expr) = query_expr else {
+        return Err(ToolOutcome {
+            ok: false,
+            kind: ToolErrorKind::BadArgs,
+            result_preview: "queryEntries 缺少 queryExpr".to_string(),
+            side_effect: None,
+        });
+    };
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_i64())
+        .map(|n| n.clamp(1, 100) as i32)
+        .unwrap_or(20);
+    // 走 parse_view_query GraphQL helper：复用现有解析 + 校验逻辑。
+    let parse_req = async_graphql::Request::new(
+        "query($ws: ID!, $e: String!) { parseViewQuery(workspaceId: $ws, expr: $e) }",
+    )
+    .variables(async_graphql::Variables::from_json(serde_json::json!({
+        "ws": workspace_id.to_string(),
+        "e": expr,
+    })));
+    let parse_ctx = crate::api::graphql::GraphqlContext {
+        services: services.clone(),
+        auth: Some(auth.clone()),
+    };
+    let parse_resp = services
+        .schema
+        .execute(parse_req.data(parse_ctx))
+        .await;
+    if !parse_resp.errors.is_empty() {
+        let msg = parse_resp.errors[0].message.clone();
+        return Err(ToolOutcome {
+            ok: false,
+            kind: ToolErrorKind::BadArgs,
+            result_preview: format!("queryExpr 解析失败: {msg}"),
+            side_effect: None,
+        });
+    }
+    let parse_data = serde_json::to_value(&parse_resp.data).map_err(|e| {
+        ToolOutcome {
+            ok: false,
+            kind: ToolErrorKind::ServerError,
+            result_preview: format!("parseViewQuery 响应序列化失败: {e}"),
+            side_effect: None,
+        }
+    })?;
+    let query_ast = parse_data
+        .get("parseViewQuery")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+    // 保留 queryExpr 原文：classify_side_effect (Task 8) 需要它生成
+    // ViewQueryReplace 副作用；GraphQL 端忽略多余变量，安全。
+    Ok(serde_json::json!({
+        "workspaceId": workspace_id.to_string(),
+        "query": query_ast,
+        "sorts": serde_json::Value::Null,
+        "page": { "page": 1, "page_size": limit },
+        "queryExpr": expr,
+    }))
+}
+
 /// 执行一个 tool call：复用现有 GraphQL `Schema::execute`，同 `GraphqlContext`。
 /// AuthContext 与权限路径与前端 mutation 100% 一致——零权限漏洞。
 pub async fn execute_tool(
@@ -32,6 +107,16 @@ pub async fn execute_tool(
         .find(|(n, _)| *n == name)
         .ok_or_else(|| AppError::Ai(format!("未知工具: {name}")))?
         .1;
+
+    // 1.5) queryEntries 走预处理：LLM 给 queryExpr 字符串，先解析成 AST 再注入 query。
+    let args = if name == "queryEntries" {
+        match prepare_query_entries_args(services, auth, workspace_id, args).await {
+            Ok(rewritten) => rewritten,
+            Err(outcome) => return Ok(outcome),
+        }
+    } else {
+        args
+    };
 
     // 2) 构造 GraphQL 请求：args 本身就是一个变量 map（`{ input: {...}, ... }`），
     // 直接转 `Variables` 后塞进去即可。
