@@ -501,7 +501,11 @@ pub fn AgentPanel() -> impl IntoView {
                                                         move |_| current_session.set(Some(sid.clone()))
                                                     }
                                                 >
-                                                    <span class="agent-session-title">{s.title}</span>
+                                                    // 新建会话时 title 为空串，没东西显示就成
+                                                    // 「看不见条目」。补一个占位——日期比
+                                                    // 编号稳（同日多次新建不至于全撞 "新会话"），
+                                                    // 让用户能区分多条空标题会话。
+                                                    <span class="agent-session-title">{session_label(&s)}</span>
                                                     <button
                                                         class="agent-session-del"
                                                         title="删除会话"
@@ -867,6 +871,31 @@ fn first_path_segment(pathname: &str) -> String {
         .unwrap_or("")
         .trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
         .to_string()
+}
+
+/// 会话列表里显示的标题：有 `title` 就用，否则用 `updatedAt` 渲染成
+/// `M-D HH:mm`。新建会话 `title` 是空串，标题列没东西渲染用户就
+/// 看不见条目；用更新时间占位还能区分同日多次新建。`updatedAt` 是
+/// `chrono::DateTime<Utc>` 序列化的 ISO 字符串，手工解前缀避免拖进
+/// chrono 这个 wasm-only 重型依赖。
+fn session_label(s: &crate::frontend::graphql_client::AgentSession) -> String {
+    if !s.title.is_empty() {
+        return s.title.clone();
+    }
+    let iso = &s.updated_at;
+    let formatted = (|| -> Option<String> {
+        let bytes = iso.as_bytes();
+        let take = |start: usize, len: usize| -> Option<&str> {
+            let end = start.checked_add(len)?;
+            std::str::from_utf8(bytes.get(start..end)?).ok()
+        };
+        let month = take(5, 2)?;
+        let day = take(8, 2)?;
+        let hh = take(11, 2)?;
+        let mm = take(14, 2)?;
+        Some(format!("{month}-{day} {hh}:{mm}"))
+    })();
+    formatted.unwrap_or_else(|| iso.to_string())
 }
 
 /// 视口尺寸（宽, 高），拿不到（SSR / 权限拒绝）返回 None。AgentPanel
