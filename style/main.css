@@ -1908,6 +1908,57 @@ input[type="color"].sw:disabled {
     font:inherit;
 }
 
+/* Entry 选择器：表单里的目标条目搜索 + 下拉。
+   与 .rel-select 同样的 6/8 padding + 圆角，视觉上等价于一个略宽的 input。
+   下拉用绝对定位浮在 composer 之外，避免 flex-wrap 后被挤到下一行。 */
+.entry-picker{
+    position:relative;
+    flex:1 1 180px;min-width:0;
+}
+.entry-picker-input{
+    display:flex;align-items:center;gap:4px;
+    border:1px solid var(--line);
+    border-radius:var(--r-s);
+    background:var(--bg);
+    padding:0 6px;
+}
+.entry-picker-input .inp{
+    flex:1;min-width:0;
+    border:none;outline:none;background:transparent;
+    padding:6px 4px;
+    color:inherit;font:inherit;
+}
+.entry-picker-input .ibtn{
+    padding:0 6px;
+    background:transparent;border:none;cursor:pointer;
+    color:var(--mut);font-size:1.1em;line-height:1;
+}
+.entry-picker-input .ibtn:hover{color:var(--accent);}
+.entry-picker-results{
+    position:absolute;left:0;right:0;top:calc(100% + 2px);
+    z-index:50;
+    max-height:240px;overflow-y:auto;
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:var(--r-s);
+    box-shadow:0 4px 12px rgba(0,0,0,.08);
+    list-style:none;margin:0;padding:4px 0;
+}
+.entry-picker-results > .mut{padding:6px 10px;}
+.entry-picker-results > .hint{padding:6px 10px;margin:0;}
+.entry-picker-item{
+    display:flex;align-items:center;gap:8px;
+    padding:6px 10px;cursor:pointer;
+}
+.entry-picker-item:hover{background:var(--panel-2);}
+.entry-picker-item .ep-title{
+    flex:1;min-width:0;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.entry-picker-item .ep-code{
+    color:var(--mut);font-family:var(--mono);font-size:.85em;
+}
+
 /* 标签表达式 + 全文搜索合并条：左右两个独立的输入框共享一个圆角外框，
    内部不再画分隔线，靠左工具列 + 输入框 + 右侧搜索栏自然分段；
    视觉上是「同一个搜索条的两部分」，但语义上各自保留独立 AST。 */
@@ -2427,6 +2478,36 @@ input[type="color"].sw:disabled {
 }
 @keyframes agent-spin {
     to { transform: rotate(360deg); }
+}
+/* 推理链折叠块：与正式回答视觉上明显区分——左竖线 + 浅底 + 等宽风格 summary。
+ * 默认收起：典型思考几百到几千字，不收起聊天区会被撑爆;
+ * summary 用斜体 + ink2 灰度，「思考过程」字面提示「这是思考，不是结论」。
+ * body 渲染 markdown 后的 HTML，但用等宽偏小字号让长思考不像正文那么抢眼。 */
+.agent-think {
+    margin: 4px 0 8px;
+    border-left: 3px solid var(--ink3, #999);
+    background: color-mix(in srgb, var(--ink3, #999) 8%, var(--bg));
+    border-radius: 0 var(--r-s) var(--r-s) 0;
+    padding: 4px 8px;
+    font-size: 12px;
+    line-height: 1.5;
+}
+.agent-think > summary {
+    list-style: none;
+    cursor: pointer;
+    color: var(--ink2);
+    font-style: italic;
+    user-select: none;
+    padding: 2px 0;
+}
+.agent-think > summary::-webkit-details-marker {
+    display: none;
+}
+.agent-think-body {
+    color: var(--ink2);
+    margin-top: 4px;
+    white-space: pre-wrap;
+    word-break: break-word;
 }
 
 /* 视图导航栏行上的右键菜单：「配置视图」「删除视图」。 */

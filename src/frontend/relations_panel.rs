@@ -1,16 +1,19 @@
 //! 条目关联侧栏：列出当前条目的全部关联（from + to 两侧），并提供新增 / 删除。
 //!
 //! 形态刻意做成"邻居式"——一行就是一个关联，从语义图标、对方条目、动作
-//! 三段拼起来。最热路径是「选条目 + 选语义 → 新建」，所以新建表单始终
-//! 展开。修改语义目前走删除重建（方向 / 端点锁死后语义再变意义不大，
-//! 改语义通常意味着"当初选错了"，重建反而更直观）。
+//! 三段拼起来。添加表单：左侧语义下拉 + 右侧 Entry 选择器 + 「添加」按钮，
+//! 顺序按需求固定（语义在前、目标条目在后）。修改语义目前走删除重建
+//! （方向 / 端点锁死后语义再变意义不大，改语义通常意味着"当初选错了"，
+//! 重建反而更直观）。
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::frontend::components::{logged_out, role_at_least};
+use crate::frontend::entry_picker::EntryPicker;
 use crate::frontend::graphql_client::{
-    add_entry_relation, delete_entry_relation, entry_relations, my_role, Relation, RelationSemantic,
+    add_entry_relation, delete_entry_relation, entry_relations, my_role, Entry, Relation,
+    RelationSemantic,
 };
 
 /// 与服务端语义枚举一一对应：内置 key + 中文展示名。自定义形态 key="custom"，
@@ -53,18 +56,17 @@ pub fn RelationsPanel(
     code: Signal<String>,
     /// 当前条目所属工作空间，用于删除等需要工作空间 id 的接口。
     workspace_id: Signal<String>,
-    /// 列出条目缓存用的轻量索引（code → title）。空 Map 时跳过对方条目名解析。
-    title_index: Signal<std::collections::HashMap<String, String>>,
     /// 关联变更后通知外层：详情面板的徽标与更新时间。
     on_changed: Callback<()>,
 ) -> impl IntoView {
     let items = RwSignal::new(None::<Result<Vec<Relation>, String>>);
     let role = RwSignal::new(String::new());
-    let new_target = RwSignal::new(String::new());
+    // EntryPicker 选中状态；submit 时从这里拿目标 code。
+    let picked = RwSignal::new(Option::<Entry>::None);
     let new_kind = RwSignal::new("relates_to".to_string());
     let new_custom = RwSignal::new(String::new());
-    let confirm_del = RwSignal::new(None::<String>);
-    let error = RwSignal::new(None::<String>);
+    let confirm_del = RwSignal::new(Option::<String>::None);
+    let error = RwSignal::new(Option::<String>::None);
 
     let load = move || {
         if items.is_disposed() {
@@ -111,11 +113,15 @@ pub fn RelationsPanel(
 
     let submit = move |_| {
         let from = code.get();
-        let to = new_target.get().trim().to_string();
+        let Some(target) = picked.get() else {
+            error.set(Some("请选择目标条目".to_string()));
+            return;
+        };
+        let to = target.code.clone();
         let kind = new_kind.get();
         let custom = new_custom.get();
-        if from.is_empty() || to.is_empty() {
-            error.set(Some("请填写目标条目编码".to_string()));
+        if from.is_empty() {
+            error.set(Some("当前条目未加载".to_string()));
             return;
         }
         if from == to {
@@ -136,7 +142,7 @@ pub fn RelationsPanel(
             match r {
                 Ok(_) => {
                     error.set(None);
-                    new_target.set(String::new());
+                    picked.set(None);
                     new_custom.set(String::new());
                     load();
                     on_changed.run(());
@@ -163,14 +169,6 @@ pub fn RelationsPanel(
 
     view! {
         <div class="relations">
-            <div class="grp-h">
-                <span style="margin-right:0.4em">"↪"</span>
-                {move || format!(
-                    "关联（{}）",
-                    items.get().and_then(|r| r.ok()).map(|v| v.len()).unwrap_or(0),
-                )}
-            </div>
-
             {move || error.get().map(|e| view! { <div class="hint">{"⚠ "}{e}</div> })}
 
             {move || {
@@ -181,22 +179,11 @@ pub fn RelationsPanel(
                         if list.is_empty() {
                             view! { <div class="mut">"暂无关联"</div> }.into_any()
                         } else {
-                            let titles = title_index.get();
                             view! {
                                 <ul class="rel-list">
                                     {list.into_iter().map(|r| {
                                         let rid = r.id.clone();
-                                        let other_code = if r.from_code == code.get_untracked() {
-                                            r.to_code.clone()
-                                        } else if r.to_code == code.get_untracked() {
-                                            r.from_code.clone()
-                                        } else {
-                                            r.from_code.clone()
-                                        };
-                                        let other_title = titles
-                                            .get(&other_code)
-                                            .cloned()
-                                            .unwrap_or_else(|| other_code.clone());
+                                        let other_title = r.other_title.clone();
                                         let arrow = direction_arrow(r.direction.as_deref()).to_string();
                                         let (kind, _value) = split_semantic(&r.semantic);
                                         let badge_class = match kind {
@@ -261,20 +248,17 @@ pub fn RelationsPanel(
 
             {move || {
                 if !role_at_least(&role.get(), "worker") {
-                    return view! { <div></div> }.into_any();
+                    return view! { <span></span> }.into_any();
                 }
                 let cur = code.get();
                 if cur.is_empty() {
-                    return view! { <div></div> }.into_any();
+                    return view! { <span></span> }.into_any();
                 }
+                let cur_for_exclude = cur.clone();
+                let ws_for_picker = workspace_id;
+                let cur_for_exclude_sig = Signal::derive(move || cur_for_exclude.clone());
                 view! {
                     <div class="rel-composer">
-                        <input
-                            class="rel-input"
-                            placeholder="目标条目编码"
-                            prop:value=move || new_target.get()
-                            on:input=move |ev| new_target.set(event_target_value(&ev))
-                        />
                         <select
                             class="rel-select"
                             on:change=move |ev| new_kind.set(event_target_value(&ev))
@@ -297,8 +281,13 @@ pub fn RelationsPanel(
                                 />
                             }.into_any()
                         } else {
-                            view! { <div></div> }.into_any()
+                            view! { <span></span> }.into_any()
                         }}
+                        <EntryPicker
+                            exclude_code=cur_for_exclude_sig
+                            workspace_id=ws_for_picker
+                            selected=picked
+                        />
                         <button class="btn pri sm" on:click=submit>"添加"</button>
                     </div>
                 }.into_any()

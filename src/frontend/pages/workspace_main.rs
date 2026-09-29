@@ -29,6 +29,7 @@ use crate::frontend::icons::{
 };
 use crate::frontend::label_editor::LabelEditor;
 use crate::frontend::query_eval;
+use crate::frontend::relations_panel::RelationsPanel;
 use crate::frontend::timeline::TimelineView;
 use crate::frontend::tiny_editor::TinyEditor;
 use crate::frontend::use_auth;
@@ -2744,6 +2745,7 @@ fn EntryTable(
 /// 右侧详情面板的三个页签。
 const DETAIL_TABS: &[(&str, &str)] = &[
     ("detail", "详情"),
+    ("relations", "关联"),
     ("attachments", "附件"),
     ("history", "历史"),
 ];
@@ -3017,6 +3019,13 @@ fn EntryPanel(
                         <div class="editing"><span class="dot"></span>"乐观并发 · 保存时检测冲突"</div>
                         <TabBar tabs=DETAIL_TABS active=tab />
                         {move || match tab.get().as_str() {
+                            "relations" => view! {
+                                <RelationsPanel
+                                    code=Signal::derive(move || code.get())
+                                    workspace_id=workspace_id
+                                    on_changed=on_changed
+                                />
+                            }.into_any(),
                             "attachments" => view! {
                                 <AttachmentList
                                     code=Signal::derive(move || code.get())

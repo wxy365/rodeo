@@ -5,6 +5,7 @@ pub mod attachment_list;
 pub mod automation_tab;
 pub mod comment_list;
 pub mod components;
+pub mod entry_picker;
 pub mod graphql_client;
 pub mod icons;
 pub mod label_editor;

@@ -18,8 +18,12 @@ use crate::frontend::relations_panel::RelationsPanel;
 use crate::frontend::tiny_editor::TinyEditor;
 use crate::frontend::use_auth;
 
-// 全屏页侧栏的两个页签。标签编辑不在这里——它常驻在页签上方。
-const SIDE_TABS: &[(&str, &str)] = &[("attachments", "附件"), ("history", "历史")];
+// 全屏页侧栏的页签。标签编辑不在这里——它常驻在页签上方。
+const SIDE_TABS: &[(&str, &str)] = &[
+    ("relations", "关联"),
+    ("attachments", "附件"),
+    ("history", "历史"),
+];
 
 #[component]
 pub fn EntryFullScreen() -> impl IntoView {
@@ -303,37 +307,26 @@ pub fn EntryFullScreen() -> impl IntoView {
                         <LabelEditor code=Signal::derive(code) schemas labels members=ws_members on_changed />
                     </div>
 
-                    {move || {
-                        let mut index: std::collections::HashMap<String, String> =
-                            std::collections::HashMap::new();
-                        if let Some(Ok((_, e, _, _, _))) = data.get() {
-                            index.insert(e.code.clone(), e.title.clone());
-                        }
-                        let title_index = Signal::derive(move || index.clone());
-                        view! {
-                            <RelationsPanel
-                                code=Signal::derive(code)
-                                workspace_id=ws_id
-                                title_index
-                                on_changed=on_changed
-                            />
-                        }
-                    }}
-
                     <div>
                         <TabBar tabs=SIDE_TABS active=side_tab />
-                        {move || if side_tab.get() == "history" {
-                            view! {
+                        {move || match side_tab.get().as_str() {
+                            "relations" => view! {
+                                <RelationsPanel
+                                    code=Signal::derive(code)
+                                    workspace_id=ws_id
+                                    on_changed=on_changed
+                                />
+                            }.into_any(),
+                            "history" => view! {
                                 <AuditTimeline logs=logs code=Signal::derive(code) />
-                            }.into_any()
-                        } else {
-                            view! {
+                            }.into_any(),
+                            _ => view! {
                                 <AttachmentList
                                     code=Signal::derive(code)
                                     workspace_id=ws_id
                                     on_changed=on_changed
                                 />
-                            }.into_any()
+                            }.into_any(),
                         }}
                     </div>
                 </aside>
