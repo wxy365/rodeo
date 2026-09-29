@@ -22,6 +22,10 @@ pub struct SideEffectHint {
     pub domain: String,
     pub action: String,
     pub id: String,
+    /// view_query_replace / view_search_replace 用：放 query_expr 或 keyword 文本。
+    /// Entry/Labeling/Comment 副作用此字段为 None。
+    #[serde(default)]
+    pub payload: Option<String>,
 }
 
 pub fn provide_agent_side_effects() -> AgentSideEffects {
