@@ -1021,10 +1021,32 @@ mod tests {
     mod engine {
         use super::*;
         use crate::service::entry::labeling_ops;
+        use crate::service::message::MessageService;
+        use crate::service::relation::RelationService;
         use crate::service::rule::RuleEngine;
+        use crate::service::workspace::WorkspaceService;
         use crate::service::EntryService;
         use crate::storage::DocStore;
         use std::sync::Arc;
+
+        /// `EntryService` 现在依赖 MessageService + RelationService；这里把它们拼起来，
+        /// 与 `Services::new` 启动顺序一致。规则引擎测试不需要搜索索引，所以不调 `with_search`.
+        fn entry_svc(store: &Arc<DocStore>) -> EntryService {
+            let ws_svc = WorkspaceService::new(store.clone());
+            let msg_svc = MessageService::new(store.clone(), ws_svc);
+            let rel_svc = RelationService::new(store.clone());
+            EntryService::new(store.clone(), msg_svc, rel_svc)
+        }
+
+        /// 三个测试 schema 对应的 `value_type`：`labeling_ops` 需要它来算索引键。
+        fn value_type_for(name: &str) -> LabelValueType {
+            match name {
+                "Status" => LabelValueType::Enum,
+                "FinishedAt" => LabelValueType::DateTime,
+                "Priority" => LabelValueType::Integer,
+                _ => panic!("engine 测试用到了未注册的标签 {name}"),
+            }
+        }
 
         /// 建一个只有 schema + 条目的临时工作空间。
         fn setup() -> (String, Arc<DocStore>, Ulid, Ulid) {
@@ -1069,7 +1091,7 @@ mod tests {
             let before = store
                 .get::<Labeling>(cf::LABELINGS, &keys::labeling_key(code, name))
                 .unwrap();
-            let ops = labeling_ops(ws, code, name, Some(&lv), actor, before.as_ref()).unwrap();
+            let ops = labeling_ops(ws, code, name, value_type_for(name), Some(&lv), actor, before.as_ref()).unwrap();
             store.write_batch(ops).unwrap();
         }
 
@@ -1094,6 +1116,7 @@ mod tests {
                         ws,
                         &w.entry_code,
                         &w.label_name,
+                        value_type_for(&w.label_name),
                         w.value.as_ref(),
                         w.actor,
                         before.as_ref(),
@@ -1116,7 +1139,7 @@ mod tests {
         #[test]
         fn status_finished_writes_finished_at() {
             let (dir, store, ws, actor) = setup();
-            let entry = EntryService::new(store.clone()).create(actor, ws, "任务").unwrap();
+            let entry = entry_svc(&store).create(actor, ws, "任务").unwrap();
             rule_set_finished_at(&store, ws, actor);
             apply(&store, ws, &[StagedWrite {
                 entry_code: entry.code.clone(),
@@ -1132,7 +1155,7 @@ mod tests {
         #[test]
         fn rewrites_with_unchanged_value_do_not_fire() {
             let (dir, store, ws, actor) = setup();
-            let entry = EntryService::new(store.clone()).create(actor, ws, "任务").unwrap();
+            let entry = entry_svc(&store).create(actor, ws, "任务").unwrap();
             rule_set_finished_at(&store, ws, actor);
             // 先真的写一次 Finished，让规则触发。
             apply(&store, ws, &[StagedWrite {
@@ -1159,7 +1182,7 @@ mod tests {
         #[test]
         fn same_level_writes_to_one_label_are_last_write_wins() {
             let (dir, store, ws, actor) = setup();
-            let entry = EntryService::new(store.clone()).create(actor, ws, "任务").unwrap();
+            let entry = entry_svc(&store).create(actor, ws, "任务").unwrap();
             // 两条规则都因 Priority 事件触发（`Priority` 条件对任意 Priority 值成立），
             // 同一层里先后写 Priority = 1、2。
             let svc = RuleService::new(store.clone());
@@ -1189,7 +1212,7 @@ mod tests {
         #[test]
         fn rule_audit_records_trigger_and_writes() {
             let (dir, store, ws, actor) = setup();
-            let entry = EntryService::new(store.clone()).create(actor, ws, "任务").unwrap();
+            let entry = entry_svc(&store).create(actor, ws, "任务").unwrap();
             rule_set_finished_at(&store, ws, actor);
             apply(&store, ws, &[StagedWrite {
                 entry_code: entry.code.clone(),
@@ -1212,7 +1235,7 @@ mod tests {
         #[test]
         fn cascade_is_capped_at_max_level() {
             let (dir, store, ws, actor) = setup();
-            let entry = EntryService::new(store.clone()).create(actor, ws, "任务").unwrap();
+            let entry = entry_svc(&store).create(actor, ws, "任务").unwrap();
             let svc = RuleService::new(store.clone());
             let write = |name: &str, op: WriteOp, value: Option<ValueSource>| LabelWrite {
                 label_name: name.into(),
@@ -1253,7 +1276,7 @@ mod tests {
         #[test]
         fn noop_rule_write_is_dropped_without_audit() {
             let (dir, store, ws, actor) = setup();
-            let entry = EntryService::new(store.clone()).create(actor, ws, "任务").unwrap();
+            let entry = entry_svc(&store).create(actor, ws, "任务").unwrap();
             // 触发条件是任意 Status 事件，动作把 $new 原样写回 Status：值没变。
             RuleService::new(store.clone())
                 .create(
@@ -1291,7 +1314,7 @@ mod tests {
         #[test]
         fn remove_action_deletes_the_label() {
             let (dir, store, ws, actor) = setup();
-            let entry = EntryService::new(store.clone()).create(actor, ws, "任务").unwrap();
+            let entry = entry_svc(&store).create(actor, ws, "任务").unwrap();
             set(&store, ws, &entry.code, "Priority", LabelValue::Int(5), actor);
             RuleService::new(store.clone())
                 .create(
@@ -1323,7 +1346,7 @@ mod tests {
         #[test]
         fn missing_event_value_skips_the_write_without_failing() {
             let (dir, store, ws, actor) = setup();
-            let entry = EntryService::new(store.clone()).create(actor, ws, "任务").unwrap();
+            let entry = entry_svc(&store).create(actor, ws, "任务").unwrap();
             RuleService::new(store.clone())
                 .create(
                     actor,
@@ -1359,7 +1382,7 @@ mod tests {
         #[test]
         fn missing_new_on_delete_event_skips_the_write() {
             let (dir, store, ws, actor) = setup();
-            let entry = EntryService::new(store.clone()).create(actor, ws, "任务").unwrap();
+            let entry = entry_svc(&store).create(actor, ws, "任务").unwrap();
             set(&store, ws, &entry.code, "Status", LabelValue::Enum("Finished".into()), actor);
             RuleService::new(store.clone())
                 .create(
@@ -1394,7 +1417,7 @@ mod tests {
         #[test]
         fn noop_only_rule_still_audits() {
             let (dir, store, ws, actor) = setup();
-            let entry = EntryService::new(store.clone()).create(actor, ws, "任务").unwrap();
+            let entry = entry_svc(&store).create(actor, ws, "任务").unwrap();
             // 触发条件是任意 Status 事件，动作把 $new 原样写回 Status：值没变。
             RuleService::new(store.clone())
                 .create(
@@ -1442,7 +1465,7 @@ mod tests {
         #[test]
         fn skipped_write_still_audits_with_empty_writes() {
             let (dir, store, ws, actor) = setup();
-            let entry = EntryService::new(store.clone()).create(actor, ws, "任务").unwrap();
+            let entry = entry_svc(&store).create(actor, ws, "任务").unwrap();
             RuleService::new(store.clone())
                 .create(
                     actor,
@@ -1490,7 +1513,7 @@ mod tests {
         #[test]
         fn audit_triggers_list_only_the_rules_own_matched_events() {
             let (dir, store, ws, actor) = setup();
-            let entry = EntryService::new(store.clone()).create(actor, ws, "任务").unwrap();
+            let entry = entry_svc(&store).create(actor, ws, "任务").unwrap();
             let svc = RuleService::new(store.clone());
             let set_write = |name: &str, value: ValueSource| LabelWrite {
                 label_name: name.into(),
@@ -1559,7 +1582,7 @@ mod tests {
         #[test]
         fn query_target_scopes_writes_to_matching_entries_and_is_frozen_within_level() {
             let (dir, store, ws, actor) = setup();
-            let svc = EntryService::new(store.clone());
+            let svc = entry_svc(&store);
             let e1 = svc.create(actor, ws, "任务一").unwrap();
             let e2 = svc.create(actor, ws, "任务二").unwrap();
             let e3 = svc.create(actor, ws, "任务三").unwrap();
@@ -1624,7 +1647,7 @@ mod tests {
         #[test]
         fn affected_covers_entries_written_at_every_level() {
             let (dir, store, ws, actor) = setup();
-            let svc = EntryService::new(store.clone());
+            let svc = entry_svc(&store);
             let e1 = svc.create(actor, ws, "任务一").unwrap();
             let e2 = svc.create(actor, ws, "任务二").unwrap();
             set(&store, ws, &e2.code, "Priority", LabelValue::Int(5), actor);
