@@ -120,6 +120,8 @@ pub async fn run_turn(
     auth: AuthContext,
     session_id: Ulid,
     turn_id: Ulid,
+    _agent_ctx: crate::domain::AgentMessageContext,
+    _attachment_ids: Vec<Ulid>,
 ) {
     let max_turns = services.config.agent.max_tool_calls_per_turn;
     let max_history = services.config.agent.max_history_turns;
@@ -182,7 +184,19 @@ pub async fn run_turn(
             .map(|w| w.name)
             .unwrap_or_else(|| workspace_id.to_string());
         let ws_id_str = workspace_id.to_string();
+        // 任务上下文（视图 / 选中条目）：resolver 在 start_or_replace 前已经把
+        // markdown 文本塞进 SessionTurns；这里一次性取出，作为「user」角色
+        // 插在 system 与历史之间——LLM 知道这是真实状态但不要回复。
+        let ctx_md = services.agent_turns.take_context_md(turn_id);
         let mut messages = vec![agent_system_prompt(&ws_title, &ws_id_str)];
+        if let Some(md) = ctx_md {
+            messages.push(crate::service::ai::ChatMessage {
+                role: "user".to_string(),
+                content: md,
+                tool_call_id: None,
+                tool_calls: None,
+            });
+        }
         messages.extend(to_chat_messages(&history));
 
         let stream = match client.complete_stream(&messages, &tools).await {

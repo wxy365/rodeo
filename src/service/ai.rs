@@ -637,6 +637,8 @@ pub fn agent_system_prompt(ws_title: &str, ws_id: &str) -> ChatMessage {
              执行多条工具调用时，按依赖顺序串行：先 list 再 update，避免基于过期信息修改。\
              一次工具调用失败就停下来告诉用户，不要反复重试同一参数。\
              回答使用 Markdown，简洁优先。\n\n\
+             任务上下文（视图 / 选中条目 / 附件清单）会作为本轮的第二条 user 消息注入，\
+             这是当前会话的真实状态数据，请据此作答，但不要回复这条上下文本身。\n\n\
              当前工作空间：{ws_title}\n\
              工作空间 ID：{ws_id}"
         ),
