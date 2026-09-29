@@ -345,6 +345,61 @@ pub fn WorkspaceMain() -> impl IntoView {
     let view_label_names = RwSignal::new(Vec::<String>::new());
     let ad_hoc_text = RwSignal::new(String::new());
     let refresh_view = RwSignal::new(0u32);
+
+    // 视图查询反射：AI 调 queryEntries / searchEntries 命中后，把表达式 / 关键词
+    // 回填到当前的表达式输入框 / 全文输入框。走 server-side parseViewQuery
+    // 保证 AST 与 server 端完全同构——不在前端复刻 parser。位置放在信号定义
+    // 之后，确保 effect 闭包捕获的是最终信号。
+    if let Some(eff_ai) =
+        use_context::<crate::frontend::agent_side_effects::AgentSideEffects>()
+    {
+        let expr_text_for_ai = expr_text;
+        let query_ast_for_ai = query_ast;
+        let ad_hoc_text_for_ai = ad_hoc_text;
+        let refresh_view_for_ai = refresh_view;
+        let data_for_ai = data;
+        Effect::new(move |_| {
+            let _ = eff_ai.tick.get();
+            let Some(hint) = eff_ai.last.get() else { return };
+            match hint.domain.as_str() {
+                "view_query_replace" => {
+                    let Some(payload) = hint.payload.clone() else { return };
+                    let Some(ws_id) = data_for_ai
+                        .get()
+                        .and_then(|r| r.ok())
+                        .map(|(w, _, _)| w.id)
+                    else {
+                        return;
+                    };
+                    spawn_local(async move {
+                        match parse_view_query(&ws_id, &payload).await {
+                            Ok(ast) => {
+                                batch(move || {
+                                    expr_text_for_ai.set(payload);
+                                    query_ast_for_ai.set(ast);
+                                    ad_hoc_text_for_ai.set(String::new());
+                                    refresh_view_for_ai.update(|n| *n += 1);
+                                });
+                            }
+                            Err(e) => {
+                                leptos::web_sys::console::warn_1(
+                                    &format!("AI 视图查询表达式无效: {e}").into(),
+                                );
+                            }
+                        }
+                    });
+                }
+                "view_search_replace" => {
+                    let Some(payload) = hint.payload.clone() else { return };
+                    batch(move || {
+                        ad_hoc_text_for_ai.set(payload);
+                        refresh_view_for_ai.update(|n| *n += 1);
+                    });
+                }
+                _ => {}
+            }
+        });
+    }
     // ---- 分页状态 ----
     let page_signal = RwSignal::new(1i64);
     let page_size: i64 = 20;
