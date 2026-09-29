@@ -133,6 +133,80 @@ pub fn build_tools(schema: &AppSchema) -> Result<Arc<Vec<ToolSchema>>, AppError>
     Ok(Arc::new(tools))
 }
 
+/// 从现有 GraphQL Schema 的 `type Query` 段生成 OpenAI `tools` 数组。
+/// 与 `build_tools` 同款 SDL 切分（这次切 `type Query`），description 仍来自
+/// doc comment。返回的 tools 与 `build_tools` 的产物合并后塞进
+/// `services.agent_tools` 给所有 SSE turn 共享。
+pub fn build_query_tools(schema: &AppSchema) -> Result<Arc<Vec<ToolSchema>>, AppError> {
+    let sdl = schema.sdl();
+    let body = sdl
+        .split("type Query")
+        .nth(1)
+        .and_then(|s| s.split('{').nth(1).and_then(|s| s.split('}').next()))
+        .ok_or_else(|| AppError::Ai("query introspection 解析失败".into()))?;
+
+    let mut tools = Vec::new();
+    let mut desc_lines: Vec<String> = Vec::new();
+    let mut in_desc = false;
+    let mut current: Option<(String, String, Vec<(String, String)>)> = None;
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed == "\"\"\"" {
+            if in_desc {
+                in_desc = false;
+            } else {
+                desc_lines.clear();
+                in_desc = true;
+            }
+            continue;
+        }
+        if in_desc {
+            if trimmed.is_empty() && desc_lines.last().map_or(true, |l| l.is_empty()) {
+                continue;
+            }
+            desc_lines.push(trimmed.to_string());
+            continue;
+        }
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if !trimmed.starts_with('(') && trimmed.contains('(') {
+            if let Some((name, desc, args)) = current.take() {
+                tools.push(build_tool(&name, &desc, &args));
+            }
+            let name = super::templates::first_identifier(trimmed)
+                .unwrap_or("")
+                .to_string();
+            let desc = join_desc_lines(&desc_lines);
+            desc_lines.clear();
+            let args_str = trimmed
+                .split_once('(')
+                .map(|(_, rest)| rest)
+                .and_then(|s| s.split_once(')').map(|(l, _)| l))
+                .unwrap_or("");
+            let args = parse_args(args_str);
+            current = Some((name, desc, args));
+        }
+    }
+    if let Some((name, desc, args)) = current.take() {
+        tools.push(build_tool(&name, &desc, &args));
+    }
+    let empty_desc: Vec<&str> = tools
+        .iter()
+        .filter(|t| t.description.is_empty())
+        .map(|t| t.name.as_str())
+        .collect();
+    if !empty_desc.is_empty() {
+        tracing::warn!(
+            count = tools.len(),
+            empty = empty_desc.len(),
+            ?empty_desc,
+            "build_query_tools: 部分 tool description 为空",
+        );
+    }
+    Ok(Arc::new(tools))
+}
+
 /// 把 `"""..."""` 块内累积的多行 description 拼成单字符串：去掉尾部空行，
 /// 中间用 `\n` 连接。空 description 块返回空字符串（不是 `" "` 或 `"\n"`）。
 fn join_desc_lines(lines: &[String]) -> String {

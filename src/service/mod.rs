@@ -21,7 +21,7 @@ use crate::config::Config;
 use crate::error::AppError;
 use crate::service::agent::runner::SessionTurns;
 use crate::service::agent::templates::{validate_query_templates, validate_templates, ToolSchema};
-use crate::service::agent::tools::build_tools;
+use crate::service::agent::tools::{build_query_tools, build_tools};
 use crate::storage::{BlobStore, DocStore};
 
 pub use agent::AgentService;
@@ -82,12 +82,17 @@ impl Services {
         let blobs = BlobStore::from_config(&config.storage)?;
         let attachment = AttachmentService::new(store.clone(), entry.clone(), blobs);
         let schema = Arc::new(build_schema());
-        let tools = build_tools(&schema)
+        let mut_tools = build_tools(&schema)
             .map_err(|e| AppError::Ai(format!("build_tools 失败: {e}")))?;
+        let query_tools = build_query_tools(&schema)
+            .map_err(|e| AppError::Ai(format!("build_query_tools 失败: {e}")))?;
         validate_templates(&schema)
             .map_err(|e| AppError::Ai(format!("validate_templates 失败: {e}")))?;
         validate_query_templates(&schema)
             .map_err(|e| AppError::Ai(format!("validate_query_templates 失败: {e}")))?;
+        let tools: Arc<Vec<ToolSchema>> = Arc::new(
+            mut_tools.iter().chain(query_tools.iter()).cloned().collect(),
+        );
         let agent_turns = Arc::new(SessionTurns::default());
         let services = Self {
             auth: AuthService::new(store.clone(), config.clone()),
