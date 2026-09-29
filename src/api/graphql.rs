@@ -2889,10 +2889,13 @@ impl Mutation {
                     total_bytes += block.len();
                     attachment_md.push_str(&block);
                 }
-                Err(e) => attachment_md.push_str(&format!(
-                    "[附件 {} 读取失败: {}]\n\n",
-                    aid, e
-                )),
+                Err(e) => {
+                    // 不把内部错误(e.to_string() 会泄露「存储错误:…」之类细节)
+                    // 写进 user content——这段文本会落库 + 喂给 LLM + 重开会话时
+                    // 展示给用户。短提示够用户判断,完整原因进服务端日志。
+                    tracing::warn!(attachment_id = %aid, error = %e, "附件读取失败,跳过");
+                    attachment_md.push_str(&format!("[附件 {} 不可读]\n\n", aid));
+                }
             }
         }
         let final_content = format!("{}{}", attachment_md, input.content);

@@ -149,6 +149,9 @@ pub fn AgentPanel() -> impl IntoView {
     let messages: RwSignal<Vec<AgentMessage>> = RwSignal::new(Vec::new());
     let input: RwSignal<String> = RwSignal::new(String::new());
     let attachment_ids_input: RwSignal<String> = RwSignal::new(String::new());
+    // 附件 id 不是 ULID 形态时挂在输入区下方的小提示——resolver 端静默 drop
+    // 这些 id,客户端必须给用户反馈,否则他们以为附件已被读取。
+    let attachment_warn: RwSignal<Option<String>> = RwSignal::new(None);
     let streaming: RwSignal<bool> = RwSignal::new(false);
     // 用户是否「贴底」：scroll 事件每次把它更新成 (scroll_height - top - client) < 32px。
     // 初始 true —— 切会话 / 首次打开面板时直接滚到底，而不是停在历史某处。
@@ -386,13 +389,37 @@ pub fn AgentPanel() -> impl IntoView {
             });
         });
         input.set(String::new());
-        let attachment_ids: Vec<String> = attachment_ids_input
+        // 客户端预校验 ULID 形态,非 ULID 的 id 在 input 区下方挂一条短提示,
+        // 让用户知道自己粘错了——resolver 端静默丢掉这些 id,但用户没有反馈。
+        let raw_ids: Vec<String> = attachment_ids_input
             .get_untracked()
             .split_whitespace()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
+        let mut attachment_ids: Vec<String> = Vec::with_capacity(raw_ids.len());
+        let mut bad_ids: Vec<String> = Vec::new();
+        for id in raw_ids {
+            // ULID 是 26 位 Crockford Base32(0-9 A-H J-N P-T V-Z)。
+            // 简单长度+字符集校验足以剔出明显拼错的,真 ULID 的存在性由服务端保证。
+            if id.len() == 26
+                && id.chars().all(|c| c.is_ascii_alphanumeric())
+            {
+                attachment_ids.push(id);
+            } else {
+                bad_ids.push(id);
+            }
+        }
         attachment_ids_input.set(String::new());
+        if !bad_ids.is_empty() {
+            attachment_warn.set(Some(format!(
+                "已忽略 {} 个非 ULID 格式的附件 id: {}",
+                bad_ids.len(),
+                bad_ids.join(" ")
+            )));
+        } else {
+            attachment_warn.set(None);
+        }
         // 视图 + 选中条目上下文：闭包快照。拿不到 ctx 的路由（登录 / 账号页）发 None。
         let context_md = agent_ctx.map(|c| AgentMessageContext {
             view_id: c.view_id.get_untracked(),
@@ -649,6 +676,14 @@ pub fn AgentPanel() -> impl IntoView {
                                                 prop:value=attachment_ids_input
                                                 placeholder="如：01HXXX 01HYYY"
                                             />
+                                            <Show
+                                                when=move || attachment_warn.get().is_some()
+                                                fallback=move || view! { <span></span> }
+                                            >
+                                                <p class="agent-att-warn">
+                                                    {move || attachment_warn.get().unwrap_or_default()}
+                                                </p>
+                                            </Show>
                                         </div>
                                         <textarea
                                             class="agent-textarea"

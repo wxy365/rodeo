@@ -82,7 +82,7 @@ impl Services {
         let blobs = BlobStore::from_config(&config.storage)?;
         let attachment = AttachmentService::new(store.clone(), entry.clone(), blobs);
         let schema = Arc::new(build_schema());
-        let mut_tools = build_tools(&schema)
+        let mutation_tools = build_tools(&schema)
             .map_err(|e| AppError::Ai(format!("build_tools 失败: {e}")))?;
         let query_tools = build_query_tools(&schema)
             .map_err(|e| AppError::Ai(format!("build_query_tools 失败: {e}")))?;
@@ -91,7 +91,7 @@ impl Services {
         validate_query_templates(&schema)
             .map_err(|e| AppError::Ai(format!("validate_query_templates 失败: {e}")))?;
         let tools: Arc<Vec<ToolSchema>> = Arc::new(
-            mut_tools.iter().chain(query_tools.iter()).cloned().collect(),
+            mutation_tools.iter().chain(query_tools.iter()).cloned().collect(),
         );
         let agent_turns = Arc::new(SessionTurns::default());
         let services = Self {

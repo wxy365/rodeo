@@ -281,12 +281,10 @@ pub fn WorkspaceMain() -> impl IntoView {
     // 已经不在当前列表里却仍被写入。
     let batch_selected = RwSignal::new(Vec::<String>::new());
     let show_batch = RwSignal::new(false);
-    // ---- Agent 上下文桥 ----
-    // 复用 batch_selected 作为「选中条目列表」上下文（同一份 RwSignal，避免两个独立
-    // 信号漂移）。视图 id 的 authoritative 信号是下面 `let active_id = ...` 那行，
-    // 这里只声明提供位置，闭包在 active_id 出现后绑定——见 `provide_agent_context`
-    // 调用站点。
-    let agent_ctx_binder = batch_selected;
+    // 复用 batch_selected 作为 AgentPanel「选中条目列表」上下文（同一份 RwSignal,
+    // 与批量设置标签 / AI 总结 / 归档按钮保持一致）。视图 id 的 authoritative 信号
+    // 是下面 `let active_id = ...` 那行,这里只声明提供位置——见
+    // `provide_agent_context` 调用站点。
     let batch_labels = RwSignal::new(Vec::<DraftLabel>::new());
     let batch_error = RwSignal::new(None::<String>);
     let batch_busy = RwSignal::new(false);
@@ -302,6 +300,29 @@ pub fn WorkspaceMain() -> impl IntoView {
     let ai_tone = RwSignal::new(String::new());
     let ai_busy = RwSignal::new(false);
     let ai_error = RwSignal::new(None::<String>);
+    // Agent 副作用（view_query_replace / view_search_replace）落地时,服务端的
+    // parseViewQuery 偶尔会拒绝 LLM 回传的表达式——以前只打 console.warn,
+    // 用户看不到提示,视图又没改,会以为 agent 失灵。这里挂一条短提示,5s
+    // 后清掉。独立于 ai_error(那个是 AI 总结弹窗的错)。
+    let agent_warning: RwSignal<Option<String>> = RwSignal::new(None);
+    // 自定义 toast: 设置文字,等 5s 自动清空。两次连续触发时把计时器取消
+    // 重设,免得前一条被新一条在屏幕中段覆盖。
+    #[cfg(target_arch = "wasm32")]
+    {
+        let warn_for_timer = agent_warning;
+        Effect::new(move |_| {
+            if warn_for_timer.get().is_some() {
+                let target = warn_for_timer;
+                spawn_local(async move {
+                    gloo_timers::future::TimeoutFuture::new(5_000).await;
+                    // 仅当 5s 间没有新覆盖才清空——避免新消息被旧 timer 误清。
+                    if target.get_untracked().is_some() {
+                        target.set(None);
+                    }
+                });
+            }
+        });
+    }
 
     // ---- 归档 ----
     // 已归档条目：打开「已归档」弹窗时拉取，恢复一条后就地移除，不整表重拉。
@@ -366,8 +387,17 @@ pub fn WorkspaceMain() -> impl IntoView {
         let ad_hoc_text_for_ai = ad_hoc_text;
         let refresh_view_for_ai = refresh_view;
         let data_for_ai = data;
+        let warning_for_ai = agent_warning;
+        // AgentSideEffects 在 App 层 provide，跨路由切换持久化；workspace_main
+        // 每次挂载都会拿到「上一次 workspace 留下的 hint」。若直接应用,新 ws 的
+        // expr_text 会被旧 ws 的 view_query_replace 覆盖。在挂载时刻快照
+        // tick,只接受 mount 之后新到的 hint,切 ws 自然不会带副作用过来。
+        let tick_at_mount = eff_ai.tick.get_untracked();
         Effect::new(move |_| {
-            let _ = eff_ai.tick.get();
+            let cur_tick = eff_ai.tick.get();
+            if cur_tick <= tick_at_mount {
+                return;
+            }
             let Some(hint) = eff_ai.last.get() else { return };
             match hint.domain.as_str() {
                 "view_query_replace" => {
@@ -390,9 +420,15 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 });
                             }
                             Err(e) => {
+                                // parse 失败:LMM 给的表达式 server 不接受。
+                                // 用户需要知道这件事——不然视图没变,以为 agent 罢工。
+                                // 顶部挂 5s 自消失的提示,console.warn 留给排查。
                                 leptos::web_sys::console::warn_1(
                                     &format!("AI 视图查询表达式无效: {e}").into(),
                                 );
+                                warning_for_ai.set(Some(format!(
+                                    "AI 返回的视图表达式无效,未应用: {e}"
+                                )));
                             }
                         }
                     });
@@ -422,7 +458,7 @@ pub fn WorkspaceMain() -> impl IntoView {
     let active_id = RwSignal::new(None::<String>);
     // 提供 AgentPanel 取用的上下文：当前视图 id + 表格勾选 codes。
     // 复用 batch_selected（与批量按钮同读同一份信号，行为一致）。
-    let _agent_ctx = provide_agent_context(active_id, agent_ctx_binder);
+    let _ = provide_agent_context(active_id, batch_selected);
     // 视图导航栏右键菜单：(client_x, client_y, view_id)。None 表示关闭。
     let vmenu: RwSignal<Option<(i32, i32, String)>> = RwSignal::new(None);
     // ---- 时间轴视图 ----
@@ -1248,6 +1284,16 @@ pub fn WorkspaceMain() -> impl IntoView {
 
     view! {
         <div class="page page-app">
+            // Agent 副作用落地时的非阻塞提示：view_query_replace parse 失败等
+            // 场景会让用户以为 agent 罢工,这里挂 5s 自消失的横幅。
+            <Show
+                when=move || agent_warning.get().is_some()
+                fallback=move || view! { <span></span> }
+            >
+                <div class="agent-warn" role="status">
+                    {move || agent_warning.get().unwrap_or_default()}
+                </div>
+            </Show>
             <div class="crumb" style="display:flex;align-items:center;gap:8px">
                 <A href="/workspaces">
                     <button class="btn sm">{ic_back()}"工作空间列表"</button>
