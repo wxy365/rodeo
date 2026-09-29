@@ -2872,14 +2872,28 @@ impl Mutation {
         .await?;
         gql.services.agent_turns.put_context_md(turn_id, ctx_md);
 
-        // 落库 user 消息（content = 用户原始 content；附件文本由 runner 在 system
-        // 之后另起一条 user 消息注入，不污染持久化的 user 消息——历史回放看到
-        // 的就是用户原本输入）。
+        // 提取附件文本（拼在 user content 前面）。text/* 与 application/json
+        // 走正文解码，5 MiB / 200 KiB 双重截断；其他 mime 给占位标记——二进制
+        // 直接喂给 LLM 既无意义又费 token。
+        let mut attachment_md = String::new();
+        for aid in &attachment_ids {
+            match extract_attachment_block(&gql.services, workspace_id, *aid).await {
+                Ok(block) => attachment_md.push_str(&block),
+                Err(e) => attachment_md.push_str(&format!(
+                    "[附件 {} 读取失败: {}]\n\n",
+                    aid, e
+                )),
+            }
+        }
+        let final_content = format!("{}{}", attachment_md, input.content);
+
+        // 落库 user 消息：content = 附件文本 + 用户原文。重开会话看到的就是用户
+        // 实际发的「问 + 附件」整体——历史回放一致。
         let user_msg = AgentMessage {
             id: Ulid::new(),
             session_id: sid,
             role: Role::User,
-            content: input.content.clone(),
+            content: final_content,
             tool_calls: vec![],
             tool_call_id: None,
             created_at: Utc::now(),
@@ -2961,6 +2975,59 @@ async fn build_agent_context_md(
     }
 
     Ok(md)
+}
+
+/// 拉一个 attachment 的字节，按 MIME 决定提取文本还是返回占位标记。
+/// 返回多行 markdown 块（已含分隔符），拼到 user content 前面。
+async fn extract_attachment_block(
+    services: &Arc<crate::service::Services>,
+    workspace_id: Ulid,
+    attachment_id: Ulid,
+) -> Result<String, AppError> {
+    let Some(att) = services.attachment.get(attachment_id)? else {
+        return Err(AppError::InvalidQuery(format!("附件不存在: {attachment_id}")));
+    };
+    if att.workspace_id != workspace_id {
+        return Err(AppError::Forbidden);
+    }
+    let bytes = services.attachment.read(&att).await?;
+    const RAW_LIMIT: usize = 5 * 1024 * 1024;
+    if bytes.len() > RAW_LIMIT {
+        return Err(AppError::InvalidQuery(format!(
+            "附件 {} 超过 5 MiB（{} B）",
+            att.filename, bytes.len()
+        )));
+    }
+    let ctype = if att.content_type.is_empty() {
+        "application/octet-stream"
+    } else {
+        att.content_type.as_str()
+    };
+    let text = if ctype.starts_with("text/")
+        || ctype == "application/json"
+        || ctype == "application/xml"
+    {
+        let s = String::from_utf8_lossy(&bytes).into_owned();
+        const TEXT_LIMIT: usize = 200 * 1024;
+        if s.chars().count() > TEXT_LIMIT {
+            let mut out: String = s.chars().take(TEXT_LIMIT).collect();
+            out.push_str("\n…(已截断)");
+            out
+        } else {
+            s
+        }
+    } else {
+        format!(
+            "[附件: {} ({}，{} B) — 仅 text/* 可被读取]",
+            att.filename,
+            ctype,
+            bytes.len()
+        )
+    };
+    Ok(format!(
+        "--- 附件: {} ({}) ---\n{}\n---\n\n",
+        att.filename, ctype, text
+    ))
 }
 
 pub type AppSchema = Schema<Query, Mutation, EmptySubscription>;
