@@ -65,6 +65,47 @@ pub static TEMPLATES: &[(&str, &str)] = &[
     ),
 ];
 
+/// 服务端 Query 模板表。key = Query 字段名（与 Mutation 模板同款约定）。
+/// queryEntries 走现有 queryEntries；其它 3 个全部复用现有 Query resolver。
+pub static QUERY_TEMPLATES: &[(&str, &str)] = &[
+    (
+        "queryEntries",
+        // 接受 (workspaceId, query, sorts, page)；Agent 端 exec.rs 在调用前
+        // 会先把 queryExpr 字符串走 parse_view_query 转成 JSON 再塞进 query 变量。
+        "query($workspaceId: ID!, $query: JSON, $sorts: [SortInput!], $page: PageInput) {
+            queryEntries(workspaceId: $workspaceId, query: $query, sorts: $sorts, page: $page) {
+                items { code title detail createdAt updatedAt
+                        createdByAccount { id name email }
+                        updatedByAccount { id name email } }
+                total
+                labelNames
+            }
+        }",
+    ),
+    (
+        "searchEntries",
+        // 新增 GraphQL resolver，见 Task 7。
+        "query($workspaceId: ID!, $keyword: String!, $limit: Int) {
+            searchEntries(workspaceId: $workspaceId, keyword: $keyword, limit: $limit) {
+                items { code title }
+                total
+            }
+        }",
+    ),
+    (
+        "labelSchemas",
+        "query($workspaceId: ID!) {
+            labelSchemas(workspaceId: $workspaceId) { name type format }
+        }",
+    ),
+    (
+        "views",
+        "query($workspaceId: ID!) {
+            views(workspaceId: $workspaceId) { id name queryExpr }
+        }",
+    ),
+];
+
 use crate::api::graphql::AppSchema;
 use crate::error::AppError;
 
@@ -111,6 +152,49 @@ pub fn validate_templates(schema: &AppSchema) -> Result<(), AppError> {
     if !missing.is_empty() {
         return Err(AppError::Ai(format!(
             "agent templates 引用了 schema 中不存在的 mutation: {:?}",
+            missing
+        )));
+    }
+    Ok(())
+}
+
+/// 启动期校验：QUERY_TEMPLATES 里的每个 query 名都在 schema 中——防止模板引用
+/// 已删/重命名的 query。逻辑与 `validate_templates` 完全对称，复用同款 SDL
+/// 切分（这次切 `type Query`）。返回值与 `validate_templates` 一样：
+/// 失败时 `AppError::Ai(_)`，启动期 panic。
+pub fn validate_query_templates(schema: &AppSchema) -> Result<(), AppError> {
+    let sdl = schema.sdl();
+    let body = sdl
+        .split("type Query")
+        .nth(1)
+        .and_then(|s| s.split('{').nth(1).and_then(|s| s.split('}').next()))
+        .ok_or_else(|| AppError::Ai("query introspection 解析失败".into()))?;
+
+    let mut schema_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut in_desc = false;
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed == "\"\"\"" {
+            in_desc = !in_desc;
+            continue;
+        }
+        if in_desc || trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        if !trimmed.starts_with('(') && trimmed.contains('(') {
+            if let Some(name) = first_identifier(trimmed) {
+                schema_names.insert(name.to_string());
+            }
+        }
+    }
+    let template_names: Vec<&str> = QUERY_TEMPLATES.iter().map(|(n, _)| *n).collect();
+    let missing: Vec<&&str> = template_names
+        .iter()
+        .filter(|n| !schema_names.contains(**n))
+        .collect();
+    if !missing.is_empty() {
+        return Err(AppError::Ai(format!(
+            "agent query templates 引用了 schema 中不存在的 query: {:?}",
             missing
         )));
     }

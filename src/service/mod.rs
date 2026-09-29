@@ -20,7 +20,7 @@ use crate::api::graphql::{build_schema, AppSchema};
 use crate::config::Config;
 use crate::error::AppError;
 use crate::service::agent::runner::SessionTurns;
-use crate::service::agent::templates::{validate_templates, ToolSchema};
+use crate::service::agent::templates::{validate_query_templates, validate_templates, ToolSchema};
 use crate::service::agent::tools::build_tools;
 use crate::storage::{BlobStore, DocStore};
 
@@ -86,6 +86,8 @@ impl Services {
             .map_err(|e| AppError::Ai(format!("build_tools 失败: {e}")))?;
         validate_templates(&schema)
             .map_err(|e| AppError::Ai(format!("validate_templates 失败: {e}")))?;
+        validate_query_templates(&schema)
+            .map_err(|e| AppError::Ai(format!("validate_query_templates 失败: {e}")))?;
         let agent_turns = Arc::new(SessionTurns::default());
         let services = Self {
             auth: AuthService::new(store.clone(), config.clone()),
