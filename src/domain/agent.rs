@@ -66,3 +66,15 @@ impl AgentSession {
         }
     }
 }
+
+/// 每次 sendAgentMessage 调用携带的 turn-scoped 上下文。
+/// runner 在每轮重新读取（不存进 cf::AGENT_SESSIONS），保证用户切视图后
+/// 下一条消息的 context 反映新视图。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct AgentMessageContext {
+    /// 当前打开的视图 id。None = 基础视图 / 未选视图。
+    pub view_id: Option<String>,
+    /// 用户在表格里勾选 / 打开的条目 code 列表。空 = 无选中。
+    /// 上限 20 条（由 resolver 强制）。
+    pub selected_entry_codes: Vec<String>,
+}
