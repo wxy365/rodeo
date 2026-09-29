@@ -120,6 +120,7 @@ pub fn AgentPanel() -> impl IntoView {
     let current_session: RwSignal<Option<String>> = RwSignal::new(None);
     let messages: RwSignal<Vec<AgentMessage>> = RwSignal::new(Vec::new());
     let input: RwSignal<String> = RwSignal::new(String::new());
+    let attachment_ids_input: RwSignal<String> = RwSignal::new(String::new());
     let streaming: RwSignal<bool> = RwSignal::new(false);
     // 用户是否「贴底」：scroll 事件每次把它更新成 (scroll_height - top - client) < 32px。
     // 初始 true —— 切会话 / 首次打开面板时直接滚到底，而不是停在历史某处。
@@ -357,10 +358,23 @@ pub fn AgentPanel() -> impl IntoView {
             });
         });
         input.set(String::new());
+        let attachment_ids: Vec<String> = attachment_ids_input
+            .get_untracked()
+            .split_whitespace()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        attachment_ids_input.set(String::new());
         streaming.set(true);
         let sid_for_refresh = sid.clone();
+        let attachment_ids_for_send = attachment_ids.clone();
         spawn_local(async move {
-            match send_agent_message(&sid, &content, None, None).await {
+            match send_agent_message(
+                &sid,
+                &content,
+                None,
+                if attachment_ids_for_send.is_empty() { None } else { Some(attachment_ids_for_send) },
+            ).await {
                 Ok(turn) => {
                     // 占位自然由 open_stream 之后的 post-stream list_agent_messages
                     // 替换为真 ULID 消息——SSE 路径出错也不需要就地清，因为
@@ -594,6 +608,15 @@ pub fn AgentPanel() -> impl IntoView {
                                         />
                                     </div>
                                     <div class="agent-input">
+                                        <div class="agent-attachments-input">
+                                            <label>"附件 IDs（空格分隔）："</label>
+                                            <input
+                                                type="text"
+                                                class="inp"
+                                                prop:value=attachment_ids_input
+                                                placeholder="如：01HXXX 01HYYY"
+                                            />
+                                        </div>
                                         <textarea
                                             class="agent-textarea"
                                             bind:value=input
