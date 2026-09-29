@@ -13,7 +13,8 @@ use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
 use crate::domain::{
-    Account, AccountStatus, ActionTarget, AgentMessage, Attachment, AuditLog, AutomationRule,
+    Account, AccountStatus, ActionTarget, AgentMessage, AgentMessageContext, Attachment, AuditLog,
+    AutomationRule,
     Comment, Entry,
     Invite,
     LabelSchema, LabelValueType, LinkKind,
@@ -950,6 +951,23 @@ impl PageInput {
 pub struct LabelingInput {
     name: String,
     value: Option<Json<serde_json::Value>>,
+}
+
+/// Agent 消息上下文输入。空字段（None / 空数组）= 没有上下文约束。
+#[derive(async_graphql::InputObject)]
+pub struct AgentMessageContextInput {
+    view_id: Option<ID>,
+    selected_entry_codes: Option<Vec<String>>,
+}
+
+/// sendAgentMessage 的入参打包。把 content / context / attachmentIds
+/// 一起带过来比拆 4 个顶层参数更可读，未来加字段（如 streamId）也方便。
+#[derive(async_graphql::InputObject)]
+pub struct SendAgentMessageInput {
+    session_id: ID,
+    content: String,
+    context: Option<AgentMessageContextInput>,
+    attachment_ids: Option<Vec<ID>>,
 }
 
 fn parse_query_json(value: Option<Json<serde_json::Value>>) -> GqlResult<ViewQuery> {
@@ -2785,17 +2803,17 @@ impl Mutation {
     /// 给 agent 会话追加一条 user 消息，并起一个 turn 由 `run_turn` 异步跑 LLM。
     /// 返回 turn 元信息，前端用它开 SSE 订阅 `AgentEvent` 流（Task 7 的 handler）。
     ///
-    /// 校验：session 必须属于当前用户；content 不能为空。
+    /// 校验：session 必须属于当前用户；content 不能为空。context / attachment_ids
+    /// 是可选上下文：解析失败或超限就降级丢弃（不阻断消息）。
     async fn send_agent_message(
         &self,
         ctx: &Context<'_>,
-        session_id: String,
-        content: String,
+        input: SendAgentMessageInput,
     ) -> GqlResult<GqlAgentTurn> {
         let gql = ctx.data::<GraphqlContext>()?;
         let auth = gql.require_auth()?;
-        let sid = parse_ulid(&session_id)?;
-        if content.trim().is_empty() {
+        let sid = parse_ulid(input.session_id.as_str())?;
+        if input.content.trim().is_empty() {
             return Err(AppError::InvalidQuery("content 不能为空".into()).into());
         }
         // 校验 session 归属：get_session 找不到（跨 user / 不存在）就 NotFound。
@@ -2805,12 +2823,45 @@ impl Mutation {
             .get_session(auth.account_id, sid)?
             .ok_or(AppError::NotFound)?;
 
-        // 落库 user 消息
+        // 解析 view_id / selected_entry_codes：忽略失败（解析错就当 ctx 为空）。
+        let ctx_view = match input.context.as_ref().and_then(|c| c.view_id.as_ref()) {
+            Some(v) => match parse_ulid(v.as_str()) {
+                Ok(uid) => Some(uid),
+                Err(_) => None,
+            },
+            None => None,
+        };
+        let selected_codes: Vec<String> = input
+            .context
+            .as_ref()
+            .and_then(|c| c.selected_entry_codes.clone())
+            .unwrap_or_default();
+        // 上限 20（spec §6.1）。
+        let selected_codes: Vec<String> = selected_codes.into_iter().take(20).collect();
+
+        // 解析附件 id（不下载，先收集 ulid；下载放到 Task 13）。
+        let attachment_ids: Vec<Ulid> = input
+            .attachment_ids
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|id| parse_ulid(id.as_str()).ok())
+            .take(10)
+            .collect();
+
+        // 组装 AgentContext，传给 runner；附件文本在 Task 13 里拼到 content。
+        let agent_ctx = AgentMessageContext {
+            view_id: ctx_view.map(|u| u.to_string()),
+            selected_entry_codes: selected_codes.clone(),
+        };
+
+        // 落库 user 消息（content = 用户原始 content；附件文本由 runner 在 system
+        // 之后另起一条 user 消息注入，不污染持久化的 user 消息——历史回放看到
+        // 的就是用户原本输入）。
         let user_msg = AgentMessage {
             id: Ulid::new(),
             session_id: sid,
             role: Role::User,
-            content: content.clone(),
+            content: input.content.clone(),
             tool_calls: vec![],
             tool_call_id: None,
             created_at: Utc::now(),
@@ -2825,7 +2876,15 @@ impl Mutation {
             sid,
             turn_id,
             async move {
-                run_turn(services_for_runner, auth_for_runner, sid, turn_id).await;
+                run_turn(
+                    services_for_runner,
+                    auth_for_runner,
+                    sid,
+                    turn_id,
+                    agent_ctx,
+                    attachment_ids,
+                )
+                .await;
             },
         )?;
 

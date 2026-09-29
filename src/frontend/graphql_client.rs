@@ -1711,15 +1711,33 @@ pub async fn delete_agent_session(id: &str) -> Result<bool, String> {
         .unwrap_or(false))
 }
 
-pub async fn send_agent_message(session_id: &str, content: String) -> Result<AgentTurn, String> {
-    // content 走 GraphQL 变量（项目约定）：转义、引号、换行都交给服务端变量解析，
-    // 不在 query 字符串里手工转义。
+pub async fn send_agent_message(
+    session_id: &str,
+    content: &str,
+    context: Option<AgentMessageContext>,
+    attachment_ids: Option<Vec<String>>,
+) -> Result<AgentTurn, String> {
+    // content / context / attachmentIds 走 GraphQL input 变量（项目约定）：
+    // 转义、引号、换行都交给服务端变量解析。
     let q = format!(
-        "mutation($id: ID!, $c: String!) {{ sendAgentMessage(sessionId: $id, content: $c) {{ {AGENT_TURN_FIELDS} }} }}"
+        "mutation($input: SendAgentMessageInput!) {{ sendAgentMessage(input: $input) {{ {AGENT_TURN_FIELDS} }} }}"
     );
-    let data = graphql(&q, json!({ "id": session_id, "c": content })).await?;
+    let input = json!({
+        "sessionId": session_id,
+        "content": content,
+        "context": context,
+        "attachmentIds": attachment_ids,
+    });
+    let data = graphql(&q, json!({ "input": input })).await?;
     serde_json::from_value(data.get("sendAgentMessage").cloned().unwrap_or(Value::Null))
         .map_err(|e| e.to_string())
+}
+
+#[derive(Clone, serde::Deserialize, serde::Serialize, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentMessageContext {
+    pub view_id: Option<String>,
+    pub selected_entry_codes: Vec<String>,
 }
 
 #[cfg(test)]

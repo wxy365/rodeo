@@ -360,7 +360,7 @@ pub fn AgentPanel() -> impl IntoView {
         streaming.set(true);
         let sid_for_refresh = sid.clone();
         spawn_local(async move {
-            match send_agent_message(&sid, content).await {
+            match send_agent_message(&sid, &content, None, None).await {
                 Ok(turn) => {
                     // 占位自然由 open_stream 之后的 post-stream list_agent_messages
                     // 替换为真 ULID 消息——SSE 路径出错也不需要就地清，因为

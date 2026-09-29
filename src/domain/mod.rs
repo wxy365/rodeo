@@ -15,7 +15,7 @@ pub mod view;
 pub mod workspace;
 
 pub use account::{Account, AccountStatus};
-pub use agent::{AgentMessage, AgentSession, EntryAction, Role, SideEffect, ToolCall};
+pub use agent::{AgentMessage, AgentMessageContext, AgentSession, EntryAction, Role, SideEffect, ToolCall};
 pub use agent_events::AgentEvent;
 pub use ai::{NamedPrompt, WorkspaceAiConfig};
 pub use audit::{AuditAction, AuditLog};
