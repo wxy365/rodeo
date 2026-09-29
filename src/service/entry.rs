@@ -77,6 +77,12 @@ impl EntryService {
         Self { store, search: Some(search), rules, messages, relations }
     }
 
+    /// 让 GraphQL resolver / Agent 工具能拿到底层的 SearchIndex，
+    /// 全文检索不可用（配置未启用 / 未注入）时返回 None。
+    pub fn search_available(&self) -> Option<&Arc<SearchIndex>> {
+        self.search.as_ref()
+    }
+
     fn reindex(&self, entry: &Entry) {
         let Some(search) = &self.search else { return };
         let labels = self.labelings(&entry.code).unwrap_or_default();

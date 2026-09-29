@@ -1534,6 +1534,57 @@ impl Query {
         })
     }
 
+    /// 全文检索入口。keyword 由 Tantivy 解析（ngram 1-2），跨 title / detail /
+    /// labels / code / comments 五个字段。返回 GqlEntryConnection 与 queryEntries
+    /// 同形态（无 label_names——全文结果不输出标签列表）。
+    async fn search_entries(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: ID,
+        keyword: String,
+        limit: Option<i32>,
+    ) -> GqlResult<GqlEntryConnection> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let ws = parse_ulid(workspace_id.as_str())?;
+        gql.require_member(ws)?;
+        let search = gql
+            .services
+            .entry
+            .search_available()
+            .ok_or_else(|| AppError::Internal("全文检索不可用".into()))?;
+        let limit = limit.unwrap_or(20).clamp(1, 100) as usize;
+        if keyword.trim().is_empty() {
+            return Ok(GqlEntryConnection {
+                items: Vec::new(),
+                total: 0,
+                page: 1,
+                page_size: limit as i32,
+                label_names: Vec::new(),
+            });
+        }
+        let codes = search.search(ws, &keyword, limit)?;
+        let total = codes.len();
+        let mut items = Vec::with_capacity(codes.len());
+        for code in codes {
+            let Some(entry) = gql.services.entry.get(&code)? else {
+                continue;
+            };
+            // 跳过软删除与归档：与 queryEntries 行为一致。
+            if entry.is_deleted() || gql.services.entry.is_archived(&code)? {
+                continue;
+            }
+            let labels = gql.services.entry.labelings(&code).unwrap_or_default();
+            items.push(gql_entry(gql, entry, labels)?);
+        }
+        Ok(GqlEntryConnection {
+            items,
+            total: total as i32,
+            page: 1,
+            page_size: limit as i32,
+            label_names: Vec::new(),
+        })
+    }
+
     /// 已归档条目（Reader+），按归档时间倒序。
     async fn archived_entries(
         &self,
