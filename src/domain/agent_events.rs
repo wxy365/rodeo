@@ -18,6 +18,9 @@ pub enum ToolErrorKind {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
     Delta { turn_id: Ulid, content: String },
+    /// 模型推理链（DeepSeek `reasoning_content` / OpenAI o1 `reasoning`）。
+    /// 仅在流式期间推送给前端做样式区分；不入库——重开会话不重现推理链。
+    Reasoning { turn_id: Ulid, content: String },
     ToolCall { turn_id: Ulid, name: String, args: serde_json::Value },
     ToolResult {
         turn_id: Ulid,

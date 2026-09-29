@@ -474,6 +474,9 @@ pub struct GqlRelation {
     created_by: ID,
     created_at: String,
     updated_at: String,
+    /// 关联对端的标题（不是当前 entry 的那一头）。找不到时回退到空串——前端会
+    /// 再用编码占位显示。N+1 在 relations 列表规模内可接受；关联通常只有几条。
+    other_title: String,
     /// 反向观察：当前条目是「from」还是「to」，`null` 表示既不属 from 也不属 to
     /// （条目的关联查询同时返回两侧，UI 可据此标注箭头方向）。具体规则：
     /// - 该条目 == from_code → "outgoing"
@@ -482,7 +485,7 @@ pub struct GqlRelation {
     direction: Option<String>,
 }
 
-fn gql_relation(rel: Relation, viewer_code: Option<&str>) -> GqlRelation {
+fn gql_relation(rel: Relation, viewer_code: Option<&str>, other_title: String) -> GqlRelation {
     let direction = viewer_code.map(|cond| {
         if rel.from_code == cond {
             "outgoing"
@@ -503,6 +506,7 @@ fn gql_relation(rel: Relation, viewer_code: Option<&str>) -> GqlRelation {
         created_by: rel.created_by.to_string().into(),
         created_at: rel.created_at.to_rfc3339(),
         updated_at: rel.updated_at.to_rfc3339(),
+        other_title,
         direction,
     }
 }
@@ -1303,10 +1307,23 @@ impl Query {
             .ok_or(AppError::NotFound)?;
         gql.require_member(entry.workspace_id)?;
         let rels = gql.services.relation.list_for_entry(entry.workspace_id, &entry_code)?;
-        Ok(rels
-            .into_iter()
-            .map(|r| gql_relation(r, Some(&entry_code)))
-            .collect())
+        // 对端标题逐条查：relations 列表规模小（通常个位数），N+1 可接受。
+        let mut out = Vec::with_capacity(rels.len());
+        for r in rels {
+            let other_code = if r.from_code == entry_code {
+                r.to_code.as_str()
+            } else {
+                r.from_code.as_str()
+            };
+            let other_title = gql
+                .services
+                .entry
+                .get(other_code)?
+                .map(|e| e.title)
+                .unwrap_or_default();
+            out.push(gql_relation(r, Some(&entry_code), other_title));
+        }
+        Ok(out)
     }
 
     /// 某条目的全部附件，按上传时间升序。成员即可读（与 `comments` 一致）。
@@ -2199,7 +2216,15 @@ impl Mutation {
             &to_code,
             semantic.into_semantic(),
         )?;
-        Ok(gql_relation(rel, Some(&from_code)))
+        let other_title = gql
+            .services
+            .entry
+            .get(&to_code)
+            .ok()
+            .flatten()
+            .map(|e| e.title)
+            .unwrap_or_default();
+        Ok(gql_relation(rel, Some(&from_code), other_title))
     }
 
     /// 改语义（Worker+）。方向 / 端点锁死，只能换语义。
@@ -2221,7 +2246,16 @@ impl Mutation {
             rid,
             semantic.into_semantic(),
         )?;
-        Ok(gql_relation(updated, None))
+        // update 路径没有 viewer_code：以 to_code 为对端（与 create 路径语义一致）。
+        let other_title = gql
+            .services
+            .entry
+            .get(&updated.to_code)
+            .ok()
+            .flatten()
+            .map(|e| e.title)
+            .unwrap_or_default();
+        Ok(gql_relation(updated, None, other_title))
     }
 
     /// 删除关联（Worker+）。返回是否真删了一行——前端用它给用户 undo 提示。
@@ -2243,6 +2277,8 @@ impl Mutation {
     }
 
     /// 上传附件（Worker+）。multipart 由 async-graphql 的 `Upload` scalar 承载。
+    /// `agentSessionId` 不为空时改为 agent 会话附件：跳过 entry 校验、用 session
+    /// 的 workspace_id，附件落到 `AGENT_ENTRY_SENTINEL`（见 `attachment::save_for_session`）。
     async fn upload_attachment(
         &self,
         ctx: &Context<'_>,
@@ -2250,15 +2286,10 @@ impl Mutation {
         file: Upload,
         // 编辑器内联图片传 true：不进附件列表。省略即 false，等于一条独立附件。
         inline: Option<bool>,
+        agent_session_id: Option<ID>,
     ) -> GqlResult<GqlAttachment> {
         let gql = ctx.data::<GraphqlContext>()?;
         let auth = gql.require_auth()?;
-        let entry = gql
-            .services
-            .entry
-            .get(&entry_code)?
-            .ok_or(AppError::NotFound)?;
-        gql.require_role(entry.workspace_id, WorkspaceRole::Worker)?;
         // tempfile 特性开启时 content 是临时文件句柄，try_clone 取一份自有的，
         // 这样 filename / content_type 还能从原值上读。
         let value = file
@@ -2270,18 +2301,45 @@ impl Mutation {
             .content_type
             .clone()
             .unwrap_or_else(|| "application/octet-stream".to_string());
-        let a = gql
-            .services
-            .attachment
-            .save(
-                auth.account_id,
-                &entry_code,
-                &filename,
-                &content_type,
-                value.content,
-                inline.unwrap_or(false),
-            )
-            .await?;
+        let a = if let Some(sid) = agent_session_id {
+            // agent 会话：校验 session 归属当前用户 → 拿到 workspace_id；entry_code 走 sentinel。
+            let sid = parse_ulid(sid.as_str())?;
+            let session = gql
+                .services
+                .agent
+                .get_session(auth.account_id, sid)?
+                .ok_or(AppError::NotFound)?;
+            gql.require_role(session.workspace_id, WorkspaceRole::Worker)?;
+            gql.services
+                .attachment
+                .save_for_session(
+                    auth.account_id,
+                    sid,
+                    session.workspace_id,
+                    &filename,
+                    &content_type,
+                    value.content,
+                )
+                .await?
+        } else {
+            let entry = gql
+                .services
+                .entry
+                .get(&entry_code)?
+                .ok_or(AppError::NotFound)?;
+            gql.require_role(entry.workspace_id, WorkspaceRole::Worker)?;
+            gql.services
+                .attachment
+                .save(
+                    auth.account_id,
+                    &entry_code,
+                    &filename,
+                    &content_type,
+                    value.content,
+                    inline.unwrap_or(false),
+                )
+                .await?
+        };
         gql_attachment(gql, a)
     }
 
@@ -2913,6 +2971,21 @@ impl Mutation {
         };
         gql.services.agent.append_message(user_msg)?;
 
+        // 首条 user 消息自动填标题：取首段非空 line 截断到 30 字。已
+        // 有 title 的会话不再覆盖——用户后续消息不应顶掉首问的标题。
+        let now = Utc::now();
+        let title: Option<String> = if session.title.is_empty() {
+            derive_session_title(&input.content)
+        } else {
+            None
+        };
+        gql.services.agent.update_session_meta(
+            auth.account_id,
+            sid,
+            title,
+            Some(now),
+        )?;
+
         let services = gql.services.clone();
         let auth_for_runner = auth.clone();
         let services_for_runner = services.clone();
@@ -2980,6 +3053,23 @@ async fn build_agent_context_md(
     }
 
     Ok(md)
+}
+
+/// 从 user content 推出首条消息的会话展示标题：trim 后取首段非空 line，
+/// 截断到 30 字 + `…`。新建会话时填上，后续不再覆盖——用户后续消息
+/// 不应顶掉首问的标题。
+fn derive_session_title(content: &str) -> Option<String> {
+    const MAX_CHARS: usize = 30;
+    let first_line = content
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())?;
+    let truncated: String = first_line.chars().take(MAX_CHARS).collect();
+    if first_line.chars().count() > MAX_CHARS {
+        Some(format!("{truncated}…"))
+    } else {
+        Some(truncated)
+    }
 }
 
 /// 拉一个 attachment 的字节，按 MIME 决定提取文本还是返回占位标记。

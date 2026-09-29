@@ -177,6 +177,8 @@ pub struct ToolCallRequestFn {
 
 /// 流式响应的单帧：
 /// - `Delta`：assistant 文本增量；
+/// - `Reasoning`：模型推理链（DeepSeek `reasoning_content` / OpenAI o1
+///   `reasoning`）。前端与 Delta 分别累积,渲染时分两块；
 /// - `ToolCallsPartial`：单帧只携带了某个 tool_call 的部分字段，调用方应
 ///   据此更新自己的累积状态，不要立刻视为完整 tool call；
 /// - `ToolCalls`：流结束时一次性吐出的完整 tool calls；
@@ -184,6 +186,7 @@ pub struct ToolCallRequestFn {
 #[derive(Debug, Clone)]
 pub enum StreamChunk {
     Delta(String),
+    Reasoning(String),
     #[allow(dead_code)]
     ToolCallsPartial(Vec<(u32, String, String, String)>),
     ToolCalls(Vec<ToolCallRequest>),
@@ -332,6 +335,7 @@ impl AiClient {
                         buffer = buffer[split + 2..].to_string();
                         match parse_sse_event(&event)? {
                             Some(StreamChunk::Delta(s)) => yield StreamChunk::Delta(s),
+                            Some(StreamChunk::Reasoning(s)) => yield StreamChunk::Reasoning(s),
                             Some(StreamChunk::ToolCallsPartial(partials)) => {
                                 // OpenAI 流式协议：每个 delta 只携带变化的部分
                                 // （id / function.name 各自出现一次，function.arguments
@@ -432,6 +436,20 @@ fn parse_sse_event(event: &str) -> Result<Option<StreamChunk>, AppError> {
         .and_then(|a| a.first())
         .ok_or_else(|| AppError::Ai("SSE chunk 缺少 choices".to_string()))?;
     let delta = choice.get("delta");
+    // 推理链放在 content 之前判：DeepSeek 用 `reasoning_content`,OpenAI o1
+    // 用 `reasoning`——同一时刻两者不会同时出现,先匹配到就先吐。
+    if let Some(r) = delta
+        .and_then(|d| d.get("reasoning_content"))
+        .and_then(|c| c.as_str())
+    {
+        return Ok(Some(StreamChunk::Reasoning(r.to_string())));
+    }
+    if let Some(r) = delta
+        .and_then(|d| d.get("reasoning"))
+        .and_then(|c| c.as_str())
+    {
+        return Ok(Some(StreamChunk::Reasoning(r.to_string())));
+    }
     if let Some(content) = delta.and_then(|d| d.get("content")).and_then(|c| c.as_str()) {
         return Ok(Some(StreamChunk::Delta(content.to_string())));
     }

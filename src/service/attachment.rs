@@ -12,6 +12,11 @@ use crate::storage::{cf, keys, BatchOp, BlobStore, DocStore};
 /// 单文件上限。与 UI 文案「附件（≤ 50MB）」一致。
 pub const MAX_ATTACHMENT_SIZE: u64 = 50 * 1024 * 1024;
 
+/// agent 会话附件的 entry_code 占位：实际没有 entry，只为让
+/// blob_key / Attachment 元数据继续按字符串路径段组装。不走
+/// `ATTACHMENTS_BY_ENTRY` 索引（save_for_session 不写），不影响列表。
+pub const AGENT_ENTRY_SENTINEL: &str = "_agent";
+
 pub struct AttachmentService {
     store: Arc<DocStore>,
     /// 单向依赖：上传是条目上的活动，要推进 Entry.updated_at 并重建检索文档。
@@ -43,6 +48,61 @@ impl AttachmentService {
             a.id,
             safe_name(&a.filename)
         )
+    }
+
+    /// agent 会话用的「工作空间级」附件：没有 entry_code 关联，落到
+    /// sentinel `"_agent"` 让 blob_key / attachment 元数据能继续按字符串
+    /// 路径段组装，entry 那条路（reindex、updated_at）整段跳过——agent 会话
+    /// 没有 entry。`session_id` 仅用于审计 resource_id。
+    pub async fn save_for_session(
+        &self,
+        actor: Ulid,
+        session_id: Ulid,
+        workspace_id: Ulid,
+        filename: &str,
+        content_type: &str,
+        content: std::fs::File,
+    ) -> Result<Attachment, AppError> {
+        let size = content
+            .metadata()
+            .map_err(|e| AppError::Storage(e.to_string()))?
+            .len();
+        if size == 0 {
+            return Err(AppError::InvalidQuery("附件内容为空".to_string()));
+        }
+        if size > MAX_ATTACHMENT_SIZE {
+            return Err(AppError::InvalidQuery("附件超过 50MB".to_string()));
+        }
+        let attachment = Attachment::new(
+            AGENT_ENTRY_SENTINEL.to_string(),
+            workspace_id,
+            filename.to_string(),
+            content_type.to_string(),
+            size,
+            actor,
+        );
+        let key = Self::blob_key(&attachment);
+        self.blobs.put(&key, content).await?;
+        let audit = AuditLog::new(
+            AuditAction::AttachmentUploaded,
+            actor,
+            "attachment",
+            &session_id.to_string(),
+            Some(workspace_id),
+            None,
+            Some(serde_json::to_string(&attachment).unwrap_or_default()),
+        );
+        let mut ops = audit_ops(&audit)?;
+        ops.push(BatchOp::put(
+            cf::ATTACHMENTS,
+            attachment.id.to_bytes().to_vec(),
+            &attachment,
+        )?);
+        if let Err(e) = self.store.write_batch(ops) {
+            let _ = self.blobs.delete(&key).await;
+            return Err(e);
+        }
+        Ok(attachment)
     }
 
     /// 落盘并写元数据。`content` 是 async-graphql 给的临时文件句柄，交给

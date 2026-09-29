@@ -114,7 +114,7 @@ fn mount_editor<N: wasm_bindgen::JsCast>(
                     .dyn_into::<web_sys::File>()
                     .map_err(|_| JsValue::from_str("粘贴的内容不是文件"))?;
                 // 编辑器里的图片是正文的一部分：不列进附件，随正文删除而回收。
-                match crate::frontend::graphql_client::upload_attachment(&code, &file, true).await {
+                match crate::frontend::graphql_client::upload_attachment(&code, &file, true, None).await {
                     Ok(a) => {
                         // 上传推进了 entry.updated_at，宿主的版本号已经过期，先让它重新取一次。
                         on_uploaded.run(());

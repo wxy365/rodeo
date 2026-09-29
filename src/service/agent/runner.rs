@@ -224,6 +224,10 @@ pub async fn run_turn(
                     content.push_str(&s);
                     let _ = tx.send(AgentEvent::Delta { turn_id, content: s });
                 }
+                Some(Ok(crate::service::ai::StreamChunk::Reasoning(s))) => {
+                    // 推理链不入库——只在流式期间推给前端做样式区分。
+                    let _ = tx.send(AgentEvent::Reasoning { turn_id, content: s });
+                }
                 Some(Ok(crate::service::ai::StreamChunk::ToolCallsPartial(partials))) => {
                     for (idx, id, name, args) in partials {
                         let entry = pending_args

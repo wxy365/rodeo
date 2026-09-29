@@ -41,10 +41,21 @@ use crate::frontend::agent_side_effects::AgentSideEffects;
 use crate::frontend::agent_side_effects::SideEffectHint;
 #[cfg(target_arch = "wasm32")]
 use crate::frontend::graphql_client::get_token;
+use crate::frontend::components::human_size;
 use crate::frontend::graphql_client::{
     create_agent_session, delete_agent_session, list_agent_messages, list_agent_sessions,
     send_agent_message, AgentMessage, AgentMessageContext, AgentSession,
 };
+#[cfg(target_arch = "wasm32")]
+use crate::frontend::graphql_client::upload_attachment;
+
+/// 已选附件（上传成功后存 id）。发消息时按 id 列表传给 sendAgentMessage。
+#[derive(Clone)]
+struct AgentAttachmentChip {
+    id: String,
+    filename: String,
+    size: i64,
+}
 
 /// 是否展开 Agent 面板。`true` 时显示、点击关闭按钮或外部 trigger 置 `false`。
 ///
@@ -148,10 +159,12 @@ pub fn AgentPanel() -> impl IntoView {
     let current_session: RwSignal<Option<String>> = RwSignal::new(None);
     let messages: RwSignal<Vec<AgentMessage>> = RwSignal::new(Vec::new());
     let input: RwSignal<String> = RwSignal::new(String::new());
-    let attachment_ids_input: RwSignal<String> = RwSignal::new(String::new());
-    // 附件 id 不是 ULID 形态时挂在输入区下方的小提示——resolver 端静默 drop
-    // 这些 id,客户端必须给用户反馈,否则他们以为附件已被读取。
-    let attachment_warn: RwSignal<Option<String>> = RwSignal::new(None);
+    // 已上传附件（按用户选文件顺序累加）；发消息时按 id 列表传给 sendAgentMessage。
+    let attachments: RwSignal<Vec<AgentAttachmentChip>> = RwSignal::new(Vec::new());
+    // 一次选中多文件时多协程并发上传，UI 用它显示「上传中…」+ 禁用发送按钮。
+    let attachments_uploading: RwSignal<bool> = RwSignal::new(false);
+    // 上传失败的提示（resolver 拒绝 / 网络错 / 超 50 MiB）。单条短提示，替换不堆叠。
+    let attachments_error: RwSignal<Option<String>> = RwSignal::new(None);
     let streaming: RwSignal<bool> = RwSignal::new(false);
     // 用户是否「贴底」：scroll 事件每次把它更新成 (scroll_height - top - client) < 32px。
     // 初始 true —— 切会话 / 首次打开面板时直接滚到底，而不是停在历史某处。
@@ -351,23 +364,22 @@ pub fn AgentPanel() -> impl IntoView {
                 None => messages.set(Vec::new()),
             }
         });
+        // 切会话时把上一会话的附件 chip 清空——chip 里只有 id,落到新会话
+        // 上 send 也会被服务端当作新会话的附件,但语义跟用户预期不一致。
+        attachments.set(Vec::new());
+        attachments_error.set(None);
     });
 
-    let on_send = move |_| {
-        // 闭包不在 setup 段；`.get_untracked()` 拿调用时刻的快照即可——
-        // send 后 streaming / input 的变化不需要回头更新这个回调。
-        let content = input.get_untracked();
-        if content.trim().is_empty() {
-            return;
-        }
-        let Some(sid) = current_session.get_untracked() else {
-            web_sys_console_warn("no session selected");
-            return;
-        };
-        let Some(ws_id) = workspace_id_resolved.get_untracked() else {
-            web_sys_console_warn("workspace not ready");
-            return;
-        };
+    // 参数显式标 `()`：原来 `move |_|` 是让 on:click 推断成 MouseEvent handler,
+    // 但 keydown 里需要直接调 `on_send()`——同一闭包既要做事件 handler 又要
+    // 显式调用,_ 不能两边都推断。改成 `()` 后,on:click 走一层薄包装忽略
+    // MouseEvent 参数,on:keydown 直接调,两条路径都收敛到同一段逻辑。
+    //
+    // 拆成 do_send + on_send 两层：do_send 假设 sid 已经就绪（直接乐观写、
+    // 调 sendAgentMessage），on_send 在没 sid 时先 create_agent_session 再
+    // 调 do_send。原来的「没 sid 就 console.warn + return」会让首次进来的
+    // 用户打了一行字按 Enter 静默丢掉、session 导航栏永远空——见 2026-09-29 缺陷 #2。
+    let do_send = move |sid: String, content: String, ws_id: String| {
         if streaming.get_untracked() {
             return;
         }
@@ -383,43 +395,22 @@ pub fn AgentPanel() -> impl IntoView {
                 session_id: sid.clone(),
                 role: "USER".to_string(),
                 content: content.clone(),
+                reasoning: String::new(),
                 tool_calls: Vec::new(),
                 tool_call_id: None,
                 created_at: String::new(),
             });
         });
         input.set(String::new());
-        // 客户端预校验 ULID 形态,非 ULID 的 id 在 input 区下方挂一条短提示,
-        // 让用户知道自己粘错了——resolver 端静默丢掉这些 id,但用户没有反馈。
-        let raw_ids: Vec<String> = attachment_ids_input
+        // 已选附件（id 来自 uploadAttachment）按顺序传给 sendAgentMessage。
+        // 同时清空 chip 列表——发完即用完。
+        let attachment_ids: Vec<String> = attachments
             .get_untracked()
-            .split_whitespace()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
+            .into_iter()
+            .map(|a| a.id)
             .collect();
-        let mut attachment_ids: Vec<String> = Vec::with_capacity(raw_ids.len());
-        let mut bad_ids: Vec<String> = Vec::new();
-        for id in raw_ids {
-            // ULID 是 26 位 Crockford Base32(0-9 A-H J-N P-T V-Z)。
-            // 简单长度+字符集校验足以剔出明显拼错的,真 ULID 的存在性由服务端保证。
-            if id.len() == 26
-                && id.chars().all(|c| c.is_ascii_alphanumeric())
-            {
-                attachment_ids.push(id);
-            } else {
-                bad_ids.push(id);
-            }
-        }
-        attachment_ids_input.set(String::new());
-        if !bad_ids.is_empty() {
-            attachment_warn.set(Some(format!(
-                "已忽略 {} 个非 ULID 格式的附件 id: {}",
-                bad_ids.len(),
-                bad_ids.join(" ")
-            )));
-        } else {
-            attachment_warn.set(None);
-        }
+        attachments.set(Vec::new());
+        attachments_error.set(None);
         // 视图 + 选中条目上下文：闭包快照。拿不到 ctx 的路由（登录 / 账号页）发 None。
         let context_md = agent_ctx.map(|c| AgentMessageContext {
             view_id: c.view_id.get_untracked(),
@@ -428,6 +419,19 @@ pub fn AgentPanel() -> impl IntoView {
         streaming.set(true);
         let sid_for_refresh = sid.clone();
         let attachment_ids_for_send = attachment_ids.clone();
+        // 服务端 send_agent_message 在落 user 消息后会同步写一个 title（首条
+        // user 消息的截断文本）。这里同步更新本地 sessions 缓存，省一次
+        // list_agent_sessions 重拉——`derive_session_title` 是对应的本地算法，
+        // 见 helpers 区注释。
+        if let Some(derived) = local_session_title(&content) {
+            sessions.update(|l| {
+                if let Some(s) = l.iter_mut().find(|s| s.id == sid) {
+                    if s.title.is_empty() {
+                        s.title = derived.clone();
+                    }
+                }
+            });
+        }
         spawn_local(async move {
             match send_agent_message(
                 &sid,
@@ -471,6 +475,42 @@ pub fn AgentPanel() -> impl IntoView {
         let _ = ws_id;
     };
 
+    let on_send = move || {
+        // 闭包不在 setup 段；`.get_untracked()` 拿调用时刻的快照即可——
+        // send 后 streaming / input 的变化不需要回头更新这个回调。
+        let content = input.get_untracked();
+        if content.trim().is_empty() {
+            return;
+        }
+        let Some(ws_id) = workspace_id_resolved.get_untracked() else {
+            web_sys_console_warn("workspace not ready");
+            return;
+        };
+        if streaming.get_untracked() {
+            return;
+        }
+        if let Some(sid) = current_session.get_untracked() {
+            do_send(sid, content, ws_id);
+        } else {
+            // 没选会话：自动建一个再走 do_send。建失败时 input 内容保留，
+            // 用户能看到自己刚才打了什么、可以重试或去点「+ 新建」。
+            spawn_local(async move {
+                match create_agent_session(&ws_id).await {
+                    Ok(s) => {
+                        sessions.update(|l| l.insert(0, s.clone()));
+                        current_session.set(Some(s.id.clone()));
+                        do_send(s.id, content, ws_id);
+                    }
+                    Err(e) => {
+                        web_sys_console_warn(&format!(
+                            "create_agent_session (auto from send) failed: {e}"
+                        ));
+                    }
+                }
+            });
+        }
+    };
+
     let on_new_session = move |_| {
         let Some(ws_id) = workspace_id_resolved.get_untracked() else {
             return;
@@ -484,6 +524,19 @@ pub fn AgentPanel() -> impl IntoView {
                 Err(e) => web_sys_console_warn(&format!("create_agent_session failed: {e}")),
             }
         });
+    };
+
+    // 选完文件即传：每个文件都跑一次 uploadAttachment，agent_session_id
+    // 钉到当前会话。失败文件不进 attachments、提示挂在 attachments_error。
+    // 多文件并发——单文件上限 50 MiB，整体上传耗时只受最大单文件影响。
+    let on_pick_files = move |ev: leptos::ev::Event| {
+        spawn_attachment_uploads(
+            ev,
+            current_session.get_untracked(),
+            attachments,
+            attachments_uploading,
+            attachments_error,
+        );
     };
 
     view! {
@@ -618,6 +671,12 @@ pub fn AgentPanel() -> impl IntoView {
                                                     "agent-msg agent-msg-{}",
                                                     m.role.to_lowercase()
                                                 );
+                                                // 推理链：仅前端流式期间累积,服务端不持久化。
+                                                // 渲染成可折叠 <details>——典型情况(DeepSeek / o1)
+                                                // 推理几百字到几千字,默认收起避免撑爆聊天区;
+                                                // 用户主动点开看思考细节。
+                                                let reasoning_html = render_markdown(&m.reasoning);
+                                                let has_reasoning = !m.reasoning.is_empty();
                                                 // tool_calls 折叠：args + result_preview 渲染进 <details>。
                                                 // 流式占位（role=TOOL_CALL / TOOL_RESULT_*）没有 tool_calls
                                                 // 字段，Vec::new() 自然零次循环——只渲染 content 文字。
@@ -626,6 +685,15 @@ pub fn AgentPanel() -> impl IntoView {
                                                 let tool_calls = m.tool_calls.clone();
                                                 view! {
                                                     <div class=role_cls>
+                                                        <Show
+                                                            when=move || has_reasoning
+                                                            fallback=move || view! { <span></span> }
+                                                        >
+                                                            <details class="agent-think">
+                                                                <summary>"思考过程"</summary>
+                                                                <div class="agent-think-body" inner_html=reasoning_html.clone()></div>
+                                                            </details>
+                                                        </Show>
                                                         <div class="agent-msg-content" inner_html=content_html></div>
                                                         <For
                                                             each=move || tool_calls.clone()
@@ -668,33 +736,95 @@ pub fn AgentPanel() -> impl IntoView {
                                         />
                                     </div>
                                     <div class="agent-input">
-                                        <div class="agent-attachments-input">
-                                            <label>"附件 IDs（空格分隔）："</label>
-                                            <input
-                                                type="text"
-                                                class="inp"
-                                                prop:value=attachment_ids_input
-                                                placeholder="如：01HXXX 01HYYY"
-                                            />
-                                            <Show
-                                                when=move || attachment_warn.get().is_some()
-                                                fallback=move || view! { <span></span> }
-                                            >
-                                                <p class="agent-att-warn">
-                                                    {move || attachment_warn.get().unwrap_or_default()}
-                                                </p>
-                                            </Show>
+                                        <div class="agent-attachments-bar">
+                                            <label class="agent-attach-pick">
+                                                {move || if attachments_uploading.get() {
+                                                    "上传中…"
+                                                } else {
+                                                    "📎 附件"
+                                                }}
+                                                <input
+                                                    type="file"
+                                                    multiple=true
+                                                    style="display:none"
+                                                    prop:disabled=move || attachments_uploading.get() || streaming.get()
+                                                    on:change=on_pick_files
+                                                />
+                                            </label>
+                                            // 已选附件 chip 列表：点击 × 把对应附件从 attachments 里剔掉。
+                                            // 这里没用 <For> key 索引 id——ids 是 ULID，重复概率极低，
+                                            // 且渲染顺序就是添加顺序，键稳定。
+                                            {move || {
+                                                let chips = attachments.get();
+                                                if chips.is_empty() {
+                                                    view! { <span></span> }.into_any()
+                                                } else {
+                                                    view! {
+                                                        <div class="agent-attach-chips">
+                                                            {chips.into_iter().map(|chip| {
+                                                                let remove_id = chip.id.clone();
+                                                                let name = chip.filename.clone();
+                                                                let size = human_size(chip.size);
+                                                                view! {
+                                                                    <span class="agent-attach-chip">
+                                                                        <span class="agent-attach-chip-name">{name}</span>
+                                                                        <span class="agent-attach-chip-size">{size}</span>
+                                                                        <button
+                                                                            class="agent-attach-chip-x"
+                                                                            title="移除"
+                                                                            on:click={
+                                                                                let rid = remove_id.clone();
+                                                                                move |_| {
+                                                                                    attachments.update(|l| {
+                                                                                        l.retain(|c| c.id != rid)
+                                                                                    });
+                                                                                }
+                                                                            }
+                                                                        >"×"</button>
+                                                                    </span>
+                                                                }
+                                                            }).collect::<Vec<_>>()}
+                                                        </div>
+                                                    }.into_any()
+                                                }
+                                            }}
                                         </div>
+                                        <Show
+                                            when=move || attachments_error.get().is_some()
+                                            fallback=move || view! { <span></span> }
+                                        >
+                                            <p class="agent-att-warn">
+                                                {move || attachments_error.get().unwrap_or_default()}
+                                            </p>
+                                        </Show>
                                         <textarea
                                             class="agent-textarea"
                                             bind:value=input
                                             prop:disabled=move || streaming.get()
-                                            placeholder="向 Buckaroo 提问…"
+                                            placeholder="向 Buckaroo 提问…回车发送，Ctrl/⌘+回车换行"
+                                            on:keydown=move |ev: leptos::ev::KeyboardEvent| {
+                                                // 回车直接发送：与主流 IM / 聊天面板一致;
+                                                // Shift+Enter / Ctrl+Enter / ⌘+Enter 留给浏览器默认
+                                                // （插入换行）——避免与全局快捷键（Ctrl+Enter 也
+                                                // 经常被绑成「换行」以外的语义）冲突。
+                                                // 输入期间按下时 textarea 仍是焦点元素,
+                                                // prevent_default 阻止浏览器在按 Enter 时
+                                                // 默认的「插入换行」生效——on_send 触发的发送流程
+                                                // 负责清空 textarea。
+                                                if ev.key() == "Enter"
+                                                    && !ev.shift_key()
+                                                    && !ev.ctrl_key()
+                                                    && !ev.meta_key()
+                                                {
+                                                    ev.prevent_default();
+                                                    on_send();
+                                                }
+                                            }
                                         />
                                         <button
                                             class="agent-send"
-                                            on:click=on_send
-                                            prop:disabled=move || streaming.get()
+                                            on:click=move |_| on_send()
+                                            prop:disabled=move || streaming.get() || attachments_uploading.get()
                                         >
                                             {move || if streaming.get() { "..." } else { "发送" }}
                                         </button>
@@ -1233,6 +1363,35 @@ fn handle_event(parsed: &Value, messages: &RwSignal<Vec<AgentMessage>>, effects:
                     session_id: String::new(),
                     role: "ASSISTANT".to_string(),
                     content,
+                    reasoning: String::new(),
+                    tool_calls: Vec::new(),
+                    tool_call_id: None,
+                    created_at: String::new(),
+                });
+            });
+        }
+        "reasoning" => {
+            // 推理链与 Delta 各自累积——同一回合里 assistant 消息只有一条,
+            // reasoning / content 分别写在两个字段上,渲染时分两块。
+            let content = parsed
+                .get("content")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            messages.update(|m| {
+                if let Some(last) = m.last_mut() {
+                    if last.role == "ASSISTANT" {
+                        last.reasoning.push_str(&content);
+                        return;
+                    }
+                }
+                // 罕见：推理先于第一条 Delta 到达——先建一个空 content 的占位。
+                m.push(AgentMessage {
+                    id: ulid_compat_id(),
+                    session_id: String::new(),
+                    role: "ASSISTANT".to_string(),
+                    content: String::new(),
+                    reasoning: content,
                     tool_calls: Vec::new(),
                     tool_call_id: None,
                     created_at: String::new(),
@@ -1251,6 +1410,7 @@ fn handle_event(parsed: &Value, messages: &RwSignal<Vec<AgentMessage>>, effects:
                     session_id: String::new(),
                     role: "TOOL_CALL".to_string(),
                     content: format!("[tool_call] {name}"),
+                    reasoning: String::new(),
                     tool_calls: Vec::new(),
                     tool_call_id: None,
                     created_at: String::new(),
@@ -1279,6 +1439,7 @@ fn handle_event(parsed: &Value, messages: &RwSignal<Vec<AgentMessage>>, effects:
                     session_id: String::new(),
                     role: role.to_string(),
                     content: format!("{prefix} {preview}"),
+                    reasoning: String::new(),
                     tool_calls: Vec::new(),
                     tool_call_id: None,
                     created_at: String::new(),
@@ -1318,4 +1479,125 @@ fn handle_event(parsed: &Value, messages: &RwSignal<Vec<AgentMessage>>, effects:
         }
         _ => {}
     }
+}
+
+/// 与服务端 `derive_session_title` 同算法：trim 后取首段非空 line，截断
+/// 30 字 + `…`。本地 on_send 成功后乐观更新 sessions 缓存，避免再发一次
+/// list_agent_sessions。改任一处算法时记得同步另一边。
+fn local_session_title(content: &str) -> Option<String> {
+    const MAX_CHARS: usize = 30;
+    let first_line = content
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())?;
+    let truncated: String = first_line.chars().take(MAX_CHARS).collect();
+    if first_line.chars().count() > MAX_CHARS {
+        Some(format!("{truncated}…"))
+    } else {
+        Some(truncated)
+    }
+}
+
+/// 把 `change` 事件里选中的文件逐个上传到 agent 会话附件后端。
+/// 与 `attachment_list::spawn_upload` 同思路：通过 `Reflect::get("files")` 拿
+/// FileList（仓库没开 web-sys 的 `FileList` 特性）；逐个并发上传；上传
+/// 完成后把 `(id, filename, size)` 推进 `attachments` 信号；任一文件失败
+/// 把错误挂到 `attachments_error`，不影响已成功的。
+#[cfg(target_arch = "wasm32")]
+fn spawn_attachment_uploads(
+    ev: leptos::ev::Event,
+    session_id: Option<String>,
+    attachments: RwSignal<Vec<AgentAttachmentChip>>,
+    uploading: RwSignal<bool>,
+    error: RwSignal<Option<String>>,
+) {
+    use js_sys::Reflect;
+    use wasm_bindgen::{JsCast, JsValue};
+
+    let Some(sid) = session_id else {
+        error.set(Some("请先选择会话再添加附件".to_string()));
+        return;
+    };
+    let Some(input) = ev
+        .target()
+        .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+    else {
+        return;
+    };
+    let Ok(files_js) =
+        Reflect::get(AsRef::<JsValue>::as_ref(&input), &JsValue::from_str("files"))
+    else {
+        return;
+    };
+    let Some(files) = files_js.dyn_ref::<js_sys::Array>() else {
+        return;
+    };
+    if files.length() == 0 {
+        return;
+    }
+    // 选完即清 input.value，下次同文件也能再触发 change。
+    input.set_value("");
+    uploading.set(true);
+    error.set(None);
+
+    // 每个文件独立 spawn 一个 task，并发上传；哪个先完成先 update 信号。
+    // 不引入 futures::join_all：仓库只挂 futures-util，开新 crate 不值得。
+    // 用 `AtomicI64` 计数——最后一个任务负责把 uploading 翻回 false。
+    // 计数本身包 Arc：spawn_local(async move) 会 move 捕获，循环里同一变量要 clone 进每个任务。
+    use std::sync::atomic::{AtomicI64, Ordering};
+    use std::sync::Arc;
+    let remaining = Arc::new(AtomicI64::new(files.length() as i64));
+
+    for i in 0..files.length() {
+        let Ok(file_js) = Reflect::get(&files, &JsValue::from_f64(i as f64)) else {
+            continue;
+        };
+        let Ok(file) = file_js.dyn_into::<web_sys::File>() else {
+            // 这一个文件读不出来也计数减一，避免 uploading 卡死。
+            if remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
+                uploading.set(false);
+            }
+            continue;
+        };
+        let sid_for_task = sid.clone();
+        let remaining_for_task = remaining.clone();
+        let size = file.size() as i64;
+        let filename = file.name();
+        spawn_local(async move {
+            let result = upload_attachment("", &file, false, Some(&sid_for_task)).await;
+            match result {
+                Ok(a) => {
+                    attachments.update(|l| {
+                        l.push(AgentAttachmentChip {
+                            id: a.id,
+                            filename,
+                            size,
+                        });
+                    });
+                }
+                Err(e) => {
+                    let new_msg = format!("{filename} 上传失败: {e}");
+                    error.update(|prev| {
+                        *prev = match prev.take() {
+                            Some(prev_msg) => Some(format!("{prev_msg}; {new_msg}")),
+                            None => Some(new_msg),
+                        };
+                    });
+                }
+            }
+            if remaining_for_task.fetch_sub(1, Ordering::SeqCst) == 1 {
+                uploading.set(false);
+            }
+        });
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn spawn_attachment_uploads(
+    _ev: leptos::ev::Event,
+    _session_id: Option<String>,
+    _attachments: RwSignal<Vec<AgentAttachmentChip>>,
+    _uploading: RwSignal<bool>,
+    _error: RwSignal<Option<String>>,
+) {
 }

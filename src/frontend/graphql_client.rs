@@ -255,6 +255,10 @@ pub struct Relation {
     pub created_by: String,
     pub created_at: String,
     pub updated_at: String,
+    /// 关联对端条目标题（不是当前 entry 的那一头）。后端查不到时为空串，
+    /// 列表里退化成显示 entry code。
+    #[serde(default)]
+    pub other_title: String,
     /// 服务端按查询条目是 from / to 给出方向："outgoing" / "incoming" / null。
     #[serde(default)]
     pub direction: Option<String>,
@@ -350,7 +354,7 @@ const COMMENT_FIELDS: &str = "id entryCode body createdAt updatedAt createdBy up
      createdByAccount { id name email } updatedByAccount { id name email }";
 
 const RELATION_FIELDS: &str =
-    "id workspaceId fromCode toCode direction createdBy createdAt updatedAt \
+    "id workspaceId fromCode toCode direction otherTitle createdBy createdAt updatedAt \
      semantic { kind display value }";
 
 const LABEL_SCHEMA_FIELDS: &str =
@@ -935,18 +939,26 @@ pub async fn delete_attachment(id: &str) -> Result<bool, String> {
 
 /// 走 GraphQL multipart 上传。字段名 `operations` / `map` / `map` 里映射的键三者必须自洽
 /// （async-graphql 按 graphql-multipart-request-spec 解析）。
+/// `agent_session_id` 不为空时：跳过 entry 校验，附件落到 agent 会话下的
+/// `_agent` sentinel（见 `attachment::save_for_session`）。
 /// 只在 wasm 下存在：`web_sys::File` 在非 wasm 目标不可用，调用点也是 wasm-only。
 #[cfg(target_arch = "wasm32")]
 pub async fn upload_attachment(
     entry_code: &str,
     file: &web_sys::File,
     inline: bool,
+    agent_session_id: Option<&str>,
 ) -> Result<Attachment, String> {
     let operations = json!({
         "query": format!(
-            "mutation($c: String!, $f: Upload!, $in: Boolean!) {{ uploadAttachment(entryCode: $c, file: $f, inline: $in) {{ {ATTACHMENT_FIELDS} }} }}"
+            "mutation($c: String!, $f: Upload!, $in: Boolean!, $sid: ID) {{ uploadAttachment(entryCode: $c, file: $f, inline: $in, agentSessionId: $sid) {{ {ATTACHMENT_FIELDS} }} }}"
         ),
-        "variables": { "c": entry_code, "f": null, "in": inline },
+        "variables": {
+            "c": entry_code,
+            "f": null,
+            "in": inline,
+            "sid": agent_session_id,
+        },
     });
     let map = json!({ "0": ["variables.f"] });
 
@@ -1366,6 +1378,33 @@ pub async fn query_entries(
         .map_err(|e| e.to_string())
 }
 
+/// 全文检索（用作 Entry 选择器等）。keyword 由 Tantivy ngram 解析，
+/// 跨 title / content / labels / code / comments 五字段。返回结构与
+/// `query_entries` 同形态（`EntryPage`），picker 只用 `items`，剩下的字段
+/// 留着方便未来在别处复用。
+pub async fn search_entries(
+    workspace_id: &str,
+    keyword: &str,
+    limit: i64,
+) -> Result<EntryPage, String> {
+    let q = format!(
+        "query($id: ID!, $k: String!, $l: Int) {{ \
+         searchEntries(workspaceId: $id, keyword: $k, limit: $l) {{ \
+         items {{ {ENTRY_FIELDS} }} total page pageSize labelNames }} }}"
+    );
+    let data = graphql(
+        &q,
+        json!({
+            "id": workspace_id,
+            "k": keyword,
+            "l": limit,
+        }),
+    )
+    .await?;
+    serde_json::from_value(data.get("searchEntries").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
 /// 时间轴模式一次取回的条目上限。时间轴要按全量画（铺在轴上才有意义），
 /// 而服务端 `pageSize` 上限是 100，故逐页翻。500 条覆盖了绝大多数视图；
 /// 真超了也只是少画几条，界面上有提示。
@@ -1654,6 +1693,11 @@ pub struct AgentMessage {
     /// 服务端 `AgentRole` enum，async-graphql 默认以字符串（`"USER"` 等）序列化。
     pub role: String,
     pub content: String,
+    /// 仅前端累积的推理链：流式期间由 Reasoning SSE 事件累加,
+    /// 服务端不持久化——重开会话不重现推理链,但保证同一会话内
+    /// 「思考 + 回答」样式区分。
+    #[serde(default)]
+    pub reasoning: String,
     pub tool_calls: Vec<AgentToolCallRecord>,
     /// 仅 role=Tool 时有值。`#[serde(default)]` 同上，防止字段缺失炸反序列化。
     #[serde(default)]
