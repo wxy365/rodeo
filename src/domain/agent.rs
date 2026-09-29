@@ -42,6 +42,10 @@ pub enum SideEffect {
     Entry { action: EntryAction, id: String },
     Labeling { code: String },
     Comment { code: String },
+    /// queryEntries 命中：前端把表达式写回 query_ast + expr_text
+    ViewQueryReplace { query_expr: String },
+    /// searchEntries 命中：前端把关键词写回 ad_hoc_text
+    ViewSearchReplace { keyword: String },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
