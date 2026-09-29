@@ -10,6 +10,7 @@ async fn main() {
     use leptos::prelude::*;
     use leptos_axum::{generate_route_list, LeptosRoutes};
     use tower_http::limit::RequestBodyLimitLayer;
+    use tower_http::services::ServeFile;
 
     use rodeo::api::{agent_stream_handler, build_schema, download_attachment, graphql_handler, AppState};
     use rodeo::app::*;
@@ -76,6 +77,13 @@ async fn main() {
         .route("/api/health", get(|| async { "ok" }))
         .route("/api/attachments/{id}", get(download_attachment))
         .route("/api/agent/turns/{turn_id}/stream", get(agent_stream_handler))
+        // favicon 必须放在 leptos_routes 之前：`/favicon.svg` 是单段路径，
+        // 会被 Leptos 的 ParamSegment("slug") workspace 路由抢走渲染成工作空间
+        // 页面，SPA fallback 的 ServeDir 因此永远收不到它。
+        .route_service(
+            "/favicon.svg",
+            ServeFile::new(format!("{}/favicon.svg", leptos_options.site_root)),
+        )
         .leptos_routes(&leptos_options, routes, {
             let leptos_options = leptos_options.clone();
             move || shell(leptos_options.clone())
