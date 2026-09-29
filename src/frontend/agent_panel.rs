@@ -1213,7 +1213,10 @@ fn handle_event(parsed: &Value, messages: &RwSignal<Vec<AgentMessage>>, effects:
                     .or_else(|| se.get("id").and_then(|v| v.as_str()))
                     .unwrap_or("")
                     .to_string(),
-                payload: None,
+                payload: se
+                    .get("payload")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
             };
             effects.tick.update(|n| *n += 1);
             effects.last.set(Some(hint));
