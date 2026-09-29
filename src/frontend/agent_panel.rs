@@ -121,6 +121,13 @@ pub fn AgentPanel() -> impl IntoView {
     let messages: RwSignal<Vec<AgentMessage>> = RwSignal::new(Vec::new());
     let input: RwSignal<String> = RwSignal::new(String::new());
     let streaming: RwSignal<bool> = RwSignal::new(false);
+    // 用户是否「贴底」：scroll 事件每次把它更新成 (scroll_height - top - client) < 32px。
+    // 初始 true —— 切会话 / 首次打开面板时直接滚到底，而不是停在历史某处。
+    // 自动滚动 effect 只在 at_bottom 时推进 scroll_top，避免用户主动上滑读历史时跳回去。
+    // 仅 wasm32 持有：native / SSR 编译时既无 DOM 也无滚动事件，整组都关掉。
+    #[cfg(target_arch = "wasm32")]
+    let messages_at_bottom: RwSignal<bool> = RwSignal::new(true);
+    let messages_ref: NodeRef<leptos::html::Div> = NodeRef::new();
 
     // 浮动面板的位置 / 尺寸 —— 拖拽与缩放的工作对象。
     // 默认值是「右下角浮窗」占位坐标，第一次打开时由下面的 Effect 用
@@ -162,6 +169,22 @@ pub fn AgentPanel() -> impl IntoView {
             panel_height.set(PANEL_DEF_H);
             panel_left.set((vw - PANEL_DEF_W - 10.0).max(10.0));
             panel_top.set((vh - PANEL_DEF_H - 10.0).max(60.0));
+        }
+    });
+
+    // 消息列表自动滚动：贴底时把 scroll_top 推到 scroll_height。
+    // 仅 wasm32 走——native / SSR 路径没有 web_sys，且 messages_ref.get() 在 SSR 时为 None。
+    // 不引入 request_animation_frame：leptos 的 Effect::new 默认就在 render 之后跑，
+    // 此时 `.agent-messages` 子节点已经更新，scroll_height 反映最新 DOM。
+    #[cfg(target_arch = "wasm32")]
+    Effect::new(move |_| {
+        // 跟踪 messages 变化；streaming 不直接进这里（delta 也走 messages.update）。
+        let _ = messages.get();
+        if !messages_at_bottom.get_untracked() {
+            return;
+        }
+        if let Some(el) = messages_ref.get() {
+            el.set_scroll_top(el.scroll_height());
         }
     });
 
@@ -490,14 +513,78 @@ pub fn AgentPanel() -> impl IntoView {
                                     />
                                 </aside>
                                 <main class="agent-chat">
-                                    <div class="agent-messages">
+                                    <div
+                                        class="agent-messages"
+                                        node_ref=messages_ref
+                                        on:scroll=move |_ev: leptos::ev::Event| {
+                                            // 滚动事件触发时更新「贴底」判据。wasm32 only——
+                                            // SSR / native 不会发出 Event，参数与函数体整段关掉。
+                                            #[cfg(target_arch = "wasm32")]
+                                            {
+                                                use wasm_bindgen::JsCast;
+                                                let target = _ev.target().unwrap();
+                                                let el: &web_sys::Element = target.unchecked_ref();
+                                                let top = el.scroll_top() as f64;
+                                                let height = el.scroll_height() as f64;
+                                                let client = el.client_height() as f64;
+                                                messages_at_bottom.set(height - top - client < 32.0);
+                                            }
+                                        }
+                                    >
                                         <For
                                             each=move || messages.get()
                                             key=|m| m.id.clone()
                                             children=|m: AgentMessage| {
-                                                let html = render_markdown(&m.content);
+                                                let content_html = render_markdown(&m.content);
+                                                let role_cls = format!(
+                                                    "agent-msg agent-msg-{}",
+                                                    m.role.to_lowercase()
+                                                );
+                                                // tool_calls 折叠：args + result_preview 渲染进 <details>。
+                                                // 流式占位（role=TOOL_CALL / TOOL_RESULT_*）没有 tool_calls
+                                                // 字段，Vec::new() 自然零次循环——只渲染 content 文字。
+                                                // server 重拉后的真消息里 `args` 是 serde_json::Value，
+                                                // to_string 出来已经是合法 JSON 文本（数组 / 对象均行）。
+                                                let tool_calls = m.tool_calls.clone();
                                                 view! {
-                                                    <div class=format!("agent-msg agent-msg-{}", m.role.to_lowercase()) inner_html=html></div>
+                                                    <div class=role_cls>
+                                                        <div class="agent-msg-content" inner_html=content_html></div>
+                                                        <For
+                                                            each=move || tool_calls.clone()
+                                                            key=|tc| tc.id.clone()
+                                                            children=|tc: crate::frontend::graphql_client::AgentToolCallRecord| {
+                                                                let name = tc.name.clone();
+                                                                let args_text = serde_json::to_string_pretty(&tc.args)
+                                                                    .unwrap_or_else(|_| tc.args.to_string());
+                                                                // 截断 result_preview：折叠态只露前 N 字符，避免详情块一展开就被
+                                                                // 几百行 JSON 撑爆整个聊天区；点开 <details> 看全文。
+                                                                let preview_truncated: String = tc.result_preview.chars().take(280).collect();
+                                                                let preview_full = tc.result_preview.clone();
+                                                                let ok = tc.ok;
+                                                                let detail_id = format!("agent-tool-{}", tc.id);
+                                                                view! {
+                                                                    <details class="agent-tool" id=detail_id>
+                                                                        <summary>
+                                                                            <span class="agent-tool-icon" aria-hidden="true">{if ok { "✓" } else { "✗" }}</span>
+                                                                            <span class="agent-tool-name">{name}</span>
+                                                                        </summary>
+                                                                        <div class="agent-tool-body">
+                                                                            <div class="agent-tool-label">"args"</div>
+                                                                            <pre class="agent-tool-args">{args_text}</pre>
+                                                                            <div class="agent-tool-label">"result"</div>
+                                                                            <pre class=if ok { "agent-tool-result" } else { "agent-tool-result err" }>{preview_truncated}</pre>
+                                                                            // 截断后才把全文写进一个隐藏的 <pre>，由 CSS 在 details[open]
+                                                                            // 时把它显示出来——避免 SSE 期间重复渲染几百行字符串。
+                                                                            <details class="agent-tool-result-full">
+                                                                                <summary>"查看完整 result"</summary>
+                                                                                <pre>{preview_full}</pre>
+                                                                            </details>
+                                                                        </div>
+                                                                    </details>
+                                                                }
+                                                            }
+                                                        />
+                                                    </div>
                                                 }
                                             }
                                         />
@@ -517,6 +604,19 @@ pub fn AgentPanel() -> impl IntoView {
                                             {move || if streaming.get() { "..." } else { "发送" }}
                                         </button>
                                     </div>
+                                    // 流式期间在输入区下方挂一条 status：spinner + 文案
+                                    // 「Buckaroo 正在思考…」——让用户看见 agent 确实在跑，
+                                    // 不是按了发送毫无反馈。SSE 结束（成功或失败）后 streaming
+                                    // 翻 false，块整体卸载。
+                                    <Show
+                                        when=move || streaming.get()
+                                        fallback=move || view! { <span></span> }
+                                    >
+                                        <div class="agent-streaming" aria-live="polite">
+                                            <span class="agent-spinner" aria-hidden="true"></span>
+                                            <span class="agent-streaming-text">"Buckaroo 正在思考…"</span>
+                                        </div>
+                                    </Show>
                                 </main>
                             </div>
                         }.into_any(),

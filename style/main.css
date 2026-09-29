@@ -2323,6 +2323,111 @@ input[type="color"].sw:disabled {
     color: var(--blue);
     text-decoration: underline;
 }
+/* 工具调用折叠块：默认收起，summary 上展示「✓/✗ + 工具名」，展开看 args / result。
+ * 用 <details> 原生折叠而不是自实现 click handler：键盘可达、SSR 输出即正确、
+ * 嵌套 <details> 让「查看完整 result」二级折叠不需要新组件。
+ * summary 的 marker 默认有三角，自定义图标后用 list-style:none 把三角吃掉。 */
+.agent-tool {
+    margin: 6px 0;
+    border: 1px solid var(--line);
+    border-radius: var(--r-s);
+    background: var(--bg2);
+    font-size: 12px;
+    line-height: 1.4;
+}
+.agent-tool > summary {
+    list-style: none;
+    cursor: pointer;
+    padding: 6px 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    user-select: none;
+}
+.agent-tool > summary::-webkit-details-marker {
+    display: none;
+}
+.agent-tool-icon {
+    font-weight: 700;
+    color: var(--blue);
+    width: 14px;
+    text-align: center;
+}
+/* tool_call 失败的 ✗ 用主题警告色；用 attribute 而不是 class 方便 summary 里直读。 */
+.agent-tool:has(.agent-tool-result.err) > summary .agent-tool-icon {
+    color: var(--warn, #c33);
+}
+.agent-tool-name {
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+    color: var(--ink);
+}
+.agent-tool-body {
+    padding: 0 10px 8px;
+    border-top: 1px solid var(--line);
+}
+.agent-tool-label {
+    margin-top: 6px;
+    font-size: 11px;
+    color: var(--ink2);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.agent-tool-args,
+.agent-tool-result {
+    background: var(--bg3);
+    padding: 6px 8px;
+    border-radius: 3px;
+    overflow-x: auto;
+    margin: 4px 0 6px;
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+    font-size: 11px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+/* 失败的 result 走主题警告色（淡红底）。 */
+.agent-tool-result.err {
+    background: color-mix(in srgb, var(--warn, #c33) 12%, var(--bg3));
+    color: color-mix(in srgb, var(--warn, #c33) 70%, var(--ink));
+}
+/* 二级折叠：「查看完整 result」默认收起，省得长 JSON 一次性把面板撑高。 */
+.agent-tool-result-full {
+    margin: 4px 0 0;
+}
+.agent-tool-result-full > summary {
+    list-style: none;
+    cursor: pointer;
+    font-size: 11px;
+    color: var(--blue);
+    padding: 2px 0;
+    user-select: none;
+}
+.agent-tool-result-full > summary::-webkit-details-marker {
+    display: none;
+}
+/* 流式状态条：输入区下方的小行，spinner + 文案。靠 <Show> 挂卸，开 SSR 时不会渲染。 */
+.agent-streaming {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    font-size: 12px;
+    color: var(--ink2);
+    border-top: 1px solid var(--line);
+}
+.agent-spinner {
+    width: 12px;
+    height: 12px;
+    border: 2px solid var(--line);
+    border-top-color: var(--blue);
+    border-radius: 50%;
+    animation: agent-spin 0.7s linear infinite;
+    display: inline-block;
+    flex-shrink: 0;
+}
+@keyframes agent-spin {
+    to { transform: rotate(360deg); }
+}
 
 /* 视图导航栏行上的右键菜单：「配置视图」「删除视图」。 */
 .vmenu {
