@@ -120,8 +120,6 @@ pub async fn run_turn(
     auth: AuthContext,
     session_id: Ulid,
     turn_id: Ulid,
-    _agent_ctx: crate::domain::AgentMessageContext,
-    _attachment_ids: Vec<Ulid>,
 ) {
     let max_turns = services.config.agent.max_tool_calls_per_turn;
     let max_history = services.config.agent.max_history_turns;
@@ -158,6 +156,12 @@ pub async fn run_turn(
 
     let tools = services.agent_tools.clone();
     let workspace_id = session.workspace_id;
+    // 任务上下文（视图 / 选中条目）：resolver 在 start_or_replace 前已经把
+    // markdown 文本塞进 SessionTurns。Hoist 到循环外——`take_context_md` 是
+    // HashMap::remove 的一次性消费，循环里再取第二轮起就 None，LLM 看见的
+    // 消息形状从第二轮起就丢了 context，跟系统提示里「上下文在第二条 user
+    // 消息」承诺不一致。每轮都复用同一份 markdown——text 不变，复用零成本。
+    let ctx_md = services.agent_turns.take_context_md(turn_id);
 
     for _ in 0..max_turns {
         let history = match services
@@ -184,15 +188,13 @@ pub async fn run_turn(
             .map(|w| w.name)
             .unwrap_or_else(|| workspace_id.to_string());
         let ws_id_str = workspace_id.to_string();
-        // 任务上下文（视图 / 选中条目）：resolver 在 start_or_replace 前已经把
-        // markdown 文本塞进 SessionTurns；这里一次性取出，作为「user」角色
-        // 插在 system 与历史之间——LLM 知道这是真实状态但不要回复。
-        let ctx_md = services.agent_turns.take_context_md(turn_id);
+        // 任务上下文 markdown 在循环外一次性取，跨轮复用——见 for-loop 上方的
+        // ctx_md 取法说明。
         let mut messages = vec![agent_system_prompt(&ws_title, &ws_id_str)];
-        if let Some(md) = ctx_md {
+        if let Some(md) = ctx_md.as_deref() {
             messages.push(crate::service::ai::ChatMessage {
                 role: "user".to_string(),
-                content: md,
+                content: md.to_string(),
                 tool_call_id: None,
                 tool_calls: None,
             });

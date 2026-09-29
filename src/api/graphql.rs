@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
 use crate::domain::{
-    Account, AccountStatus, ActionTarget, AgentMessage, AgentMessageContext, Attachment, AuditLog,
+    Account, AccountStatus, ActionTarget, AgentMessage, Attachment, AuditLog,
     AutomationRule,
     Comment, Entry,
     Invite,
@@ -2848,13 +2848,9 @@ impl Mutation {
             .take(10)
             .collect();
 
-        // 组装 AgentContext，传给 runner；附件文本在 Task 13 里拼到 content。
-        let agent_ctx = AgentMessageContext {
-            view_id: ctx_view.map(|u| u.to_string()),
-            selected_entry_codes: selected_codes.clone(),
-        };
-
         // 取 session 拿到 workspace_id（auth 校验已通过）；顺便构建 ctx_md。
+        // 注：runner 不再需要 `AgentMessageContext` 结构（仅 ctx_view /
+        // selected_codes 用于构造 ctx_md），所以这里不重新组装结构体。
         let session = gql
             .services
             .agent
@@ -2873,12 +2869,26 @@ impl Mutation {
         gql.services.agent_turns.put_context_md(turn_id, ctx_md);
 
         // 提取附件文本（拼在 user content 前面）。text/* 与 application/json
-        // 走正文解码，5 MiB / 200 KiB 双重截断；其他 mime 给占位标记——二进制
-        // 直接喂给 LLM 既无意义又费 token。
+        // 走正文解码，5 MiB 单文件 / 4 MiB 总配额双重截断；其他 mime 给占位标记
+        // ——二进制直接喂给 LLM 既无意义又费 token。总配额保护 sendAgentMessage
+        // 不被 10×5MiB 的同步读取锁住（解 5x10=50MiB 全读到内存再 UTF-8 解码
+        // 完才返回 turn），单个慢 S3 GET 会拖到用户可见。
         let mut attachment_md = String::new();
+        let mut total_bytes: usize = 0;
+        const TOTAL_BYTE_BUDGET: usize = 4 * 1024 * 1024;
         for aid in &attachment_ids {
+            if total_bytes >= TOTAL_BYTE_BUDGET {
+                attachment_md.push_str(&format!(
+                    "[附件 {} 跳过：已达总配额 {} MiB]\n\n",
+                    aid, TOTAL_BYTE_BUDGET / 1024 / 1024
+                ));
+                continue;
+            }
             match extract_attachment_block(&gql.services, workspace_id, *aid).await {
-                Ok(block) => attachment_md.push_str(&block),
+                Ok(block) => {
+                    total_bytes += block.len();
+                    attachment_md.push_str(&block);
+                }
                 Err(e) => attachment_md.push_str(&format!(
                     "[附件 {} 读取失败: {}]\n\n",
                     aid, e
@@ -2907,15 +2917,7 @@ impl Mutation {
             sid,
             turn_id,
             async move {
-                run_turn(
-                    services_for_runner,
-                    auth_for_runner,
-                    sid,
-                    turn_id,
-                    agent_ctx,
-                    attachment_ids,
-                )
-                .await;
+                run_turn(services_for_runner, auth_for_runner, sid, turn_id).await;
             },
         )?;
 
