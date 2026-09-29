@@ -170,6 +170,36 @@ pub fn classify_side_effect(
                 .map(|s| s.to_string())?;
             Some(SideEffect::Comment { code })
         }
+        "queryEntries" => {
+            let total = data
+                .get("queryEntries")
+                .and_then(|v| v.get("total"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            if total == 0 {
+                return None;
+            }
+            let expr = args
+                .get("queryExpr")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())?;
+            Some(SideEffect::ViewQueryReplace { query_expr: expr })
+        }
+        "searchEntries" => {
+            let total = data
+                .get("searchEntries")
+                .and_then(|v| v.get("total"))
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            if total == 0 {
+                return None;
+            }
+            let kw = args
+                .get("keyword")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())?;
+            Some(SideEffect::ViewSearchReplace { keyword: kw })
+        }
         _ => None,
     }
 }
