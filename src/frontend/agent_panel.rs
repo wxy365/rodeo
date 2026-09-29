@@ -43,7 +43,7 @@ use crate::frontend::agent_side_effects::SideEffectHint;
 use crate::frontend::graphql_client::get_token;
 use crate::frontend::graphql_client::{
     create_agent_session, delete_agent_session, list_agent_messages, list_agent_sessions,
-    send_agent_message, AgentMessage, AgentSession,
+    send_agent_message, AgentMessage, AgentMessageContext, AgentSession,
 };
 
 /// 是否展开 Agent 面板。`true` 时显示、点击关闭按钮或外部 trigger 置 `false`。
@@ -63,10 +63,38 @@ pub fn use_agent_panel_open() -> AgentPanelOpen {
     use_context::<AgentPanelOpen>().expect("AgentPanelOpen 未提供")
 }
 
+/// 工作区侧把当前视图 id + 表格勾选条目 code 列表传进 AgentPanel；
+/// 由 `WorkspaceMain` 在 setup 段 `provide_context`，AgentPanel 拿不到就 None
+/// ——非工作区路由（登录 / 账号页）不发上下文给后端，避免污染 agent 总结。
+#[derive(Clone, Copy)]
+pub struct AgentContext {
+    pub view_id: RwSignal<Option<String>>,
+    pub selected_entry_codes: RwSignal<Vec<String>>,
+}
+
+pub fn provide_agent_context(
+    view_id: RwSignal<Option<String>>,
+    selected_entry_codes: RwSignal<Vec<String>>,
+) -> AgentContext {
+    let ctx = AgentContext {
+        view_id,
+        selected_entry_codes,
+    };
+    provide_context(ctx);
+    ctx
+}
+
+/// 非 panic 兜底——AgentPanel 挂在 App 层，工作区没挂载时拿不到，
+/// 视为「无上下文」即可。
+pub fn use_agent_context() -> Option<AgentContext> {
+    use_context::<AgentContext>()
+}
+
 #[component]
 pub fn AgentPanel() -> impl IntoView {
     let open = use_agent_panel_open();
     let effects = use_context::<AgentSideEffects>().expect("AgentSideEffects 未提供");
+    let agent_ctx = use_agent_context();
 
     let location = use_location();
     // workspace_by_slug 拿到的 workspace_id：所有会话/消息请求都依赖它。
@@ -365,6 +393,11 @@ pub fn AgentPanel() -> impl IntoView {
             .filter(|s| !s.is_empty())
             .collect();
         attachment_ids_input.set(String::new());
+        // 视图 + 选中条目上下文：闭包快照。拿不到 ctx 的路由（登录 / 账号页）发 None。
+        let context_md = agent_ctx.map(|c| AgentMessageContext {
+            view_id: c.view_id.get_untracked(),
+            selected_entry_codes: c.selected_entry_codes.get_untracked(),
+        });
         streaming.set(true);
         let sid_for_refresh = sid.clone();
         let attachment_ids_for_send = attachment_ids.clone();
@@ -372,7 +405,7 @@ pub fn AgentPanel() -> impl IntoView {
             match send_agent_message(
                 &sid,
                 &content,
-                None,
+                context_md,
                 if attachment_ids_for_send.is_empty() { None } else { Some(attachment_ids_for_send) },
             ).await {
                 Ok(turn) => {

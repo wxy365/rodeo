@@ -35,6 +35,8 @@ use crate::frontend::use_auth;
 use crate::frontend::view_filter::with_text;
 use serde_json::Value;
 
+use crate::frontend::agent_panel::provide_agent_context;
+
 /// 内置元数据关键字 → 中文展示名。恒定并入 `/` 候选，与视图里有哪些标签无关
 /// （`src/domain/query.rs` 的 `RESERVED_FIELDS` 是同一份名单）。
 const BUILTIN_FIELDS: [(&str, &str); 7] = [
@@ -279,6 +281,12 @@ pub fn WorkspaceMain() -> impl IntoView {
     // 已经不在当前列表里却仍被写入。
     let batch_selected = RwSignal::new(Vec::<String>::new());
     let show_batch = RwSignal::new(false);
+    // ---- Agent 上下文桥 ----
+    // 复用 batch_selected 作为「选中条目列表」上下文（同一份 RwSignal，避免两个独立
+    // 信号漂移）。视图 id 的 authoritative 信号是下面 `let active_id = ...` 那行，
+    // 这里只声明提供位置，闭包在 active_id 出现后绑定——见 `provide_agent_context`
+    // 调用站点。
+    let agent_ctx_binder = batch_selected;
     let batch_labels = RwSignal::new(Vec::<DraftLabel>::new());
     let batch_error = RwSignal::new(None::<String>);
     let batch_busy = RwSignal::new(false);
@@ -412,6 +420,9 @@ pub fn WorkspaceMain() -> impl IntoView {
     let active_view = RwSignal::new(None::<View>);
     // 侧栏高亮只需 id；与 active_view 一并更新，保持二者同步。
     let active_id = RwSignal::new(None::<String>);
+    // 提供 AgentPanel 取用的上下文：当前视图 id + 表格勾选 codes。
+    // 复用 batch_selected（与批量按钮同读同一份信号，行为一致）。
+    let _agent_ctx = provide_agent_context(active_id, agent_ctx_binder);
     // 视图导航栏右键菜单：(client_x, client_y, view_id)。None 表示关闭。
     let vmenu: RwSignal<Option<(i32, i32, String)>> = RwSignal::new(None);
     // ---- 时间轴视图 ----
