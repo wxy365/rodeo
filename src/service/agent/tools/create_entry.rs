@@ -1,4 +1,5 @@
-//! `create_entry` tool 骨架。Args/Outputs/Error 形态在后续 task 中按 spec §5 填充。
+//! 在当前工作空间里新建一个条目（仅设置标题，正文留空）。
+//! 与 GraphQL `Mutation::create_entry` 对齐：写库、自动生成 code、推进 updated_at。
 
 use std::fmt;
 use std::sync::Arc;
@@ -17,12 +18,15 @@ pub struct CreateEntryTool {
 
 #[derive(Deserialize)]
 pub struct CreateEntryArgs {
-    // TODO: 由后续 task 按 spec §5 字段填充
+    pub workspace_id: String,
+    pub title: String,
 }
 
 #[derive(Serialize)]
 pub struct CreateEntryOutput {
-    // TODO: 由后续 task 按 spec §5 字段填充
+    pub code: String,
+    pub title: String,
+    pub updated_at: String,
 }
 
 pub enum CreateEntryError {
@@ -55,20 +59,48 @@ impl Tool for CreateEntryTool {
     type Output = CreateEntryOutput;
 
     fn description(&self) -> String {
-        // TODO: 由后续 task 按 spec §5 替换为正式 description
-        format!("create_entry (TODO: 待后续 task 填实)")
+        "在当前工作空间里新建一个条目。仅写标题，正文留空；返回新条目的 code（16位 base62 全局唯一编码，后续所有接口都以此为标识）、标题与更新时间。".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
-        // TODO: 由后续 task 按 spec §5 替换为正式 JSON Schema
-        serde_json::json!({"type": "object", "properties": {}, "required": []})
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "workspace_id": {
+                    "type": "string",
+                    "description": "工作空间 ULID；必须与 agent session 的 workspace 一致"
+                },
+                "title": {
+                    "type": "string",
+                    "description": "条目标题。trim 后不能为空；最长受 entry.title 字段长度约束。"
+                }
+            },
+            "required": ["workspace_id", "title"]
+        })
     }
 
     async fn call(
         &self,
         _ctx: &mut ToolContext,
-        _args: Self::Args,
+        args: Self::Args,
     ) -> Result<Self::Output, Self::Error> {
-        unimplemented!("create_entry 将在后续 task 填实")
+        let ws = Ulid::from_string(&args.workspace_id)
+            .map_err(|e| CreateEntryError::BadArgs(format!("workspace_id: {e}")))?;
+        if ws != self.workspace_id {
+            return Err(CreateEntryError::BadArgs(format!(
+                "workspace_id 不匹配 session（session={}, args={}）",
+                self.workspace_id, ws
+            )));
+        }
+        let entry = self
+            .services
+            .entry
+            .create(self.auth.account_id, ws, &args.title)
+            .map_err(|e| CreateEntryError::Server(e.to_string()))?;
+        Ok(CreateEntryOutput {
+            code: entry.code,
+            title: entry.title,
+            updated_at: entry.updated_at.to_rfc3339(),
+        })
     }
 }
