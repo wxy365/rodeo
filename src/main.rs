@@ -18,6 +18,18 @@ async fn main() {
     use rodeo::service::Services;
     use rodeo::storage::DocStore;
 
+    // 必须先于任何 TLS 工作：rig-core 0.42 的 `rustls` 特性会拉进 reqwest 0.13 的
+    // rustls 路径，而 reqwest 0.13 的 `rustls` 特性 = `["__rustls-aws-lc-rs", ...]`,
+    // 即强制打开 rustls 的 `aws_lc_rs` 特性。仓库顶层 rustls 又显式开了 `ring`——
+    // 两个 provider 同时编译进二进制。rustls 的
+    // `CryptoProvider::from_crate_features()` 在这种情况下返回 None，
+    // `get_default_or_install_from_crate_features()` 紧接着 panic（消息原话
+    // "make sure exactly one of the 'aws-lc-rs' and 'ring' features is enabled"）。
+    // axum-server 的 `ServerConfig::builder()`、hyper-rustls 都先看
+    // `CryptoProvider::get_default()`：装好 ring 之后它们就拿到 ring，不会再走
+    // `from_crate_features`，panic 路径被切断。aws-lc-rs 仍编译进二进制但永不被使用。
+    install_ring_crypto_provider();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -119,3 +131,12 @@ async fn main() {
 
 #[cfg(not(feature = "ssr"))]
 pub fn main() {}
+
+/// 在 tokio runtime 起来之前同步跑一次：把 ring 钉死为全局默认 crypto provider。
+/// 见 `main()` 顶部注释；`install_default` 重复占用已经注册过的 provider 时会
+/// 返回 `Err`，我们忽略——这里只要「第一个调用者赢」就够了。
+#[cfg(feature = "ssr")]
+fn install_ring_crypto_provider() {
+    use rustls::crypto::CryptoProvider;
+    let _ = CryptoProvider::install_default(rustls::crypto::ring::default_provider());
+}
