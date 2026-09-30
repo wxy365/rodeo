@@ -2456,6 +2456,71 @@ input[type="color"].sw:disabled {
 .agent-tool-result-full > summary::-webkit-details-marker {
     display: none;
 }
+/* 流式 ToolCall 卡片：tool_call / tool_result 事件按 FIFO 配对后并排显示，
+ * Task 24。前 4 张并排 grid，第 5+ 张收进 <details> 折叠——避免长 turn 把
+ * 聊天面板撑到无限长。卡片内容只是工具名 + 状态图标，详细 args / result
+ * 留在收消息后的 m.tool_calls 路径（已有 .agent-tool 完整折叠）。 */
+.tool-call-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 8px;
+    margin: 4px 0;
+}
+.tool-call-card {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-s);
+    background: var(--bg2);
+    font-size: 12px;
+    line-height: 1.4;
+    min-width: 0;
+}
+.tool-call-card .tool-call-icon {
+    flex-shrink: 0;
+    width: 14px;
+    text-align: center;
+    font-weight: 700;
+    color: var(--blue);
+}
+/* Running 状态：图标用 spinner 颜色（蓝），不抖动——单一字符 "…" 已足够
+ * 表达「进行中」；抖动用 .agent-spinner 太重。 */
+.tool-call-running .tool-call-icon {
+    color: var(--blue);
+}
+/* Err 状态：走主题警告色，呼应 .agent-tool-result.err。 */
+.tool-call-err {
+    border-color: color-mix(in srgb, var(--warn, #c33) 35%, var(--line));
+    background: color-mix(in srgb, var(--warn, #c33) 8%, var(--bg2));
+}
+.tool-call-err .tool-call-icon {
+    color: var(--warn, #c33);
+}
+.tool-call-name {
+    font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+    color: var(--ink);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+/* 5+ 张的折叠块：summary 用 ink2 灰度,与「查看完整 result」二级折叠
+ * 视觉等级一致——别让它喧宾夺主。 */
+.tool-call-overflow {
+    margin: 4px 0 0;
+}
+.tool-call-overflow > summary {
+    list-style: none;
+    cursor: pointer;
+    font-size: 11px;
+    color: var(--blue);
+    padding: 2px 0;
+    user-select: none;
+}
+.tool-call-overflow > summary::-webkit-details-marker {
+    display: none;
+}
 /* 流式状态条：输入区下方的小行，spinner + 文案。靠 <Show> 挂卸，开 SSR 时不会渲染。 */
 .agent-streaming {
     display: flex;

@@ -57,6 +57,33 @@ struct AgentAttachmentChip {
     size: i64,
 }
 
+/// 流式 ToolCall 卡片渲染态。ToolCall 事件到达 → push 新元素（status=Running）；
+/// ToolResult 事件到达 → 按 name（FIFO 配对）找到对应元素更新 status + preview。
+/// 渲染时取前 4 个并排 grid，5+ 折叠进 <details>——见 Task 24 brief。
+///
+/// `args` 当前仅在流式期间写入 ToolCallDisplay,卡片视图只渲染 name + status;
+/// 留字段是为了和后端 AgentEvent::ToolCall 对齐,后续若加「卡片可点击展开
+/// args 预览」就直接读,不需要再补回字段。
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+struct ToolCallDisplay {
+    id: String,
+    name: String,
+    args: serde_json::Value,
+    status: ToolCallStatus,
+    preview: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ToolCallStatus {
+    /// 工具调用刚发出，还未拿到结果。
+    Running,
+    /// 工具调用成功完成（含 ToolErrorKind::Ok）。
+    Ok,
+    /// 工具调用失败（bad_args / rejected / server_error 任一）。
+    Err,
+}
+
 /// 是否展开 Agent 面板。`true` 时显示、点击关闭按钮或外部 trigger 置 `false`。
 ///
 /// 上下文「开关」信号——与 AuthState / WorkspaceNewMenuSlot 同款，由调用方
@@ -166,6 +193,12 @@ pub fn AgentPanel() -> impl IntoView {
     // 上传失败的提示（resolver 拒绝 / 网络错 / 超 50 MiB）。单条短提示，替换不堆叠。
     let attachments_error: RwSignal<Option<String>> = RwSignal::new(None);
     let streaming: RwSignal<bool> = RwSignal::new(false);
+    // 流式 ToolCall 卡片列表：tool_call 事件 push 进来、tool_result 事件
+    // 按 name（FIFO）配对更新。list_agent_messages 重新拉到真消息后清空——
+    // 真消息的 m.tool_calls 字段自带完整配对，不需要乐观态再渲染。
+    // 本信号非 cfg(target_arch = "wasm32") 也持有：SSR / native 编译下 handle_event
+    // 不跑，列表始终为空，零开销。
+    let streaming_tool_calls: RwSignal<Vec<ToolCallDisplay>> = RwSignal::new(Vec::new());
     // 用户是否「贴底」：scroll 事件每次把它更新成 (scroll_height - top - client) < 32px。
     // 初始 true —— 切会话 / 首次打开面板时直接滚到底，而不是停在历史某处。
     // 自动滚动 effect 只在 at_bottom 时推进 scroll_top，避免用户主动上滑读历史时跳回去。
@@ -368,6 +401,9 @@ pub fn AgentPanel() -> impl IntoView {
         // 上 send 也会被服务端当作新会话的附件,但语义跟用户预期不一致。
         attachments.set(Vec::new());
         attachments_error.set(None);
+        // 切会话时同步清空流式 ToolCall 卡片——避免上一会话未结束的乐观态
+        // 跑到新会话里,触发「这是哪个工具的卡片」的混淆。
+        streaming_tool_calls.set(Vec::new());
     });
 
     // 参数显式标 `()`：原来 `move |_|` 是让 on:click 推断成 MouseEvent handler,
@@ -444,7 +480,7 @@ pub fn AgentPanel() -> impl IntoView {
                     // 替换为真 ULID 消息——SSE 路径出错也不需要就地清，因为
                     // 服务端已经把 user_msg 落库（graphql.rs send_agent_message
                     // 先 append 再 run_turn），list_agent_messages 能拿回真消息。
-                    open_stream(&turn.id, messages, streaming, effects).await;
+                    open_stream(&turn.id, messages, streaming, streaming_tool_calls, effects).await;
                 }
                 Err(e) => {
                     streaming.set(false);
@@ -734,6 +770,95 @@ pub fn AgentPanel() -> impl IntoView {
                                                 }
                                             }
                                         />
+                                        // 流式 ToolCall 卡片：tool_call / tool_result
+                                        // 事件累积进 streaming_tool_calls；这里取前 4
+                                        // 个并排 grid，5+ 进 <details> 折叠。
+                                        // 仅在 streaming_tool_calls 非空时挂卸——空状态
+                                        // 不占布局。list_agent_messages 拉到真消息后
+                                        // 上面的 <For> 会渲染 m.tool_calls（结构化、
+                                        // 完整配对），本块在 done 事件被清空。
+                                        {move || {
+                                            let tcs = streaming_tool_calls.get();
+                                            if tcs.is_empty() {
+                                                return view! { <span></span> }.into_any();
+                                            }
+                                            let total = tcs.len();
+                                            let hidden = total.saturating_sub(4);
+                                            view! {
+                                                <div class="agent-msg agent-msg-tool_call">
+                                                    <div class="tool-call-grid">
+                                                        <For
+                                                            each=move || {
+                                                                streaming_tool_calls
+                                                                    .get()
+                                                                    .into_iter()
+                                                                    .take(4)
+                                                                    .collect::<Vec<_>>()
+                                                            }
+                                                            key=|tc| tc.id.clone()
+                                                            children=|tc: ToolCallDisplay| {
+                                                                let icon = match tc.status {
+                                                                    ToolCallStatus::Running => "…",
+                                                                    ToolCallStatus::Ok => "✓",
+                                                                    ToolCallStatus::Err => "✗",
+                                                                };
+                                                                let cls = match tc.status {
+                                                                    ToolCallStatus::Running => "tool-call-card tool-call-running",
+                                                                    ToolCallStatus::Ok => "tool-call-card tool-call-ok",
+                                                                    ToolCallStatus::Err => "tool-call-card tool-call-err",
+                                                                };
+                                                                let name = tc.name.clone();
+                                                                view! {
+                                                                    <div class=cls>
+                                                                        <span class="tool-call-icon" aria-hidden="true">{icon}</span>
+                                                                        <span class="tool-call-name">{name}</span>
+                                                                    </div>
+                                                                }
+                                                            }
+                                                        />
+                                                    </div>
+                                                    <Show
+                                                        when=move || { streaming_tool_calls.get().len() >= 5 }
+                                                        fallback=move || view! { <span></span> }
+                                                    >
+                                                        <details class="tool-call-overflow">
+                                                            <summary>{format!("{hidden} more")}</summary>
+                                                            <div class="tool-call-grid">
+                                                                <For
+                                                                    each=move || {
+                                                                        streaming_tool_calls
+                                                                            .get()
+                                                                            .into_iter()
+                                                                            .skip(4)
+                                                                            .collect::<Vec<_>>()
+                                                                    }
+                                                                    key=|tc| tc.id.clone()
+                                                                    children=|tc: ToolCallDisplay| {
+                                                                        let icon = match tc.status {
+                                                                            ToolCallStatus::Running => "…",
+                                                                            ToolCallStatus::Ok => "✓",
+                                                                            ToolCallStatus::Err => "✗",
+                                                                        };
+                                                                        let cls = match tc.status {
+                                                                            ToolCallStatus::Running => "tool-call-card tool-call-running",
+                                                                            ToolCallStatus::Ok => "tool-call-card tool-call-ok",
+                                                                            ToolCallStatus::Err => "tool-call-card tool-call-err",
+                                                                        };
+                                                                        let name = tc.name.clone();
+                                                                        view! {
+                                                                            <div class=cls>
+                                                                                <span class="tool-call-icon" aria-hidden="true">{icon}</span>
+                                                                                <span class="tool-call-name">{name}</span>
+                                                                            </div>
+                                                                        }
+                                                                    }
+                                                                />
+                                                            </div>
+                                                        </details>
+                                                    </Show>
+                                                </div>
+                                            }.into_any()
+                                        }}
                                     </div>
                                     <div class="agent-input">
                                         <div class="agent-attachments-bar">
@@ -1218,6 +1343,7 @@ async fn open_stream(
     turn_id: &str,
     messages: RwSignal<Vec<AgentMessage>>,
     streaming: RwSignal<bool>,
+    streaming_tool_calls: RwSignal<Vec<ToolCallDisplay>>,
     effects: AgentSideEffects,
 ) {
     use gloo_net::http::Request;
@@ -1304,7 +1430,7 @@ async fn open_stream(
                     Ok(v) => v,
                     Err(_) => continue,
                 };
-                handle_event(&parsed, &messages, &effects);
+                handle_event(&parsed, &messages, &streaming_tool_calls, &effects);
             }
         }
     }
@@ -1336,13 +1462,19 @@ async fn open_stream(
     _turn_id: &str,
     _messages: RwSignal<Vec<AgentMessage>>,
     streaming: RwSignal<bool>,
+    _streaming_tool_calls: RwSignal<Vec<ToolCallDisplay>>,
     _effects: AgentSideEffects,
 ) {
     streaming.set(false);
 }
 
 #[cfg(target_arch = "wasm32")]
-fn handle_event(parsed: &Value, messages: &RwSignal<Vec<AgentMessage>>, effects: &AgentSideEffects) {
+fn handle_event(
+    parsed: &Value,
+    messages: &RwSignal<Vec<AgentMessage>>,
+    streaming_tool_calls: &RwSignal<Vec<ToolCallDisplay>>,
+    effects: &AgentSideEffects,
+) {
     let typ = parsed.get("type").and_then(|v| v.as_str()).unwrap_or("");
     match typ {
         "delta" => {
@@ -1399,25 +1531,39 @@ fn handle_event(parsed: &Value, messages: &RwSignal<Vec<AgentMessage>>, effects:
             });
         }
         "tool_call" => {
+            // 流式 ToolCall 卡片：push 新元素，状态 Running。AgentEvent::ToolCall
+            // 没有 id 字段（rig 0.42 不带 tool_call_id），只能按 name 配对——
+            // 用 ulid_compat_id 给前端一个稳定 key。
             let name = parsed
                 .get("name")
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            messages.update(|m| {
-                m.push(AgentMessage {
+            let args = parsed
+                .get("args")
+                .cloned()
+                .unwrap_or(Value::Null);
+            streaming_tool_calls.update(|tcs| {
+                tcs.push(ToolCallDisplay {
                     id: ulid_compat_id(),
-                    session_id: String::new(),
-                    role: "TOOL_CALL".to_string(),
-                    content: format!("[tool_call] {name}"),
-                    reasoning: String::new(),
-                    tool_calls: Vec::new(),
-                    tool_call_id: None,
-                    created_at: String::new(),
+                    name,
+                    args,
+                    status: ToolCallStatus::Running,
+                    preview: String::new(),
                 });
             });
         }
         "tool_result" => {
+            // 配对：找到同名 + 仍在 Running 的最早元素（FIFO），写入 status + preview。
+            // 同名并发 tool_call 的极端情况下 FIFO 会把后到的结果挂到前一个调用
+            // 上——但 rig 当前是顺序执行工具,实际碰不到,留 FIFO 是因为它对常见
+            // 场景（多个不同名字的工具串行）天然正确。
+            // 找不到匹配时（孤儿 ToolResult）也 push 一张卡，保证用户至少看见结果。
+            let name = parsed
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             let preview = parsed
                 .get("preview")
                 .and_then(|v| v.as_str())
@@ -1427,24 +1573,32 @@ fn handle_event(parsed: &Value, messages: &RwSignal<Vec<AgentMessage>>, effects:
                 .get("kind")
                 .and_then(|v| v.as_str())
                 .unwrap_or("ok");
-            let (prefix, role) = match kind {
-                "bad_args" => ("[参数错]", "TOOL_RESULT_BAD_ARGS"),
-                "rejected" => ("[拒绝]", "TOOL_RESULT_REJECTED"),
-                "server_error" => ("[服务端错误]", "TOOL_RESULT_SERVER_ERROR"),
-                _ => ("[ok]", "TOOL_RESULT"),
-            };
-            messages.update(|m| {
-                m.push(AgentMessage {
-                    id: ulid_compat_id(),
-                    session_id: String::new(),
-                    role: role.to_string(),
-                    content: format!("{prefix} {preview}"),
-                    reasoning: String::new(),
-                    tool_calls: Vec::new(),
-                    tool_call_id: None,
-                    created_at: String::new(),
+            let ok = matches!(kind, "ok");
+            let target_status = if ok { ToolCallStatus::Ok } else { ToolCallStatus::Err };
+            // 先用 snapshot 找一遍索引,再用 update 改——RwSignal::update 签名
+            // 返回 ()，把匹配结果塞在 update 闭包里反而拿不出来。
+            let idx = streaming_tool_calls
+                .get_untracked()
+                .iter()
+                .position(|tc| tc.name == name && tc.status == ToolCallStatus::Running);
+            if let Some(i) = idx {
+                streaming_tool_calls.update(|tcs| {
+                    if let Some(tc) = tcs.get_mut(i) {
+                        tc.status = target_status;
+                        tc.preview = preview.clone();
+                    }
                 });
-            });
+            } else {
+                streaming_tool_calls.update(|tcs| {
+                    tcs.push(ToolCallDisplay {
+                        id: ulid_compat_id(),
+                        name,
+                        args: Value::Null,
+                        status: target_status,
+                        preview,
+                    });
+                });
+            }
         }
         "side_effect" => {
             let se = parsed.get("side_effect").cloned().unwrap_or(Value::Null);
@@ -1475,7 +1629,10 @@ fn handle_event(parsed: &Value, messages: &RwSignal<Vec<AgentMessage>>, effects:
         }
         "done" | "error" => {
             // 流结束由调用方在 open_stream 末尾统一把 streaming 置回 false，
-            // 这里不再重复处理。
+            // 这里不再重复处理。但要把 streaming_tool_calls 清掉：list_agent_messages
+            // 重新拉到真消息后,真消息自带 m.tool_calls（结构化、完整配对）,
+            // 卡片渲染会从那个字段来——这里的乐观态不撤掉会和真消息重复。
+            streaming_tool_calls.set(Vec::new());
         }
         _ => {}
     }
