@@ -109,6 +109,9 @@ fn builtin_admin_email(gql: &GraphqlContext) -> String {
 #[derive(SimpleObject, Clone)]
 pub struct GqlServerConfig {
     allow_registration: bool,
+    /// 对外可访问的 origin（不含尾斜杠）。由 `[server] public_url` 解析得到；
+    /// 未配置或非法时为 `null`，前端据此回退到 `window.location.origin`。
+    public_url: Option<String>,
 }
 
 #[derive(SimpleObject, Clone)]
@@ -1112,11 +1115,12 @@ impl Query {
             .collect())
     }
 
-    /// 免登录：登录页据此渲染注册入口。
+    /// 免登录：登录页据此渲染注册入口；管理员建号面板据此拼接邀请文案里的登录地址。
     async fn server_config(&self, ctx: &Context<'_>) -> GqlResult<GqlServerConfig> {
         let gql = ctx.data::<GraphqlContext>()?;
         Ok(GqlServerConfig {
             allow_registration: gql.services.config.auth.builtin.allow_registration,
+            public_url: gql.services.config.public_url(),
         })
     }
 
@@ -1948,7 +1952,7 @@ impl Mutation {
 
         let client = gql
             .services
-            .ai_client
+            .rig_client
             .as_ref()
             .ok_or(AppError::AiNotConfigured)?;
         let prompt = gql

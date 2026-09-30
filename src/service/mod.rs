@@ -25,7 +25,7 @@ use crate::service::agent::tools::{build_query_tools, build_tools};
 use crate::storage::{BlobStore, DocStore};
 
 pub use agent::AgentService;
-pub use ai::{AiClient, AiService};
+pub use ai::{AiService, RigClient};
 pub use attachment::AttachmentService;
 pub use audit::AuditService;
 pub use auth::{AuthContext, AuthService};
@@ -54,7 +54,7 @@ pub struct Services {
     pub search: Arc<SearchIndex>,
     pub view: ViewService,
     pub ai: AiService,
-    pub ai_client: Option<AiClient>,
+    pub rig_client: Option<RigClient>,
     pub rule: RuleService,
     pub relation: RelationService,
     pub agent: AgentService,
@@ -67,7 +67,7 @@ impl Services {
     pub fn new(store: Arc<DocStore>, config: Arc<Config>) -> Result<Self, AppError> {
         let search = Arc::new(SearchIndex::open(&format!("{}/search", config.data_dir()))?);
         // 未配置就保持 None，启动阶段不做任何网络操作。
-        let ai_client = AiClient::from_config(&config.ai)?;
+        let rig_client = RigClient::from_config(&config.ai)?;
         let workspace = WorkspaceService::new(store.clone());
         let message = MessageService::new(store.clone(), workspace.clone());
         // RelationService 在 EntryService 之前：条目软删除要把关联清理拼进自己的
@@ -105,7 +105,7 @@ impl Services {
             audit: AuditService::new(store.clone()),
             view: ViewService::new(store.clone()),
             ai: AiService::new(store.clone()),
-            ai_client,
+            rig_client,
             rule: RuleService::new(store.clone()),
             relation,
             agent: AgentService::new(store.clone(), config.clone()),

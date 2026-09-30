@@ -79,9 +79,10 @@ tokio-util = { version = "0.7", features = ["rt"], optional = true }
 # LLM agent 重写（rig-agent-rewrite plan）。先锁版本、仅 ssr、可选；
 # 后续任务会真正接入 rig_core::message / rig::providers::openai / rig::tool::Tool。
 # default-features = false：保留最小特性集（关掉 rig-core 自带的 reqwest/derive/rustls），
-# 等真正接入 OpenAI provider 时再按需打开 `rustls` 特性并确保 ring 唯一 provider。
+# 再开 `rustls` 走 reqwest 0.13 的 rustls 路径；ring 仍由项目顶层 rustls/features=["ring"] 钉死为
+# 唯一 provider（axum-server 的 ServerConfig::builder() 在双 provider 下会 panic）。
 # `=X.Y.Z` 严格锁版本：rig 还没到 1.0，bincode 编码不稳定。
-rig-core = { version = "=0.42.0", default-features = false, optional = true }
+rig-core = { version = "=0.42.0", default-features = false, features = ["rustls"], optional = true }
 rig = { version = "=0.42.0", default-features = false, optional = true }
 
 # 仅 WASM 目标

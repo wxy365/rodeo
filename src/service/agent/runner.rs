@@ -13,7 +13,7 @@ use crate::domain::agent_events::{AgentEvent, ToolErrorKind};
 use crate::domain::{AgentMessage, Role, ToolCall};
 use crate::error::AppError;
 use crate::service::agent::exec::execute_tool;
-use crate::service::ai::{agent_system_prompt, to_chat_messages};
+use crate::service::agent::system_prompt::{agent_system_prompt, to_chat_messages};
 use crate::service::{AuthContext, Services};
 
 /// 单 turn 的运行句柄：task + 它的 broadcast sender。
@@ -130,7 +130,7 @@ pub async fn run_turn(
         return;
     };
 
-    let client = match services.ai_client.as_ref() {
+    let client = match services.rig_client.as_ref() {
         Some(c) => c,
         None => {
             let _ = tx.send(AgentEvent::Error {
