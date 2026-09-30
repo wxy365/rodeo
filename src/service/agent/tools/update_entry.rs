@@ -1,4 +1,5 @@
-//! `update_entry` tool 骨架。Args/Outputs/Error 形态在后续 task 中按 spec §5 填充。
+//! 编辑条目（标题与正文）。`expected_updated_at` 走乐观并发：与库里最新
+//! `updated_at` 不一致时返回 ConflictDetected，避免覆盖并发修改。
 
 use std::fmt;
 use std::sync::Arc;
@@ -17,12 +18,20 @@ pub struct UpdateEntryTool {
 
 #[derive(Deserialize)]
 pub struct UpdateEntryArgs {
-    // TODO: 由后续 task 按 spec §5 字段填充
+    pub workspace_id: String,
+    pub code: String,
+    /// 当前条目的 `updated_at`（RFC3339）。与库中最新值不一致会被服务端拒绝。
+    pub expected_updated_at: String,
+    pub title: String,
+    #[serde(default)]
+    pub detail: String,
 }
 
 #[derive(Serialize)]
 pub struct UpdateEntryOutput {
-    // TODO: 由后续 task 按 spec §5 字段填充
+    pub code: String,
+    pub title: String,
+    pub updated_at: String,
 }
 
 pub enum UpdateEntryError {
@@ -55,20 +64,76 @@ impl Tool for UpdateEntryTool {
     type Output = UpdateEntryOutput;
 
     fn description(&self) -> String {
-        // TODO: 由后续 task 按 spec §5 替换为正式 description
-        format!("update_entry (TODO: 待后续 task 填实)")
+        "编辑条目（标题与正文）。expected_updated_at 用于乐观并发：与库中最新 updated_at 不一致时服务端拒绝（避免覆盖他人改动）。如果之前没有 read，建议先 query_entries 拿最新 updated_at。".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
-        // TODO: 由后续 task 按 spec §5 替换为正式 JSON Schema
-        serde_json::json!({"type": "object", "properties": {}, "required": []})
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "workspace_id": {
+                    "type": "string",
+                    "description": "工作空间 ULID；必须与 agent session 的 workspace 一致"
+                },
+                "code": {
+                    "type": "string",
+                    "description": "条目 16 位 base62 编码"
+                },
+                "expected_updated_at": {
+                    "type": "string",
+                    "description": "调用方拿到的上一版 updated_at（RFC3339）；乐观并发校验"
+                },
+                "title": {
+                    "type": "string",
+                    "description": "新标题；trim 后不能为空"
+                },
+                "detail": {
+                    "type": "string",
+                    "description": "新正文（Quill Delta JSON 字符串）。省略/空串 = 正文留空。"
+                }
+            },
+            "required": ["workspace_id", "code", "expected_updated_at", "title"]
+        })
     }
 
     async fn call(
         &self,
         _ctx: &mut ToolContext,
-        _args: Self::Args,
+        args: Self::Args,
     ) -> Result<Self::Output, Self::Error> {
-        unimplemented!("update_entry 将在后续 task 填实")
+        let ws = Ulid::from_string(&args.workspace_id)
+            .map_err(|e| UpdateEntryError::BadArgs(format!("workspace_id: {e}")))?;
+        if ws != self.workspace_id {
+            return Err(UpdateEntryError::BadArgs(format!(
+                "workspace_id 不匹配 session（session={}, args={}）",
+                self.workspace_id, ws
+            )));
+        }
+        // 服务端 update 调用取 author_name 做审计 / 通知；本工具不暴露该字段，
+        // 用空串占位——通知路径仍走 @姓名 解析，不依赖这个名字。
+        let name = self
+            .services
+            .auth
+            .find_by_id(self.auth.account_id)
+            .map_err(|e| UpdateEntryError::Server(e.to_string()))?
+            .map(|a| a.name)
+            .unwrap_or_default();
+        let updated = self
+            .services
+            .entry
+            .update(
+                self.auth.account_id,
+                &name,
+                &args.code,
+                &args.expected_updated_at,
+                &args.title,
+                &args.detail,
+            )
+            .map_err(|e| UpdateEntryError::Server(e.to_string()))?;
+        Ok(UpdateEntryOutput {
+            code: updated.code,
+            title: updated.title,
+            updated_at: updated.updated_at.to_rfc3339(),
+        })
     }
 }
