@@ -5,15 +5,18 @@ use std::sync::Arc;
 
 use futures_util::StreamExt;
 use parking_lot::Mutex;
+use rig::agent::{AgentBuilder, MultiTurnStreamItem};
+use rig::completion::message::AssistantContent;
+use rig::message::{ToolCall as RigToolCall, ToolResultContent};
+use rig::streaming::{StreamedAssistantContent, StreamedUserContent};
 use tokio::sync::broadcast;
 use ulid::Ulid;
 
-use crate::domain::agent::AssistantContent;
+use crate::domain::agent::{AgentMessage, AgentMessageRecord};
 use crate::domain::agent_events::{AgentEvent, ToolErrorKind};
-use crate::domain::AgentMessage;
 use crate::error::AppError;
-use crate::service::agent::exec::execute_tool;
-use crate::service::agent::system_prompt::{agent_system_prompt, to_chat_messages};
+use crate::service::agent::system_prompt::agent_system_prompt;
+use crate::service::agent::tools::AgentTools;
 use crate::service::{AuthContext, Services};
 
 /// 单 turn 的运行句柄：task + 它的 broadcast sender。
@@ -113,26 +116,19 @@ impl SessionTurns {
     }
 }
 
-/// Agent 单 turn 编排循环：
-/// 1) 取历史 → 组 messages（含 system + 全部历史 user/assistant/tool）
-/// 2) 流式调 LLM，边收边 emit `Delta`，把 tool_call delta 累加成完整 `ToolCalls`
-/// 3) 落库 assistant 消息
-/// 4) 若无 tool_call，emit `Done` 退出；否则按顺序执行每个工具，落库 tool 消息，
-///    回到 1) 进入下一轮（最多 `max_tool_calls_per_turn` 轮）
+/// Agent 单 turn 编排：交 Rig `AgentRunner::stream()` 驱动，把每条
+/// `MultiTurnStreamItem` 适配到现有 `AgentEvent` 走 SSE。
 ///
-/// 错误与 cancel 通过 `AgentEvent::Error` 透传给订阅者，最后统一 `finish(turn_id)`
-/// 收尾——订阅端（Task 7 的 SSE handler）据此断开连接。
+/// 错误路径统一「推 `AgentEvent::Error` → `finish(turn_id)` → `return`」——
+/// 不会有 `break` 落尾部跑到「超过最大 turn 数」的老 bug。
 pub async fn run_turn(services: Arc<Services>, auth: AuthContext, session_id: Ulid, turn_id: Ulid) {
-    let max_turns = services.config.agent.max_tool_calls_per_turn;
-    let max_history = services.config.agent.max_history_turns;
-
     // runner 必须拿到 turn 的 broadcast sender 才能 emit event。
     // 拿不到（已被 finish 或 turn 被替换）就直接退出。
     let Some(tx) = services.agent_turns.turn_sender(turn_id) else {
         return;
     };
 
-    let client = match services.rig_client.as_ref() {
+    let rig = match services.rig_client.as_ref() {
         Some(c) => c,
         None => {
             let _ = tx.send(AgentEvent::Error {
@@ -156,250 +152,189 @@ pub async fn run_turn(services: Arc<Services>, auth: AuthContext, session_id: Ul
         }
     };
 
-    let tools = services.agent_tools.clone();
-    let workspace_id = session.workspace_id;
-    // 任务上下文（视图 / 选中条目）：resolver 在 start_or_replace 前已经把
-    // markdown 文本塞进 SessionTurns。Hoist 到循环外——`take_context_md` 是
-    // HashMap::remove 的一次性消费，循环里再取第二轮起就 None，LLM 看见的
-    // 消息形状从第二轮起就丢了 context，跟系统提示里「上下文在第二条 user
-    // 消息」承诺不一致。每轮都复用同一份 markdown——text 不变，复用零成本。
     let ctx_md = services.agent_turns.take_context_md(turn_id);
-
-    for _ in 0..max_turns {
-        let history = match services.agent.list_messages(session_id, max_history) {
-            Ok(h) => h,
-            Err(e) => {
-                let _ = tx.send(AgentEvent::Error {
-                    turn_id,
-                    message: e.to_string(),
-                });
-                break;
-            }
-        };
-        // 占位已填：runner 进 turn 前查一次 Workspace 拿真实 name 给 system prompt；
-        // 查不到（罕见：session 引用的 ws 已删）就退回到用 id 串。Workspaces 表的读
-        // 是同步 DocStore get，不阻塞 current_thread 运行时。
-        let ws_title = services
-            .workspace
-            .get_by_id(workspace_id)
-            .ok()
-            .flatten()
-            .map(|w| w.name)
-            .unwrap_or_else(|| workspace_id.to_string());
-        let ws_id_str = workspace_id.to_string();
-        // 任务上下文 markdown 在循环外一次性取，跨轮复用——见 for-loop 上方的
-        // ctx_md 取法说明。
-        let mut messages = vec![agent_system_prompt(&ws_title, &ws_id_str)];
-        if let Some(md) = ctx_md.as_deref() {
-            messages.push(crate::service::ai::ChatMessage {
-                role: "user".to_string(),
-                content: md.to_string(),
-                tool_call_id: None,
-                tool_calls: None,
-            });
-        }
-        messages.extend(to_chat_messages(&history));
-
-        let stream = match client.complete_stream(&messages, &tools).await {
-            Ok(s) => s,
-            Err(e) => {
-                let _ = tx.send(AgentEvent::Error {
-                    turn_id,
-                    message: e.to_string(),
-                });
-                break;
-            }
-        };
-        futures_util::pin_mut!(stream);
-
-        let mut content = String::new();
-        let mut pending_args: HashMap<u32, (String, String, String)> = HashMap::new();
-        let mut final_tool_calls: Vec<crate::service::ai::ToolCallRequest> = Vec::new();
-        let mut stream_error: Option<String> = None;
-
-        loop {
-            match stream.next().await {
-                Some(Ok(crate::service::ai::StreamChunk::Delta(s))) => {
-                    content.push_str(&s);
-                    let _ = tx.send(AgentEvent::Delta {
-                        turn_id,
-                        content: s,
-                    });
-                }
-                Some(Ok(crate::service::ai::StreamChunk::Reasoning(s))) => {
-                    // 推理链不入库——只在流式期间推给前端做样式区分。
-                    let _ = tx.send(AgentEvent::Reasoning {
-                        turn_id,
-                        content: s,
-                    });
-                }
-                Some(Ok(crate::service::ai::StreamChunk::ToolCallsPartial(partials))) => {
-                    for (idx, id, name, args) in partials {
-                        let entry = pending_args
-                            .entry(idx)
-                            .or_insert_with(|| (String::new(), String::new(), String::new()));
-                        if !id.is_empty() {
-                            entry.0 = id;
-                        }
-                        if !name.is_empty() {
-                            entry.1 = name;
-                        }
-                        entry.2.push_str(&args);
-                    }
-                }
-                Some(Ok(crate::service::ai::StreamChunk::ToolCalls(tcs))) => {
-                    final_tool_calls = tcs;
-                }
-                Some(Ok(crate::service::ai::StreamChunk::Done)) | None => break,
-                Some(Err(e)) => {
-                    stream_error = Some(e.to_string());
-                    break;
-                }
-            }
-        }
-
-        if let Some(msg) = stream_error {
+    let history = match services
+        .agent
+        .list_messages(session_id, services.config.agent.max_history_turns)
+    {
+        Ok(h) => h,
+        Err(e) => {
             let _ = tx.send(AgentEvent::Error {
                 turn_id,
-                message: msg,
+                message: e.to_string(),
             });
             services.agent_turns.finish(turn_id);
             return;
         }
+    };
 
-        // 落库 assistant 消息。Rig `Message::Assistant` 的 `content` 是
-        // `Vec<AssistantContent>`：先放文本，再追加 tool_call。ULID 由
-        // persist 层在落库时分配，runner 不预生成。
-        let mut assistant_content: Vec<AssistantContent> = Vec::new();
-        if !content.is_empty() {
-            assistant_content.push(AssistantContent::text(content.clone()));
-        }
-        for tc in &final_tool_calls {
-            let args =
-                serde_json::from_str(&tc.function.arguments).unwrap_or(serde_json::Value::Null);
-            assistant_content.push(AssistantContent::tool_call(
-                tc.id.clone(),
-                tc.function.name.clone(),
-                args,
-            ));
-        }
-        let assistant_msg = AgentMessage::Assistant {
-            id: None,
-            content: assistant_content,
-        };
-        let assistant_record = match services.agent.append_message(session_id, assistant_msg) {
-            Ok(r) => r,
+    let workspace_id = session.workspace_id;
+    let ws_title = services
+        .workspace
+        .get_by_id(workspace_id)
+        .ok()
+        .flatten()
+        .map(|w| w.name)
+        .unwrap_or_else(|| workspace_id.to_string());
+    let preamble = agent_system_prompt(&ws_title, &workspace_id.to_string());
+    let completion_model = rig.completion_model();
+
+    // 当前 user 输入：ctx_md 存在就用它，否则拿 history 最后一条；都没有就空 user。
+    // history 是 Vec<AgentMessage> = Vec<rig::Message>，chat history 传过去让 Rig
+    // 帮我们组装到 system 之后。
+    let user_msg = match ctx_md.as_deref() {
+        Some(md) => AgentMessage::user(md.to_string()),
+        None => history
+            .last()
+            .cloned()
+            .unwrap_or_else(|| AgentMessage::user(String::new())),
+    };
+    let chat_history: Vec<AgentMessage> = history;
+
+    let agent = AgentTools::build(services.clone(), auth.clone(), workspace_id)
+        .register_into(
+            AgentBuilder::new(completion_model)
+                .preamble(&preamble)
+                .default_max_turns(services.config.agent.max_tool_calls_per_turn),
+        )
+        .build();
+
+    // `AgentRunner::stream` 是 `async fn stream(self) -> StreamingResult`，把错误
+    // 装进 stream 的 `Item` 而不是 `Result`——所以直接 `.await` 拿到 stream。
+    let stream = agent
+        .runner(user_msg)
+        .history(chat_history)
+        .max_turns(services.config.agent.max_tool_calls_per_turn)
+        .stream()
+        .await;
+    futures_util::pin_mut!(stream);
+
+    // 累积本次 assistant 输出，便于在 FinalResponse 时落库。
+    let mut accumulated_text = String::new();
+    let mut assistant_tool_calls: Vec<RigToolCall> = Vec::new();
+    // assistant record 在 FinalResponse 时创建；先 hold ULID 给 Done 事件用。
+    let assistant_id = Ulid::new();
+
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::Text(t))) => {
+                accumulated_text.push_str(&t.text);
+                let _ = tx.send(AgentEvent::Delta {
+                    turn_id,
+                    content: t.text,
+                });
+            }
+            Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::ToolCall {
+                tool_call,
+                ..
+            })) => {
+                assistant_tool_calls.push(tool_call);
+            }
+            Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::Reasoning {
+                reasoning,
+                ..
+            })) => {
+                // 推理链不入库——只在流式期间推给前端做样式区分。
+                let content = reasoning.display_text();
+                if !content.is_empty() {
+                    let _ = tx.send(AgentEvent::Reasoning { turn_id, content });
+                }
+            }
+            Ok(MultiTurnStreamItem::StreamAssistantItem(_)) => {
+                // ToolCallDelta / ReasoningDelta / Final / Unknown——暂不直接推 SSE；
+                // 完整 ToolCall 在 StreamAssistantItem::ToolCall 路径，完整 Reasoning
+                // 也在 Reasoning 路径。
+            }
+            Ok(MultiTurnStreamItem::ToolExecutionCommitted { tool_call, .. }) => {
+                let name = tool_call.function.name.clone();
+                let args = tool_call.function.arguments.clone();
+                let _ = tx.send(AgentEvent::ToolCall {
+                    turn_id,
+                    name,
+                    args,
+                });
+            }
+            Ok(MultiTurnStreamItem::StreamUserItem(StreamedUserContent::ToolResult {
+                tool_result,
+                ..
+            })) => {
+                let preview = tool_result
+                    .content
+                    .iter()
+                    .map(|trc| match trc {
+                        ToolResultContent::Text(t) => t.text.clone(),
+                        _ => String::new(),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                // rig 0.42 的 ToolResult 没有 is_err 字段——到达这里说明工具执行
+                // 没失败（失败的执行不产 ToolResult，见 rig-agent MultiTurnStreamItem
+                // 注释）。前端 ok=true 用 ToolErrorKind::Ok 表达即可。
+                let _ = tx.send(AgentEvent::ToolResult {
+                    turn_id,
+                    name: tool_result.name.clone(),
+                    ok: true,
+                    kind: ToolErrorKind::Ok,
+                    preview,
+                });
+            }
+            Ok(MultiTurnStreamItem::CompletionCall(_)) => {
+                // 内部使用统计，前端不关心。
+            }
+            Ok(MultiTurnStreamItem::ModelTurnRetried { turn }) => {
+                // 短暂 banner，不中断流。
+                let _ = tx.send(AgentEvent::Error {
+                    turn_id,
+                    message: format!("LLM 内部重试 turn {turn}"),
+                });
+            }
+            Ok(MultiTurnStreamItem::FinalResponse(_resp)) => {
+                // 落库 assistant 消息：Rig Message::Assistant 的 content 是
+                // Vec<AssistantContent>，文本先放，再追加全部 tool_call。
+                let mut content = Vec::new();
+                if !accumulated_text.is_empty() {
+                    content.push(AssistantContent::text(accumulated_text.clone()));
+                }
+                content.extend(
+                    assistant_tool_calls
+                        .iter()
+                        .cloned()
+                        .map(AssistantContent::ToolCall),
+                );
+                if content.is_empty() {
+                    content.push(AssistantContent::text(String::new()));
+                }
+                let assistant_msg = AgentMessage::Assistant {
+                    id: None,
+                    content,
+                };
+                let record = AgentMessageRecord {
+                    id: assistant_id,
+                    session_id,
+                    message: assistant_msg,
+                    created_at: chrono::Utc::now(),
+                };
+                if let Err(e) = services.agent.append_record(record) {
+                    let _ = tx.send(AgentEvent::Error {
+                        turn_id,
+                        message: format!("assistant 落库失败: {e}"),
+                    });
+                }
+                let _ = tx.send(AgentEvent::Done {
+                    turn_id,
+                    message_id: assistant_id,
+                });
+            }
             Err(e) => {
                 let _ = tx.send(AgentEvent::Error {
                     turn_id,
-                    message: e.to_string(),
+                    message: format!("stream error: {e}"),
                 });
-                break;
+                services.agent_turns.finish(turn_id);
+                return;
             }
-        };
-
-        // 没有 tool_call：本轮就是答案。落库 last_message_at 然后发 Done。
-        if final_tool_calls.is_empty() {
-            let _ = services.agent.update_session_meta(
-                auth.account_id,
-                session_id,
-                None,
-                Some(assistant_record.created_at),
-            );
-            let _ = tx.send(AgentEvent::Done {
-                turn_id,
-                message_id: assistant_record.id,
-            });
-            services.agent_turns.finish(turn_id);
-            return;
-        }
-
-        // 串行执行每个 tool_call：发 ToolCall → execute → 发 ToolResult/SideEffect → 落 tool 消息。
-        for tc in final_tool_calls {
-            let args: serde_json::Value = match serde_json::from_str(&tc.function.arguments) {
-                Ok(v) => v,
-                Err(parse_err) => {
-                    // LLM 回传的 arguments 不是合法 JSON——以前静默退化成
-                    // `Value::Null` 继续 execute，让 LLM 在下一轮看不到反馈、
-                    // 重发同样坏串。现在短路：照常发 ToolCall / ToolResult，
-                    // preview + 落库的 tool 消息里写明解析失败原因，让它在下一轮
-                    // 自己修正。
-                    let _ = tx.send(AgentEvent::ToolCall {
-                        turn_id,
-                        name: tc.function.name.clone(),
-                        args: serde_json::Value::Null,
-                    });
-                    let preview = format!("参数 JSON 解析失败: {parse_err}");
-                    let _ = tx.send(AgentEvent::Error {
-                        turn_id,
-                        message: preview.clone(),
-                    });
-                    let _ = tx.send(AgentEvent::ToolResult {
-                        turn_id,
-                        name: tc.function.name.clone(),
-                        ok: false,
-                        kind: ToolErrorKind::BadArgs,
-                        preview: preview.clone(),
-                    });
-                    let tool_msg =
-                        AgentMessage::tool_result(tc.id.clone(), tc.function.name.clone(), preview);
-                    let _ = services.agent.append_message(session_id, tool_msg);
-                    continue;
-                }
-            };
-            let _ = tx.send(AgentEvent::ToolCall {
-                turn_id,
-                name: tc.function.name.clone(),
-                args: args.clone(),
-            });
-            let outcome = match execute_tool(
-                &services.schema,
-                &services,
-                &auth,
-                workspace_id,
-                &tc.function.name,
-                args,
-            )
-            .await
-            {
-                Ok(o) => o,
-                Err(e) => crate::service::agent::exec::ToolOutcome {
-                    // execute_tool 返回 Err：典型路径是「未知工具」（build 阶段
-                    // 没过滤干净的 query 漂移）或罕见的序列化 / panic。归
-                    // ServerError——LLM 重试参数无意义（不是它能改的）。preview
-                    // 把真实原因带出来，不然下次再踩这个坑前端只看到一句"工具
-                    // 调用失败"，又得走一轮 systematic-debugging 才能定位。
-                    ok: false,
-                    kind: ToolErrorKind::ServerError,
-                    result_preview: format!("工具调用失败: {e}"),
-                    side_effect: None,
-                },
-            };
-            let _ = tx.send(AgentEvent::ToolResult {
-                turn_id,
-                name: tc.function.name.clone(),
-                ok: outcome.ok,
-                kind: outcome.kind,
-                preview: outcome.result_preview.clone(),
-            });
-            if let Some(se) = &outcome.side_effect {
-                let _ = tx.send(AgentEvent::SideEffect {
-                    turn_id,
-                    side_effect: se.clone(),
-                });
-            }
-            let tool_msg = AgentMessage::tool_result(
-                tc.id.clone(),
-                tc.function.name.clone(),
-                outcome.result_preview,
-            );
-            let _ = services.agent.append_message(session_id, tool_msg);
         }
     }
 
-    let _ = tx.send(AgentEvent::Error {
-        turn_id,
-        message: format!("超过最大 turn 数 ({max_turns})"),
-    });
     services.agent_turns.finish(turn_id);
 }
