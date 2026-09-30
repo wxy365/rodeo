@@ -1,4 +1,5 @@
-//! `unarchive` tool 骨架。Args/Outputs/Error 形态在后续 task 中按 spec §5 填充。
+//! 取消条目归档：删 `ENTRIES_ARCHIVED` 列族里的标记、重新进入基础视图与全文检索。
+//! 幂等：未归档时直接返回成功。
 
 use std::fmt;
 use std::sync::Arc;
@@ -17,12 +18,14 @@ pub struct UnarchiveTool {
 
 #[derive(Deserialize)]
 pub struct UnarchiveArgs {
-    // TODO: 由后续 task 按 spec §5 字段填充
+    pub workspace_id: String,
+    pub code: String,
 }
 
 #[derive(Serialize)]
 pub struct UnarchiveOutput {
-    // TODO: 由后续 task 按 spec §5 字段填充
+    pub code: String,
+    pub unarchived: bool,
 }
 
 pub enum UnarchiveError {
@@ -55,20 +58,46 @@ impl Tool for UnarchiveTool {
     type Output = UnarchiveOutput;
 
     fn description(&self) -> String {
-        // TODO: 由后续 task 按 spec §5 替换为正式 description
-        format!("unarchive (TODO: 待后续 task 填实)")
+        "取消条目归档（删 ENTRIES_ARCHIVED 列族里的标记）。条目重新进入基础视图与全文检索；未归档时静默返回成功（幂等）。".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
-        // TODO: 由后续 task 按 spec §5 替换为正式 JSON Schema
-        serde_json::json!({"type": "object", "properties": {}, "required": []})
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "workspace_id": {
+                    "type": "string",
+                    "description": "工作空间 ULID；必须与 agent session 的 workspace 一致"
+                },
+                "code": {
+                    "type": "string",
+                    "description": "条目 16 位 base62 编码"
+                }
+            },
+            "required": ["workspace_id", "code"]
+        })
     }
 
     async fn call(
         &self,
         _ctx: &mut ToolContext,
-        _args: Self::Args,
+        args: Self::Args,
     ) -> Result<Self::Output, Self::Error> {
-        unimplemented!("unarchive 将在后续 task 填实")
+        let ws = Ulid::from_string(&args.workspace_id)
+            .map_err(|e| UnarchiveError::BadArgs(format!("workspace_id: {e}")))?;
+        if ws != self.workspace_id {
+            return Err(UnarchiveError::BadArgs(format!(
+                "workspace_id 不匹配 session（session={}, args={}）",
+                self.workspace_id, ws
+            )));
+        }
+        self.services
+            .entry
+            .unarchive(self.auth.account_id, &args.code)
+            .map_err(|e| UnarchiveError::Server(e.to_string()))?;
+        Ok(UnarchiveOutput {
+            code: args.code,
+            unarchived: true,
+        })
     }
 }
