@@ -101,9 +101,13 @@ pub async fn execute_tool(
     name: &str,
     args: serde_json::Value,
 ) -> Result<ToolOutcome, AppError> {
-    // 1) 在白名单里找模板
+    // 1) 在白名单里找模板：mutation 走 TEMPLATES，query 走 QUERY_TEMPLATES。
+    // 两张表共用 `(&str, &str)` 形态，chain 起来一次查全——启动期的
+    // `validate_templates` / `validate_query_templates` 已经分别断言
+    // 各自白名单 ⊆ schema，所以这里不会再漂移。
     let template = super::templates::TEMPLATES
         .iter()
+        .chain(super::templates::QUERY_TEMPLATES.iter())
         .find(|(n, _)| *n == name)
         .ok_or_else(|| AppError::Ai(format!("未知工具: {name}")))?
         .1;

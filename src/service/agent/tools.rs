@@ -35,6 +35,10 @@ const INTROSPECTION_QUERY: &str = r#"
 /// 注释编译进 SDL 时默认用 `"""..."""` 块包裹（见 export_sdl.rs 的
 /// `write_description`：默认 `prefer_single_line_descriptions = false`）。
 /// 这里把字段前的字符串字面量（多行）累积成 description 字符串。
+///
+/// 仅把 `templates::TEMPLATES` 白名单里的 mutation 暴露给 LLM——设计上 agent
+/// 工具表是 GraphQL mutation 的子集（参见 `validate_templates` 注释），未列
+/// 入白名单的 mutation 不进工具表，避免 LLM 选中后落进"未知工具"路径。
 pub fn build_tools(schema: &AppSchema) -> Result<Arc<Vec<ToolSchema>>, AppError> {
     // 用 SDL 解析 mutation 字段：与 templates::validate_templates 共用同一份解析逻辑，
     // 不重复实现。description 来自 doc comment。
@@ -44,6 +48,8 @@ pub fn build_tools(schema: &AppSchema) -> Result<Arc<Vec<ToolSchema>>, AppError>
         .nth(1)
         .and_then(|s| s.split('{').nth(1).and_then(|s| s.split('}').next()))
         .ok_or_else(|| AppError::Ai("introspection 解析失败".into()))?;
+    let is_whitelisted =
+        |name: &str| super::templates::TEMPLATES.iter().any(|(n, _)| *n == name);
 
     let mut tools = Vec::new();
     // 当前正在累积的 description 行（多行 `"\"\"\"...\"\"\""` 块）。遇到字段行时
@@ -84,9 +90,11 @@ pub fn build_tools(schema: &AppSchema) -> Result<Arc<Vec<ToolSchema>>, AppError>
 
         // 字段名起始行：`<name>(<args>): <ReturnType>` 或 `<name>: <ReturnType>`
         if !trimmed.starts_with('(') && trimmed.contains('(') {
-            // 关闭上一个
+            // 关闭上一个：白名单过滤——非白名单 mutation 不进工具表。
             if let Some((name, desc, args)) = current.take() {
-                tools.push(build_tool(&name, &desc, &args));
+                if is_whitelisted(&name) {
+                    tools.push(build_tool(&name, &desc, &args));
+                }
             }
             let name = super::templates::first_identifier(trimmed)
                 .unwrap_or("")
@@ -104,7 +112,9 @@ pub fn build_tools(schema: &AppSchema) -> Result<Arc<Vec<ToolSchema>>, AppError>
         }
     }
     if let Some((name, desc, args)) = current.take() {
-        tools.push(build_tool(&name, &desc, &args));
+        if is_whitelisted(&name) {
+            tools.push(build_tool(&name, &desc, &args));
+        }
     }
     // 生产期 sanity 检查：每个 tool 都应该有非空 description，否则 LLM 只能靠
     // name 猜 mutation 语义。空 description 计数会在日志里暴露出来，便于在
@@ -137,6 +147,12 @@ pub fn build_tools(schema: &AppSchema) -> Result<Arc<Vec<ToolSchema>>, AppError>
 /// 与 `build_tools` 同款 SDL 切分（这次切 `type Query`），description 仍来自
 /// doc comment。返回的 tools 与 `build_tools` 的产物合并后塞进
 /// `services.agent_tools` 给所有 SSE turn 共享。
+///
+/// 仅把 `templates::QUERY_TEMPLATES` 白名单里的 query 暴露给 LLM——与
+/// `build_tools` 同款 design 子集语义（参见 `validate_query_templates` 注释）。
+/// 否则 `me` / `serverConfig` / `workspaces` 这些 query 也会进工具表，LLM 选中
+/// 后落入"未知工具"路径——`execute_tool` 找不到模板就 `ServerError`，前端显示
+/// "工具调用失败"，调试信号也丢失。
 pub fn build_query_tools(schema: &AppSchema) -> Result<Arc<Vec<ToolSchema>>, AppError> {
     let sdl = schema.sdl();
     let body = sdl
@@ -144,6 +160,8 @@ pub fn build_query_tools(schema: &AppSchema) -> Result<Arc<Vec<ToolSchema>>, App
         .nth(1)
         .and_then(|s| s.split('{').nth(1).and_then(|s| s.split('}').next()))
         .ok_or_else(|| AppError::Ai("query introspection 解析失败".into()))?;
+    let is_whitelisted =
+        |name: &str| super::templates::QUERY_TEMPLATES.iter().any(|(n, _)| *n == name);
 
     let mut tools = Vec::new();
     let mut desc_lines: Vec<String> = Vec::new();
@@ -171,8 +189,11 @@ pub fn build_query_tools(schema: &AppSchema) -> Result<Arc<Vec<ToolSchema>>, App
             continue;
         }
         if !trimmed.starts_with('(') && trimmed.contains('(') {
+            // 关闭上一个：白名单过滤——非白名单 query 不进工具表。
             if let Some((name, desc, args)) = current.take() {
-                tools.push(build_tool(&name, &desc, &args));
+                if is_whitelisted(&name) {
+                    tools.push(build_tool(&name, &desc, &args));
+                }
             }
             let name = super::templates::first_identifier(trimmed)
                 .unwrap_or("")
@@ -189,7 +210,9 @@ pub fn build_query_tools(schema: &AppSchema) -> Result<Arc<Vec<ToolSchema>>, App
         }
     }
     if let Some((name, desc, args)) = current.take() {
-        tools.push(build_tool(&name, &desc, &args));
+        if is_whitelisted(&name) {
+            tools.push(build_tool(&name, &desc, &args));
+        }
     }
     let empty_desc: Vec<&str> = tools
         .iter()

@@ -351,7 +351,7 @@ pub async fn run_turn(
                 name: tc.function.name.clone(),
                 args: args.clone(),
             });
-            let outcome = execute_tool(
+            let outcome = match execute_tool(
                 &services.schema,
                 &services,
                 &auth,
@@ -360,15 +360,20 @@ pub async fn run_turn(
                 args,
             )
             .await
-            .unwrap_or(crate::service::agent::exec::ToolOutcome {
-                // execute_tool 自身罕见失败：序列化 / panic 等。归到
-                // ServerError 而不是 BadArgs——LLM 看不到 extensions.code，
-                // message 里只能拿到"工具调用失败"，对它重试参数无意义。
-                ok: false,
-                kind: ToolErrorKind::ServerError,
-                result_preview: "工具调用失败".to_string(),
-                side_effect: None,
-            });
+            {
+                Ok(o) => o,
+                Err(e) => crate::service::agent::exec::ToolOutcome {
+                    // execute_tool 返回 Err：典型路径是「未知工具」（build 阶段
+                    // 没过滤干净的 query 漂移）或罕见的序列化 / panic。归
+                    // ServerError——LLM 重试参数无意义（不是它能改的）。preview
+                    // 把真实原因带出来，不然下次再踩这个坑前端只看到一句"工具
+                    // 调用失败"，又得走一轮 systematic-debugging 才能定位。
+                    ok: false,
+                    kind: ToolErrorKind::ServerError,
+                    result_preview: format!("工具调用失败: {e}"),
+                    side_effect: None,
+                },
+            };
             let _ = tx.send(AgentEvent::ToolResult {
                 turn_id,
                 name: tc.function.name.clone(),
