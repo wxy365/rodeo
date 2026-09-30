@@ -63,7 +63,9 @@ timeout_seconds = 60
 # 是否启用 Agent 功能。关闭后 SSE 路由直接返回 503。
 enabled = true
 # 单 turn 工具调用硬上限
-max_tool_calls_per_turn = 8
+max_turns = 10
+# 同时允许运行的 Agent turn 数（并发）
+concurrency = 4
 # 单 turn 整体超时（秒）
 turn_timeout_seconds = 60
 # 上下文超阈值时触发摘要截断

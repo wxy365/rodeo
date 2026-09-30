@@ -195,7 +195,7 @@ pub async fn run_turn(services: Arc<Services>, auth: AuthContext, session_id: Ul
         .register_into(
             AgentBuilder::new(completion_model)
                 .preamble(&preamble)
-                .default_max_turns(services.config.agent.max_tool_calls_per_turn),
+                .default_max_turns(services.config.agent.max_turns),
         )
         .build();
 
@@ -204,7 +204,7 @@ pub async fn run_turn(services: Arc<Services>, auth: AuthContext, session_id: Ul
     let stream = agent
         .runner(user_msg)
         .history(chat_history)
-        .max_turns(services.config.agent.max_tool_calls_per_turn)
+        .max_turns(services.config.agent.max_turns)
         .stream()
         .await;
     futures_util::pin_mut!(stream);

@@ -130,7 +130,8 @@ pub struct AiConfig {
 #[serde(default)]
 pub struct AgentConfig {
     pub enabled: bool,
-    pub max_tool_calls_per_turn: usize,
+    pub max_turns: usize,
+    pub concurrency: usize,
     pub turn_timeout_seconds: u64,
     pub context_truncate_tokens: usize,
     pub max_history_turns: usize,
@@ -140,7 +141,8 @@ impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            max_tool_calls_per_turn: 8,
+            max_turns: 10,
+            concurrency: 4,
             turn_timeout_seconds: 60,
             context_truncate_tokens: 16384,
             max_history_turns: 40,
