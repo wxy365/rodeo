@@ -3,14 +3,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use chrono::Utc;
 use futures_util::StreamExt;
 use parking_lot::Mutex;
 use tokio::sync::broadcast;
 use ulid::Ulid;
 
+use crate::domain::agent::AssistantContent;
 use crate::domain::agent_events::{AgentEvent, ToolErrorKind};
-use crate::domain::AgentMessageRecord;
+use crate::domain::AgentMessage;
 use crate::error::AppError;
 use crate::service::agent::exec::execute_tool;
 use crate::service::agent::system_prompt::{agent_system_prompt, to_chat_messages};
@@ -64,7 +64,13 @@ impl SessionTurns {
         }
         let (tx, _) = broadcast::channel(128);
         let handle = tokio::spawn(runner);
-        self.turns.lock().insert(turn_id, TurnHandle { handle, sender: tx.clone() });
+        self.turns.lock().insert(
+            turn_id,
+            TurnHandle {
+                handle,
+                sender: tx.clone(),
+            },
+        );
         self.by_session.lock().insert(session_id, turn_id);
         Ok(())
     }
@@ -94,7 +100,8 @@ impl SessionTurns {
 
     pub fn session_of(&self, turn_id: Ulid) -> Option<Ulid> {
         let bs = self.by_session.lock();
-        bs.iter().find_map(|(&sid, &tid)| (tid == turn_id).then_some(sid))
+        bs.iter()
+            .find_map(|(&sid, &tid)| (tid == turn_id).then_some(sid))
     }
 
     pub fn finish(&self, turn_id: Ulid) {
@@ -115,12 +122,7 @@ impl SessionTurns {
 ///
 /// 错误与 cancel 通过 `AgentEvent::Error` 透传给订阅者，最后统一 `finish(turn_id)`
 /// 收尾——订阅端（Task 7 的 SSE handler）据此断开连接。
-pub async fn run_turn(
-    services: Arc<Services>,
-    auth: AuthContext,
-    session_id: Ulid,
-    turn_id: Ulid,
-) {
+pub async fn run_turn(services: Arc<Services>, auth: AuthContext, session_id: Ulid, turn_id: Ulid) {
     let max_turns = services.config.agent.max_tool_calls_per_turn;
     let max_history = services.config.agent.max_history_turns;
 
@@ -164,10 +166,7 @@ pub async fn run_turn(
     let ctx_md = services.agent_turns.take_context_md(turn_id);
 
     for _ in 0..max_turns {
-        let history = match services
-            .agent
-            .list_messages(auth.account_id, session_id, max_history)
-        {
+        let history = match services.agent.list_messages(session_id, max_history) {
             Ok(h) => h,
             Err(e) => {
                 let _ = tx.send(AgentEvent::Error {
@@ -178,8 +177,8 @@ pub async fn run_turn(
             }
         };
         // 占位已填：runner 进 turn 前查一次 Workspace 拿真实 name 给 system prompt；
-// 查不到（罕见：session 引用的 ws 已删）就退回到用 id 串。Workspaces 表的读
-// 是同步 DocStore get，不阻塞 current_thread 运行时。
+        // 查不到（罕见：session 引用的 ws 已删）就退回到用 id 串。Workspaces 表的读
+        // 是同步 DocStore get，不阻塞 current_thread 运行时。
         let ws_title = services
             .workspace
             .get_by_id(workspace_id)
@@ -222,11 +221,17 @@ pub async fn run_turn(
             match stream.next().await {
                 Some(Ok(crate::service::ai::StreamChunk::Delta(s))) => {
                     content.push_str(&s);
-                    let _ = tx.send(AgentEvent::Delta { turn_id, content: s });
+                    let _ = tx.send(AgentEvent::Delta {
+                        turn_id,
+                        content: s,
+                    });
                 }
                 Some(Ok(crate::service::ai::StreamChunk::Reasoning(s))) => {
                     // 推理链不入库——只在流式期间推给前端做样式区分。
-                    let _ = tx.send(AgentEvent::Reasoning { turn_id, content: s });
+                    let _ = tx.send(AgentEvent::Reasoning {
+                        turn_id,
+                        content: s,
+                    });
                 }
                 Some(Ok(crate::service::ai::StreamChunk::ToolCallsPartial(partials))) => {
                     for (idx, id, name, args) in partials {
@@ -262,33 +267,36 @@ pub async fn run_turn(
             return;
         }
 
-        // 落库 assistant 消息。
-        let assistant = AgentMessage {
-            id: Ulid::new(),
-            session_id,
-            role: Role::Assistant,
-            content: content.clone(),
-            tool_calls: final_tool_calls
-                .iter()
-                .map(|tc| ToolCall {
-                    id: tc.id.clone(),
-                    name: tc.function.name.clone(),
-                    args: serde_json::from_str(&tc.function.arguments)
-                        .unwrap_or(serde_json::Value::Null),
-                    result_preview: String::new(),
-                    ok: false,
-                })
-                .collect(),
-            tool_call_id: None,
-            created_at: Utc::now(),
-        };
-        if let Err(e) = services.agent.append_message(assistant.clone()) {
-            let _ = tx.send(AgentEvent::Error {
-                turn_id,
-                message: e.to_string(),
-            });
-            break;
+        // 落库 assistant 消息。Rig `Message::Assistant` 的 `content` 是
+        // `Vec<AssistantContent>`：先放文本，再追加 tool_call。ULID 由
+        // persist 层在落库时分配，runner 不预生成。
+        let mut assistant_content: Vec<AssistantContent> = Vec::new();
+        if !content.is_empty() {
+            assistant_content.push(AssistantContent::text(content.clone()));
         }
+        for tc in &final_tool_calls {
+            let args =
+                serde_json::from_str(&tc.function.arguments).unwrap_or(serde_json::Value::Null);
+            assistant_content.push(AssistantContent::tool_call(
+                tc.id.clone(),
+                tc.function.name.clone(),
+                args,
+            ));
+        }
+        let assistant_msg = AgentMessage::Assistant {
+            id: None,
+            content: assistant_content,
+        };
+        let assistant_record = match services.agent.append_message(session_id, assistant_msg) {
+            Ok(r) => r,
+            Err(e) => {
+                let _ = tx.send(AgentEvent::Error {
+                    turn_id,
+                    message: e.to_string(),
+                });
+                break;
+            }
+        };
 
         // 没有 tool_call：本轮就是答案。落库 last_message_at 然后发 Done。
         if final_tool_calls.is_empty() {
@@ -296,11 +304,11 @@ pub async fn run_turn(
                 auth.account_id,
                 session_id,
                 None,
-                Some(assistant.created_at),
+                Some(assistant_record.created_at),
             );
             let _ = tx.send(AgentEvent::Done {
                 turn_id,
-                message_id: assistant.id,
+                message_id: assistant_record.id,
             });
             services.agent_turns.finish(turn_id);
             return;
@@ -333,16 +341,9 @@ pub async fn run_turn(
                         kind: ToolErrorKind::BadArgs,
                         preview: preview.clone(),
                     });
-                    let tool_msg = AgentMessage {
-                        id: Ulid::new(),
-                        session_id,
-                        role: Role::Tool,
-                        content: preview,
-                        tool_calls: vec![],
-                        tool_call_id: Some(tc.id.clone()),
-                        created_at: Utc::now(),
-                    };
-                    let _ = services.agent.append_message(tool_msg);
+                    let tool_msg =
+                        AgentMessage::tool_result(tc.id.clone(), tc.function.name.clone(), preview);
+                    let _ = services.agent.append_message(session_id, tool_msg);
                     continue;
                 }
             };
@@ -387,16 +388,12 @@ pub async fn run_turn(
                     side_effect: se.clone(),
                 });
             }
-            let tool_msg = AgentMessage {
-                id: Ulid::new(),
-                session_id,
-                role: Role::Tool,
-                content: outcome.result_preview,
-                tool_calls: vec![],
-                tool_call_id: Some(tc.id.clone()),
-                created_at: Utc::now(),
-            };
-            let _ = services.agent.append_message(tool_msg);
+            let tool_msg = AgentMessage::tool_result(
+                tc.id.clone(),
+                tc.function.name.clone(),
+                outcome.result_preview,
+            );
+            let _ = services.agent.append_message(session_id, tool_msg);
         }
     }
 

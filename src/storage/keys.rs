@@ -108,7 +108,12 @@ pub fn audit_by_workspace_key(workspace_id: Ulid, at: DateTime<Utc>, id: Ulid) -
 }
 
 /// (resource_type \0 resource_id \0 时间倒序, id)：按资源前缀扫描。
-pub fn audit_by_resource_key(resource_type: &str, resource_id: &str, at: DateTime<Utc>, id: Ulid) -> Vec<u8> {
+pub fn audit_by_resource_key(
+    resource_type: &str,
+    resource_id: &str,
+    at: DateTime<Utc>,
+    id: Ulid,
+) -> Vec<u8> {
     let mut key = Vec::new();
     key.extend_from_slice(resource_type.as_bytes());
     key.push(0);
@@ -204,10 +209,13 @@ pub fn agent_session_prefix(user_id: Ulid) -> [u8; 16] {
     user_id.to_bytes()
 }
 
-pub fn agent_message_key(session_id: Ulid, message_id: Ulid) -> [u8; 32] {
-    let mut out = [0u8; 32];
-    out[..16].copy_from_slice(&session_id.to_bytes());
-    out[16..].copy_from_slice(&message_id.to_bytes());
+/// Agent 消息主键：`(session_id, msg_id)` 复合键，32 字节。`msg_id` 是
+/// ULID，字节序即时间序，因此按 session_id 前缀扫描天然得到按发表时间
+/// 升序的消息列表，不需要额外的排序字段。
+pub fn agent_message_key(session_id: Ulid, msg_id: Ulid) -> Vec<u8> {
+    let mut out = Vec::with_capacity(32);
+    out.extend_from_slice(&session_id.to_bytes());
+    out.extend_from_slice(&msg_id.to_bytes());
     out
 }
 
