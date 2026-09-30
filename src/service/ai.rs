@@ -9,6 +9,7 @@
 use std::sync::Arc;
 
 use rig::client::CompletionClient;
+use rig::completion::{AssistantContent, CompletionModel as CoreCompletionModel};
 use rig::providers::openai::{self, CompletionModel};
 use ulid::Ulid;
 
@@ -189,6 +190,40 @@ impl RigClient {
     /// DeepSeek / 通义等 OpenAI 兼容服务走标准 Chat 路径。
     pub fn completion_model(&self) -> CompletionModel {
         self.provider.completion_model(&self.model)
+    }
+
+    /// 一次性 chat completion：发一段 prompt，拿回模型的纯文本响应。
+    ///
+    /// rig agent rewrite (task 10) 只接管了多轮 + tool 调用、SSE streaming
+    /// 那条路径；graphql `summarize_entries` 这种「不需要 tool、不需要 streaming」
+    /// 的单次补全 path 上，调用方拿到的还是 `client.complete(&prompt).await?`
+    /// ——所以这里补一个最薄的 rig 包装。出错统一映射为 `AppError::Ai`，
+    /// 调用方拿到的就是文本摘要字符串，调用站点不需要改。
+    ///
+    /// `Prompt::instructions` 走 preamble（system message），`Prompt::input`
+    /// 走 user message —— 与旧 RigClient 的 system+user 注入语义保持一致。
+    pub async fn complete(&self, prompt: &Prompt) -> Result<String, AppError> {
+        let model = self.completion_model();
+        let request = model
+            .completion_request(rig::completion::Message::user(&prompt.input))
+            .preamble(prompt.instructions.clone())
+            .build();
+        let response = model
+            .completion(request)
+            .await
+            .map_err(|e| AppError::Ai(format!("rig completion 失败: {e}")))?;
+        // 抽取文本。summarize 不期望 tool call / reasoning / image —— 如果
+        // 模型真返回这些就忽略，保留兼容旧行为的「只取 Text」语义。
+        let mut text = String::new();
+        for item in response.choice {
+            if let AssistantContent::Text(t) = item {
+                text.push_str(t.text());
+            }
+        }
+        if text.is_empty() {
+            return Err(AppError::Ai("rig completion 返回空响应".into()));
+        }
+        Ok(text)
     }
 }
 
