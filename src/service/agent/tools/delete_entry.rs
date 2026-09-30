@@ -1,4 +1,5 @@
-//! `delete_entry` tool 骨架。Args/Outputs/Error 形态在后续 task 中按 spec §5 填充。
+//! 软删除条目：写入 `deleted_at`，数据保留，可由 archive/unarchive 处理归档但
+//! 不可恢复删除状态。
 
 use std::fmt;
 use std::sync::Arc;
@@ -17,12 +18,14 @@ pub struct DeleteEntryTool {
 
 #[derive(Deserialize)]
 pub struct DeleteEntryArgs {
-    // TODO: 由后续 task 按 spec §5 字段填充
+    pub workspace_id: String,
+    pub code: String,
 }
 
 #[derive(Serialize)]
 pub struct DeleteEntryOutput {
-    // TODO: 由后续 task 按 spec §5 字段填充
+    pub code: String,
+    pub deleted: bool,
 }
 
 pub enum DeleteEntryError {
@@ -55,20 +58,46 @@ impl Tool for DeleteEntryTool {
     type Output = DeleteEntryOutput;
 
     fn description(&self) -> String {
-        // TODO: 由后续 task 按 spec §5 替换为正式 description
-        format!("delete_entry (TODO: 待后续 task 填实)")
+        "软删除条目（写 deleted_at）。数据保留，移出基础视图与全文检索；归档（archive）后可用 unarchive 复活，但本删除不可撤销。".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
-        // TODO: 由后续 task 按 spec §5 替换为正式 JSON Schema
-        serde_json::json!({"type": "object", "properties": {}, "required": []})
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "workspace_id": {
+                    "type": "string",
+                    "description": "工作空间 ULID；必须与 agent session 的 workspace 一致"
+                },
+                "code": {
+                    "type": "string",
+                    "description": "条目 16 位 base62 编码"
+                }
+            },
+            "required": ["workspace_id", "code"]
+        })
     }
 
     async fn call(
         &self,
         _ctx: &mut ToolContext,
-        _args: Self::Args,
+        args: Self::Args,
     ) -> Result<Self::Output, Self::Error> {
-        unimplemented!("delete_entry 将在后续 task 填实")
+        let ws = Ulid::from_string(&args.workspace_id)
+            .map_err(|e| DeleteEntryError::BadArgs(format!("workspace_id: {e}")))?;
+        if ws != self.workspace_id {
+            return Err(DeleteEntryError::BadArgs(format!(
+                "workspace_id 不匹配 session（session={}, args={}）",
+                self.workspace_id, ws
+            )));
+        }
+        self.services
+            .entry
+            .soft_delete(self.auth.account_id, &args.code)
+            .map_err(|e| DeleteEntryError::Server(e.to_string()))?;
+        Ok(DeleteEntryOutput {
+            code: args.code,
+            deleted: true,
+        })
     }
 }
