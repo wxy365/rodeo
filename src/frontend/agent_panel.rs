@@ -1529,10 +1529,39 @@ fn spawn_attachment_uploads(
     else {
         return;
     };
-    let Some(files) = files_js.dyn_ref::<js_sys::Array>() else {
+    // FileList 没有数值属性（Reflect::get(files, idx) 拿到 undefined），也不能
+    // dyn_ref::<js_sys::Array>（FileList 不是 Array）。最稳的路是
+    // `Array.from(files)`——FileList 自带 Symbol.iterator，转出来的就是普通
+    // js_sys::Array，每个元素是 File。`attachment_list::spawn_upload` 只读
+    // 0 号走的是巧合：浏览器实现里 Reflect::get(files, 0) 偶尔返回 File，
+    // 但写 `for i in 0..n` 循环就会拿到 undefined 静默失败。
+    // 注：`Array(fileList)` 单参调用只会按 length 构 `[undefined, ...]`，
+    // 不是 `Array.from`，所以必须显式取 `Array.from`。
+    let Ok(array_ctor) = js_sys::eval("Array") else {
+        uploading.set(false);
         return;
     };
-    if files.length() == 0 {
+    let array_ctor: js_sys::Function = array_ctor.unchecked_into();
+    let array_from = match Reflect::get(array_ctor.as_ref(), &JsValue::from_str("from"))
+        .ok()
+        .and_then(|v| v.dyn_into::<js_sys::Function>().ok())
+    {
+        Some(f) => f,
+        None => {
+            uploading.set(false);
+            return;
+        }
+    };
+    let Ok(files_arr_js) = array_from.call1(&JsValue::UNDEFINED, &files_js) else {
+        uploading.set(false);
+        return;
+    };
+    let Some(files_arr) = files_arr_js.dyn_ref::<js_sys::Array>() else {
+        uploading.set(false);
+        return;
+    };
+    let length_js = files_arr.length();
+    if length_js == 0 {
         return;
     }
     // 选完即清 input.value，下次同文件也能再触发 change。
@@ -1546,25 +1575,35 @@ fn spawn_attachment_uploads(
     // 计数本身包 Arc：spawn_local(async move) 会 move 捕获，循环里同一变量要 clone 进每个任务。
     use std::sync::atomic::{AtomicI64, Ordering};
     use std::sync::Arc;
-    let remaining = Arc::new(AtomicI64::new(files.length() as i64));
+    let remaining = Arc::new(AtomicI64::new(length_js as i64));
 
-    for i in 0..files.length() {
-        let Ok(file_js) = Reflect::get(&files, &JsValue::from_f64(i as f64)) else {
-            continue;
-        };
-        let Ok(file) = file_js.dyn_into::<web_sys::File>() else {
-            // 这一个文件读不出来也计数减一，避免 uploading 卡死。
-            if remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
-                uploading.set(false);
+    for i in 0..length_js {
+        let file_js = match files_arr.get(i as u32) {
+            v if !v.is_undefined() && !v.is_null() => v,
+            _ => {
+                if remaining.fetch_sub(1, Ordering::SeqCst) == 1 {
+                    uploading.set(false);
+                }
+                continue;
             }
-            continue;
         };
+        let size = Reflect::get(&file_js, &JsValue::from_str("size"))
+            .ok()
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0) as i64;
+        let filename = Reflect::get(&file_js, &JsValue::from_str("name"))
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_else(|| "未命名文件".to_string());
+        // Array.from 出来的元素仍是 File 实例，但 wasm-bindgen 的
+        // dyn_into::<web_sys::File> 走静态 prototype 检查会失败（FileList
+        // / 跨 realm 场景常见），改走 unchecked_from_js：File 继承 Blob，
+        // 运行期 instanceof 也通过，uploadAttachment 内部只用 Blob 字段。
+        let file_for_upload = web_sys::File::unchecked_from_js(file_js);
         let sid_for_task = sid.clone();
         let remaining_for_task = remaining.clone();
-        let size = file.size() as i64;
-        let filename = file.name();
         spawn_local(async move {
-            let result = upload_attachment("", &file, false, Some(&sid_for_task)).await;
+            let result = upload_attachment("", &file_for_upload, false, Some(&sid_for_task)).await;
             match result {
                 Ok(a) => {
                     attachments.update(|l| {

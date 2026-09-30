@@ -29,19 +29,36 @@ fn spawn_upload(
     else {
         return;
     };
-    // `HtmlInputElement::files()` 要 web-sys 的 `FileList` 特性，而本仓库没开、Cargo.toml
-    // 又不该由本任务改，于是照 `tiny_editor` 取粘贴文件的办法用 Reflect 读 `files[0]`
-    // （没选文件时是 `undefined`，`dyn_into` 自然失败）。
+    // `HtmlInputElement::files()` 要 web-sys 的 `FileList` 特性，而本仓库没开、
+    // Cargo.toml 又不该由本任务改。Reflect::get(files, idx) 在 FileList 上
+    // 拿不到元素（FileList 不暴露数值属性），`dyn_ref::<js_sys::Array>` 也
+    // 不行（FileList 不是 Array）——agent_panel.rs 的多文件循环踩过这两个坑。
+    // 最稳的路是 `Array.from(files)`：FileList 自带 Symbol.iterator，转成
+    // 普通 Array 后 `Array.prototype[0]` / `.item(0)` 都拿到真正的 File。
     let Ok(files) = Reflect::get(AsRef::<JsValue>::as_ref(&input), &JsValue::from_str("files"))
     else {
         return;
     };
-    let Ok(first) = Reflect::get(&files, &JsValue::from_f64(0.0)) else {
+    let Ok(array_from_js) = js_sys::eval("Array.from") else {
         return;
     };
-    let Ok(file) = first.dyn_into::<web_sys::File>() else {
+    let Ok(array_from) = array_from_js.dyn_into::<js_sys::Function>() else {
         return;
     };
+    let Ok(files_arr_val) = array_from.call1(&JsValue::UNDEFINED, &files) else {
+        return;
+    };
+    let Some(files_arr) = files_arr_val.dyn_ref::<js_sys::Array>() else {
+        return;
+    };
+    let first = files_arr.get(0);
+    if first.is_undefined() || first.is_null() {
+        return;
+    }
+    // dyn_into::<web_sys::File> 对跨 realm / FileList 取出的 File 会失败
+    // （wasm-bindgen 静态 prototype 检查），改走 unchecked_from_js：File 继承
+    // Blob，运行期 instanceof 也是 true，且 upload_attachment 只用到 Blob 字段。
+    let file = web_sys::File::unchecked_from_js(first);
     // 选完即传；input 立刻清空，同一个文件重选也能再触发 change。
     input.set_value("");
     if code.is_empty() {
