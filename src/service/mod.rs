@@ -21,7 +21,7 @@ use crate::config::Config;
 use crate::error::AppError;
 use crate::service::agent::runner::SessionTurns;
 use crate::service::agent::templates::{validate_query_templates, validate_templates, ToolSchema};
-use crate::service::agent::tools::{build_query_tools, build_tools};
+use crate::service::agent::introspection::{build_query_tools, build_tools};
 use crate::storage::{cf, BatchOp, BlobStore, DocStore};
 
 pub use agent::AgentService;
