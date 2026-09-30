@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use ulid::Ulid;
 
 use crate::config::Config;
-use crate::domain::{AgentMessage, AgentSession};
+use crate::domain::{AgentMessageRecord, AgentSession};
 use crate::error::AppError;
 use crate::storage::{cf, keys, BatchOp, DocStore};
 
@@ -93,7 +93,7 @@ impl AgentService {
         Ok(true)
     }
 
-    pub fn append_message(&self, msg: AgentMessage) -> Result<(), AppError> {
+    pub fn append_message(&self, msg: AgentMessageRecord) -> Result<(), AppError> {
         let op = BatchOp::put(
             cf::AGENT_MESSAGES,
             keys::agent_message_key(msg.session_id, msg.id).to_vec(),
@@ -108,13 +108,13 @@ impl AgentService {
         user_id: Ulid,
         session_id: Ulid,
         limit: usize,
-    ) -> Result<Vec<AgentMessage>, AppError> {
+    ) -> Result<Vec<AgentMessageRecord>, AppError> {
         // 先确认 session 归属
         let _ = self.get_session(user_id, session_id)?.ok_or(AppError::NotFound)?;
         let prefix = keys::agent_message_prefix(session_id);
         let mut out = Vec::new();
         for (_, v) in self.store.scan_prefix(cf::AGENT_MESSAGES, &prefix)? {
-            let m: AgentMessage = bincode::deserialize(&v)?;
+            let m: AgentMessageRecord = bincode::deserialize(&v)?;
             out.push(m);
         }
         out.sort_by_key(|m| m.created_at);

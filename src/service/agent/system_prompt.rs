@@ -5,9 +5,10 @@
 //! 喂给 Rig 的 Chat Completions streaming。
 //!
 //! 注意：`to_chat_messages` 现在还是「把 `&[AgentMessage]` 原样转 `Vec<AgentMessage>`」
-//! 的恒等形态，因为 `AgentMessage` 仍是领域层类型，task 3 会把它换成
-//! `rig::message::Message` 别名，task 11 会按新类型重写 `to_chat_messages`。
-//! 提前按 rig 的 `Message` 写只会让 task 3 一次性大改两次。
+//! 的恒等形态。task 3 之后 `AgentMessage` 是 `rig::message::Message` 的别名，但
+//! `AgentMessageRecord` 才带 `id` / `session_id` / `created_at` 这些域字段——
+//! runner 需要先把 `&[AgentMessageRecord]` 的 `.message` 抽出来再喂给本函数，
+//! task 11 会按新形态做实际的角色 / tool_call 映射。
 
 use crate::domain::AgentMessage;
 
@@ -27,10 +28,11 @@ pub fn agent_system_prompt(ws_title: &str, ws_id: &str) -> String {
     )
 }
 
-/// 当前只是把领域层 `AgentMessage` 序列按值复制一份：
-/// `AgentMessage` 现在还带着 `id` / `session_id` / `created_at` 这些域字段，序列化
-/// 时要全部透传，不做任何过滤或转换。task 3 切到 `rig::message::Message` 之后，本
-/// 函数会做 role / tool_calls / tool_call_id 的实际映射。
+/// 当前只是把 `AgentMessage`（即 `rig::message::Message`）序列按值复制一份：
+/// task 3 之后 `AgentMessage` 已经是 Rig Message 别名（不再带 `id` /
+/// `session_id` / `created_at`，这些由 `AgentMessageRecord` 承载），所以本函数
+/// 现在是按值复制 `Message` 本身，task 11 会补 role / tool_calls / tool_call_id
+/// 的实际映射。
 pub fn to_chat_messages(history: &[AgentMessage]) -> Vec<AgentMessage> {
     history.to_vec()
 }

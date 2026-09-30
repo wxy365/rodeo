@@ -18,7 +18,7 @@ use crate::domain::{
     Comment, Entry,
     Invite,
     LabelSchema, LabelValueType, LinkKind,
-    LabelWrite, Labeling, Message, NamedPrompt, Query as ViewQuery, Relation, RelationSemantic, Role, SemanticKind, SortField, SortKey,
+    LabelWrite, Labeling, Message, NamedPrompt, Query as ViewQuery, Relation, RelationSemantic, SemanticKind, SortField, SortKey,
     SortSpec, TitleColorRule,
     ValueColor, ValueSource, View, ViewTimeline, Workspace, WorkspaceAiConfig, WorkspaceMember,
     WorkspaceRole,

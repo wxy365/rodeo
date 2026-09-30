@@ -10,7 +10,7 @@ use tokio::sync::broadcast;
 use ulid::Ulid;
 
 use crate::domain::agent_events::{AgentEvent, ToolErrorKind};
-use crate::domain::{AgentMessage, Role, ToolCall};
+use crate::domain::AgentMessageRecord;
 use crate::error::AppError;
 use crate::service::agent::exec::execute_tool;
 use crate::service::agent::system_prompt::{agent_system_prompt, to_chat_messages};

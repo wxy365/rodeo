@@ -1,27 +1,33 @@
+//! Agent 消息与领域类型。
+//!
+//! 消息本体直接复用 `rig::message::Message` —— agent 的轮次编排、tool
+//! call/result、序列化、provider 适配全部交给 rig 处理。Rodeo 私有字段
+//! （`id` / `session_id` / `created_at`）由 `AgentMessageRecord` 在持久化层
+//! 承载，与 Rig Message 一起落库。
+//!
+//! `rig::message::Message` 三个变体（参考 Context7）：
+//! - `System { content: String }` — 系统提示
+//! - `User { content: Vec<UserContent> }` — 用户消息 / 工具回执（`UserContent::tool_result`）
+//! - `Assistant { id: Option<String>, content: Vec<AssistantContent> }` — 助手回复（`Text`/`ToolCall`/`Reasoning`）
+
+pub use rig::message::{
+    AssistantContent, Message as AgentMessage, ToolResult as AgentToolResult, ToolResultContent,
+    UserContent,
+};
+pub use ulid::Ulid;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use ulid::Ulid;
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum Role { System, User, Assistant, Tool }
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ToolCall {
-    pub id: String,
-    pub name: String,
-    pub args: serde_json::Value,
-    pub result_preview: String,
-    pub ok: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct AgentMessage {
+/// DocStore 落库一行：Rig Message + Rodeo 元数据。
+///
+/// 把 Rig 的 `Message` 与 Rodeo 私有的 ULID / 时间戳捆成一个落库单元：
+/// `id` 是消息本身的 row id，`session_id` 用于前缀扫描归属到会话，
+/// `created_at` 走 session 列表的排序 + 历史窗口裁剪。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AgentMessageRecord {
     pub id: Ulid,
     pub session_id: Ulid,
-    pub role: Role,
-    pub content: String,
-    pub tool_calls: Vec<ToolCall>,
-    pub tool_call_id: Option<String>,
+    pub message: AgentMessage,
     pub created_at: DateTime<Utc>,
 }
 
