@@ -1777,6 +1777,19 @@ pub async fn send_agent_message(
         .map_err(|e| e.to_string())
 }
 
+/// 显式取消一个正在跑的 turn。`Ok(true)` 表示刚被取消、`Ok(false)` 表示
+/// 已经没有活跃 turn（重复点击、turn 已结束都是 false）。前端不关心这个
+/// bool 本身——只是为了把服务端 `was_active` 的语义直接透出来；UI 拿到
+/// 任何 Ok 都立即把 streaming 标志关掉。
+pub async fn cancel_agent_turn(turn_id: &str) -> Result<bool, String> {
+    let q = "mutation($id: ID!) { cancelAgentTurn(turnId: $id) }";
+    let data = graphql(q, json!({ "id": turn_id })).await?;
+    Ok(data
+        .get("cancelAgentTurn")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false))
+}
+
 #[derive(Clone, serde::Deserialize, serde::Serialize, Debug, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentMessageContext {

@@ -3133,6 +3133,27 @@ impl Mutation {
             started_at: Utc::now(),
         })
     }
+
+    /// 显式取消一个正在进行的 turn。返回 `was_active`：
+    /// - `true`：该 turn 还在 SessionTurns 注册表里，刚刚被 `finish` 移除；
+    /// - `false`：该 turn 已结束 / 不存在（重复取消是 no-op）。
+    ///
+    /// 真正的「杀掉 runner」由 `SessionTurns::finish` 承担：它把 `TurnHandle`
+    /// 从 map 里 `remove`，`TurnHandle.sender`（即注册表里那份 broadcast
+    /// sender 克隆）随之 drop——runner 的本地 `tx` 还活着，所以 channel
+    /// 不会立刻关，但 SSE 端 `session_of(turn_id)` 之后变 None，前端用
+    /// 这个 bool 决定要不要立刻把 streaming 指示器关掉。start_or_replace
+    /// 替换旧 turn 时也会隐式触发同一条 finish 路径。
+    async fn cancel_agent_turn(&self, ctx: &Context<'_>, turn_id: ID) -> GqlResult<bool> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        gql.require_auth()?;
+        let id = parse_ulid(turn_id.as_str())?;
+        let was_active = gql.services.agent_turns.session_of(id).is_some();
+        if was_active {
+            gql.services.agent_turns.finish(id);
+        }
+        Ok(was_active)
+    }
 }
 
 // ---------- 请求处理 ----------

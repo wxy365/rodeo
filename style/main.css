@@ -2280,6 +2280,22 @@ input[type="color"].sw:disabled {
     opacity: 0.5;
     cursor: not-allowed;
 }
+.agent-cancel {
+    /* 取消按钮：仅在 streaming 时挂载（Show when=streaming.get()），用
+       浅红边 + 红字把它和「发送」主按钮视觉上分开——按错也只是一次
+       no-op，不会丢掉已发的内容。 */
+    border: 1px solid var(--danger, #c2410c);
+    background: transparent;
+    color: var(--danger, #c2410c);
+    padding: 5px 11px;
+    border-radius: var(--r-s);
+    cursor: pointer;
+    font-size: 13px;
+}
+.agent-cancel:hover {
+    background: var(--danger, #c2410c);
+    color: var(--bg);
+}
 
 /* 会话列表里每行的标题 + 删除按钮：标题撑满，删除按钮贴右。item 本身是
    flex 行，删除按钮不撑开，但按下时高亮——避免误删（点标题 = 切会话，点

@@ -43,8 +43,8 @@ use crate::frontend::agent_side_effects::SideEffectHint;
 use crate::frontend::graphql_client::get_token;
 use crate::frontend::components::human_size;
 use crate::frontend::graphql_client::{
-    create_agent_session, delete_agent_session, list_agent_messages, list_agent_sessions,
-    send_agent_message, AgentMessage, AgentMessageContext, AgentSession,
+    cancel_agent_turn, create_agent_session, delete_agent_session, list_agent_messages,
+    list_agent_sessions, send_agent_message, AgentMessage, AgentMessageContext, AgentSession,
 };
 #[cfg(target_arch = "wasm32")]
 use crate::frontend::graphql_client::upload_attachment;
@@ -190,6 +190,11 @@ pub fn AgentPanel() -> impl IntoView {
     let attachments: RwSignal<Vec<AgentAttachmentChip>> = RwSignal::new(Vec::new());
     // 一次选中多文件时多协程并发上传，UI 用它显示「上传中…」+ 禁用发送按钮。
     let attachments_uploading: RwSignal<bool> = RwSignal::new(false);
+    // 当前正在跑的 turn id：do_send 拿到 AgentTurn 后写入，cancel 按钮调完
+    // cancelAgentTurn 立即清空。取消按钮的可见性以 streaming 为准（覆盖
+    // send_agent_message 阶段）；current_turn_id 用来保证 cancel 永远拿得到
+    // id，不会因为某种 race 拿到 None。
+    let current_turn_id: RwSignal<Option<String>> = RwSignal::new(None);
     // 上传失败的提示（resolver 拒绝 / 网络错 / 超 50 MiB）。单条短提示，替换不堆叠。
     let attachments_error: RwSignal<Option<String>> = RwSignal::new(None);
     let streaming: RwSignal<bool> = RwSignal::new(false);
@@ -505,7 +510,13 @@ pub fn AgentPanel() -> impl IntoView {
                     // 替换为真 ULID 消息——SSE 路径出错也不需要就地清，因为
                     // 服务端已经把 user_msg 落库（graphql.rs send_agent_message
                     // 先 append 再 run_turn），list_agent_messages 能拿回真消息。
+                    current_turn_id.set(Some(turn.id.clone()));
                     open_stream(&turn.id, messages, streaming, streaming_tool_calls, retry_signal, effects).await;
+                    // open_stream 结束后清掉 current_turn_id（无论正常 done 还是
+                    // 流错误退出，streaming 已经被置 false）：取消按钮基于
+                    // streaming 显隐，但万一未来加「超时清空」之类的逻辑时
+                    // 这里同步清更不容易留 orphan turn id。
+                    current_turn_id.set(None);
                 }
                 Err(e) => {
                     streaming.set(false);
@@ -996,6 +1007,45 @@ pub fn AgentPanel() -> impl IntoView {
                                         >
                                             {move || if streaming.get() { "..." } else { "发送" }}
                                         </button>
+                                        // 取消按钮：只在 streaming 期间出现。
+                                        // 调 cancelAgentTurn，服务端 finish() 把 turn
+                                        // 从 SessionTurns 注册表移除；runner 还在跑也
+                                        // 无所谓——前端立即关 streaming 指示器、释放
+                                        // 输入框让用户接着打字。Error 路径只 console.warn
+                                        // 不弹错误：用户重复点或服务端已结束都不会让面板
+                                        // 失去响应。
+                                        <Show
+                                            when=move || streaming.get()
+                                            fallback=move || view! { <span></span> }
+                                        >
+                                            <button
+                                                class="agent-cancel"
+                                                on:click={
+                                                    let streaming = streaming;
+                                                    let current_turn_id = current_turn_id;
+                                                    move |_| {
+                                                        let Some(tid) = current_turn_id.get_untracked() else {
+                                                            // streaming=true 但 turn_id 还没就绪
+                                                            // （send_agent_message 阶段）——按钮
+                                                            // 不该被点；如果真的点了（极快双击）就静默
+                                                            // no-op，等下一次按钮出现。
+                                                            return;
+                                                        };
+                                                        streaming.set(false);
+                                                        current_turn_id.set(None);
+                                                        spawn_local(async move {
+                                                            if let Err(e) = cancel_agent_turn(&tid).await {
+                                                                web_sys_console_warn(&format!(
+                                                                    "cancel_agent_turn failed: {e}"
+                                                                ));
+                                                            }
+                                                        });
+                                                    }
+                                                }
+                                            >
+                                                "取消"
+                                            </button>
+                                        </Show>
                                     </div>
                                     // 流式期间在输入区下方挂一条 status：spinner + 文案
                                     // 「Buckaroo 正在思考…」——让用户看见 agent 确实在跑，
