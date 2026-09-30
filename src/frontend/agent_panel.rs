@@ -199,6 +199,11 @@ pub fn AgentPanel() -> impl IntoView {
     // 本信号非 cfg(target_arch = "wasm32") 也持有：SSR / native 编译下 handle_event
     // 不跑，列表始终为空，零开销。
     let streaming_tool_calls: RwSignal<Vec<ToolCallDisplay>> = RwSignal::new(Vec::new());
+    // 内部重试提示：服务端 `ModelTurnRetried` 推 AgentEvent::Error 时消息以
+    // "LLM 内部重试 turn N" 开头,前端解析出 N 后挂在 banner。3 秒后自动
+    // 清空；中途又来新 retry 事件,Effect 重新计时——避免前一轮 timer 误关。
+    // SSR / native 编译下不会有事件来源,信号始终 None。
+    let retry_signal: RwSignal<Option<usize>> = RwSignal::new(None);
     // 用户是否「贴底」：scroll 事件每次把它更新成 (scroll_height - top - client) < 32px。
     // 初始 true —— 切会话 / 首次打开面板时直接滚到底，而不是停在历史某处。
     // 自动滚动 effect 只在 at_bottom 时推进 scroll_top，避免用户主动上滑读历史时跳回去。
@@ -264,6 +269,23 @@ pub fn AgentPanel() -> impl IntoView {
         if let Some(el) = messages_ref.get() {
             el.set_scroll_top(el.scroll_height());
         }
+    });
+
+    // retry banner 自动清除：retry_signal 翻成 Some(n) 后起 3s timer；timer
+    // 到点时检查信号是否仍是当初的 Some(n)——仍是才清。这样中途又来新
+    // retry 事件（变成 Some(m)）时前一轮 timer 看到值变了会放手，新一轮
+    // Effect 重跑也会起自己的 timer，最终展示最新一轮的 turn + 重置计时。
+    // 用 gloo_timers 的 `futures` feature（仓库已在用 gloo-timers）：
+    // TimeoutFuture 直接 .await，不引第三方定时器库。
+    #[cfg(target_arch = "wasm32")]
+    Effect::new(move |_| {
+        let Some(turn) = retry_signal.get() else { return };
+        spawn_local(async move {
+            gloo_timers::future::TimeoutFuture::new(3_000).await;
+            if retry_signal.get_untracked() == Some(turn) {
+                retry_signal.set(None);
+            }
+        });
     });
 
     // 头部拖拽起点：仅 mousedown 时启用 cursor:move，移动 / 松手由窗口级
@@ -404,6 +426,9 @@ pub fn AgentPanel() -> impl IntoView {
         // 切会话时同步清空流式 ToolCall 卡片——避免上一会话未结束的乐观态
         // 跑到新会话里,触发「这是哪个工具的卡片」的混淆。
         streaming_tool_calls.set(Vec::new());
+        // 切会话时同步清掉旧会话遗留的重试 banner——banner 描述的是上一会话
+        // LLM 的 retry 行为,跨会话展示会让用户以为新会话也在重试。
+        retry_signal.set(None);
     });
 
     // 参数显式标 `()`：原来 `move |_|` 是让 on:click 推断成 MouseEvent handler,
@@ -480,7 +505,7 @@ pub fn AgentPanel() -> impl IntoView {
                     // 替换为真 ULID 消息——SSE 路径出错也不需要就地清，因为
                     // 服务端已经把 user_msg 落库（graphql.rs send_agent_message
                     // 先 append 再 run_turn），list_agent_messages 能拿回真消息。
-                    open_stream(&turn.id, messages, streaming, streaming_tool_calls, effects).await;
+                    open_stream(&turn.id, messages, streaming, streaming_tool_calls, retry_signal, effects).await;
                 }
                 Err(e) => {
                     streaming.set(false);
@@ -698,6 +723,24 @@ pub fn AgentPanel() -> impl IntoView {
                                             }
                                         }
                                     >
+                                        // 内部重试 banner：handle_event 解析
+                                        // "LLM 内部重试 turn N" 后挂在 retry_signal;
+                                        // 这里按信号存在与否挂卸；Effect 自动 3s
+                                        // 清空（中途新 retry 会重置计时）。
+                                        // 放在 messages <For> 之上：banner 描述
+                                        // 的是「当前会话正在重试」的瞬时状态，
+                                        // 视觉上压在新消息之上最显眼。
+                                        <Show
+                                            when=move || retry_signal.get().is_some()
+                                            fallback=move || view! { <span></span> }
+                                        >
+                                            <div class="retry-banner" aria-live="polite">
+                                                {move || {
+                                                    let turn = retry_signal.get().unwrap_or(0);
+                                                    format!("LLM 正在重试第 {turn} 轮")
+                                                }}
+                                            </div>
+                                        </Show>
                                         <For
                                             each=move || messages.get()
                                             key=|m| m.id.clone()
@@ -1344,6 +1387,7 @@ async fn open_stream(
     messages: RwSignal<Vec<AgentMessage>>,
     streaming: RwSignal<bool>,
     streaming_tool_calls: RwSignal<Vec<ToolCallDisplay>>,
+    retry_signal: RwSignal<Option<usize>>,
     effects: AgentSideEffects,
 ) {
     use gloo_net::http::Request;
@@ -1430,7 +1474,7 @@ async fn open_stream(
                     Ok(v) => v,
                     Err(_) => continue,
                 };
-                handle_event(&parsed, &messages, &streaming_tool_calls, &effects);
+                handle_event(&parsed, &messages, &streaming_tool_calls, &retry_signal, &effects);
             }
         }
     }
@@ -1463,6 +1507,7 @@ async fn open_stream(
     _messages: RwSignal<Vec<AgentMessage>>,
     streaming: RwSignal<bool>,
     _streaming_tool_calls: RwSignal<Vec<ToolCallDisplay>>,
+    _retry_signal: RwSignal<Option<usize>>,
     _effects: AgentSideEffects,
 ) {
     streaming.set(false);
@@ -1473,6 +1518,7 @@ fn handle_event(
     parsed: &Value,
     messages: &RwSignal<Vec<AgentMessage>>,
     streaming_tool_calls: &RwSignal<Vec<ToolCallDisplay>>,
+    retry_signal: &RwSignal<Option<usize>>,
     effects: &AgentSideEffects,
 ) {
     let typ = parsed.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -1627,15 +1673,51 @@ fn handle_event(
             effects.tick.update(|n| *n += 1);
             effects.last.set(Some(hint));
         }
-        "done" | "error" => {
+        "done" => {
             // 流结束由调用方在 open_stream 末尾统一把 streaming 置回 false，
             // 这里不再重复处理。但要把 streaming_tool_calls 清掉：list_agent_messages
             // 重新拉到真消息后,真消息自带 m.tool_calls（结构化、完整配对）,
             // 卡片渲染会从那个字段来——这里的乐观态不撤掉会和真消息重复。
             streaming_tool_calls.set(Vec::new());
         }
+        "error" => {
+            // 两种来源都要收尾：
+            // 1. 服务端 `ModelTurnRetried`（runner.rs:284）推一条临时 banner
+            //    消息——"LLM 内部重试 turn N"，前端解析 N 挂到 retry_signal
+            //    显示 3 秒。流并未结束,故 streaming_tool_calls 不清。
+            // 2. 其它真正的 end-of-stream 错误（沿用旧行为）——同样清掉
+            //    streaming_tool_calls,避免乐观态和重拉到的 m.tool_calls 重复。
+            let message = parsed
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            if let Some(turn) = parse_retry_turn(&message) {
+                retry_signal.set(Some(turn));
+                // retry banner：流在继续,tool_call 卡片仍在累积,不清。
+            } else {
+                // 非内部重试的 error：按原行为清 tool_call 卡片。
+                streaming_tool_calls.set(Vec::new());
+            }
+        }
         _ => {}
     }
+}
+
+/// 解析 "LLM 内部重试 turn N"（runner.rs:284 ModelTurnRetried 翻译）→
+/// 返回 N。匹配不到数字或前缀不一致返回 None——这意味着是真正的 end-of-stream
+/// 错误（应当走 streaming_tool_calls.set(Vec::new()) 路径）。
+///
+/// 故意用 ASCII 单字符扫描：消息里其他字符（汉字 / 标点）都不参与边界判断，
+/// 只有 ASCII 数字字符是稳定锚点。允许 "turn 3" 前后带空格、末尾可带任意尾巴
+/// （"。" / "次" 等）。
+#[cfg(target_arch = "wasm32")]
+fn parse_retry_turn(message: &str) -> Option<usize> {
+    const PREFIX: &str = "LLM 内部重试 turn ";
+    let rest = message.strip_prefix(PREFIX)?;
+    // 扫描连续 ASCII 数字；前面可能留一段空白前缀（防御性）。
+    let digits: String = rest.trim_start().chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
 }
 
 /// 与服务端 `derive_session_title` 同算法：trim 后取首段非空 line，截断

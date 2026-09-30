@@ -2521,6 +2521,20 @@ input[type="color"].sw:disabled {
 .tool-call-overflow > summary::-webkit-details-marker {
     display: none;
 }
+/* LLM 内部重试 banner：handle_event 解析到 "LLM 内部重试 turn N" 时挂出，
+ * 3 秒后 Effect 自动清。重试是中间事件——流并未结束，不该用 .agent-tool-err
+ * 那种红；用淡黄区分「瞬时提示」与「真的失败」。位置在 .agent-messages 内、
+ * 消息 <For> 之上,视觉上压在最新消息之上。 */
+.retry-banner {
+    background: #fcf3cf;
+    color: #6b5b00;
+    border: 1px solid #e6d97a;
+    border-radius: var(--r-s);
+    padding: 8px 12px;
+    font-size: 13px;
+    line-height: 1.4;
+    align-self: stretch;
+}
 /* 流式状态条：输入区下方的小行，spinner + 文案。靠 <Show> 挂卸，开 SSR 时不会渲染。 */
 .agent-streaming {
     display: flex;
