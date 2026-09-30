@@ -12,7 +12,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
-use crate::domain::agent::{AssistantContent, UserContent};
+use crate::domain::agent::{AssistantContent, ToolResultContent, UserContent};
 use crate::domain::{
     Account, AccountStatus, ActionTarget, AgentMessage, AgentMessageRecord, Attachment, AuditLog,
     AutomationRule, Comment, Entry, Invite, LabelSchema, LabelValueType, LabelWrite, Labeling,
@@ -1039,78 +1039,83 @@ pub struct GqlAgentMessage {
 }
 
 /// 把 `AgentMessageRecord`（rig::Message + Rodeo 元数据）摊平成 GraphQL
-/// 类型。Task 4 的最小可编译版本——text 块拼接、tool_call 拆出来、tool 消息
-/// 视作 role=Tool 并把 call_id 透出来。后续 task（message → tool_call /
-/// tool_call_id 的双向映射）会基于这个壳做语义化精修。
-fn gql_agent_message(record: AgentMessageRecord) -> GqlAgentMessage {
-    let mut role = GqlAgentRole::User;
-    let mut content = String::new();
-    let mut tool_calls: Vec<GqlAgentToolCallRecord> = Vec::new();
-    let mut tool_call_id: Option<String> = None;
-
-    match record.message {
-        AgentMessage::System { content: text } => {
-            role = GqlAgentRole::System;
-            content = text;
-        }
-        AgentMessage::User { content: items } => {
-            for item in items {
-                match item {
-                    UserContent::Text(t) => content.push_str(&t.text),
-                    UserContent::ToolResult(tr) => {
-                        role = GqlAgentRole::Tool;
-                        tool_call_id = Some(tr.call.to_string());
-                        for part in tr.content {
-                            if let crate::domain::agent::ToolResultContent::Text(t) = part {
-                                content.push_str(&t.text);
+/// 类型。Task 6: 改成 `From<AgentMessageRecord>` impl——System / User /
+/// Assistant 三个变体分别填 role + content；Assistant.ToolCall 拆出来，
+/// User.ToolResult.call 取作 tool_call_id，role 升为 Tool。`tool_call`
+/// 的 `result_preview` / `ok` 在紧随其后的 Tool 消息里承载，这里只记
+/// 请求态。
+impl From<AgentMessageRecord> for GqlAgentMessage {
+    fn from(record: AgentMessageRecord) -> Self {
+        let (role, content, tool_calls, tool_call_id) = match record.message {
+            AgentMessage::System { content } => (GqlAgentRole::System, content, Vec::new(), None),
+            AgentMessage::User { content, .. } => {
+                let mut text = String::new();
+                let mut tool_preview = String::new();
+                let mut extracted_call_id: Option<String> = None;
+                let mut is_tool = false;
+                for item in &content {
+                    match item {
+                        UserContent::Text(t) => text.push_str(&t.text),
+                        UserContent::ToolResult(tr) => {
+                            is_tool = true;
+                            extracted_call_id = Some(tr.call.to_string());
+                            for part in &tr.content {
+                                if let ToolResultContent::Text(t) = part {
+                                    tool_preview.push_str(&t.text);
+                                }
                             }
                         }
-                    }
-                    UserContent::Image(_)
-                    | UserContent::Audio(_)
-                    | UserContent::Video(_)
-                    | UserContent::Document(_) => {
-                        // 当前 UI 不展示富媒体预览；保留空内容，等 task 11
-                        // 引入 dedicated field 时再细化。
-                    }
-                }
-            }
-        }
-        AgentMessage::Assistant { content: items, .. } => {
-            role = GqlAgentRole::Assistant;
-            for item in items {
-                match item {
-                    AssistantContent::Text(t) => content.push_str(&t.text),
-                    AssistantContent::Reasoning(_) => {
-                        // 推理链不入库；若已写入则跳过——不展示也不喂前端。
-                    }
-                    AssistantContent::ToolCall(tc) => {
-                        // tool_call 的 result_preview / ok 在 tool_msg 里，
-                        // 这里只承载「请求态」，前端把它跟紧随其后的 Tool 消息对账。
-                        tool_calls.push(GqlAgentToolCallRecord {
-                            id: tc.id.to_string(),
-                            name: tc.function.name,
-                            args: tc.function.arguments,
-                            result_preview: String::new(),
-                            ok: false,
-                        });
-                    }
-                    AssistantContent::Image(_) => {
-                        // 不在 v1 展示，等 task 11 细化。
+                        UserContent::Image(_)
+                        | UserContent::Audio(_)
+                        | UserContent::Video(_)
+                        | UserContent::Document(_) => {
+                            // 当前 UI 不展示富媒体预览；保留空内容，等 task 11
+                            // 引入 dedicated field 时再细化。
+                        }
                     }
                 }
+                let role = if is_tool { GqlAgentRole::Tool } else { GqlAgentRole::User };
+                let content = if is_tool { tool_preview } else { text };
+                (role, content, Vec::new(), extracted_call_id)
             }
-        }
-    }
+            AgentMessage::Assistant { content, .. } => {
+                let mut text = String::new();
+                let mut tcs = Vec::new();
+                for item in &content {
+                    match item {
+                        AssistantContent::Text(t) => text.push_str(&t.text),
+                        AssistantContent::Reasoning(_) => {
+                            // 推理链不入库；若已写入则跳过——不展示也不喂前端。
+                        }
+                        AssistantContent::ToolCall(tc) => {
+                            // tool_call 的 result_preview / ok 在 tool_msg 里，
+                            // 这里只承载「请求态」，前端把它跟紧随其后的 Tool 消息对账。
+                            tcs.push(GqlAgentToolCallRecord {
+                                id: tc.id.to_string(),
+                                name: tc.function.name.clone(),
+                                args: tc.function.arguments.clone(),
+                                result_preview: String::new(),
+                                ok: false,
+                            });
+                        }
+                        AssistantContent::Image(_) => {
+                            // 不在 v1 展示，等 task 11 细化。
+                        }
+                    }
+                }
+                (GqlAgentRole::Assistant, text, tcs, None)
+            }
+        };
 
-    GqlAgentMessage {
-        id: record.id.to_string(),
-        session_id: record.session_id.to_string(),
-        role,
-        content,
-        tool_calls,
-        tool_call_id,
-        created_at: record.created_at,
+        Self {
+            id: record.id.to_string(),
+            session_id: record.session_id.to_string(),
+            role,
+            content,
+            tool_calls,
+            tool_call_id,
+            created_at: record.created_at,
+        }
     }
 }
 
@@ -1344,7 +1349,7 @@ impl Query {
             .ok_or(AppError::NotFound)?;
         let limit = limit.unwrap_or(200).max(0).min(1000) as usize;
         let rows = gql.services.agent.list_message_records(sid, limit)?;
-        Ok(rows.into_iter().map(gql_agent_message).collect())
+        Ok(rows.into_iter().map(GqlAgentMessage::from).collect())
     }
 
     /// 某条目的全部评论，按发表时间升序。成员即可读（与 labelSchemas 一致）。
