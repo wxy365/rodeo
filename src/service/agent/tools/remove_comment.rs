@@ -1,4 +1,6 @@
-//! `remove_comment` tool 骨架。Args/Outputs/Error 形态在后续 task 中按 spec §5 填充。
+//! 删除条目下的指定评论。本工具以「作者本人」身份调用（can_moderate=false）：
+//! 想删他人评论必须通过 GraphQL resolver，那条路径上才能取到 Maintainer+ 角色。
+//! 删除会回收评论正文里被引用的内联图片附件。
 
 use std::fmt;
 use std::sync::Arc;
@@ -17,12 +19,16 @@ pub struct RemoveCommentTool {
 
 #[derive(Deserialize)]
 pub struct RemoveCommentArgs {
-    // TODO: 由后续 task 按 spec §5 字段填充
+    pub workspace_id: String,
+    pub entry_code: String,
+    pub comment_id: String,
 }
 
 #[derive(Serialize)]
 pub struct RemoveCommentOutput {
-    // TODO: 由后续 task 按 spec §5 字段填充
+    pub entry_code: String,
+    pub comment_id: String,
+    pub removed: bool,
 }
 
 pub enum RemoveCommentError {
@@ -55,20 +61,54 @@ impl Tool for RemoveCommentTool {
     type Output = RemoveCommentOutput;
 
     fn description(&self) -> String {
-        // TODO: 由后续 task 按 spec §5 替换为正式 description
-        format!("remove_comment (TODO: 待后续 task 填实)")
+        "删除指定条目下的某条评论（按 comment_id 精确匹配）。本工具以作者本人身份调用（can_moderate=false）：能删自己的评论；删他人评论需走 GraphQL 的 deleteComment 接口。删除会回收该评论里被引用的内联图片附件。".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
-        // TODO: 由后续 task 按 spec §5 替换为正式 JSON Schema
-        serde_json::json!({"type": "object", "properties": {}, "required": []})
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "workspace_id": {
+                    "type": "string",
+                    "description": "工作空间 ULID；必须与 agent session 的 workspace 一致"
+                },
+                "entry_code": {
+                    "type": "string",
+                    "description": "评论所属条目 16 位 base62 编码"
+                },
+                "comment_id": {
+                    "type": "string",
+                    "description": "评论 ULID 字符串"
+                }
+            },
+            "required": ["workspace_id", "entry_code", "comment_id"]
+        })
     }
 
     async fn call(
         &self,
         _ctx: &mut ToolContext,
-        _args: Self::Args,
+        args: Self::Args,
     ) -> Result<Self::Output, Self::Error> {
-        unimplemented!("remove_comment 将在后续 task 填实")
+        let ws = Ulid::from_string(&args.workspace_id)
+            .map_err(|e| RemoveCommentError::BadArgs(format!("workspace_id: {e}")))?;
+        if ws != self.workspace_id {
+            return Err(RemoveCommentError::BadArgs(format!(
+                "workspace_id 不匹配 session（session={}, args={}）",
+                self.workspace_id, ws
+            )));
+        }
+        let id = Ulid::from_string(&args.comment_id)
+            .map_err(|e| RemoveCommentError::BadArgs(format!("comment_id: {e}")))?;
+        // agent 工具无角色上下文，一律以 can_moderate=false 调；作者本人仍可删自己的。
+        self.services
+            .comment
+            .delete(self.auth.account_id, &args.entry_code, id, false)
+            .map_err(|e| RemoveCommentError::Server(e.to_string()))?;
+        Ok(RemoveCommentOutput {
+            entry_code: args.entry_code,
+            comment_id: args.comment_id,
+            removed: true,
+        })
     }
 }
