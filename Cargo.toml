@@ -76,6 +76,13 @@ futures-util = { version = "0.3", optional = true, default-features = false, fea
 parking_lot = { version = "0.12", optional = true }
 # Agent runner 用 `CancellationToken` 让 SSE 断连时干净地中止 turn。
 tokio-util = { version = "0.7", features = ["rt"], optional = true }
+# LLM agent 重写（rig-agent-rewrite plan）。先锁版本、仅 ssr、可选；
+# 后续任务会真正接入 rig_core::message / rig::providers::openai / rig::tool::Tool。
+# default-features = false：保留最小特性集（关掉 rig-core 自带的 reqwest/derive/rustls），
+# 等真正接入 OpenAI provider 时再按需打开 `rustls` 特性并确保 ring 唯一 provider。
+# `=X.Y.Z` 严格锁版本：rig 还没到 1.0，bincode 编码不稳定。
+rig-core = { version = "=0.42.0", default-features = false, optional = true }
+rig = { version = "=0.42.0", default-features = false, optional = true }
 
 # 仅 WASM 目标
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -123,6 +130,8 @@ ssr = [
     "dep:futures-util",
     "dep:parking_lot",
     "dep:tokio-util",
+    "dep:rig-core",
+    "dep:rig",
     "leptos/ssr",
     "leptos_meta/ssr",
     "leptos_router/ssr",
