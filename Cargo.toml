@@ -83,7 +83,7 @@ tokio-util = { version = "0.7", features = ["rt"], optional = true }
 # 唯一 provider（axum-server 的 ServerConfig::builder() 在双 provider 下会 panic）。
 # `=X.Y.Z` 严格锁版本：rig 还没到 1.0，bincode 编码不稳定。
 rig-core = { version = "=0.42.0", default-features = false, features = ["rustls"], optional = true }
-rig = { version = "=0.42.0", default-features = false, optional = true }
+rig = { version = "=0.42.0", default-features = false, features = ["agent"], optional = true }
 
 # 仅 WASM 目标
 [target.'cfg(target_arch = "wasm32")'.dependencies]
