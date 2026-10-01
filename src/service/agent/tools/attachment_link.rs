@@ -56,7 +56,7 @@ impl Tool for AttachmentLinkTool {
 
     fn description(&self) -> String {
         // TODO: 由后续 task 按 spec §5 替换为正式 description
-        format!("attachment_link (TODO: 待后续 task 填实)")
+        format!("attachment_link (not yet implemented — hallucinated calls will return a tool error)")
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -69,6 +69,8 @@ impl Tool for AttachmentLinkTool {
         _ctx: &mut ToolContext,
         _args: Self::Args,
     ) -> Result<Self::Output, Self::Error> {
-        unimplemented!("attachment_link 将在后续 task 填实")
+        Err(Self::Error::Server(
+            "tool not yet implemented — will be filled by follow-up task".into(),
+        ))
     }
 }
