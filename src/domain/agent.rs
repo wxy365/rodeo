@@ -22,13 +22,73 @@ use serde::{Deserialize, Serialize};
 ///
 /// 把 Rig 的 `Message` 与 Rodeo 私有的 ULID / 时间戳捆成一个落库单元：
 /// `id` 是消息本身的 row id，`session_id` 用于前缀扫描归属到会话，
-/// `created_at` 走 session 列表的排序 + 历史窗口裁剪。
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// `created_at` 走 session 列表的排序 +历史窗口裁剪。
+///
+/// 序列化走 `try_from` / `into` shim——`rig::message::Message` 及其嵌套
+/// `AssistantContent` / `UserContent` 都带 `#[serde(tag = "...", ...)]`
+/// 内部 tag，bincode 1.x 走 `deserialize_any` 读不回来（错误信息原文：
+/// "Bincode does not support the serde::Deserializer::deserialize_any
+/// method"）。`list_messages` 又是 `filter_map(|(_, v)| ... .ok())`
+/// 静默吞掉失败的 row——结果就是「消息写入成功但 list_messages
+/// 永远空」。Shim 把 `message` 字段单独编码成 JSON 字节，再让 bincode
+/// 走正常的 tuple 编码。读侧失败会冒到上层而不是静默丢失。
+#[derive(Debug, Clone)]
 pub struct AgentMessageRecord {
     pub id: Ulid,
     pub session_id: Ulid,
     pub message: AgentMessage,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct AgentMessageRecordShim {
+    id: Ulid,
+    session_id: Ulid,
+    /// rig::Message 用 `#[serde(tag="role")]` 内部 tag，bincode 1.x
+    /// 走 `deserialize_any` 读不回来。这里改成原始 JSON 字节
+    /// ——bincode 对 `Vec<u8>` 友好（自带长度前缀），解码时再走 serde_json
+    /// 还原回 `rig::Message`。
+    message_json: Vec<u8>,
+    created_at: DateTime<Utc>,
+}
+
+impl From<AgentMessageRecord> for AgentMessageRecordShim {
+    fn from(r: AgentMessageRecord) -> Self {
+        // `serde_json::to_vec` 对 rig::Message 一定成功（JSON 内部 tag
+        // 友好）；在序列化落库路径上没有失败可能，没必要 `Result`。
+        Self {
+            id: r.id,
+            session_id: r.session_id,
+            message_json: serde_json::to_vec(&r.message)
+                .expect("rig::Message 应当能 JSON 编码"),
+            created_at: r.created_at,
+        }
+    }
+}
+
+impl TryFrom<AgentMessageRecordShim> for AgentMessageRecord {
+    type Error = serde_json::Error;
+    fn try_from(s: AgentMessageRecordShim) -> Result<Self, Self::Error> {
+        Ok(Self {
+            id: s.id,
+            session_id: s.session_id,
+            message: serde_json::from_slice(&s.message_json)?,
+            created_at: s.created_at,
+        })
+    }
+}
+
+impl Serialize for AgentMessageRecord {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        AgentMessageRecordShim::from(self.clone()).serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for AgentMessageRecord {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let shim = AgentMessageRecordShim::deserialize(d)?;
+        Self::try_from(shim).map_err(serde::de::Error::custom)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

@@ -150,12 +150,7 @@ impl AgentService {
         session_id: Ulid,
         limit: usize,
     ) -> Result<Vec<AgentMessage>, AppError> {
-        let mut records: Vec<AgentMessageRecord> = self
-            .store
-            .scan_prefix(cf::AGENT_MESSAGES, &session_id.to_bytes())?
-            .into_iter()
-            .filter_map(|(_, v)| bincode::deserialize(&v).ok())
-            .collect();
+        let mut records = self.collect_records(session_id)?;
         records.sort_by_key(|e| e.id);
         Ok(records
             .into_iter()
@@ -181,16 +176,36 @@ impl AgentService {
         session_id: Ulid,
         limit: usize,
     ) -> Result<Vec<AgentMessageRecord>, AppError> {
-        let mut records: Vec<AgentMessageRecord> = self
-            .store
-            .scan_prefix(cf::AGENT_MESSAGES, &session_id.to_bytes())?
-            .into_iter()
-            .filter_map(|(_, v)| bincode::deserialize(&v).ok())
-            .collect();
+        let mut records = self.collect_records(session_id)?;
         records.sort_by_key(|e| e.created_at);
         if records.len() > limit {
             // 保留最新的 limit 条；前端展示时翻转
             records = records.split_off(records.len() - limit);
+        }
+        Ok(records)
+    }
+
+    /// `list_messages` / `list_message_records` 共享：扫前缀 → 反序列化。
+    /// 反序列化失败的 row 视为「历史遗留 / bincode 旧版本不兼容」，跳过并
+    /// 打 warn——以前 `filter_map(|..| .ok())` 静默吞掉，让用户看到的是
+    /// 「消息写进去了但 agentMessages 永远空」这种鬼故事，至少留个信号。
+    fn collect_records(
+        &self,
+        session_id: Ulid,
+    ) -> Result<Vec<AgentMessageRecord>, AppError> {
+        let mut records = Vec::new();
+        for (k, v) in self.store.scan_prefix(cf::AGENT_MESSAGES, &session_id.to_bytes())? {
+            match bincode::deserialize::<AgentMessageRecord>(&v) {
+                Ok(r) => records.push(r),
+                Err(e) => {
+                    tracing::warn!(
+                        target: "rodeo.agent.persist",
+                        session_id = %session_id,
+                        key = %format!("{:02x?}", &k[..k.len().min(32)]),
+                        "跳过无法解码的 agent 消息 row: {e}"
+                    );
+                }
+            }
         }
         Ok(records)
     }
