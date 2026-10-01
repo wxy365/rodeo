@@ -1,15 +1,8 @@
-//! Agent 用的 system prompt 与历史消息组装。
+//! Agent 用的 system prompt。
 //!
-//! 这两个 helper 从 `src/service/ai.rs` 拆出来：ai.rs 现在只关心 Rig 装配和配置层
-//! 逻辑，runner（task 10 改写）会从这里拿 system 文本和历史 `AgentMessage` 序列，
-//! 喂给 Rig 的 Chat Completions streaming。
-//!
-//! 注意：`to_chat_messages` 是「把 `&[AgentMessage]` 原样转 `Vec<AgentMessage>`」
-//! 的恒等形态——`AgentMessage` 是 `rig::message::Message` 的别名（task 3 引入）；
-//! `AgentMessageRecord` 才带 `id` / `session_id` / `created_at` 这些域字段，
-//! runner 需要先把 `&[AgentMessageRecord]` 的 `.message` 抽出来再喂给本函数。
-
-use crate::domain::AgentMessage;
+//! 从 `src/service/ai.rs` 拆出来：ai.rs 现在只关心 Rig 装配和配置层逻辑，
+//! runner（task 10 改写）会从这里拿 system 文本喂给 Rig 的 Chat Completions
+//! streaming。
 
 /// 通用 system 提示 + 工作空间附加段。返回纯文本，runner 自己把它塞进首条
 /// system 消息。
@@ -25,12 +18,4 @@ pub fn agent_system_prompt(ws_title: &str, ws_id: &str) -> String {
          当前工作空间：{ws_title}\n\
          工作空间 ID：{ws_id}"
     )
-}
-
-/// 把 `AgentMessage`（即 `rig::message::Message`）序列按值复制一份。
-/// `AgentMessage` 已是 Rig Message 别名（task 3 引入），不再带 `id` /
-/// `session_id` / `created_at`（这些由 `AgentMessageRecord` 承载），
-/// 所以本函数是 `Message` 序列的恒等转换。
-pub fn to_chat_messages(history: &[AgentMessage]) -> Vec<AgentMessage> {
-    history.to_vec()
 }

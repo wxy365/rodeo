@@ -182,6 +182,14 @@ pub async fn run_turn(services: Arc<Services>, auth: AuthContext, session_id: Ul
     // 当前 user 输入：ctx_md 存在就用它，否则拿 history 最后一条；都没有就空 user。
     // history 是 Vec<AgentMessage> = Vec<rig::Message>，chat history 传过去让 Rig
     // 帮我们组装到 system 之后。
+    //
+    // history 已经包含刚 append 的 user message（graphql.rs:append_message 在
+    // runner 启动前调用过）；.runner(user_msg) 把 user_msg 作为 prompt 再发一次，
+    // .history(chat_history) 把 chat_history 拼在 prompt **之前**——所以
+    // ctx_md=Some 时 user_msg != history.last()（一个是 ctx_md、一个是真实
+    // user query），两个独立 user 消息不需要去重；ctx_md=None 时
+    // user_msg == history.last()，不去重就会 [...past..., user_msg, user_msg]
+    // 让 LLM 看到重复输入。这里按 ctx_md 是否存在分支去重。
     let user_msg = match ctx_md.as_deref() {
         Some(md) => AgentMessage::user(md.to_string()),
         None => history
@@ -189,7 +197,11 @@ pub async fn run_turn(services: Arc<Services>, auth: AuthContext, session_id: Ul
             .cloned()
             .unwrap_or_else(|| AgentMessage::user(String::new())),
     };
-    let chat_history: Vec<AgentMessage> = history;
+    let chat_history: Vec<AgentMessage> = if ctx_md.is_some() || history.is_empty() {
+        history
+    } else {
+        history[..history.len() - 1].to_vec()
+    };
 
     let agent = AgentTools::build(services.clone(), auth.clone(), workspace_id)
         .register_into(
