@@ -226,15 +226,29 @@ pub async fn run_turn(services: Arc<Services>, auth: AuthContext, session_id: Ul
     let mut assistant_tool_calls: Vec<RigToolCall> = Vec::new();
     // assistant record 在 FinalResponse 时创建；先 hold ULID 给 Done 事件用。
     let assistant_id = Ulid::new();
+    // 流式 `` 解析器：把 reasoning 拆出去 emit Reasoning 事件，
+    // 外侧 emit Delta。详见本文件末尾 `ThinkParser` 的注释。
+    let mut think_parser = ThinkParser::new();
+    // FinalResponse 已 emit Done 的标记：循环结束后若仍为 false，
+    // 表示流被截断或 finish_reason=length 等异常结尾，需要兜底落库。
+    let mut done_emitted = false;
 
     while let Some(item) = stream.next().await {
         match item {
             Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::Text(t))) => {
-                accumulated_text.push_str(&t.text);
-                let _ = tx.send(AgentEvent::Delta {
-                    turn_id,
-                    content: t.text,
-                });
+                // 先过 ThinkParser：落在 `<think>...</think>` 内的 emit Reasoning，
+                // 其余 emit Delta；只有 Delta 计入 accumulated_text。
+                for piece in think_parser.feed(&t.text) {
+                    match piece {
+                        ThinkPiece::Text(s) => {
+                            accumulated_text.push_str(&s);
+                            let _ = tx.send(AgentEvent::Delta { turn_id, content: s });
+                        }
+                        ThinkPiece::Reasoning(s) => {
+                            let _ = tx.send(AgentEvent::Reasoning { turn_id, content: s });
+                        }
+                    }
+                }
             }
             Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::ToolCall {
                 tool_call,
@@ -336,6 +350,7 @@ pub async fn run_turn(services: Arc<Services>, auth: AuthContext, session_id: Ul
                     turn_id,
                     message_id: assistant_id,
                 });
+                done_emitted = true;
             }
             Err(e) => {
                 let _ = tx.send(AgentEvent::Error {
@@ -348,5 +363,159 @@ pub async fn run_turn(services: Arc<Services>, auth: AuthContext, session_id: Ul
         }
     }
 
+    // 流结束但未收到 FinalResponse —— 网络截断、finish_reason=length、
+    // 或者模型在半句话中间停了都会走到这里。FinalResponse 那条路径
+    // 已经持久化并 emit Done，这里只补一次兜底：把 ThinkParser 残留的
+    // 非 think 文本刷出来，accumulated_text / tool_calls 一并落库并
+    // emit Done，避免 agent_panel.rs:537-544 的 post-stream 重拉把
+    // 已经展给用户的部分回答再覆盖成空。
+    //
+    // 未闭合的 think 块由 ThinkParser::flush 丢掉——一半的推理文本
+    // 给用户看反而误导。
+    if !done_emitted {
+        for piece in think_parser.flush() {
+            if let ThinkPiece::Text(s) = piece {
+                accumulated_text.push_str(&s);
+            }
+        }
+        if !accumulated_text.is_empty() || !assistant_tool_calls.is_empty() {
+            let mut content = Vec::new();
+            if !accumulated_text.is_empty() {
+                content.push(AssistantContent::text(accumulated_text.clone()));
+            }
+            content.extend(
+                assistant_tool_calls
+                    .iter()
+                    .cloned()
+                    .map(AssistantContent::ToolCall),
+            );
+            let assistant_msg = AgentMessage::Assistant { id: None, content };
+            let record = AgentMessageRecord {
+                id: assistant_id,
+                session_id,
+                message: assistant_msg,
+                created_at: chrono::Utc::now(),
+            };
+            if let Err(e) = services.agent.append_record(record) {
+                let _ = tx.send(AgentEvent::Error {
+                    turn_id,
+                    message: format!("assistant 落库失败: {e}"),
+                });
+            }
+            let _ = tx.send(AgentEvent::Done {
+                turn_id,
+                message_id: assistant_id,
+            });
+        }
+    }
+
     services.agent_turns.finish(turn_id);
+}
+
+/// 流式 `` 解析器：chunk 进来时攒到 buffer，扫到完整
+/// `<think>...</think>` 就把内部 emit 为 Reasoning、外侧 emit 为 Text；
+/// 末尾不能跨越 chunk 边界的残段（`<think>` 长度 - 1 个字符）留着等下次
+/// 拼，防止 "<th" 这种半截被当 text 吐出去。
+///
+/// 大多数推理模型（DeepSeek-R1 / Qwen-QwQ 等）的 OpenAI 兼容服务只走
+/// Chat Completions 标准协议、`reasoning_content` 字段不存在或不标准；
+/// 它们把思考链放进 `content`、用 `<think>...</think>` 包起来。
+/// rig-core 的 OpenAI provider 不拆这块（见 rig-core ollama.rs 的
+/// `split_legacy_thinking` 是 ollama 才有），所以全部以 Text 进来——
+/// 在 runner 这一层拆开后 emit Reasoning 走 `<details class="agent-think">`
+/// 折叠样式，文本才不会被用户当成回答看见。
+struct ThinkParser {
+    in_think: bool,
+    pending: String,
+}
+
+enum ThinkPiece {
+    Text(String),
+    Reasoning(String),
+}
+
+impl ThinkParser {
+    fn new() -> Self {
+        Self {
+            in_think: false,
+            pending: String::new(),
+        }
+    }
+
+    /// 喂一个新 chunk，返回应 emit 的片段。`feed` 之后 buffer 仍持有
+    /// 未闭合的 think 残段或 `<th` 这种跨 chunk 边界；这些下一次 `feed`
+    /// 拼上续字符才会解开。
+    fn feed(&mut self, chunk: &str) -> Vec<ThinkPiece> {
+        self.pending.push_str(chunk);
+        let mut out = Vec::new();
+        // 一次 feed 内可能解开多对 `<think>...</think>`（理论上罕见，
+        // 但 parser 不假设只有一对）。循环到没法再解开为止。
+        loop {
+            if self.in_think {
+                match self.pending.find("</think>") {
+                    Some(end_idx) => {
+                        let reasoning = self.pending[..end_idx].to_string();
+                        if !reasoning.is_empty() {
+                            out.push(ThinkPiece::Reasoning(reasoning));
+                        }
+                        self.pending = self.pending[end_idx + "</think>".len()..].to_string();
+                        self.in_think = false;
+                    }
+                    None => break,
+                }
+            } else {
+                match self.pending.find("<think>") {
+                    Some(start_idx) => {
+                        let before = self.pending[..start_idx].to_string();
+                        if !before.is_empty() {
+                            out.push(ThinkPiece::Text(before));
+                        }
+                        self.pending = self.pending[start_idx + "<think>".len()..].to_string();
+                        self.in_think = true;
+                    }
+                    None => {
+                        // 没有 `<think>` 开头。把最后 (THINK_LEN - 1) 字符
+                        // 留作残段——避免 chunk 边界正好把 `<` 切走导致
+                        // `<th...` 被当 text 吐出后再跟 `ink>...` 拼成
+                        // 错位的字符串。常量 7 = "<think>".len()。
+                        //
+                        // 按字符（不是字节）算：「<think>」是 7 个 ASCII 字符
+                        // 也是 7 字节；中文输入里 1 字符 = 3 字节，按字节算
+                        // 会落在多字节字符中间 panic。
+                        const THINK_LEN: usize = 7;
+                        let char_count = self.pending.chars().count();
+                        if char_count > THINK_LEN - 1 {
+                            let chars_to_emit = char_count - (THINK_LEN - 1);
+                            // 找到「第 chars_to_emit 个字符结束」的字节位置——
+                            // char_indices() 自动落在 char boundary 上。
+                            let safe_byte_len = self
+                                .pending
+                                .char_indices()
+                                .nth(chars_to_emit)
+                                .map(|(i, _)| i)
+                                .unwrap_or(self.pending.len());
+                            let emit = self.pending[..safe_byte_len].to_string();
+                            out.push(ThinkPiece::Text(emit));
+                            self.pending.drain(..safe_byte_len);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// 流结束时调用：把残留的 buffer 按当前 in_think 状态处理。
+    /// in_think=true（未闭合的 think 块）丢弃——半截推理给用户看反而误导；
+    /// in_think=false（只是普通尾部文本）作为 Text emit。
+    fn flush(&mut self) -> Vec<ThinkPiece> {
+        let mut out = Vec::new();
+        if !self.in_think && !self.pending.is_empty() {
+            out.push(ThinkPiece::Text(std::mem::take(&mut self.pending)));
+        } else {
+            self.pending.clear();
+        }
+        out
+    }
 }
