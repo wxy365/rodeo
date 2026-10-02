@@ -85,4 +85,43 @@ impl OAuthBindingsService {
         )?;
         Ok(())
     }
+
+    /// 通过 OAuth 创建 Rodeo 账号。
+    /// - `password.is_none()` 时 password_hash 留空串（OAuth-only 无密码）。
+    /// - 与 `AuthService::register` 共用 `allow_registration` 守门规则，但调用方负责先查 config。
+    /// - 原子写：ACCOUNTS + ACCOUNTS_EMAIL_IDX。binding 由 GraphQL mutation 在外层写。
+    pub fn create_account_via_oauth(
+        &self,
+        email: &str,
+        name: &str,
+        password: Option<&str>,
+    ) -> Result<crate::domain::Account, AppError> {
+        use crate::domain::Account;
+        use crate::service::auth::{hash_password, normalize_email, validate_password};
+        use crate::storage::BatchOp;
+
+        let email = normalize_email(email)?;
+        let password_hash = match password {
+            Some(p) => {
+                validate_password(p)?;
+                hash_password(p)?
+            }
+            None => String::new(),
+        };
+        let account = Account::new(email.clone(), name.trim().to_string(), password_hash, false);
+
+        self.store.write_batch(vec![
+            BatchOp::put(
+                crate::storage::cf::ACCOUNTS,
+                account.id.to_bytes().to_vec(),
+                &account,
+            )?,
+            BatchOp::put_raw(
+                crate::storage::cf::ACCOUNTS_EMAIL_IDX,
+                email.as_bytes().to_vec(),
+                account.id.to_bytes().to_vec(),
+            ),
+        ])?;
+        Ok(account)
+    }
 }

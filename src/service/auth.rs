@@ -311,7 +311,7 @@ impl AuthService {
     }
 }
 
-fn normalize_email(email: &str) -> Result<String, AppError> {
+pub(crate) fn normalize_email(email: &str) -> Result<String, AppError> {
     let email = email.trim().to_lowercase();
     if !email.contains('@') || email.len() < 3 {
         return Err(AppError::Internal("邮箱格式无效".to_string()));
@@ -319,7 +319,7 @@ fn normalize_email(email: &str) -> Result<String, AppError> {
     Ok(email)
 }
 
-fn validate_password(password: &str) -> Result<(), AppError> {
+pub(crate) fn validate_password(password: &str) -> Result<(), AppError> {
     let has_upper = password.chars().any(|c| c.is_ascii_uppercase());
     let has_lower = password.chars().any(|c| c.is_ascii_lowercase());
     let has_digit = password.chars().any(|c| c.is_ascii_digit());
@@ -329,7 +329,7 @@ fn validate_password(password: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-fn hash_password(password: &str) -> Result<String, AppError> {
+pub(crate) fn hash_password(password: &str) -> Result<String, AppError> {
     let salt = SaltString::generate(&mut OsRng);
     let hash = Argon2::default()
         .hash_password(password.as_bytes(), &salt)?
@@ -374,7 +374,7 @@ fn pick(rng: &mut impl RngCore, n: usize) -> usize {
     (rng.next_u32() as usize) % n
 }
 
-fn verify_password(password: &str, hash: &str) -> Result<bool, AppError> {
+pub(crate) fn verify_password(password: &str, hash: &str) -> Result<bool, AppError> {
     let parsed = PasswordHash::new(hash)?;
     Ok(Argon2::default()
         .verify_password(password.as_bytes(), &parsed)
