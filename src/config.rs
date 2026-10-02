@@ -41,6 +41,8 @@ pub struct AuthConfig {
     pub session_ttl_hours: u32,
     #[serde(default)]
     pub builtin: BuiltinAuthConfig,
+    #[serde(default)]
+    pub oauth: OAuthConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -53,6 +55,24 @@ pub struct BuiltinAuthConfig {
     pub admin_email: String,
     #[serde(default = "default_admin_password")]
     pub admin_password: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct OAuthConfig {
+    #[serde(default)]
+    pub wechat: Option<WeChatOAuthConfig>,
+    // Spec 2: pub google: Option<GoogleOAuthConfig>,
+    // Spec 2: pub github: Option<GithubOAuthConfig>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct WeChatOAuthConfig {
+    #[serde(default)]
+    pub app_id: String,
+    #[serde(default)]
+    pub app_secret: String,
+    #[serde(default)]
+    pub redirect_uri: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -164,6 +184,7 @@ impl Default for AuthConfig {
             jwt_secret: default_jwt_secret(),
             session_ttl_hours: default_session_ttl(),
             builtin: BuiltinAuthConfig::default(),
+            oauth: OAuthConfig::default(),
         }
     }
 }
