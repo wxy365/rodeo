@@ -9,6 +9,7 @@ pub mod label;
 pub mod mention;
 pub mod message;
 pub mod oauth;
+pub mod oauth_bindings;
 pub mod oauth_state;
 pub mod relation;
 pub mod rule;

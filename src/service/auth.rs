@@ -95,6 +95,12 @@ impl AuthService {
         let account = self
             .find_by_email(&email)?
             .ok_or(AppError::InvalidCredentials)?;
+        // 无密码账号（OAuth-only）走专用文案 —— 用户已主动输邮箱，不存在邮箱存在性探测。
+        if !account.has_password() {
+            return Err(AppError::InvalidQuery(
+                "此账号未设置密码，请使用第三方登录".to_string(),
+            ));
+        }
         if !verify_password(password, &account.password_hash)? {
             return Err(AppError::InvalidCredentials);
         }
