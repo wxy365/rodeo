@@ -37,6 +37,7 @@ const ALL_CFS: &[&str] = &[
     cf::COMMENTS,
     cf::ATTACHMENTS,
     cf::ATTACHMENTS_BY_ENTRY,
+    cf::OAUTH_BINDINGS,
     cf::INLINE_ATTACHMENTS,
     cf::VIEW_TIMELINE,
     cf::MESSAGES_BY_RECIPIENT,

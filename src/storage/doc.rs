@@ -70,6 +70,9 @@ pub mod cf {
     pub const ATTACHMENTS: &str = "attachments";
     /// 附件索引：(entry_code, attachment_id) → 空值，供按条目前缀扫描。
     pub const ATTACHMENTS_BY_ENTRY: &str = "attachments_by_entry";
+    /// (provider_byte, external_id) → IdentityBinding。
+    /// key 形如 `b"1/openid_xxx"`，前缀扫按 provider 分桶（Spec 2 加 Google/GitHub 共用此 CF）。
+    pub const OAUTH_BINDINGS: &str = "oauth_bindings";
     /// 内联图片标记：`attachment_id`（ULID 16 字节）→ 空值。
     /// 编辑器里粘贴上传的图片仍是附件（要下载、要按角色删），但不属于「附件」这一栏，
     /// 所以不进附件列表。不给 `Attachment` 加字段是因为那是 bincode 结构变更，

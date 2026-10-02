@@ -8,6 +8,7 @@ pub mod comment;
 pub mod entry;
 pub mod label;
 pub mod message;
+pub mod oauth;
 pub mod query;
 pub mod relation;
 pub mod rule;
