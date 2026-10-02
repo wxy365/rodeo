@@ -64,4 +64,5 @@ impl OAuthRegistry {
     }
 }
 
+pub mod url_guard;
 pub mod wechat;
