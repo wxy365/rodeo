@@ -29,6 +29,7 @@ pub use label::{
     LabelLink, LabelSchema, LabelValue, LabelValueType, Labeling, LinkKind, ValueColor,
 };
 pub use message::Message;
+pub use oauth::{IdentityBinding, OAuthProvider};
 pub use query::{Condition, EvalEnv, Field, Op, Query, RESERVED_FIELDS};
 pub use rule::{ActionTarget, AutomationRule, LabelEvent, LabelWrite, RuleAction, ValueSource, WriteOp};
 pub use view::{SortField, SortKey, SortSpec, TitleColorRule, View, ViewTimeline};
