@@ -11,7 +11,7 @@ async fn main() {
     use leptos_axum::{generate_route_list, LeptosRoutes};
     use tower_http::limit::RequestBodyLimitLayer;
 
-    use rodeo::api::{agent_stream_handler, build_schema, download_attachment, graphql_handler, AppState};
+    use rodeo::api::{agent_stream_handler, build_schema, download_attachment, graphql_handler, wechat_callback, wechat_start, AppState};
     use rodeo::app::*;
     use rodeo::config::Config;
     use rodeo::service::Services;
@@ -72,6 +72,14 @@ async fn main() {
         .route(
             "/api/graphql",
             post(graphql_handler).layer(RequestBodyLimitLayer::new(GRAPHQL_BODY_LIMIT)),
+        )
+        .route(
+            "/api/auth/wechat/start",
+            get(wechat_start),
+        )
+        .route(
+            "/api/auth/wechat/callback",
+            get(wechat_callback),
         )
         .route("/api/health", get(|| async { "ok" }))
         .route("/api/attachments/{id}", get(download_attachment))
