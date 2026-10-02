@@ -106,6 +106,10 @@ impl Services {
         if let Some(w) = wechat {
             oauth_providers.push(Arc::new(w));
         }
+        // 必须在 `let services = Self { store, ... }` 之前构造，否则 store 已 move，
+        // 这里再调 `OAuthBindingsService::new(store.clone())` 会触发 E0382。
+        let oauth_bindings =
+            crate::service::oauth_bindings::OAuthBindingsService::new(store.clone());
         let services = Self {
             auth: AuthService::new(store.clone(), config.clone()),
             workspace,
@@ -131,9 +135,7 @@ impl Services {
                 oauth_providers,
             )),
             oauth_state: crate::service::oauth_state::OAuthStateStore::new(),
-            oauth_bindings: crate::service::oauth_bindings::OAuthBindingsService::new(
-                store.clone(),
-            ),
+            oauth_bindings,
         };
         // 先修标签定义：搜索与打标回填都按当前结构读数据，让它们看到一致的 schema。
         services.label.repair_legacy_schemas()?;
