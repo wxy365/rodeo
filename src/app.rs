@@ -15,10 +15,11 @@ use crate::frontend::pages::{
 };
 use crate::frontend::provide_auth;
 
-pub fn shell(options: LeptosOptions) -> impl IntoView {
+pub fn shell(options: LeptosOptions, initial_locale: crate::frontend::Locale) -> impl IntoView {
+    let dir = if initial_locale.is_rtl() { "rtl" } else { "ltr" };
     view! {
         <!DOCTYPE html>
-        <html lang="zh">
+        <html lang={initial_locale.as_str()} dir=dir>
             <head>
                 <meta charset="utf-8"/>
                 <meta name="viewport" content="width=device-width, initial-scale=1"/>
@@ -51,6 +52,8 @@ pub fn App() -> impl IntoView {
     let _agent_panel_open = provide_agent_panel_open();
     // Agent 副作用 store：服务端 SSE 写入（Task 7/8）后由面板订阅刷新。
     let _agent_side_effects = provide_agent_side_effects();
+    // i18n：当前硬编码英文——Task 3 改成读 cookie / Accept-Language。
+    let _i18n = crate::frontend::i18n::provide_i18n(crate::frontend::Locale::En);
 
     // 应用挂载时若已登录（有 token）则拉取当前账号，供头像/昵称展示。
     //
