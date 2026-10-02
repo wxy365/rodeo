@@ -72,6 +72,33 @@ impl Locale {
         let base = s.split(['-', '_']).next().unwrap_or(s);
         Self::from_str_ci(base)
     }
+
+    /// Parse an `Accept-Language` header value
+    /// (e.g. `fr-FR;q=0.9,zh-CN;q=0.8,en;q=0.5`) and return the highest-q
+    /// entry that maps to one of our six locales. Entries with no `q=` default
+    /// to 1.0; `q=0` items are skipped.
+    pub fn from_accept_language(header: &str) -> Option<Self> {
+        let mut best: Option<(f32, Self)> = None;
+        for raw in header.split(',') {
+            let item = raw.trim();
+            if item.is_empty() { continue; }
+            let (tag, q) = match item.split_once(";q=") {
+                Some((t, q)) => (t.trim(), q.parse::<f32>().unwrap_or(1.0)),
+                None => match item.split_once(';') {
+                    Some((t, _)) => (t.trim(), 1.0),
+                    None => (item, 1.0),
+                },
+            };
+            if !(q > 0.0) { continue; }
+            if let Some(loc) = Self::from_browser(tag) {
+                match best {
+                    Some((bq, _)) if bq >= q => {}
+                    _ => best = Some((q, loc)),
+                }
+            }
+        }
+        best.map(|(_, l)| l)
+    }
 }
 
 #[derive(Deserialize)]

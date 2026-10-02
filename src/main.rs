@@ -15,7 +15,6 @@ async fn main() {
     use rodeo::api::{agent_stream_handler, build_schema, download_attachment, graphql_handler, AppState};
     use rodeo::app::*;
     use rodeo::config::Config;
-    use rodeo::frontend::Locale;
     use rodeo::service::Services;
     use rodeo::storage::DocStore;
 
@@ -99,9 +98,9 @@ async fn main() {
         )
         .leptos_routes(&leptos_options, routes, {
             let leptos_options = leptos_options.clone();
-            move || shell(leptos_options.clone(), Locale::En)
+            move || shell(leptos_options.clone())
         })
-        .fallback(leptos_axum::file_and_error_handler(|opts| shell(opts, Locale::En)))
+        .fallback(leptos_axum::file_and_error_handler(shell))
         .layer(Extension(app_state))
         .with_state(leptos_options);
 

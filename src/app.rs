@@ -10,21 +10,48 @@ use crate::frontend::agent_panel::{provide_agent_panel_open, AgentPanel};
 use crate::frontend::agent_side_effects::provide_agent_side_effects;
 use crate::frontend::components::AppBar;
 use crate::frontend::graphql_client::{clear_token, get_token, me};
+use crate::frontend::i18n::{provide_i18n, Locale};
 use crate::frontend::pages::{
     Account, Admin, EntryFullScreen, Home, Login, WorkspaceList, WorkspaceMain, WorkspaceSettings,
 };
 use crate::frontend::provide_auth;
 
-pub fn shell(options: LeptosOptions, initial_locale: crate::frontend::Locale) -> impl IntoView {
-    let dir = if initial_locale.is_rtl() { "rtl" } else { "ltr" };
+pub fn shell(options: LeptosOptions) -> impl IntoView {
+    view! {
+        <ShellInner options=options/>
+    }
+}
+
+/// SSR / hydrate 都能复用的真壳：解析 locale（SSR 从 Parts 读，hydrate 从
+/// localStorage 读），挂上 I18nController，再把 `<html lang/dir>` 与防闪屏
+/// 内联脚本交给 `view!`。
+#[component]
+fn ShellInner(options: LeptosOptions) -> impl IntoView {
+    let locale = resolve_initial_locale();
+    let dir = if locale.is_rtl() { "rtl" } else { "ltr" };
+    // 提供给 App 与所有子组件；首次渲染就拿对了 locale，避免 hydrate 后闪一下。
+    let _ctrl = provide_i18n(locale);
     view! {
         <!DOCTYPE html>
-        <html lang={initial_locale.as_str()} dir=dir>
+        <html lang={locale.as_str()} dir=dir>
             <head>
                 <meta charset="utf-8"/>
                 <meta name="viewport" content="width=device-width, initial-scale=1"/>
                 // 浏览器页签图标：SVG 现代浏览器都吃，静态资源走 `assets-dir = "public"`。
                 <link rel="icon" type="image/svg+xml" href="/favicon.svg"/>
+                // 主题早应用脚本：必须在 HashedStylesheet 之前 inline，否则
+                // CSS 第一次解析时还没有 `data-theme` 属性，系统 @media
+                // 会先生效几毫秒——肉眼可见的色闪。这段脚本读 localStorage，
+                // 把 data-theme 提前挂到 <html> 上；同步执行，跑在 DOM 构建前。
+                <script>
+                    "(function(){try{var s=localStorage.getItem('rodeo_theme');if(s==='light'||s==='dark'){document.documentElement.setAttribute('data-theme',s);}}catch(e){}})();"
+                </script>
+                // 语言防闪屏：localStorage 优先于 SSR 选择——前者是用户最近一次
+                // 在 AppBar 显式选过的（带 cookie 写回），后者只是 Accept-Language
+                // 推断；用户偏好 > 浏览器推断。脚本在 HashedStylesheet 之前跑。
+                <script>
+                    "(function(){try{var l=localStorage.getItem('rodeo_lang');if(l==='zh'||l==='en'||l==='ja'||l==='pt'||l==='es'||l==='ar'){var h=document.documentElement;h.setAttribute('lang',l);h.setAttribute('dir',l==='ar'?'rtl':'ltr');}else{var h2=document.documentElement.getAttribute('lang');if(h2){try{localStorage.setItem('rodeo_lang',h2);document.cookie='rodeo_lang='+h2+'; path=/; max-age=31536000; samesite=lax';}catch(e){}}}}catch(e){}})();"
+                </script>
                 // 主样式表走 cargo-leptos 的内容哈希；`Stylesheet` 不解析哈希，必须用这个。
                 <HashedStylesheet id="leptos" options=options.clone() />
                 <AutoReload options=options.clone() />
@@ -36,6 +63,61 @@ pub fn shell(options: LeptosOptions, initial_locale: crate::frontend::Locale) ->
             </body>
         </html>
     }
+}
+
+/// SSR 路径下 leptos_axum 已经把 axum 的 `Parts` 作为 context 注入；hydrate
+/// 路径下没有 Parts——退回 En（head 内联脚本会让 `document.cookie` 与
+/// `localStorage` 写回用户最近一次的选择，下一轮 SSR 自然收敛）。
+fn resolve_initial_locale() -> Locale {
+    #[cfg(feature = "ssr")]
+    {
+        use axum::http::request::Parts;
+        if let Some(parts) = use_context::<Parts>() {
+            return resolve_from_parts(&parts);
+        }
+    }
+    Locale::En
+}
+
+/// 把 `Parts`（请求头 + URL）走一遍：
+///   1. `?lang=` query 覆盖（手动测试 / 链接分享用）
+///   2. `rodeo_lang` cookie（用户在 AppBar 显式选过的）
+///   3. `Accept-Language` 头（浏览器默认语言）
+///   4. 兜底英文
+#[cfg(feature = "ssr")]
+fn resolve_from_parts(parts: &axum::http::request::Parts) -> Locale {
+    use axum::http::header::{ACCEPT_LANGUAGE, COOKIE};
+    if let Some(q) = parts.uri.query() {
+        if let Some(lang) = parse_query_lang(q) {
+            if let Some(loc) = Locale::from_browser(lang) { return loc; }
+        }
+    }
+    if let Some(cookie) = parts.headers.get(COOKIE).and_then(|v| v.to_str().ok()) {
+        for pair in cookie.split(';') {
+            let mut kv = pair.trim().splitn(2, '=');
+            if let (Some(k), Some(v)) = (kv.next(), kv.next()) {
+                if k.trim() == "rodeo_lang" {
+                    if let Some(loc) = Locale::from_browser(v.trim()) { return loc; }
+                }
+            }
+        }
+    }
+    if let Some(al) = parts.headers.get(ACCEPT_LANGUAGE).and_then(|v| v.to_str().ok()) {
+        if let Some(loc) = Locale::from_accept_language(al) { return loc; }
+    }
+    Locale::En
+}
+
+/// 极简 `?lang=xx` 解析。不引 `url` 依赖，避免给 ssr 二进制再增一条 cargo 路径。
+#[cfg(feature = "ssr")]
+fn parse_query_lang(qs: &str) -> Option<&str> {
+    for pair in qs.split('&') {
+        let mut kv = pair.splitn(2, '=');
+        if let (Some(k), Some(v)) = (kv.next(), kv.next()) {
+            if k == "lang" { return Some(v); }
+        }
+    }
+    None
 }
 
 #[component]
@@ -52,8 +134,9 @@ pub fn App() -> impl IntoView {
     let _agent_panel_open = provide_agent_panel_open();
     // Agent 副作用 store：服务端 SSE 写入（Task 7/8）后由面板订阅刷新。
     let _agent_side_effects = provide_agent_side_effects();
-    // i18n：当前硬编码英文——Task 3 改成读 cookie / Accept-Language。
-    let _i18n = crate::frontend::i18n::provide_i18n(crate::frontend::Locale::En);
+    // i18n：locale 由 `ShellInner` 在解析 `Parts` 后提供；这里不再重复 provide。
+    // LanguageButton 在用户切换时只更新既有 controller 的信号 + 写 localStorage + 写 cookie，
+    // 三件事同步完成，下次 SSR 自动从 cookie 回来同一个 locale。
 
     // 应用挂载时若已登录（有 token）则拉取当前账号，供头像/昵称展示。
     //
