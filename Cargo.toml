@@ -63,6 +63,11 @@ tantivy = { version = "0.26", optional = true, default-features = false, feature
 # 服务端调用大模型（仅 ssr）。default-features = false 是为了不引入 openssl，
 # 与仓库其余依赖一样走 rustls。
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
+# OAuth Provider trait 里 `async fn` 需要 `#[async_trait]` 才能走 dyn dispatch；
+# 没用 trait_async 原生语法，因为我们要存的是 `Arc<dyn OAuthProvider>`。
+async-trait = { version = "0.1", optional = true }
+# WeChat 拼 `redirect_uri` 等参数时二次 URL-encode —— 微信文档里明文要求。
+urlencoding = { version = "2", optional = true }
 # 服务端 SSE 流式生成器（仅 ssr）。axum::response::sse 需要 Stream<Item = Result<Event, _>>，
 # 手写状态机不如 async-stream! 宏清晰。
 async-stream = { version = "0.3", optional = true }
@@ -119,6 +124,8 @@ ssr = [
     "dep:tower-http",
     "dep:tantivy",
     "dep:reqwest",
+    "dep:async-trait",
+    "dep:urlencoding",
     "dep:async-stream",
     "dep:futures-util",
     "dep:parking_lot",
