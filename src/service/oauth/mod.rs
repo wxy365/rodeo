@@ -63,3 +63,5 @@ impl OAuthRegistry {
         v
     }
 }
+
+pub mod wechat;
