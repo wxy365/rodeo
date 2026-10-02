@@ -64,6 +64,9 @@ pub struct Services {
     pub schema: Arc<AppSchema>,
     pub agent_tools: Arc<Vec<ToolSchema>>,
     pub agent_turns: Arc<SessionTurns>,
+    pub oauth_registry: Arc<crate::service::oauth::OAuthRegistry>,
+    pub oauth_state: Arc<crate::service::oauth_state::OAuthStateStore>,
+    pub oauth_bindings: crate::service::oauth_bindings::OAuthBindingsService,
 }
 
 impl Services {
@@ -90,6 +93,19 @@ impl Services {
         validate_templates(&schema)
             .map_err(|e| AppError::Ai(format!("validate_templates 失败: {e}")))?;
         let agent_turns = Arc::new(SessionTurns::default());
+        // OAuth：按 config 启用的 provider 灌进 registry；state/bindings 服务总是构造，
+        // 这样 `[auth.oauth.wechat]` 整段缺失时启动依然通过（registry 为空、`enabled_names()` 返回空集）。
+        let wechat_cfg = config
+            .auth
+            .oauth
+            .wechat
+            .as_ref()
+            .unwrap_or(&crate::config::WeChatOAuthConfig::default());
+        let wechat = crate::service::oauth::wechat::WeChatProvider::from_config(wechat_cfg)?;
+        let mut oauth_providers: Vec<Arc<dyn crate::service::oauth::OAuthProvider>> = Vec::new();
+        if let Some(w) = wechat {
+            oauth_providers.push(Arc::new(w));
+        }
         let services = Self {
             auth: AuthService::new(store.clone(), config.clone()),
             workspace,
@@ -111,6 +127,13 @@ impl Services {
             schema,
             agent_tools: tools,
             agent_turns,
+            oauth_registry: Arc::new(crate::service::oauth::OAuthRegistry::new(
+                oauth_providers,
+            )),
+            oauth_state: crate::service::oauth_state::OAuthStateStore::new(),
+            oauth_bindings: crate::service::oauth_bindings::OAuthBindingsService::new(
+                store.clone(),
+            ),
         };
         // 先修标签定义：搜索与打标回填都按当前结构读数据，让它们看到一致的 schema。
         services.label.repair_legacy_schemas()?;
