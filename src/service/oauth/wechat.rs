@@ -12,7 +12,7 @@ use chrono::{DateTime, Utc};
 
 use super::{ExternalToken, OAuthProvider};
 use crate::config::WeChatOAuthConfig;
-use crate::domain::OAuthProvider;
+use crate::domain::OAuthProvider as ProviderKind;
 use crate::error::AppError;
 
 pub struct WeChatProvider {
@@ -71,7 +71,7 @@ impl WeChatProvider {
 #[async_trait::async_trait]
 impl OAuthProvider for WeChatProvider {
     fn name(&self) -> &'static str {
-        OAuthProvider::WeChat.as_str()
+        ProviderKind::WeChat.as_str()
     }
 
     fn enabled(&self) -> bool {
