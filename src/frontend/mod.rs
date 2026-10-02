@@ -1,8 +1,11 @@
+pub mod i18n;
+pub mod i18n_macros;
 pub mod agent_panel;
 pub mod agent_side_effects;
 pub mod ai_prompt_editor;
 pub mod attachment_list;
 pub mod automation_tab;
+pub mod command_palette;
 pub mod comment_list;
 pub mod components;
 pub mod entry_picker;
@@ -13,6 +16,7 @@ pub mod message_list;
 pub mod relations_panel;
 pub mod pages;
 pub mod query_eval;
+pub mod theme;
 pub mod timeline;
 pub mod tiny_editor;
 pub mod view_filter;
@@ -20,6 +24,7 @@ pub mod view_filter;
 use leptos::prelude::*;
 
 pub use graphql_client::User;
+pub use i18n::{I18nController, Locale};
 
 #[derive(Clone, Copy)]
 pub struct AuthState {
