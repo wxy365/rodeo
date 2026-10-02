@@ -35,6 +35,12 @@ pub enum AppError {
     Ai(String),
     #[error("{0}")]
     RuleFailed(String),
+    #[error("微信 OAuth 错误 {0}: {1}")]
+    OAuthWechat(String, String),
+    #[error("OAuth 回调失败: {0}")]
+    OAuthCallback(String),
+    #[error("OAuth 提供方未配置: {0}")]
+    OAuthNotConfigured(String),
 }
 
 impl AppError {
@@ -56,6 +62,9 @@ impl AppError {
             AppError::AiNotConfigured => "AI_NOT_CONFIGURED",
             AppError::Ai(_) => "AI_ERROR",
             AppError::RuleFailed(_) => "RULE_FAILED",
+            AppError::OAuthWechat(_, _) => "OAUTH_WECHAT",
+            AppError::OAuthCallback(_) => "OAUTH_CALLBACK",
+            AppError::OAuthNotConfigured(_) => "OAUTH_NOT_CONFIGURED",
         }
     }
 }
