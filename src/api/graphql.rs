@@ -2811,7 +2811,7 @@ impl Mutation {
         let gql = ctx.data::<GraphqlContext>()?;
 
         let bind = gql.services.oauth_state.take_bind(&bind_token).ok_or_else(|| {
-            AppError::InvalidQuery("绑定已过期，请重新扫码".to_string()).into()
+            AppError::InvalidQuery("绑定已过期，请重新扫码".to_string())
         })?;
 
         let email_n = crate::service::auth::normalize_email(&email)?;
@@ -2894,7 +2894,7 @@ impl Mutation {
         let gql = ctx.data::<GraphqlContext>()?;
 
         let bind = gql.services.oauth_state.take_bind(&bind_token).ok_or_else(|| {
-            AppError::InvalidQuery("绑定已过期，请重新扫码".to_string()).into()
+            AppError::InvalidQuery("绑定已过期，请重新扫码".to_string())
         })?;
 
         if !gql.services.config.auth.builtin.allow_registration {
