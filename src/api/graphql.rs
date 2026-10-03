@@ -1098,6 +1098,19 @@ impl Query {
         })
     }
 
+    /// 当前启用的 OAuth provider 名称列表（目前为 `["wechat"]`）。
+    /// 免登录：登录页据此渲染「微信登录」入口。
+    async fn oauth_providers(&self, ctx: &Context<'_>) -> GqlResult<Vec<String>> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        Ok(gql
+            .services
+            .oauth_registry
+            .enabled_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect())
+    }
+
     async fn workspaces(&self, ctx: &Context<'_>) -> GqlResult<Vec<GqlWorkspaceWithRole>> {
         let gql = ctx.data::<GraphqlContext>()?;
         let auth = gql.require_auth()?;
@@ -2782,6 +2795,137 @@ impl Mutation {
             id: turn_id.to_string(),
             session_id: sid.to_string(),
             started_at: Utc::now(),
+        })
+    }
+
+    /// 把当前 OAuth 登录绑定到一个**已存在**的 Rodeo 账号。
+    /// 流程：扫码拿到 `bind_token` → 服务端取出 `BindEntry` → 用户输入邮箱/密码
+    /// → 校验账号状态与密码 → 检查双向绑定冲突 → 写 binding → 签发新令牌。
+    async fn bind_oauth_to_existing(
+        &self,
+        ctx: &Context<'_>,
+        bind_token: String,
+        email: String,
+        password: String,
+    ) -> GqlResult<GqlAuthResult> {
+        let gql = ctx.data::<GraphqlContext>()?;
+
+        let bind = gql.services.oauth_state.take_bind(&bind_token).ok_or_else(|| {
+            AppError::InvalidQuery("绑定已过期，请重新扫码".to_string()).into()
+        })?;
+
+        let email_n = crate::service::auth::normalize_email(&email)?;
+        let account = gql
+            .services
+            .auth
+            .find_by_email(&email_n)?
+            .ok_or(AppError::InvalidCredentials)?;
+
+        match gql.services.auth.status(account.id)? {
+            crate::domain::AccountStatus::Active => {}
+            crate::domain::AccountStatus::Frozen => {
+                return Err(AppError::InvalidQuery(
+                    "账号已被冻结，请联系系统管理员".to_string(),
+                )
+                .into());
+            }
+            crate::domain::AccountStatus::Deactivated => {
+                return Err(AppError::InvalidCredentials.into());
+            }
+        }
+
+        if !crate::service::auth::verify_password(&password, &account.password_hash)? {
+            return Err(AppError::InvalidCredentials.into());
+        }
+
+        // 绑定冲突
+        match gql
+            .services
+            .oauth_bindings
+            .find(bind.provider, &bind.external_id)?
+        {
+            Some(b) if b.account_id == account.id => {} // 幂等
+            Some(_) => {
+                return Err(AppError::InvalidQuery(
+                    "此微信账号已绑定其它 Rodeo 账号".to_string(),
+                )
+                .into());
+            }
+            None => {
+                if gql
+                    .services
+                    .oauth_bindings
+                    .find_by_account_and_provider(account.id, bind.provider)?
+                    .is_some()
+                {
+                    return Err(AppError::InvalidQuery(
+                        "此 Rodeo 账号已绑定其它微信账号".to_string(),
+                    )
+                    .into());
+                }
+            }
+        }
+
+        gql.services.oauth_bindings.upsert(
+            account.id,
+            bind.provider,
+            &bind.external_id,
+            None,
+            None,
+        )?;
+        let token = gql.services.auth.sign_token(account.id)?;
+        Ok(GqlAuthResult {
+            token,
+            account: account.into(),
+        })
+    }
+
+    /// 把当前 OAuth 登录绑定到一个**新建**的 Rodeo 账号。
+    /// 流程：扫码拿到 `bind_token` → 校验开放注册 → 校验邮箱未占用 → 建账号 →
+    /// 写 binding → 签发新令牌。`password` 为空时建 OAuth-only 账号（无密码）。
+    async fn bind_oauth_to_new(
+        &self,
+        ctx: &Context<'_>,
+        bind_token: String,
+        email: String,
+        name: String,
+        password: Option<String>,
+    ) -> GqlResult<GqlAuthResult> {
+        let gql = ctx.data::<GraphqlContext>()?;
+
+        let bind = gql.services.oauth_state.take_bind(&bind_token).ok_or_else(|| {
+            AppError::InvalidQuery("绑定已过期，请重新扫码".to_string()).into()
+        })?;
+
+        if !gql.services.config.auth.builtin.allow_registration {
+            return Err(AppError::InvalidQuery(
+                "已关闭开放注册，请联系系统管理员创建账号".to_string(),
+            )
+            .into());
+        }
+
+        let email_n = crate::service::auth::normalize_email(&email)?;
+        if gql.services.auth.find_by_email(&email_n)?.is_some() {
+            return Err(AppError::EmailExists.into());
+        }
+
+        let account = gql.services.oauth_bindings.create_account_via_oauth(
+            &email_n,
+            &name,
+            password.as_deref(),
+        )?;
+
+        gql.services.oauth_bindings.upsert(
+            account.id,
+            bind.provider,
+            &bind.external_id,
+            None,
+            None,
+        )?;
+        let token = gql.services.auth.sign_token(account.id)?;
+        Ok(GqlAuthResult {
+            token,
+            account: account.into(),
         })
     }
 }
