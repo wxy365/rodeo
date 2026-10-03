@@ -3,9 +3,31 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::hooks::use_navigate;
 
-use crate::frontend::graphql_client::{allow_registration as fetch_allow_registration, login, register, set_token};
+use crate::frontend::graphql_client::{
+    allow_registration as fetch_allow_registration, login, oauth_providers, register, set_token,
+};
 use crate::frontend::icons::ic_logo;
+use crate::frontend::pages::wechat_bind::WeChatBindPanel;
 use crate::frontend::use_auth;
+
+fn url_param(search: &str, key: &str) -> Option<String> {
+    search.trim_start_matches('?').split('&').find_map(|kv| {
+        kv.split_once('=')
+            .filter(|(k, _)| *k == key)
+            .map(|(_, v)| urlencoding_decode(v))
+    })
+}
+
+fn urlencoding_decode(s: &str) -> String {
+    urlencoding::decode(s)
+        .map(|c| c.into_owned())
+        .unwrap_or_else(|_| s.to_string())
+}
+
+fn return_to_default() -> String {
+    // 简单起见总是 /workspaces；如果以后想从 session 取上次访问点可改这里。
+    "/workspaces".to_string()
+}
 
 #[component]
 pub fn Login() -> impl IntoView {
@@ -37,6 +59,33 @@ pub fn Login() -> impl IntoView {
         spawn_local(async move {
             allow_reg.set(Some(fetch_allow_registration().await));
         });
+    });
+
+    let oauth_providers = RwSignal::new(Vec::<String>::new());
+    Effect::new_sync(move |_| {
+        if !cfg!(target_arch = "wasm32") {
+            return;
+        }
+        spawn_local(async move {
+            if let Ok(p) = oauth_providers().await {
+                oauth_providers.set(p);
+            }
+        });
+    });
+
+    // SSR 直出时 window.location 不存在；只 wasm 跑
+    let bind_info = RwSignal::new(None::<(String, String, String)>);
+    Effect::new_sync(move |_| {
+        if !cfg!(target_arch = "wasm32") {
+            return;
+        }
+        let loc = web_sys::window().unwrap().location();
+        let search = loc.search().unwrap_or_default();
+        if let Some(bind_token) = url_param(&search, "bind") {
+            let provider = url_param(&search, "provider").unwrap_or_default();
+            let return_to = url_param(&search, "return_to").unwrap_or_else(|| "/workspaces".to_string());
+            bind_info.set(Some((bind_token, provider, return_to)));
+        }
     });
 
     let submit = move |ev: SubmitEvent| {
@@ -73,54 +122,85 @@ pub fn Login() -> impl IntoView {
 
     view! {
         <div class="login-wrap">
-            <form class="panel login-card" on:submit=submit>
-                <div class="logo">
-                    {ic_logo()}
-                    <b>"Rodeo"</b>
-                    <span class="chip dim">"任务 / 问题跟踪"</span>
-                </div>
-                {move || if is_register.get() {
-                    view! {
-                        <input class="inp" placeholder="姓名" prop:value=name on:input=move |ev| name.set(event_target_value(&ev)) />
-                    }.into_any()
-                } else {
-                    view! { <div></div> }.into_any()
-                }}
-                <input class="inp" type="email" placeholder="邮箱" prop:value=email on:input=move |ev| email.set(event_target_value(&ev)) />
-                <input class="inp" type="password" placeholder="密码（至少 8 位，含大小写和数字）" prop:value=password on:input=move |ev| password.set(event_target_value(&ev)) />
-                {move || auth.session_lost.get().then(|| view! {
-                    <p class="error">"登录已失效，请重新登录"</p>
-                })}
-                {move || error.get().map(|e| view! { <p class="error">{e}</p> })}
-                {move || (!ready.get()).then(|| view! {
-                    <p class="mut" style="text-align:center">"正在加载客户端资源，加载完成后即可登录…"</p>
-                })}
-                <button class="btn pri" type="submit" style="justify-content:center;padding:9px" disabled=move || busy.get() || !ready.get()>
-                    {move || if is_register.get() { "注册并登录" } else { "登录" }}
-                </button>
-                <div style="display:flex;justify-content:space-between" class="mut">
-                    {move || match allow_reg.get() {
-                        Some(true) => view! {
-                            <span class="link" on:click=move |_| is_register.update(|v| *v = !*v)>
-                                {if is_register.get() { "已有账号，去登录" } else { "立即注册" }}
-                            </span>
-                        }.into_any(),
-                        Some(false) => view! {
-                            <span class="mut">"已关闭开放注册，请联系系统管理员"</span>
-                        }.into_any(),
-                        None => ().into_any(),
+            {move || bind_info.get().map(|(t, p, r)| view! {
+                <WeChatBindPanel bind_token=t provider=p return_to=r />
+            }.into_any()).unwrap_or_else(|| view! {
+                <form class="panel login-card" on:submit=submit>
+                    <div class="logo">
+                        {ic_logo()}
+                        <b>"Rodeo"</b>
+                        <span class="chip dim">"任务 / 问题跟踪"</span>
+                    </div>
+                    {move || if is_register.get() {
+                        view! {
+                            <input class="inp" placeholder="姓名" prop:value=name on:input=move |ev| name.set(event_target_value(&ev)) />
+                        }.into_any()
+                    } else {
+                        view! { <div></div> }.into_any()
                     }}
-                    <u class="mut">"忘记密码"</u>
-                </div>
-                <div class="divider">"或使用以下方式继续"</div>
-                <button class="btn" type="button" style="justify-content:center" disabled>
-                    <b>"GitHub"</b>" OAuth 登录（即将上线）"
-                </button>
-                <button class="btn" type="button" style="justify-content:center" disabled>
-                    <b>"企业 OIDC"</b>" 单点登录（即将上线）"
-                </button>
-                <div class="mut" style="text-align:center">"私有部署 · 数据不出内网 · 会话经 HttpOnly Cookie"</div>
-            </form>
+                    <input class="inp" type="email" placeholder="邮箱" prop:value=email on:input=move |ev| email.set(event_target_value(&ev)) />
+                    <input class="inp" type="password" placeholder="密码（至少 8 位，含大小写和数字）" prop:value=password on:input=move |ev| password.set(event_target_value(&ev)) />
+                    {move || auth.session_lost.get().then(|| view! {
+                        <p class="error">"登录已失效，请重新登录"</p>
+                    })}
+                    {move || error.get().map(|e| view! { <p class="error">{e}</p> })}
+                    {move || (!ready.get()).then(|| view! {
+                        <p class="mut" style="text-align:center">"正在加载客户端资源，加载完成后即可登录…"</p>
+                    })}
+                    <button class="btn pri" type="submit" style="justify-content:center;padding:9px" disabled=move || busy.get() || !ready.get()>
+                        {move || if is_register.get() { "注册并登录" } else { "登录" }}
+                    </button>
+                    <div style="display:flex;justify-content:space-between" class="mut">
+                        {move || match allow_reg.get() {
+                            Some(true) => view! {
+                                <span class="link" on:click=move |_| is_register.update(|v| *v = !*v)>
+                                    {if is_register.get() { "已有账号，去登录" } else { "立即注册" }}
+                                </span>
+                            }.into_any(),
+                            Some(false) => view! {
+                                <span class="mut">"已关闭开放注册，请联系系统管理员"</span>
+                            }.into_any(),
+                            None => ().into_any(),
+                        }}
+                        <u class="mut">"忘记密码"</u>
+                    </div>
+                    {move || {
+                        let ps = oauth_providers.get();
+                        if ps.is_empty() {
+                            None
+                        } else {
+                            Some(view! {
+                                <div class="divider">"或使用以下方式继续"</div>
+                                {ps.iter().map(|name| {
+                                    let label = match name.as_str() {
+                                        "wechat" => "微信扫码登录",
+                                        "google" => "Google 账号登录",
+                                        "github" => "GitHub 账号登录",
+                                        _ => name.as_str(),
+                                    };
+                                    let start_url = format!(
+                                        "/api/auth/{}/start?return_to={}",
+                                        name,
+                                        urlencoding::encode(&return_to_default()),
+                                    );
+                                    view! {
+                                        <button class="btn" type="button"
+                                            style="justify-content:center"
+                                            on:click=move |_| {
+                                                if let Some(w) = web_sys::window() {
+                                                    w.location().set_href(&start_url).ok();
+                                                }
+                                            }>
+                                            <b>{label}</b>
+                                        </button>
+                                    }
+                                }).collect::<Vec<_>>()}
+                            })
+                        }
+                    }}
+                    <div class="mut" style="text-align:center">"私有部署 · 数据不出内网 · 会话经 HttpOnly Cookie"</div>
+                </form>
+            }.into_any())}
         </div>
     }
 }

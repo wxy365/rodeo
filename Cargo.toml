@@ -97,6 +97,7 @@ hydrate = [
     "leptos/hydrate",
     "dep:console_error_panic_hook",
     "dep:wasm-bindgen",
+    "dep:urlencoding",
 ]
 ssr = [
     "dep:axum",
