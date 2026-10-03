@@ -4,7 +4,7 @@ use leptos::task::spawn_local;
 use leptos_router::hooks::use_navigate;
 
 use crate::frontend::graphql_client::{
-    allow_registration as fetch_allow_registration, login, oauth_providers, register, set_token,
+    allow_registration as fetch_allow_registration, login, register, set_token,
 };
 use crate::frontend::icons::ic_logo;
 use crate::frontend::pages::wechat_bind::WeChatBindPanel;
