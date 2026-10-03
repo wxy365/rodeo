@@ -81,7 +81,11 @@ impl RocksDoc {
     }
 
     /// 前缀扫描：按 key 升序返回所有以 `prefix` 开头的键值对。
-    pub fn scan_prefix(&self, cf: &str, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, AppError> {
+    pub fn scan_prefix(
+        &self,
+        cf: &str,
+        prefix: &[u8],
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, AppError> {
         let h = self.handle(cf)?;
         let iter = self
             .db
@@ -140,7 +144,10 @@ mod tests {
         store.put(cf::ACCOUNTS, b"k1", &42u64).unwrap();
         let v: Option<u64> = store.get(cf::ACCOUNTS, b"k1").unwrap();
         assert_eq!(v, Some(42));
-        assert!(store.get::<u64>(cf::ACCOUNTS, b"missing").unwrap().is_none());
+        assert!(store
+            .get::<u64>(cf::ACCOUNTS, b"missing")
+            .unwrap()
+            .is_none());
         drop(store);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -149,9 +156,15 @@ mod tests {
     fn prefix_scan_orders_by_key() {
         let dir = temp_dir("scan");
         let store = DocStore::open(&dir).unwrap();
-        store.put_raw(cf::ENTRIES_BY_WORKSPACE, b"w/aaa", b"1").unwrap();
-        store.put_raw(cf::ENTRIES_BY_WORKSPACE, b"w/bbb", b"2").unwrap();
-        store.put_raw(cf::ENTRIES_BY_WORKSPACE, b"x/ccc", b"3").unwrap();
+        store
+            .put_raw(cf::ENTRIES_BY_WORKSPACE, b"w/aaa", b"1")
+            .unwrap();
+        store
+            .put_raw(cf::ENTRIES_BY_WORKSPACE, b"w/bbb", b"2")
+            .unwrap();
+        store
+            .put_raw(cf::ENTRIES_BY_WORKSPACE, b"x/ccc", b"3")
+            .unwrap();
 
         let got = store.scan_prefix(cf::ENTRIES_BY_WORKSPACE, b"w/").unwrap();
         assert_eq!(got.len(), 2);
@@ -169,7 +182,10 @@ mod tests {
             store.put_raw(cf::LABELINGS, b"c/Task", b"x").unwrap();
         }
         let store = DocStore::open(&dir).unwrap();
-        assert_eq!(store.get_raw(cf::LABELINGS, b"c/Task").unwrap(), Some(b"x".to_vec()));
+        assert_eq!(
+            store.get_raw(cf::LABELINGS, b"c/Task").unwrap(),
+            Some(b"x".to_vec())
+        );
         drop(store);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -185,8 +201,14 @@ mod tests {
             BatchOp::delete(cf::AUDIT_LOGS, b"gone".to_vec()),
         ];
         store.write_batch(ops).unwrap();
-        assert_eq!(store.get_raw(cf::AUDIT_LOGS, b"k1").unwrap(), Some(b"v1".to_vec()));
-        assert_eq!(store.get_raw(cf::AUDIT_LOGS, b"k2").unwrap(), Some(b"v2".to_vec()));
+        assert_eq!(
+            store.get_raw(cf::AUDIT_LOGS, b"k1").unwrap(),
+            Some(b"v1".to_vec())
+        );
+        assert_eq!(
+            store.get_raw(cf::AUDIT_LOGS, b"k2").unwrap(),
+            Some(b"v2".to_vec())
+        );
         assert_eq!(
             store.get_raw(cf::AUDIT_LOGS, b"gone").unwrap(),
             None,
@@ -201,16 +223,27 @@ mod tests {
         let dir = temp_dir("batch_multi_cf");
         let store = DocStore::open(&dir).unwrap();
         let ops = vec![
-            BatchOp::put_raw(cf::ENTRIES, b"entry/TESTCODE0001".to_vec(), b"{entry}".to_vec()),
+            BatchOp::put_raw(
+                cf::ENTRIES,
+                b"entry/TESTCODE0001".to_vec(),
+                b"{entry}".to_vec(),
+            ),
             BatchOp::put_raw(cf::AUDIT_LOGS, b"audit/1".to_vec(), b"{audit}".to_vec()),
-            BatchOp::put_raw(cf::AUDIT_LOGS_BY_RESOURCE, b"idx/1".to_vec(), b"audit/1".to_vec()),
+            BatchOp::put_raw(
+                cf::AUDIT_LOGS_BY_RESOURCE,
+                b"idx/1".to_vec(),
+                b"audit/1".to_vec(),
+            ),
         ];
         store.write_batch(ops).unwrap();
         assert_eq!(
             store.get_raw(cf::ENTRIES, b"entry/TESTCODE0001").unwrap(),
             Some(b"{entry}".to_vec())
         );
-        assert_eq!(store.get_raw(cf::AUDIT_LOGS, b"audit/1").unwrap(), Some(b"{audit}".to_vec()));
+        assert_eq!(
+            store.get_raw(cf::AUDIT_LOGS, b"audit/1").unwrap(),
+            Some(b"{audit}".to_vec())
+        );
         assert_eq!(
             store.get_raw(cf::AUDIT_LOGS_BY_RESOURCE, b"idx/1").unwrap(),
             Some(b"audit/1".to_vec())
@@ -236,7 +269,10 @@ mod tests {
         let old = keys::audit_by_workspace_key(ws, t_old, ulid::Ulid::new());
         let new = keys::audit_by_workspace_key(ws, t_new, ulid::Ulid::new());
         assert!(new < old, "较新的时间应排在前面");
-        assert!(old.starts_with(&ws.to_bytes()), "键必须以 workspace_id 开头以便前缀扫描");
+        assert!(
+            old.starts_with(&ws.to_bytes()),
+            "键必须以 workspace_id 开头以便前缀扫描"
+        );
         assert!(new.starts_with(&ws.to_bytes()));
     }
 
@@ -248,7 +284,10 @@ mod tests {
         let old = keys::audit_by_resource_key("entry", "TESTCODE0001", t_old, ulid::Ulid::new());
         let new = keys::audit_by_resource_key("entry", "TESTCODE0001", t_new, ulid::Ulid::new());
         assert!(new < old, "较新的时间应排在前面");
-        assert!(old.starts_with(prefix), "键必须以 resource_type\\0resource_id\\0 开头");
+        assert!(
+            old.starts_with(prefix),
+            "键必须以 resource_type\\0resource_id\\0 开头"
+        );
         assert!(new.starts_with(prefix));
     }
 }

@@ -435,10 +435,7 @@ pub async fn accounts() -> Result<Vec<AdminAccount>, String> {
 }
 
 /// 冻结 / 解冻 / 注销。`status` 取 `"active"` / `"frozen"` / `"deactivated"`。
-pub async fn set_account_status(
-    account_id: &str,
-    status: &str,
-) -> Result<AdminAccount, String> {
+pub async fn set_account_status(account_id: &str, status: &str) -> Result<AdminAccount, String> {
     let data = graphql(
         "mutation($id: ID!, $s: String!) { \
          setAccountStatus(accountId: $id, status: $s) { id email name isAdmin status createdAt isBuiltin } }",
@@ -596,7 +593,10 @@ pub async fn transfer_owner(workspace_id: &str, account_id: &str) -> Result<bool
         json!({ "id": workspace_id, "a": account_id }),
     )
     .await?;
-    Ok(data.get("transferOwner").and_then(|v| v.as_bool()).unwrap_or(false))
+    Ok(data
+        .get("transferOwner")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false))
 }
 
 /// 软删除工作空间（Owner）。数据保留，可恢复。
@@ -606,7 +606,10 @@ pub async fn delete_workspace(workspace_id: &str) -> Result<bool, String> {
         json!({ "id": workspace_id }),
     )
     .await?;
-    Ok(data.get("deleteWorkspace").and_then(|v| v.as_bool()).unwrap_or(false))
+    Ok(data
+        .get("deleteWorkspace")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false))
 }
 
 pub async fn restore_workspace(workspace_id: &str) -> Result<bool, String> {
@@ -615,7 +618,10 @@ pub async fn restore_workspace(workspace_id: &str) -> Result<bool, String> {
         json!({ "id": workspace_id }),
     )
     .await?;
-    Ok(data.get("restoreWorkspace").and_then(|v| v.as_bool()).unwrap_or(false))
+    Ok(data
+        .get("restoreWorkspace")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false))
 }
 
 pub async fn workspace_by_slug(slug: &str) -> Result<Option<Workspace>, String> {
@@ -647,9 +653,8 @@ pub async fn create_entry(workspace_id: &str, title: &str) -> Result<Entry, Stri
 }
 
 pub async fn label_schemas(workspace_id: &str) -> Result<Vec<LabelSchema>, String> {
-    let q = format!(
-        "query($id: ID!) {{ labelSchemas(workspaceId: $id) {{ {LABEL_SCHEMA_FIELDS} }} }}"
-    );
+    let q =
+        format!("query($id: ID!) {{ labelSchemas(workspaceId: $id) {{ {LABEL_SCHEMA_FIELDS} }} }}");
     let data = graphql(&q, json!({ "id": workspace_id })).await?;
     serde_json::from_value(data.get("labelSchemas").cloned().unwrap_or(Value::Null))
         .map_err(|e| e.to_string())
@@ -663,8 +668,12 @@ pub async fn workspace_ai_config(workspace_id: &str) -> Result<WorkspaceAiConfig
         "query($id: ID!) {{ workspaceAiConfig(workspaceId: $id) {{ {AI_CONFIG_FIELDS} }} }}"
     );
     let data = graphql(&q, json!({ "id": workspace_id })).await?;
-    serde_json::from_value(data.get("workspaceAiConfig").cloned().unwrap_or(Value::Null))
-        .map_err(|e| e.to_string())
+    serde_json::from_value(
+        data.get("workspaceAiConfig")
+            .cloned()
+            .unwrap_or(Value::Null),
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// `scenarios` / `tones` 是 `[{name, prompt}]` 数组；整体替换语义。
@@ -682,8 +691,12 @@ pub async fn update_workspace_ai_config(
         json!({ "id": workspace_id, "s": scenarios, "t": tones }),
     )
     .await?;
-    serde_json::from_value(data.get("updateWorkspaceAiConfig").cloned().unwrap_or(Value::Null))
-        .map_err(|e| e.to_string())
+    serde_json::from_value(
+        data.get("updateWorkspaceAiConfig")
+            .cloned()
+            .unwrap_or(Value::Null),
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// 生成总结并新建条目，返回那条新条目（调用方据此直接全屏打开）。
@@ -707,7 +720,11 @@ pub async fn summarize_entries(
         .map_err(|e| e.to_string())
 }
 
-pub async fn set_labeling(entry_code: &str, label_name: &str, value: &Value) -> Result<Value, String> {
+pub async fn set_labeling(
+    entry_code: &str,
+    label_name: &str,
+    value: &Value,
+) -> Result<Value, String> {
     // $v 可空：无值标签的值是 JSON null，非空标量 JSON! 会被服务端拒绝。
     let data = graphql(
         "mutation($c: String!, $n: String!, $v: JSON) { setLabeling(entryCode: $c, labelName: $n, value: $v) { labelName value } }",
@@ -725,7 +742,10 @@ pub async fn set_labelings(entry_codes: &[String], labelings: &Value) -> Result<
         json!({ "c": entry_codes, "l": labelings }),
     )
     .await?;
-    Ok(data.get("setLabelings").and_then(|v| v.as_i64()).unwrap_or(0))
+    Ok(data
+        .get("setLabelings")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0))
 }
 
 pub async fn entry(code: &str) -> Result<Option<Entry>, String> {
@@ -799,9 +819,8 @@ pub async fn delete_comment(entry_code: &str, id: &str) -> Result<bool, String> 
 
 /// 拉某个条目的全部关联（from + to 两侧合并）。
 pub async fn entry_relations(entry_code: &str) -> Result<Vec<Relation>, String> {
-    let q = format!(
-        "query($c: String!) {{ entryRelations(entryCode: $c) {{ {RELATION_FIELDS} }} }}"
-    );
+    let q =
+        format!("query($c: String!) {{ entryRelations(entryCode: $c) {{ {RELATION_FIELDS} }} }}");
     let data = graphql(&q, json!({ "c": entry_code })).await?;
     serde_json::from_value(data.get("entryRelations").cloned().unwrap_or(Value::Null))
         .map_err(|e| e.to_string())
@@ -855,14 +874,15 @@ pub async fn update_entry_relation(
         }),
     )
     .await?;
-    serde_json::from_value(data.get("updateEntryRelation").cloned().unwrap_or(Value::Null))
-        .map_err(|e| e.to_string())
+    serde_json::from_value(
+        data.get("updateEntryRelation")
+            .cloned()
+            .unwrap_or(Value::Null),
+    )
+    .map_err(|e| e.to_string())
 }
 
-pub async fn delete_entry_relation(
-    workspace_id: &str,
-    relation_id: &str,
-) -> Result<bool, String> {
+pub async fn delete_entry_relation(workspace_id: &str, relation_id: &str) -> Result<bool, String> {
     let data = graphql(
         "mutation($w: ID!, $r: ID!) { deleteEntryRelation(workspaceId: $w, relationId: $r) }",
         json!({ "w": workspace_id, "r": relation_id }),
@@ -887,9 +907,7 @@ pub async fn unread_message_count() -> Result<i32, String> {
 }
 
 pub async fn messages(limit: Option<i32>) -> Result<Vec<GqlMessage>, String> {
-    let q = format!(
-        "query($l: Int) {{ messages(limit: $l) {{ {MESSAGE_FIELDS} }} }}"
-    );
+    let q = format!("query($l: Int) {{ messages(limit: $l) {{ {MESSAGE_FIELDS} }} }}");
     let data = graphql(&q, serde_json::json!({ "l": limit })).await?;
     serde_json::from_value(data.get("messages").cloned().unwrap_or(Value::Null))
         .map_err(|e| e.to_string())
@@ -1047,9 +1065,7 @@ pub async fn unarchive_entry(code: &str) -> Result<bool, String> {
 
 /// 已归档条目，按归档时间倒序。
 pub async fn archived_entries(workspace_id: &str) -> Result<Vec<Entry>, String> {
-    let q = format!(
-        "query($id: ID!) {{ archivedEntries(workspaceId: $id) {{ {ENTRY_FIELDS} }} }}"
-    );
+    let q = format!("query($id: ID!) {{ archivedEntries(workspaceId: $id) {{ {ENTRY_FIELDS} }} }}");
     let data = graphql(&q, json!({ "id": workspace_id })).await?;
     serde_json::from_value(data.get("archivedEntries").cloned().unwrap_or(Value::Null))
         .map_err(|e| e.to_string())
@@ -1092,8 +1108,12 @@ pub async fn create_label_schema(
         }),
     )
     .await?;
-    serde_json::from_value(data.get("createLabelSchema").cloned().unwrap_or(Value::Null))
-        .map_err(|e| e.to_string())
+    serde_json::from_value(
+        data.get("createLabelSchema")
+            .cloned()
+            .unwrap_or(Value::Null),
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// 改标签（不改类型）。attrs 必须传齐四个键：服务端整体替换，漏传会清空已有属性。
@@ -1121,8 +1141,12 @@ pub async fn update_label_schema(
         }),
     )
     .await?;
-    serde_json::from_value(data.get("updateLabelSchema").cloned().unwrap_or(Value::Null))
-        .map_err(|e| e.to_string())
+    serde_json::from_value(
+        data.get("updateLabelSchema")
+            .cloned()
+            .unwrap_or(Value::Null),
+    )
+    .map_err(|e| e.to_string())
 }
 
 pub async fn audit_logs(workspace_id: &str) -> Result<Vec<AuditLog>, String> {
@@ -1185,13 +1209,10 @@ pub struct Invite {
     pub created_at: String,
 }
 
-const INVITE_FIELDS: &str = "workspaceId workspaceName workspaceSlug accountId email name role invitedBy createdAt";
+const INVITE_FIELDS: &str =
+    "workspaceId workspaceName workspaceSlug accountId email name role invitedBy createdAt";
 
-pub async fn invite_member(
-    workspace_id: &str,
-    email: &str,
-    role: &str,
-) -> Result<Invite, String> {
+pub async fn invite_member(workspace_id: &str, email: &str, role: &str) -> Result<Invite, String> {
     let q = format!(
         "mutation($id: ID!, $e: String!, $r: String!) {{ \
          inviteMember(workspaceId: $id, email: $e, role: $r) {{ {INVITE_FIELDS} }} }}"
@@ -1218,9 +1239,8 @@ pub async fn my_invites() -> Result<Vec<Invite>, String> {
 }
 
 pub async fn accept_invite(workspace_id: &str) -> Result<Member, String> {
-    let q = format!(
-        "mutation($id: ID!) {{ acceptInvite(workspaceId: $id) {{ {MEMBER_FIELDS} }} }}"
-    );
+    let q =
+        format!("mutation($id: ID!) {{ acceptInvite(workspaceId: $id) {{ {MEMBER_FIELDS} }} }}");
     let data = graphql(&q, json!({ "id": workspace_id })).await?;
     serde_json::from_value(data.get("acceptInvite").cloned().unwrap_or(Value::Null))
         .map_err(|e| e.to_string())
@@ -1232,7 +1252,10 @@ pub async fn decline_invite(workspace_id: &str) -> Result<bool, String> {
         json!({ "id": workspace_id }),
     )
     .await?;
-    Ok(data.get("declineInvite").and_then(|v| v.as_bool()).unwrap_or(false))
+    Ok(data
+        .get("declineInvite")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false))
 }
 
 pub async fn revoke_invite(workspace_id: &str, account_id: &str) -> Result<bool, String> {
@@ -1241,7 +1264,10 @@ pub async fn revoke_invite(workspace_id: &str, account_id: &str) -> Result<bool,
         json!({ "id": workspace_id, "a": account_id }),
     )
     .await?;
-    Ok(data.get("revokeInvite").and_then(|v| v.as_bool()).unwrap_or(false))
+    Ok(data
+        .get("revokeInvite")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false))
 }
 
 pub async fn update_member_role(
@@ -1253,7 +1279,11 @@ pub async fn update_member_role(
         "mutation($id: ID!, $a: ID!, $r: String!) {{ \
          updateMemberRole(workspaceId: $id, accountId: $a, role: $r) {{ {MEMBER_FIELDS} }} }}"
     );
-    let data = graphql(&q, json!({ "id": workspace_id, "a": account_id, "r": role })).await?;
+    let data = graphql(
+        &q,
+        json!({ "id": workspace_id, "a": account_id, "r": role }),
+    )
+    .await?;
     serde_json::from_value(data.get("updateMemberRole").cloned().unwrap_or(Value::Null))
         .map_err(|e| e.to_string())
 }
@@ -1264,7 +1294,10 @@ pub async fn remove_member(workspace_id: &str, account_id: &str) -> Result<bool,
         json!({ "id": workspace_id, "a": account_id }),
     )
     .await?;
-    Ok(data.get("removeMember").and_then(|v| v.as_bool()).unwrap_or(false))
+    Ok(data
+        .get("removeMember")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false))
 }
 
 // ---------- 视图（View） ----------
@@ -1477,7 +1510,9 @@ pub async fn set_view_timeline(
     if v.is_null() {
         return Ok(None);
     }
-    serde_json::from_value(v).map(Some).map_err(|e| e.to_string())
+    serde_json::from_value(v)
+        .map(Some)
+        .map_err(|e| e.to_string())
 }
 
 pub async fn delete_view(id: &str) -> Result<bool, String> {
@@ -1486,7 +1521,10 @@ pub async fn delete_view(id: &str) -> Result<bool, String> {
         json!({ "id": id }),
     )
     .await?;
-    Ok(data.get("deleteView").and_then(|v| v.as_bool()).unwrap_or(false))
+    Ok(data
+        .get("deleteView")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false))
 }
 
 pub async fn parse_view_query(workspace_id: &str, expr: &str) -> Result<Value, String> {
@@ -1576,8 +1614,12 @@ pub async fn create_automation_rule(
                 "tes": target_event_source, "te": target_expr, "w": writes }),
     )
     .await?;
-    serde_json::from_value(data.get("createAutomationRule").cloned().unwrap_or(Value::Null))
-        .map_err(|e| e.to_string())
+    serde_json::from_value(
+        data.get("createAutomationRule")
+            .cloned()
+            .unwrap_or(Value::Null),
+    )
+    .map_err(|e| e.to_string())
 }
 
 pub async fn update_automation_rule(
@@ -1600,8 +1642,12 @@ pub async fn update_automation_rule(
                 "tes": target_event_source, "te": target_expr, "w": writes }),
     )
     .await?;
-    serde_json::from_value(data.get("updateAutomationRule").cloned().unwrap_or(Value::Null))
-        .map_err(|e| e.to_string())
+    serde_json::from_value(
+        data.get("updateAutomationRule")
+            .cloned()
+            .unwrap_or(Value::Null),
+    )
+    .map_err(|e| e.to_string())
 }
 
 pub async fn delete_automation_rule(id: &str) -> Result<bool, String> {
@@ -1632,8 +1678,7 @@ pub struct AgentSession {
     pub last_message_at: Option<String>,
 }
 
-const AGENT_SESSION_FIELDS: &str =
-    "id workspaceId title createdAt updatedAt lastMessageAt";
+const AGENT_SESSION_FIELDS: &str = "id workspaceId title createdAt updatedAt lastMessageAt";
 
 #[derive(Clone, serde::Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -1685,9 +1730,8 @@ pub async fn list_agent_sessions(workspace_id: &str) -> Result<Vec<AgentSession>
 }
 
 pub async fn list_agent_messages(session_id: &str) -> Result<Vec<AgentMessage>, String> {
-    let q = format!(
-        "query($id: ID!) {{ agentMessages(sessionId: $id) {{ {AGENT_MESSAGE_FIELDS} }} }}"
-    );
+    let q =
+        format!("query($id: ID!) {{ agentMessages(sessionId: $id) {{ {AGENT_MESSAGE_FIELDS} }} }}");
     let data = graphql(&q, json!({ "id": session_id })).await?;
     serde_json::from_value(data.get("agentMessages").cloned().unwrap_or(Value::Null))
         .map_err(|e| e.to_string())
@@ -1698,8 +1742,12 @@ pub async fn create_agent_session(workspace_id: &str) -> Result<AgentSession, St
         "mutation($id: ID!) {{ createAgentSession(workspaceId: $id) {{ {AGENT_SESSION_FIELDS} }} }}"
     );
     let data = graphql(&q, json!({ "id": workspace_id })).await?;
-    serde_json::from_value(data.get("createAgentSession").cloned().unwrap_or(Value::Null))
-        .map_err(|e| e.to_string())
+    serde_json::from_value(
+        data.get("createAgentSession")
+            .cloned()
+            .unwrap_or(Value::Null),
+    )
+    .map_err(|e| e.to_string())
 }
 
 pub async fn delete_agent_session(id: &str) -> Result<bool, String> {
@@ -1735,7 +1783,10 @@ mod tests {
             "deletedAt": "2026-01-01T00:00:00+00:00"
         }))
         .unwrap();
-        assert_eq!(deleted.deleted_at.as_deref(), Some("2026-01-01T00:00:00+00:00"));
+        assert_eq!(
+            deleted.deleted_at.as_deref(),
+            Some("2026-01-01T00:00:00+00:00")
+        );
 
         let live: Workspace = serde_json::from_value(serde_json::json!({
             "id": "1", "name": "n", "slug": "s", "description": "d", "deletedAt": null
@@ -1772,7 +1823,11 @@ pub async fn bind_oauth_to_existing(
     )
     .await?;
     let r = data.get("bindOAuthToExisting").ok_or("绑定响应缺失")?;
-    let token = r.get("token").and_then(|v| v.as_str()).ok_or("token 缺失")?.to_string();
+    let token = r
+        .get("token")
+        .and_then(|v| v.as_str())
+        .ok_or("token 缺失")?
+        .to_string();
     let account: User = serde_json::from_value(r.get("account").cloned().unwrap_or(Value::Null))
         .map_err(|e| e.to_string())?;
     Ok((token, account))
@@ -1792,7 +1847,11 @@ pub async fn bind_oauth_to_new(
     )
     .await?;
     let r = data.get("bindOAuthToNew").ok_or("绑定响应缺失")?;
-    let token = r.get("token").and_then(|v| v.as_str()).ok_or("token 缺失")?.to_string();
+    let token = r
+        .get("token")
+        .and_then(|v| v.as_str())
+        .ok_or("token 缺失")?
+        .to_string();
     let account: User = serde_json::from_value(r.get("account").cloned().unwrap_or(Value::Null))
         .map_err(|e| e.to_string())?;
     Ok((token, account))

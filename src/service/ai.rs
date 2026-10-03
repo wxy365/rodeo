@@ -67,7 +67,11 @@ impl AiService {
             Some(serde_json::to_string(&cfg).unwrap_or_default()),
         );
         let mut ops = audit_ops(&audit)?;
-        ops.push(BatchOp::put(cf::WORKSPACE_AI, ws.to_bytes().to_vec(), &cfg)?);
+        ops.push(BatchOp::put(
+            cf::WORKSPACE_AI,
+            ws.to_bytes().to_vec(),
+            &cfg,
+        )?);
         self.store.write_batch(ops)?;
         Ok(cfg)
     }
@@ -261,10 +265,7 @@ impl AiClient {
         &self,
         messages: &[ChatMessage],
         tools: &[ToolSchema],
-    ) -> Result<
-        Pin<Box<dyn Stream<Item = Result<StreamChunk, AppError>> + Send>>,
-        AppError,
-    > {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamChunk, AppError>> + Send>>, AppError> {
         use async_stream::try_stream;
 
         let url = format!("{}/chat/completions", self.base_url);
@@ -432,7 +433,10 @@ fn parse_sse_event(event: &str) -> Result<Option<StreamChunk>, AppError> {
         .and_then(|a| a.first())
         .ok_or_else(|| AppError::Ai("SSE chunk 缺少 choices".to_string()))?;
     let delta = choice.get("delta");
-    if let Some(content) = delta.and_then(|d| d.get("content")).and_then(|c| c.as_str()) {
+    if let Some(content) = delta
+        .and_then(|d| d.get("content"))
+        .and_then(|c| c.as_str())
+    {
         return Ok(Some(StreamChunk::Delta(content.to_string())));
     }
     if let Some(tcs) = delta
@@ -445,7 +449,11 @@ fn parse_sse_event(event: &str) -> Result<Option<StreamChunk>, AppError> {
         let mut out = Vec::with_capacity(tcs.len());
         for tc in tcs {
             let index = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
-            let id = tc.get("id").and_then(|s| s.as_str()).unwrap_or("").to_string();
+            let id = tc
+                .get("id")
+                .and_then(|s| s.as_str())
+                .unwrap_or("")
+                .to_string();
             let name = tc
                 .get("function")
                 .and_then(|f| f.get("name"))
@@ -491,7 +499,11 @@ pub fn derive_title(markdown: &str, count: usize) -> String {
         let Some(rest) = t.strip_prefix('#') else {
             continue;
         };
-        let title = rest.trim_start_matches('#').trim().trim_end_matches('#').trim();
+        let title = rest
+            .trim_start_matches('#')
+            .trim()
+            .trim_end_matches('#')
+            .trim();
         if !title.is_empty() {
             return title.to_string();
         }
@@ -603,8 +615,7 @@ pub fn to_chat_messages(history: &[AgentMessage]) -> Vec<ChatMessage> {
                             kind: "function".into(),
                             function: ToolCallRequestFn {
                                 name: tc.name.clone(),
-                                arguments: serde_json::to_string(&tc.args)
-                                    .unwrap_or_default(),
+                                arguments: serde_json::to_string(&tc.args).unwrap_or_default(),
                             },
                         })
                         .collect(),

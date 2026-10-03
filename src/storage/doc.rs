@@ -103,13 +103,24 @@ pub mod cf {
 
 /// 单个批量写操作：文档/索引/审计统一原子写入。
 pub enum BatchOp {
-    Put { cf: &'static str, key: Vec<u8>, value: Vec<u8> },
-    Delete { cf: &'static str, key: Vec<u8> },
+    Put {
+        cf: &'static str,
+        key: Vec<u8>,
+        value: Vec<u8>,
+    },
+    Delete {
+        cf: &'static str,
+        key: Vec<u8>,
+    },
 }
 
 impl BatchOp {
     pub fn put<T: Serialize>(cf: &'static str, key: Vec<u8>, value: &T) -> Result<Self, AppError> {
-        Ok(BatchOp::Put { cf, key, value: bincode::serialize(value)? })
+        Ok(BatchOp::Put {
+            cf,
+            key,
+            value: bincode::serialize(value)?,
+        })
     }
 
     pub fn put_raw(cf: &'static str, key: Vec<u8>, value: Vec<u8>) -> Self {
@@ -135,7 +146,9 @@ impl DocStore {
     /// RocksDB 后端（spec 的默认组合）。这个签名刻意保留：8 个文件里约 30 处
     /// 既有测试都是 `DocStore::open(&dir)`，让它们一个字都不用改。
     pub fn open(path: &str) -> Result<Self, AppError> {
-        Ok(Self { backend: Backend::Rocks(RocksDoc::open(path)?) })
+        Ok(Self {
+            backend: Backend::Rocks(RocksDoc::open(path)?),
+        })
     }
 
     /// 按配置选后端。四种组合由这里的两层 match 决定，服务层无感。
@@ -182,7 +195,11 @@ impl DocStore {
     }
 
     /// 前缀扫描：按 key 升序返回所有以 `prefix` 开头的键值对。
-    pub fn scan_prefix(&self, cf: &str, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, AppError> {
+    pub fn scan_prefix(
+        &self,
+        cf: &str,
+        prefix: &[u8],
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, AppError> {
         match &self.backend {
             Backend::Rocks(s) => s.scan_prefix(cf, prefix),
             Backend::Pg(s) => s.scan_prefix(cf, prefix),

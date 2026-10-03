@@ -7,11 +7,7 @@ use crate::frontend::graphql_client::{bind_oauth_to_existing, bind_oauth_to_new,
 use crate::frontend::use_auth;
 
 #[component]
-pub fn WeChatBindPanel(
-    bind_token: String,
-    provider: String,
-    return_to: String,
-) -> impl IntoView {
+pub fn WeChatBindPanel(bind_token: String, provider: String, return_to: String) -> impl IntoView {
     let auth = use_auth();
     let navigate = use_navigate();
 

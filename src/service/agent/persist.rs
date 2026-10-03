@@ -110,7 +110,9 @@ impl AgentService {
         limit: usize,
     ) -> Result<Vec<AgentMessage>, AppError> {
         // 先确认 session 归属
-        let _ = self.get_session(user_id, session_id)?.ok_or(AppError::NotFound)?;
+        let _ = self
+            .get_session(user_id, session_id)?
+            .ok_or(AppError::NotFound)?;
         let prefix = keys::agent_message_prefix(session_id);
         let mut out = Vec::new();
         for (_, v) in self.store.scan_prefix(cf::AGENT_MESSAGES, &prefix)? {
@@ -132,7 +134,9 @@ impl AgentService {
         title: Option<String>,
         last_message_at: Option<DateTime<Utc>>,
     ) -> Result<(), AppError> {
-        let mut s = self.get_session(user_id, session_id)?.ok_or(AppError::NotFound)?;
+        let mut s = self
+            .get_session(user_id, session_id)?
+            .ok_or(AppError::NotFound)?;
         if let Some(t) = title {
             s.title = t;
         }

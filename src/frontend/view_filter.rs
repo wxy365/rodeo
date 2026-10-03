@@ -3,9 +3,19 @@ use serde_json::{json, Value};
 /// 筛选条上的一枚条件芯片。value 保持为 JSON，原样回写 AST。
 #[derive(Debug, Clone, PartialEq)]
 pub enum CondChip {
-    Label { name: String, op: String, value: Value },
-    Time { field: String, op: String, value: Value },
-    Text { keyword: String },
+    Label {
+        name: String,
+        op: String,
+        value: Value,
+    },
+    Time {
+        field: String,
+        op: String,
+        value: Value,
+    },
+    Text {
+        keyword: String,
+    },
 }
 
 fn conditions(query: &Value) -> Vec<Value> {
@@ -21,10 +31,18 @@ fn conditions(query: &Value) -> Vec<Value> {
 fn chip_of(cond: &Value) -> Option<CondChip> {
     let c = cond.get("cond")?;
     let field = c.get("field")?;
-    let op = c.get("op").and_then(|v| v.as_str()).unwrap_or("eq").to_string();
+    let op = c
+        .get("op")
+        .and_then(|v| v.as_str())
+        .unwrap_or("eq")
+        .to_string();
     let value = c.get("value").cloned().unwrap_or(Value::Null);
     if let Some(name) = field.get("label").and_then(|v| v.as_str()) {
-        return Some(CondChip::Label { name: name.to_string(), op, value });
+        return Some(CondChip::Label {
+            name: name.to_string(),
+            op,
+            value,
+        });
     }
     match field.as_str() {
         Some("text") => Some(CondChip::Text {
@@ -86,10 +104,16 @@ pub fn with_text(query: &Value, keyword: &str) -> Value {
     if is_flat(query) {
         let mut arr: Vec<Value> = conditions(query)
             .into_iter()
-            .filter(|c| chip_of(c).map(|ch| !matches!(ch, CondChip::Text { .. })).unwrap_or(true))
+            .filter(|c| {
+                chip_of(c)
+                    .map(|ch| !matches!(ch, CondChip::Text { .. }))
+                    .unwrap_or(true)
+            })
             .collect();
         if !keyword.is_empty() {
-            arr.push(chip_to_cond(&CondChip::Text { keyword: keyword.to_string() }));
+            arr.push(chip_to_cond(&CondChip::Text {
+                keyword: keyword.to_string(),
+            }));
         }
         json!({ "and": arr })
     } else if keyword.is_empty() {
@@ -109,14 +133,22 @@ mod tests {
         let q = json!({"cond": {"field": {"label": "Task"}, "op": "eq", "value": "Open"}});
         let chips = chips(&q);
         assert_eq!(chips.len(), 1);
-        assert!(matches!(&chips[0], CondChip::Label { name, op, .. } if name == "Task" && op == "eq"));
+        assert!(
+            matches!(&chips[0], CondChip::Label { name, op, .. } if name == "Task" && op == "eq")
+        );
     }
 
     #[test]
     fn build_query_emits_and_tree() {
         let chips = vec![
-            CondChip::Label { name: "Task".into(), op: "eq".into(), value: json!("Open") },
-            CondChip::Text { keyword: "检索".into() },
+            CondChip::Label {
+                name: "Task".into(),
+                op: "eq".into(),
+                value: json!("Open"),
+            },
+            CondChip::Text {
+                keyword: "检索".into(),
+            },
         ];
         let q = build_query(&chips);
         assert_eq!(q["and"].as_array().unwrap().len(), 2);
@@ -145,14 +177,24 @@ mod tests {
     #[test]
     fn is_flat_recognizes_chip_editable_shapes() {
         assert!(is_flat(&json!({"and": []})));
-        assert!(is_flat(&json!({"and": [{"cond": {"field": "text", "op": "contains", "value": "x"}}]})));
-        assert!(is_flat(&json!({"cond": {"field": {"label": "Task"}, "op": "eq", "value": "Open"}})));
+        assert!(is_flat(
+            &json!({"and": [{"cond": {"field": "text", "op": "contains", "value": "x"}}]})
+        ));
+        assert!(is_flat(
+            &json!({"cond": {"field": {"label": "Task"}, "op": "eq", "value": "Open"}})
+        ));
         assert!(is_flat(&Value::Null));
         assert!(is_flat(&json!({})));
 
-        assert!(!is_flat(&json!({"or": [{"cond": {"field": {"label": "Task"}, "op": "eq", "value": "Open"}}]})));
-        assert!(!is_flat(&json!({"not": {"cond": {"field": "text", "op": "contains", "value": "x"}}})));
-        assert!(!is_flat(&json!({"and": [{"or": [{"cond": {"field": {"label": "Task"}, "op": "eq", "value": "Open"}}]}]})));
+        assert!(!is_flat(
+            &json!({"or": [{"cond": {"field": {"label": "Task"}, "op": "eq", "value": "Open"}}]})
+        ));
+        assert!(!is_flat(
+            &json!({"not": {"cond": {"field": "text", "op": "contains", "value": "x"}}})
+        ));
+        assert!(!is_flat(
+            &json!({"and": [{"or": [{"cond": {"field": {"label": "Task"}, "op": "eq", "value": "Open"}}]}]})
+        ));
     }
 
     #[test]

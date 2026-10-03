@@ -45,7 +45,9 @@ impl AuditService {
             return Ok(Vec::new());
         }
         let prefix = workspace_id.to_bytes();
-        let rows = self.store.scan_prefix(cf::AUDIT_LOGS_BY_WORKSPACE, &prefix)?;
+        let rows = self
+            .store
+            .scan_prefix(cf::AUDIT_LOGS_BY_WORKSPACE, &prefix)?;
         let mut out = Vec::new();
         for (key, _) in rows {
             if key.len() < 16 + 24 {
@@ -67,8 +69,8 @@ impl AuditService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::{DateTime, Duration, Utc};
     use crate::domain::AuditAction;
+    use chrono::{DateTime, Duration, Utc};
 
     fn temp_dir(name: &str) -> String {
         let mut p = std::env::temp_dir();
@@ -133,7 +135,11 @@ mod tests {
     fn audit_ops_without_workspace_skips_workspace_index() {
         let log = audit_log(AuditAction::EntryUpdated, "c1", None, Utc::now());
         let ops = audit_ops(&log).unwrap();
-        assert_eq!(ops.len(), 2, "store + resource index only when workspace is None");
+        assert_eq!(
+            ops.len(),
+            2,
+            "store + resource index only when workspace is None"
+        );
         for op in ops {
             let BatchOp::Put { cf, .. } = op else {
                 panic!("audit_ops must only emit Put ops");

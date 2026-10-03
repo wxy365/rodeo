@@ -17,8 +17,15 @@ pub enum ToolErrorKind {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
-    Delta { turn_id: Ulid, content: String },
-    ToolCall { turn_id: Ulid, name: String, args: serde_json::Value },
+    Delta {
+        turn_id: Ulid,
+        content: String,
+    },
+    ToolCall {
+        turn_id: Ulid,
+        name: String,
+        args: serde_json::Value,
+    },
     ToolResult {
         turn_id: Ulid,
         name: String,
@@ -26,7 +33,16 @@ pub enum AgentEvent {
         kind: ToolErrorKind,
         preview: String,
     },
-    SideEffect { turn_id: Ulid, side_effect: SideEffect },
-    Done { turn_id: Ulid, message_id: Ulid },
-    Error { turn_id: Ulid, message: String },
+    SideEffect {
+        turn_id: Ulid,
+        side_effect: SideEffect,
+    },
+    Done {
+        turn_id: Ulid,
+        message_id: Ulid,
+    },
+    Error {
+        turn_id: Ulid,
+        message: String,
+    },
 }

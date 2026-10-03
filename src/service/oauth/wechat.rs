@@ -137,15 +137,16 @@ impl OAuthProvider for WeChatProvider {
         let access_token = body
             .get("access_token")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                AppError::Internal("微信 token 响应缺 access_token".to_string())
-            })?
+            .ok_or_else(|| AppError::Internal("微信 token 响应缺 access_token".to_string()))?
             .to_string();
         let refresh_token = body
             .get("refresh_token")
             .and_then(|v| v.as_str())
             .map(str::to_string);
-        let expires_in = body.get("expires_in").and_then(|v| v.as_i64()).unwrap_or(7200);
+        let expires_in = body
+            .get("expires_in")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(7200);
         let expires_at: DateTime<Utc> = Utc::now() + chrono::Duration::seconds(expires_in);
 
         Ok(ExternalToken {

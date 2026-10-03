@@ -8,11 +8,9 @@ use crate::frontend::comment_list::CommentList;
 use crate::frontend::components::{fmt_datetime, logged_out, AuditTimeline, CodeCopy, TabBar};
 use crate::frontend::graphql_client::{
     audit_logs, delete_entry, entry, label_schemas, members, update_entry, workspace_by_slug,
-    AccountBrief, AuditLog, Entry, Labeling, LabelSchema, Member, Workspace,
+    AccountBrief, AuditLog, Entry, LabelSchema, Labeling, Member, Workspace,
 };
-use crate::frontend::icons::{
-    ic_back, ic_check, ic_share, ic_tag,
-};
+use crate::frontend::icons::{ic_back, ic_check, ic_share, ic_tag};
 use crate::frontend::label_editor::LabelEditor;
 use crate::frontend::relations_panel::RelationsPanel;
 use crate::frontend::tiny_editor::TinyEditor;
@@ -30,7 +28,18 @@ pub fn EntryFullScreen() -> impl IntoView {
     let auth = use_auth();
 
     let data: RwSignal<
-        Option<Result<(Workspace, Entry, Vec<LabelSchema>, Vec<AuditLog>, Vec<Member>), String>>,
+        Option<
+            Result<
+                (
+                    Workspace,
+                    Entry,
+                    Vec<LabelSchema>,
+                    Vec<AuditLog>,
+                    Vec<Member>,
+                ),
+                String,
+            >,
+        >,
     > = RwSignal::new(None);
     let schemas = RwSignal::new(Vec::<LabelSchema>::new());
     let labels = RwSignal::new(Vec::<Labeling>::new());
@@ -46,7 +55,9 @@ pub fn EntryFullScreen() -> impl IntoView {
     let dirty = Signal::derive(move || {
         data.get()
             .and_then(|r| r.ok())
-            .is_some_and(|(_, e, _, _, _)| e.title != title.get().trim() || e.detail != detail.get())
+            .is_some_and(|(_, e, _, _, _)| {
+                e.title != title.get().trim() || e.detail != detail.get()
+            })
     });
     let error = RwSignal::new(None::<String>);
     // 标题平时只读，点击才换成输入框；输入框挂载后由 Effect 补焦点。
@@ -72,7 +83,9 @@ pub fn EntryFullScreen() -> impl IntoView {
         if cfg!(target_arch = "wasm32") {
             spawn_local(async move {
                 let result = async {
-                    let ws = workspace_by_slug(&s).await?.ok_or("工作空间不存在".to_string())?;
+                    let ws = workspace_by_slug(&s)
+                        .await?
+                        .ok_or("工作空间不存在".to_string())?;
                     let e = entry(&c).await?.ok_or("条目不存在".to_string())?;
                     let schema_list = label_schemas(&ws.id).await?;
                     let logs = audit_logs(&ws.id).await?;
@@ -180,9 +193,8 @@ pub fn EntryFullScreen() -> impl IntoView {
 
     // 按钮与 Esc 监听两处都要用它；`Callback` 是 `Copy`，可以同时进两个 handler。
     let nav_back = navigate.clone();
-    let go_back: Callback<()> = Callback::new(move |_| {
-        nav_back(&format!("/{}", slug()), Default::default())
-    });
+    let go_back: Callback<()> =
+        Callback::new(move |_| nav_back(&format!("/{}", slug()), Default::default()));
 
     // Esc 返回视图页；有未保存改动时拦住，并把原因写进现成的提示位。
     // 显式按钮不受影响：Esc 容易误触，按钮是明确动作。

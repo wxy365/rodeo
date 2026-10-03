@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
-use rand_core::{OsRng, RngCore};
 use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
@@ -81,7 +81,12 @@ impl AuthService {
             return Err(AppError::EmailExists);
         }
         let password_hash = hash_password(password)?;
-        let account = Account::new(email.clone(), name.trim().to_string(), password_hash, is_admin);
+        let account = Account::new(
+            email.clone(),
+            name.trim().to_string(),
+            password_hash,
+            is_admin,
+        );
 
         let id_key = account.id.to_bytes();
         self.store.put(cf::ACCOUNTS, &id_key, &account)?;
@@ -139,7 +144,8 @@ impl AuthService {
             ));
         }
         account.password_hash = hash_password(new_password)?;
-        self.store.put(cf::ACCOUNTS, &account.id.to_bytes(), &account)?;
+        self.store
+            .put(cf::ACCOUNTS, &account.id.to_bytes(), &account)?;
         Ok(account)
     }
 
@@ -164,12 +170,16 @@ impl AuthService {
         let mut account = self.find_by_id(id)?.ok_or(AppError::NotFound)?;
         account.name = name.to_string();
         account.is_admin = is_admin;
-        self.store.put(cf::ACCOUNTS, &account.id.to_bytes(), &account)?;
+        self.store
+            .put(cf::ACCOUNTS, &account.id.to_bytes(), &account)?;
         Ok(account)
     }
 
     pub fn find_by_email(&self, email: &str) -> Result<Option<Account>, AppError> {
-        let Some(raw) = self.store.get_raw(cf::ACCOUNTS_EMAIL_IDX, email.as_bytes())? else {
+        let Some(raw) = self
+            .store
+            .get_raw(cf::ACCOUNTS_EMAIL_IDX, email.as_bytes())?
+        else {
             return Ok(None);
         };
         let id_bytes: [u8; 16] = raw
@@ -201,11 +211,7 @@ impl AuthService {
     /// 注销另删邮箱索引，使该地址可被重新注册。**注销是终态**：把已注销账号设回
     /// `Active` 会被拒。只靠前端隐藏按钮不够——直接调 API 就能绕过去，而那时邮箱
     /// 索引并不会恢复，于是得到一个「状态正常、却永远登不进去」的死账号。
-    pub fn set_status(
-        &self,
-        id: Ulid,
-        status: AccountStatus,
-    ) -> Result<Account, AppError> {
+    pub fn set_status(&self, id: Ulid, status: AccountStatus) -> Result<Account, AppError> {
         let account = self.find_by_id(id)?.ok_or(AppError::NotFound)?;
         if status == AccountStatus::Active && self.status(id)? == AccountStatus::Deactivated {
             return Err(AppError::InvalidQuery("已注销的账号无法恢复".to_string()));
@@ -401,7 +407,9 @@ mod tests {
 
         assert!(auth.register("user@x.io", "User", "Passw0rd!").is_err());
         // 管理员建号不受开关限制，否则关闭注册后连管理员都建不出来。
-        assert!(auth.create_by_admin("admin@x.io", "Admin", "Passw0rd!", true).is_ok());
+        assert!(auth
+            .create_by_admin("admin@x.io", "Admin", "Passw0rd!", true)
+            .is_ok());
 
         std::fs::remove_dir_all(&dir).ok();
     }

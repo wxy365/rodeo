@@ -7,7 +7,10 @@ use serde_json::Value;
 use crate::frontend::graphql_client::{
     get_recent_colors, logout, push_recent_color, AuditLog, Member,
 };
-use crate::frontend::icons::{ic_add, ic_check, ic_close, ic_copy, ic_folder, ic_history, ic_logo, ic_logout, ic_profile, ic_setting, ic_timeline};
+use crate::frontend::icons::{
+    ic_add, ic_check, ic_close, ic_copy, ic_folder, ic_history, ic_logo, ic_logout, ic_profile,
+    ic_setting, ic_timeline,
+};
 use crate::frontend::use_auth;
 
 /// 账号的展示名：优先姓名，缺失时退回邮箱。
@@ -53,7 +56,8 @@ pub fn AccountPicker(
     /// 已选账号 id 集合（单选时长度为 0 / 1）。
     selected: Vec<String>,
     /// 多选模式：开启时多个候选可并存；关闭时点选替换原值。
-    #[prop(optional)] multi: bool,
+    #[prop(optional)]
+    multi: bool,
     on_change: Callback<Vec<String>>,
 ) -> impl IntoView {
     let query = RwSignal::new(String::new());
@@ -255,9 +259,11 @@ pub fn DefaultValueInput(
     #[prop(optional)] multi: bool,
     #[prop(optional)] enum_values: Vec<String>,
     /// 时间类型的展示格式（常规表示法），空串表示该类型默认格式。
-    #[prop(optional)] format: String,
+    #[prop(optional)]
+    format: String,
     /// 账号型的候选成员。
-    #[prop(optional)] members: Vec<Member>,
+    #[prop(optional)]
+    members: Vec<Member>,
     value: RwSignal<Value>,
     #[prop(optional)] disabled: bool,
 ) -> impl IntoView {
@@ -285,7 +291,7 @@ pub fn DefaultValueInput(
                     <option value="false">"否"</option>
                 </select>
             }
-                .into_any()
+            .into_any()
         }
         "enum" if multi => {
             let cur = move || value_to_string(&value.get());
@@ -305,7 +311,7 @@ pub fn DefaultValueInput(
                             );
                     } />
             }
-                .into_any()
+            .into_any()
         }
         "enum" => {
             let opts = enum_values.clone();
@@ -355,14 +361,16 @@ pub fn DefaultValueInput(
                         }
                     } />
             }
-                .into_any()
+            .into_any()
         }
         "date" | "time" | "datetime" => {
             let vt_time = vt.clone();
             let stored = Some(format.as_str());
             let layout = crate::golayout::resolve(stored, crate::golayout::default_go(&vt));
-            let hint =
-                crate::golayout::display_pattern(stored, crate::golayout::default_pattern(&vt_time));
+            let hint = crate::golayout::display_pattern(
+                stored,
+                crate::golayout::default_pattern(&vt_time),
+            );
             view! {
                 <input class="inp" style="width:180px" disabled=disabled placeholder=hint
                     prop:value=move || value_to_string(&value.get())
@@ -375,12 +383,16 @@ pub fn DefaultValueInput(
                         }
                     } />
             }
-                .into_any()
+            .into_any()
         }
         "account" => {
             let picked = Callback::new(move |ids: Vec<String>| {
                 // 单选：值是单个字符串 id。空数组视为不设置。
-                let v = ids.into_iter().next().map(Value::String).unwrap_or(Value::Null);
+                let v = ids
+                    .into_iter()
+                    .next()
+                    .map(Value::String)
+                    .unwrap_or(Value::Null);
                 value.set(v);
             });
             let current = move || value_to_string(&value.get());
@@ -716,7 +728,9 @@ pub fn from_native(vt: &str, s: &str) -> Option<String> {
         return None;
     }
     Some(match vt {
-        "datetime" => format!("{}:00", s.replacen('T', " ", 1)).get(..19)?.to_string(),
+        "datetime" => format!("{}:00", s.replacen('T', " ", 1))
+            .get(..19)?
+            .to_string(),
         "time" => format!("{s}:00").get(..8)?.to_string(),
         _ => s.to_string(),
     })
@@ -860,11 +874,15 @@ fn measure_cpick_placement(pop_ref: &NodeRef<Div>, placement: &RwSignal<String>)
     let _ = style.set_property("top", "0".into());
 
     let pop_rect = pop_web.get_bounding_client_rect();
-    let Some(anchor_el) = pop_web.previous_element_sibling() else { return };
+    let Some(anchor_el) = pop_web.previous_element_sibling() else {
+        return;
+    };
     // `previous_element_sibling` 返回的是 `web_sys::Element`，`unchecked_ref`
     // 把它再「宽化」成 `HtmlElement`——这俩都带 `get_bounding_client_rect`，
     // 用 HtmlElement 只是顺手。
-    let anchor_rect = anchor_el.unchecked_ref::<web_sys::HtmlElement>().get_bounding_client_rect();
+    let anchor_rect = anchor_el
+        .unchecked_ref::<web_sys::HtmlElement>()
+        .get_bounding_client_rect();
 
     // 把 inline 样式还原回测量前的样子。空串意味着原本就没 inline 样式，
     // 直接清掉属性；否则把备份写回去。完成后 CSS 的 `:hover` / `:focus-within`
@@ -877,7 +895,11 @@ fn measure_cpick_placement(pop_ref: &NodeRef<Div>, placement: &RwSignal<String>)
 
     let Some(win) = web_sys::window() else { return };
     // `inner_width()` 返回 `JsValue`；用 `as_f64()` 取出底层的数字。
-    let vw = win.inner_width().ok().and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let vw = win
+        .inner_width()
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
     let pop_w = pop_rect.width();
 
     // 浮层外缘到视口边缘要留 4px 间隙，跟 CSS 里 `calc(100% + 4px)` 对齐；
@@ -996,7 +1018,14 @@ pub fn audit_change(before: Option<&str>, after: Option<&str>) -> String {
 
 /// 资源快照 → 一个能指代它的短标签。
 fn subject(o: &serde_json::Map<String, Value>) -> String {
-    for k in ["title", "name", "label_name", "value", "email", "account_id"] {
+    for k in [
+        "title",
+        "name",
+        "label_name",
+        "value",
+        "email",
+        "account_id",
+    ] {
         if let Some(v) = o.get(k) {
             let s = show(v);
             if s != "—" {

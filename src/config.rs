@@ -212,7 +212,10 @@ impl Default for StorageConfig {
 
 impl Default for DocConfig {
     fn default() -> Self {
-        Self { backend: default_doc_backend(), url: String::new() }
+        Self {
+            backend: default_doc_backend(),
+            url: String::new(),
+        }
     }
 }
 

@@ -32,8 +32,10 @@ fn spawn_upload(
     // `HtmlInputElement::files()` 要 web-sys 的 `FileList` 特性，而本仓库没开、Cargo.toml
     // 又不该由本任务改，于是照 `tiny_editor` 取粘贴文件的办法用 Reflect 读 `files[0]`
     // （没选文件时是 `undefined`，`dyn_into` 自然失败）。
-    let Ok(files) = Reflect::get(AsRef::<JsValue>::as_ref(&input), &JsValue::from_str("files"))
-    else {
+    let Ok(files) = Reflect::get(
+        AsRef::<JsValue>::as_ref(&input),
+        &JsValue::from_str("files"),
+    ) else {
         return;
     };
     let Ok(first) = Reflect::get(&files, &JsValue::from_f64(0.0)) else {

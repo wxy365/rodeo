@@ -80,7 +80,12 @@ impl Services {
         // write_batch，必须先有 instance 才能传引用。
         let relation = RelationService::new(store.clone());
         // messages 必须在 workspaces 之后构造，EntryService 的 mention 派发要走它的成员表。
-        let entry = EntryService::with_search(store.clone(), search.clone(), message.clone(), relation.clone());
+        let entry = EntryService::with_search(
+            store.clone(),
+            search.clone(),
+            message.clone(),
+            relation.clone(),
+        );
         // 评论服务要与 EntryService 共用同一份实例：评论变更后要触发它的重索引。
         let comment = CommentService::new(store.clone(), entry.clone(), message.clone());
         // 附件服务同样要与 EntryService 共用同一份实例：上传后要推进条目更新时间并重索引。
@@ -88,8 +93,8 @@ impl Services {
         let blobs = BlobStore::from_config(&config.storage)?;
         let attachment = AttachmentService::new(store.clone(), entry.clone(), blobs);
         let schema = Arc::new(build_schema());
-        let tools = build_tools(&schema)
-            .map_err(|e| AppError::Ai(format!("build_tools 失败: {e}")))?;
+        let tools =
+            build_tools(&schema).map_err(|e| AppError::Ai(format!("build_tools 失败: {e}")))?;
         validate_templates(&schema)
             .map_err(|e| AppError::Ai(format!("validate_templates 失败: {e}")))?;
         let agent_turns = Arc::new(SessionTurns::default());
@@ -131,18 +136,20 @@ impl Services {
             schema,
             agent_tools: tools,
             agent_turns,
-            oauth_registry: Arc::new(crate::service::oauth::OAuthRegistry::new(
-                oauth_providers,
-            )),
+            oauth_registry: Arc::new(crate::service::oauth::OAuthRegistry::new(oauth_providers)),
             oauth_state: crate::service::oauth_state::OAuthStateStore::new(),
             oauth_bindings,
         };
         // 先修标签定义：搜索与打标回填都按当前结构读数据，让它们看到一致的 schema。
         services.label.repair_legacy_schemas()?;
         services.search.backfill(&services.store)?;
-        services.entry.labelings_by_workspace_backfill(&services.store)?;
+        services
+            .entry
+            .labelings_by_workspace_backfill(&services.store)?;
         // 标签值二级索引：仅在首次启动 / 新装时灌，幂等；已经存在就跳过。
-        services.entry.labelings_by_label_backfill(&services.store)?;
+        services
+            .entry
+            .labelings_by_label_backfill(&services.store)?;
         // 视图排序的转码修复必须排在 repair_default_view_name 之前：
         // 后者用 `self.get(id)?` 读视图，而 `DocStore::get` 在 bincode 解码失败时返回
         // `Err` 而非 `None`，旧编码的记录会让启动直接失败。

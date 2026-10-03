@@ -171,8 +171,22 @@ fn label_min_px(step: i64, family: Family) -> f64 {
 /// 步长不落在自然历法边界上也不影响读数——标签上的日期本身就是对的。
 fn tick_step(span: i64, family: Family, px_per_sec: f64) -> i64 {
     const DATE_STEPS: [i64; 16] = [
-        3_600, 21_600, 43_200, 86_400, 172_800, 604_800, 1_209_600, 2_592_000, 7_776_000,
-        15_552_000, 31_536_000, 63_072_000, 157_680_000, 315_360_000, 788_400_000, 1_576_800_000,
+        3_600,
+        21_600,
+        43_200,
+        86_400,
+        172_800,
+        604_800,
+        1_209_600,
+        2_592_000,
+        7_776_000,
+        15_552_000,
+        31_536_000,
+        63_072_000,
+        157_680_000,
+        315_360_000,
+        788_400_000,
+        1_576_800_000,
     ];
     const TIME_STEPS: [i64; 9] = [300, 600, 900, 1_800, 3_600, 7_200, 10_800, 21_600, 43_200];
     const MAX_TICKS: i64 = 40;
@@ -184,9 +198,7 @@ fn tick_step(span: i64, family: Family, px_per_sec: f64) -> i64 {
     steps
         .iter()
         .copied()
-        .find(|s| {
-            span / *s <= MAX_TICKS && *s as f64 * px_per_sec >= label_min_px(*s, family)
-        })
+        .find(|s| span / *s <= MAX_TICKS && *s as f64 * px_per_sec >= label_min_px(*s, family))
         .unwrap_or_else(|| *steps.last().unwrap())
 }
 
@@ -225,7 +237,12 @@ pub fn plan(entries: &[Entry], schemas: &[LabelSchema], cfg: &ViewTimeline) -> O
             }
         };
         lane_ends[lane] = b.max(a + 1);
-        placed.push(Placed { idx, start: a, end: b, lane });
+        placed.push(Placed {
+            idx,
+            start: a,
+            end: b,
+            lane,
+        });
     }
     let lanes = lane_ends.len();
 
@@ -253,7 +270,9 @@ pub fn plan(entries: &[Entry], schemas: &[LabelSchema], cfg: &ViewTimeline) -> O
 /// 选中区间、重算横向比例与刻度步长。`picked = None` 时原样返回。
 /// 不动 `unscheduled`——缺起止时间的条目本来就画在轴外，与缩放无关。
 fn apply_pick(p: &Plan, picked: Option<(i64, i64)>) -> Plan {
-    let Some((a, b)) = picked else { return p.clone() };
+    let Some((a, b)) = picked else {
+        return p.clone();
+    };
     let (a, b) = (a.min(b), a.max(b));
     let filtered: Vec<Placed> = p
         .placed
@@ -369,10 +388,7 @@ const PICK_DRAG_PX: f64 = 4.0;
 // DOM 测量只在 wasm 下编译（web-sys 与 wasm-bindgen 都是 hydrate-only），
 // 独立成函数并按 target 切两套——native 那侧永远返回 None，调用方无需分支。
 #[cfg(target_arch = "wasm32")]
-fn axis_x_of_impl(
-    axis_ref: &NodeRef<leptos::html::Div>,
-    client_x: i32,
-) -> Option<f64> {
+fn axis_x_of_impl(axis_ref: &NodeRef<leptos::html::Div>, client_x: i32) -> Option<f64> {
     use wasm_bindgen::JsCast;
     let el = axis_ref.get()?;
     let r: &web_sys::HtmlElement = el.unchecked_ref();
@@ -384,21 +400,16 @@ fn axis_x_of_impl(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn axis_x_of_impl(
-    _axis_ref: &NodeRef<leptos::html::Div>,
-    _client_x: i32,
-) -> Option<f64> {
+fn axis_x_of_impl(_axis_ref: &NodeRef<leptos::html::Div>, _client_x: i32) -> Option<f64> {
     None
 }
 
 #[cfg(target_arch = "wasm32")]
-fn axis_contains_impl(
-    axis_ref: &NodeRef<leptos::html::Div>,
-    client_x: i32,
-    client_y: i32,
-) -> bool {
+fn axis_contains_impl(axis_ref: &NodeRef<leptos::html::Div>, client_x: i32, client_y: i32) -> bool {
     use wasm_bindgen::JsCast;
-    let Some(el) = axis_ref.get() else { return false };
+    let Some(el) = axis_ref.get() else {
+        return false;
+    };
     let r: &web_sys::HtmlElement = el.unchecked_ref();
     let rect = r.get_bounding_client_rect();
     let cx = client_x as f64;
@@ -463,7 +474,8 @@ pub fn TimelineView(
             let Some(Some((code, x, y))) = last_pick.try_get_untracked() else {
                 return;
             };
-            if (ev.client_x() - x).abs() > PICK_SAME_PX || (ev.client_y() - y).abs() > PICK_SAME_PX {
+            if (ev.client_x() - x).abs() > PICK_SAME_PX || (ev.client_y() - y).abs() > PICK_SAME_PX
+            {
                 return;
             }
             last_pick.set(None);
@@ -486,9 +498,7 @@ pub fn TimelineView(
     let axis_ref: NodeRef<leptos::html::Div> = NodeRef::new();
 
     // 视口 x → 轴内像素。clamp 到轴宽内，越界直接落到最近端点。
-    let axis_x_of = move |client_x: i32| -> Option<f64> {
-        axis_x_of_impl(&axis_ref, client_x)
-    };
+    let axis_x_of = move |client_x: i32| -> Option<f64> { axis_x_of_impl(&axis_ref, client_x) };
 
     // 轴内像素 → 绝对秒。用当前可见 plan 的比例——picked 一变，比例就变。
     let px_to_secs = move |axis_x: f64| -> Option<i64> {

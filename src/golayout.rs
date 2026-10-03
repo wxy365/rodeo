@@ -175,9 +175,22 @@ pub fn display_pattern(stored: Option<&str>, default_pattern: &str) -> String {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Tok {
-    Year4, Year2, Month2, Month1, Day2, Day1,
-    Hour24, Hour12, Minute, Second,
-    MonAbbr, MonFull, WdAbbr, WdFull, PmUpper, PmLower,
+    Year4,
+    Year2,
+    Month2,
+    Month1,
+    Day2,
+    Day1,
+    Hour24,
+    Hour12,
+    Minute,
+    Second,
+    MonAbbr,
+    MonFull,
+    WdAbbr,
+    WdFull,
+    PmUpper,
+    PmLower,
 }
 
 /// 顺序即优先级：多字符 token 必须排在它的单字符前缀之前。
@@ -201,11 +214,27 @@ const TOKENS: &[(&str, Tok)] = &[
 ];
 
 const MONTHS: [&str; 12] = [
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December",
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
 ];
 const WEEKDAYS: [&str; 7] = [
-    "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday",
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
 ];
 
 fn match_token(rest: &str) -> Option<(&'static str, Tok)> {
@@ -358,7 +387,9 @@ pub fn parse(layout: &str, s: &str) -> Option<YmdHms> {
                     continue;
                 }
                 Tok::PmUpper | Tok::PmLower => {
-                    if rest.len() >= 2 && rest.is_char_boundary(2) && rest[..2].eq_ignore_ascii_case("PM")
+                    if rest.len() >= 2
+                        && rest.is_char_boundary(2)
+                        && rest[..2].eq_ignore_ascii_case("PM")
                     {
                         pm = true;
                     } else if rest.len() >= 2

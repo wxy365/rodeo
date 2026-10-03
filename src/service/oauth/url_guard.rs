@@ -63,4 +63,3 @@ mod tests {
         assert!(!is_safe_return_to("/path\0foo"));
     }
 }
-

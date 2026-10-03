@@ -83,7 +83,8 @@ pub fn Login() -> impl IntoView {
         let search = loc.search().unwrap_or_default();
         if let Some(bind_token) = url_param(&search, "bind") {
             let provider = url_param(&search, "provider").unwrap_or_default();
-            let return_to = url_param(&search, "return_to").unwrap_or_else(|| "/workspaces".to_string());
+            let return_to =
+                url_param(&search, "return_to").unwrap_or_else(|| "/workspaces".to_string());
             bind_info.set(Some((bind_token, provider, return_to)));
         }
     });

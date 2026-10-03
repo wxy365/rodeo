@@ -183,7 +183,9 @@ fn build_tool(name: &str, desc: &str, args: &[(String, String)]) -> ToolSchema {
 }
 
 fn map_type(t: &str) -> &'static str {
-    let base = t.trim_end_matches('!').trim_end_matches(['[', ']'].as_ref());
+    let base = t
+        .trim_end_matches('!')
+        .trim_end_matches(['[', ']'].as_ref());
     match base {
         "ID" | "String" => "string",
         "Int" | "Float" => "number",

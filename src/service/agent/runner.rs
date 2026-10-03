@@ -60,7 +60,13 @@ impl SessionTurns {
         }
         let (tx, _) = broadcast::channel(128);
         let handle = tokio::spawn(runner);
-        self.turns.lock().insert(turn_id, TurnHandle { handle, sender: tx.clone() });
+        self.turns.lock().insert(
+            turn_id,
+            TurnHandle {
+                handle,
+                sender: tx.clone(),
+            },
+        );
         self.by_session.lock().insert(session_id, turn_id);
         Ok(())
     }
@@ -79,7 +85,8 @@ impl SessionTurns {
 
     pub fn session_of(&self, turn_id: Ulid) -> Option<Ulid> {
         let bs = self.by_session.lock();
-        bs.iter().find_map(|(&sid, &tid)| (tid == turn_id).then_some(sid))
+        bs.iter()
+            .find_map(|(&sid, &tid)| (tid == turn_id).then_some(sid))
     }
 
     pub fn finish(&self, turn_id: Ulid) {
@@ -100,12 +107,7 @@ impl SessionTurns {
 ///
 /// 错误与 cancel 通过 `AgentEvent::Error` 透传给订阅者，最后统一 `finish(turn_id)`
 /// 收尾——订阅端（Task 7 的 SSE handler）据此断开连接。
-pub async fn run_turn(
-    services: Arc<Services>,
-    auth: AuthContext,
-    session_id: Ulid,
-    turn_id: Ulid,
-) {
+pub async fn run_turn(services: Arc<Services>, auth: AuthContext, session_id: Ulid, turn_id: Ulid) {
     let max_turns = services.config.agent.max_tool_calls_per_turn;
     let max_history = services.config.agent.max_history_turns;
 
@@ -157,8 +159,8 @@ pub async fn run_turn(
             }
         };
         // 占位已填：runner 进 turn 前查一次 Workspace 拿真实 name 给 system prompt；
-// 查不到（罕见：session 引用的 ws 已删）就退回到用 id 串。Workspaces 表的读
-// 是同步 DocStore get，不阻塞 current_thread 运行时。
+        // 查不到（罕见：session 引用的 ws 已删）就退回到用 id 串。Workspaces 表的读
+        // 是同步 DocStore get，不阻塞 current_thread 运行时。
         let ws_title = services
             .workspace
             .get_by_id(workspace_id)
@@ -191,7 +193,10 @@ pub async fn run_turn(
             match stream.next().await {
                 Some(Ok(crate::service::ai::StreamChunk::Delta(s))) => {
                     content.push_str(&s);
-                    let _ = tx.send(AgentEvent::Delta { turn_id, content: s });
+                    let _ = tx.send(AgentEvent::Delta {
+                        turn_id,
+                        content: s,
+                    });
                 }
                 Some(Ok(crate::service::ai::StreamChunk::ToolCallsPartial(partials))) => {
                     for (idx, id, name, args) in partials {

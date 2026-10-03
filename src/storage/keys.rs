@@ -108,7 +108,12 @@ pub fn audit_by_workspace_key(workspace_id: Ulid, at: DateTime<Utc>, id: Ulid) -
 }
 
 /// (resource_type \0 resource_id \0 时间倒序, id)：按资源前缀扫描。
-pub fn audit_by_resource_key(resource_type: &str, resource_id: &str, at: DateTime<Utc>, id: Ulid) -> Vec<u8> {
+pub fn audit_by_resource_key(
+    resource_type: &str,
+    resource_id: &str,
+    at: DateTime<Utc>,
+    id: Ulid,
+) -> Vec<u8> {
     let mut key = Vec::new();
     key.extend_from_slice(resource_type.as_bytes());
     key.push(0);

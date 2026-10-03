@@ -3,7 +3,12 @@ use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub enum Role { System, User, Assistant, Tool }
+pub enum Role {
+    System,
+    User,
+    Assistant,
+    Tool,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolCall {
@@ -46,7 +51,11 @@ pub enum SideEffect {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum EntryAction { Create, Update, Delete }
+pub enum EntryAction {
+    Create,
+    Update,
+    Delete,
+}
 
 impl AgentSession {
     pub fn new(user_id: Ulid, workspace_id: Ulid) -> Self {

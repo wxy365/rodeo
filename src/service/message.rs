@@ -41,7 +41,11 @@ impl MessageService {
             return Err(AppError::InvalidQuery("不能给自己发消息".to_string()));
         }
         // 收件人必须是该工作空间成员。允许外人触发消息会让通知系统被人借名发垃圾。
-        if self.workspaces.get_member(workspace_id, recipient_id)?.is_none() {
+        if self
+            .workspaces
+            .get_member(workspace_id, recipient_id)?
+            .is_none()
+        {
             return Err(AppError::InvalidQuery(
                 "收件人不是该工作空间成员".to_string(),
             ));

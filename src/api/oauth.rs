@@ -11,7 +11,7 @@ use std::sync::Arc;
 use crate::api::AppState;
 use crate::domain::OAuthProvider;
 use crate::error::AppError;
-use crate::service::oauth::OAuthProvider as _;     // trait method
+use crate::service::oauth::OAuthProvider as _; // trait method
 use crate::service::oauth_state::{BindEntry, CsrfEntry};
 
 #[derive(Debug, Deserialize)]
@@ -43,15 +43,16 @@ pub async fn wechat_start(
         .services
         .oauth_registry
         .get(OAuthProvider::WeChat.as_str())
-        .ok_or_else(|| {
-            AppError::OAuthNotConfigured(OAuthProvider::WeChat.as_str().to_string())
-        })?;
+        .ok_or_else(|| AppError::OAuthNotConfigured(OAuthProvider::WeChat.as_str().to_string()))?;
 
     let csrf = crate::service::oauth_state::OAuthStateStore::new_token();
-    state
-        .services
-        .oauth_state
-        .put_csrf(csrf.clone(), CsrfEntry { return_to, created_at: chrono::Utc::now() });
+    state.services.oauth_state.put_csrf(
+        csrf.clone(),
+        CsrfEntry {
+            return_to,
+            created_at: chrono::Utc::now(),
+        },
+    );
 
     // authorization_url 内的 redirect_uri 与 config 一致；我们这里再次传同一份是
     // 给 spec 留的口子 —— 未来若需要「每个回调动态 redirect_uri」也好扩展。
@@ -83,9 +84,7 @@ pub async fn wechat_callback(
         .services
         .oauth_registry
         .get(OAuthProvider::WeChat.as_str())
-        .ok_or_else(|| {
-            AppError::OAuthNotConfigured(OAuthProvider::WeChat.as_str().to_string())
-        })?;
+        .ok_or_else(|| AppError::OAuthNotConfigured(OAuthProvider::WeChat.as_str().to_string()))?;
 
     // 2. 用 code 换 access_token + openid
     let token = provider.exchange_code(&q.code).await?;
@@ -113,16 +112,13 @@ pub async fn wechat_callback(
                 return Err(AppError::InvalidCredentials);
             }
         }
-        state
-            .services
-            .oauth_bindings
-            .upsert(
-                account.id,
-                OAuthProvider::WeChat,
-                &token.external_id,
-                binding.email.clone(),
-                binding.display_name.clone(),
-            )?;
+        state.services.oauth_bindings.upsert(
+            account.id,
+            OAuthProvider::WeChat,
+            &token.external_id,
+            binding.email.clone(),
+            binding.display_name.clone(),
+        )?;
         let jwt = state.services.auth.sign_token(account.id)?;
         let redirect = format!(
             "/oauth/callback#token={}&return_to={}",

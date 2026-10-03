@@ -141,17 +141,32 @@ pub fn classify_side_effect(
     match name {
         "createEntry" => {
             let id = get(&["createEntry", "id"])?;
-            Some(SideEffect::Entry { action: crate::domain::EntryAction::Create, id })
+            Some(SideEffect::Entry {
+                action: crate::domain::EntryAction::Create,
+                id,
+            })
         }
         "updateEntry" => {
-            let id = args.get("input").and_then(|v| v.get("id")).and_then(|v| v.as_str())
+            let id = args
+                .get("input")
+                .and_then(|v| v.get("id"))
+                .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
                 .or_else(|| get(&["updateEntry", "id"]))?;
-            Some(SideEffect::Entry { action: crate::domain::EntryAction::Update, id })
+            Some(SideEffect::Entry {
+                action: crate::domain::EntryAction::Update,
+                id,
+            })
         }
         "deleteEntry" => {
-            let id = args.get("id").and_then(|v| v.as_str()).map(|s| s.to_string())?;
-            Some(SideEffect::Entry { action: crate::domain::EntryAction::Delete, id })
+            let id = args
+                .get("id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())?;
+            Some(SideEffect::Entry {
+                action: crate::domain::EntryAction::Delete,
+                id,
+            })
         }
         "createLabeling" | "updateLabeling" | "deleteLabeling" => {
             let code = args

@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use async_graphql::{
-    Context, EmptySubscription, Enum, ID, InputObject, Json, Object, Result as GqlResult, Schema,
-    SimpleObject, Upload,
+    Context, EmptySubscription, Enum, InputObject, Json, Object, Result as GqlResult, Schema,
+    SimpleObject, Upload, ID,
 };
 use async_graphql_axum::{GraphQLRequest, GraphQLResponse};
 use axum::extract::Extension;
@@ -14,21 +14,17 @@ use ulid::Ulid;
 
 use crate::domain::{
     Account, AccountStatus, ActionTarget, AgentMessage, Attachment, AuditLog, AutomationRule,
-    Comment, Entry,
-    Invite,
-    LabelSchema, LabelValueType, LinkKind,
-    LabelWrite, Labeling, Message, NamedPrompt, Query as ViewQuery, Relation, RelationSemantic, Role, SemanticKind, SortField, SortKey,
-    SortSpec, TitleColorRule,
-    ValueColor, ValueSource, View, ViewTimeline, Workspace, WorkspaceAiConfig, WorkspaceMember,
-    WorkspaceRole,
-    WriteOp, ATTACHMENT_URL_PREFIX,
+    Comment, Entry, Invite, LabelSchema, LabelValueType, LabelWrite, Labeling, LinkKind, Message,
+    NamedPrompt, Query as ViewQuery, Relation, RelationSemantic, Role, SemanticKind, SortField,
+    SortKey, SortSpec, TitleColorRule, ValueColor, ValueSource, View, ViewTimeline, Workspace,
+    WorkspaceAiConfig, WorkspaceMember, WorkspaceRole, WriteOp, ATTACHMENT_URL_PREFIX,
 };
 use crate::error::AppError;
 use crate::service::agent::runner::run_turn;
 use crate::service::ai::derive_title;
+use crate::service::auth::generate_initial_password;
 use crate::service::entry::PageInput as EntryPageInput;
 use crate::service::{AuthContext, Services};
-use crate::service::auth::generate_initial_password;
 
 // ---------- GraphQL 类型映射 ----------
 
@@ -101,7 +97,13 @@ impl GqlAdminAccount {
 /// 配置里指定的内置管理员邮箱，小写去空格——与 `AuthService` 里 `normalize_email`
 /// 的落地形态一致，这样才比得中库里存的那个账号。
 fn builtin_admin_email(gql: &GraphqlContext) -> String {
-    gql.services.config.auth.builtin.admin_email.trim().to_lowercase()
+    gql.services
+        .config
+        .auth
+        .builtin
+        .admin_email
+        .trim()
+        .to_lowercase()
 }
 
 /// 免登录可见的服务端开关，供登录页决定是否展示注册入口。
@@ -163,8 +165,7 @@ pub struct GqlLabelSchema {
 
 impl From<LabelSchema> for GqlLabelSchema {
     fn from(s: LabelSchema) -> Self {
-        let value_colors =
-            serde_json::to_value(&s.value_colors).unwrap_or(serde_json::Value::Null);
+        let value_colors = serde_json::to_value(&s.value_colors).unwrap_or(serde_json::Value::Null);
         let default_value = s
             .default_value
             .as_ref()
@@ -358,14 +359,18 @@ impl GqlEntry {
 }
 
 /// 组装 GqlEntry，顺带补上归档标记与创建/更新人账号——调用点不必各自去查 CF。
-fn gql_entry(
-    gql: &GraphqlContext,
-    entry: Entry,
-    labels: Vec<Labeling>,
-) -> GqlResult<GqlEntry> {
+fn gql_entry(gql: &GraphqlContext, entry: Entry, labels: Vec<Labeling>) -> GqlResult<GqlEntry> {
     let archived_at = gql.services.entry.archived_at(&entry.code)?;
-    let created_by_account = gql.services.auth.find_by_id(entry.created_by)?.map(Into::into);
-    let updated_by_account = gql.services.auth.find_by_id(entry.updated_by)?.map(Into::into);
+    let created_by_account = gql
+        .services
+        .auth
+        .find_by_id(entry.created_by)?
+        .map(Into::into);
+    let updated_by_account = gql
+        .services
+        .auth
+        .find_by_id(entry.updated_by)?
+        .map(Into::into);
     Ok(GqlEntry::new(
         entry,
         labels,
@@ -688,7 +693,10 @@ pub struct GqlSortKey {
 
 impl From<SortKey> for GqlSortKey {
     fn from(k: SortKey) -> Self {
-        Self { field: k.field.as_str().to_string(), desc: k.desc }
+        Self {
+            field: k.field.as_str().to_string(),
+            desc: k.desc,
+        }
     }
 }
 
@@ -856,28 +864,24 @@ fn to_rule_writes(inputs: Vec<RuleWriteInput>) -> GqlResult<Vec<LabelWrite>> {
         let op = match i.op.as_str() {
             "set" => WriteOp::Set,
             "remove" => WriteOp::Remove,
-            other => {
-                return Err(AppError::InvalidQuery(format!("未知的标签操作: {other}")).into())
-            }
+            other => return Err(AppError::InvalidQuery(format!("未知的标签操作: {other}")).into()),
         };
         let value = match op {
             WriteOp::Remove => None,
             WriteOp::Set => {
                 let kind = match i.value_kind.as_str() {
-                    "literal" => {
-                        ValueSource::Literal(i.value.map(|j| j.0).unwrap_or(serde_json::Value::Null))
-                    }
+                    "literal" => ValueSource::Literal(
+                        i.value.map(|j| j.0).unwrap_or(serde_json::Value::Null),
+                    ),
                     "now" => ValueSource::Now,
                     "new" => ValueSource::New,
                     "old" => ValueSource::Old,
                     // 缺省即字面量：前端下拉未选时不该报错，值本身仍会被校验。
-                    "" => {
-                        ValueSource::Literal(i.value.map(|j| j.0).unwrap_or(serde_json::Value::Null))
-                    }
+                    "" => ValueSource::Literal(
+                        i.value.map(|j| j.0).unwrap_or(serde_json::Value::Null),
+                    ),
                     other => {
-                        return Err(
-                            AppError::InvalidQuery(format!("未知的值来源: {other}")).into()
-                        )
+                        return Err(AppError::InvalidQuery(format!("未知的值来源: {other}")).into())
                     }
                 };
                 Some(kind)
@@ -916,13 +920,20 @@ impl SortInput {
             Some(f) => SortField::from_str(f).unwrap_or_else(|| SortField::Label(f.clone())),
             None => SortField::UpdatedAt,
         };
-        SortKey { field, desc: self.desc.unwrap_or(true) }
+        SortKey {
+            field,
+            desc: self.desc.unwrap_or(true),
+        }
     }
 }
 
 /// 入参缺省（`None` / 空数组）落回默认排序，与改动前一致。
 fn to_sort(sorts: Option<Vec<SortInput>>) -> SortSpec {
-    let keys: Vec<SortKey> = sorts.unwrap_or_default().iter().map(|s| s.to_key()).collect();
+    let keys: Vec<SortKey> = sorts
+        .unwrap_or_default()
+        .iter()
+        .map(|s| s.to_key())
+        .collect();
     if keys.is_empty() {
         SortSpec::default()
     } else {
@@ -976,14 +987,19 @@ pub struct GqlAgentSession {
 
 #[derive(Enum, Copy, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[graphql(name = "AgentRole")]
-pub enum GqlAgentRole { System, User, Assistant, Tool }
+pub enum GqlAgentRole {
+    System,
+    User,
+    Assistant,
+    Tool,
+}
 
 #[derive(SimpleObject, Clone, Serialize, Deserialize)]
 #[graphql(name = "AgentToolCallRecord")]
 pub struct GqlAgentToolCallRecord {
     pub id: String,
     pub name: String,
-    pub args: serde_json::Value,           // graphql::JSON scalar
+    pub args: serde_json::Value, // graphql::JSON scalar
     pub result_preview: String,
     pub ok: bool,
 }
@@ -1073,7 +1089,11 @@ impl Query {
         let Some(auth) = gql.auth else {
             return Ok(None);
         };
-        Ok(gql.services.auth.find_by_id(auth.account_id)?.map(Into::into))
+        Ok(gql
+            .services
+            .auth
+            .find_by_id(auth.account_id)?
+            .map(Into::into))
     }
 
     /// 账号管理列表，仅系统管理员可见。
@@ -1134,7 +1154,11 @@ impl Query {
         Ok(Some(GqlWorkspace::with_state(ws, deleted_at)))
     }
 
-    async fn label_schemas(&self, ctx: &Context<'_>, workspace_id: ID) -> GqlResult<Vec<GqlLabelSchema>> {
+    async fn label_schemas(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: ID,
+    ) -> GqlResult<Vec<GqlLabelSchema>> {
         let gql = ctx.data::<GraphqlContext>()?;
         let ws_id = parse_ulid(workspace_id.as_str())?;
         gql.require_member(ws_id)?;
@@ -1178,18 +1202,12 @@ impl Query {
     }
 
     /// 当前用户的消息列表（最新在前）。`limit = 0` 表示不限。
-    async fn messages(
-        &self,
-        ctx: &Context<'_>,
-        limit: Option<i32>,
-    ) -> GqlResult<Vec<GqlMessage>> {
+    async fn messages(&self, ctx: &Context<'_>, limit: Option<i32>) -> GqlResult<Vec<GqlMessage>> {
         let gql = ctx.data::<GraphqlContext>()?;
         let actor = gql.require_auth()?.account_id;
         let limit = limit.unwrap_or(0).max(0) as usize;
         let rows = gql.services.message.list_for_recipient(actor, limit)?;
-        rows.into_iter()
-            .map(|m| gql_message(gql, m))
-            .collect()
+        rows.into_iter().map(|m| gql_message(gql, m)).collect()
     }
 
     /// 当前工作空间里属于当前用户的 agent 会话，按 `updated_at` 倒序。
@@ -1205,7 +1223,10 @@ impl Query {
         let ws = parse_ulid(&workspace_id)?;
         gql.require_member(ws)?;
         let limit = limit.unwrap_or(20).max(0).min(100) as usize;
-        let rows = gql.services.agent.list_sessions(auth.account_id, ws, limit)?;
+        let rows = gql
+            .services
+            .agent
+            .list_sessions(auth.account_id, ws, limit)?;
         Ok(rows
             .into_iter()
             .map(|s| GqlAgentSession {
@@ -1231,7 +1252,10 @@ impl Query {
         let auth = gql.require_auth()?;
         let sid = parse_ulid(&session_id)?;
         let limit = limit.unwrap_or(200).max(0).min(1000) as usize;
-        let rows = gql.services.agent.list_messages(auth.account_id, sid, limit)?;
+        let rows = gql
+            .services
+            .agent
+            .list_messages(auth.account_id, sid, limit)?;
         Ok(rows
             .into_iter()
             .map(|m| GqlAgentMessage {
@@ -1262,11 +1286,7 @@ impl Query {
     }
 
     /// 某条目的全部评论，按发表时间升序。成员即可读（与 labelSchemas 一致）。
-    async fn comments(
-        &self,
-        ctx: &Context<'_>,
-        entry_code: String,
-    ) -> GqlResult<Vec<GqlComment>> {
+    async fn comments(&self, ctx: &Context<'_>, entry_code: String) -> GqlResult<Vec<GqlComment>> {
         let gql = ctx.data::<GraphqlContext>()?;
         let entry = gql
             .services
@@ -1297,7 +1317,10 @@ impl Query {
             .get(&entry_code)?
             .ok_or(AppError::NotFound)?;
         gql.require_member(entry.workspace_id)?;
-        let rels = gql.services.relation.list_for_entry(entry.workspace_id, &entry_code)?;
+        let rels = gql
+            .services
+            .relation
+            .list_for_entry(entry.workspace_id, &entry_code)?;
         Ok(rels
             .into_iter()
             .map(|r| gql_relation(r, Some(&entry_code)))
@@ -1395,7 +1418,11 @@ impl Query {
         let gql = ctx.data::<GraphqlContext>()?;
         let ws_id = parse_ulid(workspace_id.as_str())?;
         gql.require_member(ws_id)?;
-        let ws = gql.services.workspace.get_by_id(ws_id)?.ok_or(AppError::NotFound)?;
+        let ws = gql
+            .services
+            .workspace
+            .get_by_id(ws_id)?
+            .ok_or(AppError::NotFound)?;
         Ok(gql
             .services
             .workspace
@@ -1468,7 +1495,9 @@ impl Query {
         gql.require_member(ws)?;
         let query = ViewQuery::parse(&expr)?;
         query.validate(&gql.services.label.list_schemas(ws)?)?;
-        Ok(Json(serde_json::to_value(&query).unwrap_or(serde_json::Value::Null)))
+        Ok(Json(
+            serde_json::to_value(&query).unwrap_or(serde_json::Value::Null),
+        ))
     }
 
     /// 规则列表：成员即可读。返回顺序即求值顺序（创建顺序）。
@@ -1500,7 +1529,9 @@ impl Query {
         let ws = parse_ulid(workspace_id.as_str())?;
         gql.require_member(ws)?;
         let q = gql.services.rule.parse_trigger(ws, &expr)?;
-        Ok(Json(serde_json::to_value(&q).unwrap_or(serde_json::Value::Null)))
+        Ok(Json(
+            serde_json::to_value(&q).unwrap_or(serde_json::Value::Null),
+        ))
     }
 
     async fn format_view_query(
@@ -1645,11 +1676,13 @@ impl Mutation {
         // 那个。冻结的风险是另一个：它若是唯一的管理员，就再没人能解冻它。
         // 这道守卫要拿配置跟目标账号的邮箱比对，而配置不在服务层，故放在这里。
         let builtin = builtin_admin_email(gql);
-        let target = gql.services.auth.find_by_id(target_id)?.ok_or(AppError::NotFound)?;
+        let target = gql
+            .services
+            .auth
+            .find_by_id(target_id)?
+            .ok_or(AppError::NotFound)?;
         if status != AccountStatus::Active && target.email == builtin {
-            return Err(
-                AppError::InvalidQuery("内置管理员账号不能冻结或注销".to_string()).into(),
-            );
+            return Err(AppError::InvalidQuery("内置管理员账号不能冻结或注销".to_string()).into());
         }
 
         let account = gql.services.auth.set_status(target_id, status)?;
@@ -1672,7 +1705,11 @@ impl Mutation {
             .map_err(|_| AppError::InvalidQuery("账号 ID 格式非法".to_string()))?;
 
         let builtin = builtin_admin_email(gql);
-        let target = gql.services.auth.find_by_id(target_id)?.ok_or(AppError::NotFound)?;
+        let target = gql
+            .services
+            .auth
+            .find_by_id(target_id)?
+            .ok_or(AppError::NotFound)?;
 
         // 两道守卫只管「撤销管理员」这一个方向：提权是安全的，把本来就是管理员的账号
         // 再存一次管理员也不该被拒——只认 `!is_admin` 会把这种原样保存也一并拦下。
@@ -1691,12 +1728,20 @@ impl Mutation {
             );
         }
 
-        let account = gql.services.auth.update_profile(target_id, &name, is_admin)?;
+        let account = gql
+            .services
+            .auth
+            .update_profile(target_id, &name, is_admin)?;
         let updated_status = gql.services.auth.status(target_id)?;
         Ok(GqlAdminAccount::new(account, updated_status, &builtin))
     }
 
-    async fn login(&self, ctx: &Context<'_>, email: String, password: String) -> GqlResult<GqlAuthResult> {
+    async fn login(
+        &self,
+        ctx: &Context<'_>,
+        email: String,
+        password: String,
+    ) -> GqlResult<GqlAuthResult> {
         let gql = ctx.data::<GraphqlContext>()?;
         let (account, token) = gql.services.auth.login(&email, &password)?;
         Ok(GqlAuthResult {
@@ -1715,10 +1760,10 @@ impl Mutation {
     ) -> GqlResult<GqlAuthResult> {
         let gql = ctx.data::<GraphqlContext>()?;
         let auth = gql.require_auth()?;
-        let account = gql
-            .services
-            .auth
-            .change_password(auth.account_id, &old_password, &new_password)?;
+        let account =
+            gql.services
+                .auth
+                .change_password(auth.account_id, &old_password, &new_password)?;
         gql.services.auth.revoke_tokens(auth.account_id)?;
         let token = gql.services.auth.sign_token(auth.account_id)?;
         Ok(GqlAuthResult {
@@ -1795,7 +1840,9 @@ impl Mutation {
         let ws_id = parse_ulid(workspace_id.as_str())?;
         let target = parse_ulid(account_id.as_str())?;
         gql.require_role(ws_id, WorkspaceRole::Owner)?;
-        gql.services.workspace.transfer_owner(auth.account_id, ws_id, target)?;
+        gql.services
+            .workspace
+            .transfer_owner(auth.account_id, ws_id, target)?;
         Ok(true)
     }
 
@@ -1849,8 +1896,14 @@ impl Mutation {
         let cfg = gql.services.ai.update_config(
             auth.account_id,
             ws_id,
-            scenarios.into_iter().map(NamedPromptInput::into_named).collect(),
-            tones.into_iter().map(NamedPromptInput::into_named).collect(),
+            scenarios
+                .into_iter()
+                .map(NamedPromptInput::into_named)
+                .collect(),
+            tones
+                .into_iter()
+                .map(NamedPromptInput::into_named)
+                .collect(),
         )?;
         Ok(cfg.into())
     }
@@ -1878,10 +1931,10 @@ impl Mutation {
             .ai_client
             .as_ref()
             .ok_or(AppError::AiNotConfigured)?;
-        let prompt = gql
-            .services
-            .ai
-            .build_prompt(ws_id, &codes, scenario.as_deref(), tone.as_deref())?;
+        let prompt =
+            gql.services
+                .ai
+                .build_prompt(ws_id, &codes, scenario.as_deref(), tone.as_deref())?;
         let summary = client.complete(&prompt).await?;
 
         let title = derive_title(&summary, codes.len());
@@ -1912,10 +1965,10 @@ impl Mutation {
             .ok_or(AppError::NotFound)?;
         gql.require_role(entry.workspace_id, WorkspaceRole::Worker)?;
         let value = value.map(|j| j.0).unwrap_or(serde_json::Value::Null);
-        let labeling = gql
-            .services
-            .entry
-            .set_labeling(auth.account_id, &entry_code, &label_name, &value)?;
+        let labeling =
+            gql.services
+                .entry
+                .set_labeling(auth.account_id, &entry_code, &label_name, &value)?;
         Ok(labeling.into())
     }
 
@@ -1933,11 +1986,7 @@ impl Mutation {
         // 避免「用 A 空间的 Worker 身份改 B 空间的条目」。
         let mut workspace_id = None;
         for code in &entry_codes {
-            let entry = gql
-                .services
-                .entry
-                .get(code)?
-                .ok_or(AppError::NotFound)?;
+            let entry = gql.services.entry.get(code)?.ok_or(AppError::NotFound)?;
             match workspace_id {
                 None => workspace_id = Some(entry.workspace_id),
                 Some(id) if id != entry.workspace_id => {
@@ -1955,7 +2004,12 @@ impl Mutation {
         gql.require_role(ws_id, WorkspaceRole::Worker)?;
         let pairs: Vec<(String, serde_json::Value)> = labelings
             .into_iter()
-            .map(|l| (l.name, l.value.map(|j| j.0).unwrap_or(serde_json::Value::Null)))
+            .map(|l| {
+                (
+                    l.name,
+                    l.value.map(|j| j.0).unwrap_or(serde_json::Value::Null),
+                )
+            })
             .collect();
         let written = gql
             .services
@@ -1989,10 +2043,14 @@ impl Mutation {
             .find_by_id(auth.account_id)?
             .map(|a| a.name)
             .unwrap_or_default();
-        let updated = gql
-            .services
-            .entry
-            .update(auth.account_id, &name, &code, &expected_updated_at, &title, &detail)?;
+        let updated = gql.services.entry.update(
+            auth.account_id,
+            &name,
+            &code,
+            &expected_updated_at,
+            &title,
+            &detail,
+        )?;
         // 回收放在更新成功之后：冲突或条目不存在时不该动任何附件。
         gql.services
             .attachment
@@ -2180,9 +2238,7 @@ impl Mutation {
         let ws = parse_ulid(workspace_id.as_str())?;
         let rid = parse_ulid(relation_id.as_str())?;
         gql.require_role(ws, WorkspaceRole::Worker)?;
-        gql.services
-            .relation
-            .delete(auth.account_id, ws, rid)?;
+        gql.services.relation.delete(auth.account_id, ws, rid)?;
         Ok(true)
     }
 
@@ -2235,11 +2291,7 @@ impl Mutation {
         let auth = gql.require_auth()?;
         let id = parse_ulid(id.as_str())?;
         // 附件只带 workspace_id，先取出来才知道该问哪个工作空间的权限。
-        let attachment = gql
-            .services
-            .attachment
-            .get(id)?
-            .ok_or(AppError::NotFound)?;
+        let attachment = gql.services.attachment.get(id)?.ok_or(AppError::NotFound)?;
         gql.require_member(attachment.workspace_id)?;
         // 先看是不是 Maintainer+；不是也不立刻拒绝——上传者本人仍可撤回自己的附件。
         let can_moderate = gql
@@ -2294,7 +2346,10 @@ impl Mutation {
             .ok_or_else(|| AppError::Internal("无效的标签值类型".to_string()))?;
         let value_colors: Vec<ValueColor> = parse_json_list(value_colors, "值颜色配置")?;
         let input = attrs.to_service(name, title, vt, enum_values, color, value_colors)?;
-        let schema = gql.services.label.create_schema(auth.account_id, ws_id, input)?;
+        let schema = gql
+            .services
+            .label
+            .create_schema(auth.account_id, ws_id, input)?;
         Ok(schema.into())
     }
 
@@ -2325,7 +2380,10 @@ impl Mutation {
             color,
             value_colors,
         )?;
-        let schema = gql.services.label.update_schema(auth.account_id, ws_id, input)?;
+        let schema = gql
+            .services
+            .label
+            .update_schema(auth.account_id, ws_id, input)?;
         Ok(schema.into())
     }
 
@@ -2369,7 +2427,11 @@ impl Mutation {
         let ws = parse_ulid(workspace_id.as_str())?;
         gql.require_role(
             ws,
-            if is_shared { WorkspaceRole::Maintainer } else { WorkspaceRole::Worker },
+            if is_shared {
+                WorkspaceRole::Maintainer
+            } else {
+                WorkspaceRole::Worker
+            },
         )?;
         let q: ViewQuery = serde_json::from_value(query.0)
             .map_err(|e| AppError::InvalidQuery(format!("查询条件格式错误: {e}")))?;
@@ -2468,7 +2530,10 @@ impl Mutation {
             end,
             person: (!person.is_empty()).then_some(person),
         });
-        let saved = gql.services.view.set_timeline(auth.account_id, view_id, cfg)?;
+        let saved = gql
+            .services
+            .view
+            .set_timeline(auth.account_id, view_id, cfg)?;
         Ok(saved.map(GqlViewTimeline::from))
     }
 
@@ -2581,13 +2646,20 @@ impl Mutation {
             WorkspaceRole::Maintainer
         };
         gql.require_role(ws, need)?;
-        let invite = gql.services.workspace.invite(auth.account_id, ws, &email, role)?;
+        let invite = gql
+            .services
+            .workspace
+            .invite(auth.account_id, ws, &email, role)?;
         let account = gql
             .services
             .auth
             .find_by_id(invite.account_id)?
             .ok_or(AppError::NotFound)?;
-        let ws = gql.services.workspace.get_by_id(ws)?.ok_or(AppError::NotFound)?;
+        let ws = gql
+            .services
+            .workspace
+            .get_by_id(ws)?
+            .ok_or(AppError::NotFound)?;
         Ok(GqlInvite::new(invite, &ws, &account))
     }
 
@@ -2636,7 +2708,9 @@ impl Mutation {
             WorkspaceRole::Maintainer
         };
         gql.require_role(ws, need)?;
-        gql.services.workspace.revoke_invite(auth.account_id, ws, target)?;
+        gql.services
+            .workspace
+            .revoke_invite(auth.account_id, ws, target)?;
         Ok(true)
     }
 
@@ -2653,14 +2727,21 @@ impl Mutation {
         let ws = parse_ulid(workspace_id.as_str())?;
         let target = parse_ulid(account_id.as_str())?;
         let role = parse_role(&role)?;
-        let existing = gql.services.workspace.get_member(ws, target)?.ok_or(AppError::NotFound)?;
+        let existing = gql
+            .services
+            .workspace
+            .get_member(ws, target)?
+            .ok_or(AppError::NotFound)?;
         let need = if existing.role == WorkspaceRole::Owner || role == WorkspaceRole::Owner {
             WorkspaceRole::Owner
         } else {
             WorkspaceRole::Maintainer
         };
         gql.require_role(ws, need)?;
-        let member = gql.services.workspace.update_role(auth.account_id, ws, target, role)?;
+        let member = gql
+            .services
+            .workspace
+            .update_role(auth.account_id, ws, target, role)?;
         let account = gql
             .services
             .auth
@@ -2680,14 +2761,20 @@ impl Mutation {
         let auth = gql.require_auth()?;
         let ws = parse_ulid(workspace_id.as_str())?;
         let target = parse_ulid(account_id.as_str())?;
-        let existing = gql.services.workspace.get_member(ws, target)?.ok_or(AppError::NotFound)?;
+        let existing = gql
+            .services
+            .workspace
+            .get_member(ws, target)?
+            .ok_or(AppError::NotFound)?;
         let need = if existing.role == WorkspaceRole::Owner {
             WorkspaceRole::Owner
         } else {
             WorkspaceRole::Maintainer
         };
         gql.require_role(ws, need)?;
-        gql.services.workspace.remove_member(auth.account_id, ws, target)?;
+        gql.services
+            .workspace
+            .remove_member(auth.account_id, ws, target)?;
         Ok(true)
     }
 
@@ -2733,11 +2820,7 @@ impl Mutation {
 
     /// 删除 agent 会话（同时级联删所有消息）。
     /// 服务层用 `account_id` 前缀扫 session 表校验所有权：越权即返回 false。
-    async fn delete_agent_session(
-        &self,
-        ctx: &Context<'_>,
-        id: String,
-    ) -> GqlResult<bool> {
+    async fn delete_agent_session(&self, ctx: &Context<'_>, id: String) -> GqlResult<bool> {
         let gql = ctx.data::<GraphqlContext>()?;
         let auth = gql.require_auth()?;
         let sid = parse_ulid(&id)?;
@@ -2783,13 +2866,11 @@ impl Mutation {
         let services = gql.services.clone();
         let auth_for_runner = auth.clone();
         let services_for_runner = services.clone();
-        services.agent_turns.start_or_replace(
-            sid,
-            turn_id,
-            async move {
+        services
+            .agent_turns
+            .start_or_replace(sid, turn_id, async move {
                 run_turn(services_for_runner, auth_for_runner, sid, turn_id).await;
-            },
-        )?;
+            })?;
 
         Ok(GqlAgentTurn {
             id: turn_id.to_string(),
@@ -2810,9 +2891,11 @@ impl Mutation {
     ) -> GqlResult<GqlAuthResult> {
         let gql = ctx.data::<GraphqlContext>()?;
 
-        let bind = gql.services.oauth_state.take_bind(&bind_token).ok_or_else(|| {
-            AppError::InvalidQuery("绑定已过期，请重新扫码".to_string())
-        })?;
+        let bind = gql
+            .services
+            .oauth_state
+            .take_bind(&bind_token)
+            .ok_or_else(|| AppError::InvalidQuery("绑定已过期，请重新扫码".to_string()))?;
 
         let email_n = crate::service::auth::normalize_email(&email)?;
         let account = gql
@@ -2824,10 +2907,9 @@ impl Mutation {
         match gql.services.auth.status(account.id)? {
             crate::domain::AccountStatus::Active => {}
             crate::domain::AccountStatus::Frozen => {
-                return Err(AppError::InvalidQuery(
-                    "账号已被冻结，请联系系统管理员".to_string(),
-                )
-                .into());
+                return Err(
+                    AppError::InvalidQuery("账号已被冻结，请联系系统管理员".to_string()).into(),
+                );
             }
             crate::domain::AccountStatus::Deactivated => {
                 return Err(AppError::InvalidCredentials.into());
@@ -2846,10 +2928,9 @@ impl Mutation {
         {
             Some(b) if b.account_id == account.id => {} // 幂等
             Some(_) => {
-                return Err(AppError::InvalidQuery(
-                    "此微信账号已绑定其它 Rodeo 账号".to_string(),
-                )
-                .into());
+                return Err(
+                    AppError::InvalidQuery("此微信账号已绑定其它 Rodeo 账号".to_string()).into(),
+                );
             }
             None => {
                 if gql
@@ -2893,9 +2974,11 @@ impl Mutation {
     ) -> GqlResult<GqlAuthResult> {
         let gql = ctx.data::<GraphqlContext>()?;
 
-        let bind = gql.services.oauth_state.take_bind(&bind_token).ok_or_else(|| {
-            AppError::InvalidQuery("绑定已过期，请重新扫码".to_string())
-        })?;
+        let bind = gql
+            .services
+            .oauth_state
+            .take_bind(&bind_token)
+            .ok_or_else(|| AppError::InvalidQuery("绑定已过期，请重新扫码".to_string()))?;
 
         if !gql.services.config.auth.builtin.allow_registration {
             return Err(AppError::InvalidQuery(
@@ -2954,7 +3037,11 @@ pub async fn graphql_handler(
         services: state.services.clone(),
         auth,
     };
-    state.schema.execute(req.into_inner().data(gql_ctx)).await.into()
+    state
+        .schema
+        .execute(req.into_inner().data(gql_ctx))
+        .await
+        .into()
 }
 
 pub(crate) fn extract_auth(services: &Services, headers: &HeaderMap) -> Option<AuthContext> {
@@ -3015,7 +3102,9 @@ fn parse_json_list<T: serde::de::DeserializeOwned>(
 /// `Query` 手写投影而非走 `TitleColorRule` 的 `query_json` 适配器。
 /// `null` 与 `None` 都等价于空列表。
 fn parse_title_colors(value: Option<Json<serde_json::Value>>) -> GqlResult<Vec<TitleColorRule>> {
-    let Some(Json(v)) = value else { return Ok(Vec::new()) };
+    let Some(Json(v)) = value else {
+        return Ok(Vec::new());
+    };
     if v.is_null() {
         return Ok(Vec::new());
     }
@@ -3023,6 +3112,9 @@ fn parse_title_colors(value: Option<Json<serde_json::Value>>) -> GqlResult<Vec<T
         .map_err(|e| AppError::InvalidQuery(format!("标题颜色规则格式错误: {e}")))?;
     Ok(items
         .into_iter()
-        .map(|w| TitleColorRule { query: w.query, color: w.color })
+        .map(|w| TitleColorRule {
+            query: w.query,
+            color: w.color,
+        })
         .collect())
 }
