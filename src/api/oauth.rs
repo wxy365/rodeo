@@ -3,7 +3,7 @@
 //! - `/api/auth/wechat/start`：生成 csrf state + return_to，跳到微信。
 //! - `/api/auth/wechat/callback`：微信跳回，验 csrf、换 openid、决定登录或进绑定。
 
-use axum::extract::{Query, State};
+use axum::extract::{Extension, Query};
 use axum::response::Redirect;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -29,7 +29,7 @@ pub struct CallbackQuery {
 const DEFAULT_RETURN_TO: &str = "/workspaces";
 
 pub async fn wechat_start(
-    State(state): State<Arc<AppState>>,
+    Extension(state): Extension<Arc<AppState>>,
     Query(q): Query<StartQuery>,
 ) -> Result<Redirect, AppError> {
     let return_to = q.return_to.unwrap_or_else(|| DEFAULT_RETURN_TO.to_string());
@@ -69,7 +69,7 @@ pub async fn wechat_start(
 }
 
 pub async fn wechat_callback(
-    State(state): State<Arc<AppState>>,
+    Extension(state): Extension<Arc<AppState>>,
     Query(q): Query<CallbackQuery>,
 ) -> Result<Redirect, AppError> {
     // 1. 取 csrf（缺席/过期 → 统一文案，不区分 CSRF 与过期）
