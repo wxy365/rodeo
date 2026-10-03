@@ -11,7 +11,6 @@ use std::sync::Arc;
 use crate::api::AppState;
 use crate::domain::OAuthProvider;
 use crate::error::AppError;
-use crate::service::oauth::OAuthProvider as _; // trait method
 use crate::service::oauth_state::{BindEntry, CsrfEntry};
 
 #[derive(Debug, Deserialize)]

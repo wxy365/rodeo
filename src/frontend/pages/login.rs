@@ -29,6 +29,32 @@ fn return_to_default() -> String {
     "/workspaces".to_string()
 }
 
+/// `web_sys::window().location().search()` 的 wasm/ssr 兼容壳。SSR 没有
+/// DOM，`web_sys` 也不在 ssr 依赖里——直接调用链接都过不去。SSR 侧返回
+/// 空串，下面的 Effect 因 `cfg!` 早 return 本来也不会用。
+#[cfg(target_arch = "wasm32")]
+fn window_search() -> String {
+    web_sys::window()
+        .and_then(|w| w.location().search().ok())
+        .unwrap_or_default()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn window_search() -> String {
+    String::new()
+}
+
+/// `window.location().set_href(...)` 的 wasm/ssr 兼容壳。SSR 端是 no-op。
+#[cfg(target_arch = "wasm32")]
+fn window_set_href(url: &str) {
+    if let Some(w) = web_sys::window() {
+        w.location().set_href(url).ok();
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn window_set_href(_url: &str) {}
+
 #[component]
 pub fn Login() -> impl IntoView {
     let auth = use_auth();
@@ -79,8 +105,7 @@ pub fn Login() -> impl IntoView {
         if !cfg!(target_arch = "wasm32") {
             return;
         }
-        let loc = web_sys::window().unwrap().location();
-        let search = loc.search().unwrap_or_default();
+        let search = window_search();
         if let Some(bind_token) = url_param(&search, "bind") {
             let provider = url_param(&search, "provider").unwrap_or_default();
             let return_to =
@@ -125,54 +150,62 @@ pub fn Login() -> impl IntoView {
         <div class="login-wrap">
             {move || bind_info.get().map(|(t, p, r)| view! {
                 <WeChatBindPanel bind_token=t provider=p return_to=r />
-            }.into_any()).unwrap_or_else(|| view! {
-                <form class="panel login-card" on:submit=submit>
-                    <div class="logo">
-                        {ic_logo()}
-                        <b>"Rodeo"</b>
-                        <span class="chip dim">"任务 / 问题跟踪"</span>
-                    </div>
-                    {move || if is_register.get() {
-                        view! {
-                            <input class="inp" placeholder="姓名" prop:value=name on:input=move |ev| name.set(event_target_value(&ev)) />
-                        }.into_any()
-                    } else {
-                        view! { <div></div> }.into_any()
-                    }}
-                    <input class="inp" type="email" placeholder="邮箱" prop:value=email on:input=move |ev| email.set(event_target_value(&ev)) />
-                    <input class="inp" type="password" placeholder="密码（至少 8 位，含大小写和数字）" prop:value=password on:input=move |ev| password.set(event_target_value(&ev)) />
-                    {move || auth.session_lost.get().then(|| view! {
-                        <p class="error">"登录已失效，请重新登录"</p>
-                    })}
-                    {move || error.get().map(|e| view! { <p class="error">{e}</p> })}
-                    {move || (!ready.get()).then(|| view! {
-                        <p class="mut" style="text-align:center">"正在加载客户端资源，加载完成后即可登录…"</p>
-                    })}
-                    <button class="btn pri" type="submit" style="justify-content:center;padding:9px" disabled=move || busy.get() || !ready.get()>
-                        {move || if is_register.get() { "注册并登录" } else { "登录" }}
-                    </button>
-                    <div style="display:flex;justify-content:space-between" class="mut">
-                        {move || match allow_reg.get() {
-                            Some(true) => view! {
-                                <span class="link" on:click=move |_| is_register.update(|v| *v = !*v)>
-                                    {if is_register.get() { "已有账号，去登录" } else { "立即注册" }}
-                                </span>
-                            }.into_any(),
-                            Some(false) => view! {
-                                <span class="mut">"已关闭开放注册，请联系系统管理员"</span>
-                            }.into_any(),
-                            None => ().into_any(),
-                        }}
-                        <u class="mut">"忘记密码"</u>
-                    </div>
-                    {move || {
-                        let ps = oauth_providers.get();
-                        if ps.is_empty() {
-                            None
+            }.into_any()).unwrap_or_else(|| {
+                // `submit` 是 `move`-capture 的非 `Copy` 闭包。`unwrap_or_else`
+                // 自身是 FnOnce，里面 `view!` 又要把 `submit` move 到 `<form on:submit>`
+                // 里——外层 `move ||` 一并变 FnOnce，leptos 重渲就坏了。提前克隆
+                // 一份给 form，让 view! 拿的是独立副本。
+                let submit_for_form = submit.clone();
+                view! {
+                    <form class="panel login-card" on:submit=submit_for_form>
+                        <div class="logo">
+                            {ic_logo()}
+                            <b>"Rodeo"</b>
+                            <span class="chip dim">"任务 / 问题跟踪"</span>
+                        </div>
+                        {move || if is_register.get() {
+                            view! {
+                                <input class="inp" placeholder="姓名" prop:value=name on:input=move |ev| name.set(event_target_value(&ev)) />
+                            }.into_any()
                         } else {
-                            Some(view! {
-                                <div class="divider">"或使用以下方式继续"</div>
-                                {ps.iter().map(|name| {
+                            view! { <div></div> }.into_any()
+                        }}
+                        <input class="inp" type="email" placeholder="邮箱" prop:value=email on:input=move |ev| email.set(event_target_value(&ev)) />
+                        <input class="inp" type="password" placeholder="密码（至少 8 位，含大小写和数字）" prop:value=password on:input=move |ev| password.set(event_target_value(&ev)) />
+                        {move || auth.session_lost.get().then(|| view! {
+                            <p class="error">"登录已失效，请重新登录"</p>
+                        })}
+                        {move || error.get().map(|e| view! { <p class="error">{e}</p> })}
+                        {move || (!ready.get()).then(|| view! {
+                            <p class="mut" style="text-align:center">"正在加载客户端资源，加载完成后即可登录…"</p>
+                        })}
+                        <button class="btn pri" type="submit" style="justify-content:center;padding:9px" disabled=move || busy.get() || !ready.get()>
+                            {move || if is_register.get() { "注册并登录" } else { "登录" }}
+                        </button>
+                        <div style="display:flex;justify-content:space-between" class="mut">
+                            {move || match allow_reg.get() {
+                                Some(true) => view! {
+                                    <span class="link" on:click=move |_| is_register.update(|v| *v = !*v)>
+                                        {if is_register.get() { "已有账号，去登录" } else { "立即注册" }}
+                                    </span>
+                                }.into_any(),
+                                Some(false) => view! {
+                                    <span class="mut">"已关闭开放注册，请联系系统管理员"</span>
+                                }.into_any(),
+                                None => ().into_any(),
+                            }}
+                            <u class="mut">"忘记密码"</u>
+                        </div>
+                        {move || {
+                            let ps = oauth_providers.get();
+                            if ps.is_empty() {
+                                None
+                            } else {
+                                // 先把每个 provider 的 label + start_url 算成 owned 字符串，
+                                // 收集成 `Vec<(String, String)>` 再交给 view!——直接 `ps.iter()`
+                                // 会让 view! 借 `ps`，而 `ps` 是这个闭包的栈帧局部，view! 的
+                                // 生命周期跟闭包返回点对不上，会爆 E0515。
+                                let buttons: Vec<(String, String)> = ps.iter().map(|name| {
                                     let label = match name.as_str() {
                                         "wechat" => "微信扫码登录",
                                         "google" => "Google 账号登录",
@@ -184,24 +217,24 @@ pub fn Login() -> impl IntoView {
                                         name,
                                         urlencoding::encode(&return_to_default()),
                                     );
-                                    view! {
+                                    (label.to_string(), start_url)
+                                }).collect();
+                                Some(view! {
+                                    <div class="divider">"或使用以下方式继续"</div>
+                                    {buttons.into_iter().map(|(label, start_url)| view! {
                                         <button class="btn" type="button"
                                             style="justify-content:center"
-                                            on:click=move |_| {
-                                                if let Some(w) = web_sys::window() {
-                                                    w.location().set_href(&start_url).ok();
-                                                }
-                                            }>
+                                            on:click=move |_| window_set_href(&start_url)>
                                             <b>{label}</b>
                                         </button>
-                                    }
-                                }).collect::<Vec<_>>()}
-                            })
-                        }
-                    }}
-                    <div class="mut" style="text-align:center">"私有部署 · 数据不出内网 · 会话经 HttpOnly Cookie"</div>
-                </form>
-            }.into_any())}
+                                    }).collect::<Vec<_>>()}
+                                })
+                            }
+                        }}
+                        <div class="mut" style="text-align:center">"私有部署 · 数据不出内网 · 会话经 HttpOnly Cookie"</div>
+                    </form>
+                }.into_any()
+            })}
         </div>
     }
 }

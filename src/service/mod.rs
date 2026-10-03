@@ -100,12 +100,13 @@ impl Services {
         let agent_turns = Arc::new(SessionTurns::default());
         // OAuth：按 config 启用的 provider 灌进 registry；state/bindings 服务总是构造，
         // 这样 `[auth.oauth.wechat]` 整段缺失时启动依然通过（registry 为空、`enabled_names()` 返回空集）。
+        let wechat_cfg_default = crate::config::WeChatOAuthConfig::default();
         let wechat_cfg = config
             .auth
             .oauth
             .wechat
             .as_ref()
-            .unwrap_or(&crate::config::WeChatOAuthConfig::default());
+            .unwrap_or(&wechat_cfg_default);
         let wechat = crate::service::oauth::wechat::WeChatProvider::from_config(wechat_cfg)?;
         let mut oauth_providers: Vec<Arc<dyn crate::service::oauth::OAuthProvider>> = Vec::new();
         if let Some(w) = wechat {

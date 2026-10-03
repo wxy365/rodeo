@@ -10,6 +10,14 @@ use crate::frontend::use_auth;
 pub fn WeChatBindPanel(bind_token: String, provider: String, return_to: String) -> impl IntoView {
     let auth = use_auth();
     let navigate = use_navigate();
+    // 两个 submit 闭包都要 move-capture `navigate` / `bind_token` / `return_to`，
+    // 但每个值只能被 move 一次——把克隆提到外层作用域，两个闭包各自 move 一个副本。
+    let navigate_existing = navigate.clone();
+    let bind_token_existing = bind_token.clone();
+    let return_to_existing = return_to.clone();
+    let navigate_new = navigate;
+    let bind_token_new = bind_token;
+    let return_to_new = return_to;
 
     // 现有账号
     let existing_email = RwSignal::new(String::new());
@@ -19,9 +27,9 @@ pub fn WeChatBindPanel(bind_token: String, provider: String, return_to: String) 
 
     let submit_existing = move |ev: SubmitEvent| {
         ev.prevent_default();
-        let navigate = navigate.clone();
-        let bind_token = bind_token.clone();
-        let return_to = return_to.clone();
+        let navigate = navigate_existing.clone();
+        let bind_token = bind_token_existing.clone();
+        let return_to = return_to_existing.clone();
         let email = existing_email.get();
         let password = existing_password.get();
         existing_busy.set(true);
@@ -52,19 +60,26 @@ pub fn WeChatBindPanel(bind_token: String, provider: String, return_to: String) 
 
     let submit_new = move |ev: SubmitEvent| {
         ev.prevent_default();
-        let navigate = navigate.clone();
-        let bind_token = bind_token.clone();
-        let return_to = return_to.clone();
+        let navigate = navigate_new.clone();
+        let bind_token = bind_token_new.clone();
+        let return_to = return_to_new.clone();
         let email = new_email.get();
         let name = new_name.get();
-        let password_opt = if new_password_set.get() && !new_password.get().is_empty() {
-            Some(new_password.get().as_str())
-        } else {
-            None
-        };
+        // 把 password 收成 owned `Option<String>` 而不是 `Option<&str>`：
+        // `spawn_local` 的 future 要求 'static，`&str` 借的是这个 submit 闭包的栈帧局部，
+        // 跨 await 活不到 helper 调用点。先把 String move 进 future，再在 future 内部
+        // `.as_deref()` 转回 `&str` 给 `bind_oauth_to_new` 那个签名。
+        let password_owned = new_password.get();
+        let password_owned: Option<String> =
+            if new_password_set.get() && !password_owned.is_empty() {
+                Some(password_owned)
+            } else {
+                None
+            };
         new_busy.set(true);
         new_error.set(None);
         spawn_local(async move {
+            let password_opt = password_owned.as_deref();
             match bind_oauth_to_new(&bind_token, &email, &name, password_opt).await {
                 Ok((token, user)) => {
                     set_token(&token);

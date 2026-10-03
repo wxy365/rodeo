@@ -15,6 +15,21 @@ use crate::frontend::pages::{
 use crate::frontend::provide_auth;
 use crate::frontend::use_auth;
 
+/// `web_sys::window().location().hash()` 的 wasm/ssr 兼容壳。SSR 没有
+/// DOM，`web_sys` 也不在 ssr 依赖里——直接调用链接都过不去。SSR 侧返回
+/// 空串，下面的 Effect 因 `cfg!` 早 return 本来也不会用。
+#[cfg(target_arch = "wasm32")]
+fn read_window_hash() -> String {
+    web_sys::window()
+        .and_then(|w| w.location().hash().ok())
+        .unwrap_or_default()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn read_window_hash() -> String {
+    String::new()
+}
+
 #[component]
 pub fn OAuthCallback() -> impl IntoView {
     let auth = use_auth();
@@ -23,9 +38,7 @@ pub fn OAuthCallback() -> impl IntoView {
         if !cfg!(target_arch = "wasm32") {
             return;
         }
-        let hash = web_sys::window()
-            .and_then(|w| w.location().hash().ok())
-            .unwrap_or_default();
+        let hash = read_window_hash();
         // 形如 "#token=xxx&return_to=/workspaces"
         let mut token: Option<String> = None;
         let mut return_to = "/workspaces".to_string();
@@ -48,6 +61,10 @@ pub fn OAuthCallback() -> impl IntoView {
                 }
             }
         }
+        // `navigate` 是 Fn，不是 Copy；Effect 闭包是 FnMut，调用 `navigate(...)`
+        // 必须通过克隆走，否则闭包被推断成 FnOnce。克隆 `impl Fn(...) + Clone`
+        // 廉价，每帧一次能接受。
+        let navigate = navigate.clone();
         if let Some(t) = token {
             set_token(&t);
             // 拉一下 me() 拿到 isAdmin / 完整 user，再 navigate
