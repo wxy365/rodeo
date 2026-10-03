@@ -17,6 +17,25 @@
     "admin": "Admin",
     "logout": "Log out"
   },
+  "login": {
+    "tagline": "Tasks & issues",
+    "name": "Name",
+    "email": "Email",
+    "password": "Password (8+ chars, mixed case & digit)",
+    "session_lost": "Session expired, please sign in again",
+    "loading": "Loading client resources — login will unlock shortly…",
+    "submit_login": "Sign in",
+    "submit_register": "Sign up & sign in",
+    "to_login": "Already have an account? Sign in",
+    "to_register": "Create an account",
+    "reg_disabled": "Open registration is closed, contact your administrator",
+    "forgot_password": "Forgot password",
+    "or_continue": "or continue with",
+    "oauth_soon": " OAuth (soon to come)",
+    "enterprise_oidc": "Enterprise OIDC",
+    "sso_soon": " SSO (soon to come)",
+    "footer": "Self-hosted · data stays inside your network · session via HttpOnly cookie"
+  },
   "common": {
     "save": "Save",
     "cancel": "Cancel",

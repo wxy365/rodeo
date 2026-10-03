@@ -17,6 +17,25 @@
     "admin": "系统管理",
     "logout": "退出"
   },
+  "login": {
+    "tagline": "任务 / 问题跟踪",
+    "name": "姓名",
+    "email": "邮箱",
+    "password": "密码（至少 8 位，含大小写和数字）",
+    "session_lost": "登录已失效，请重新登录",
+    "loading": "正在加载客户端资源，加载完成后即可登录…",
+    "submit_login": "登录",
+    "submit_register": "注册并登录",
+    "to_login": "已有账号，去登录",
+    "to_register": "立即注册",
+    "reg_disabled": "已关闭开放注册，请联系系统管理员",
+    "forgot_password": "忘记密码",
+    "or_continue": "或使用以下方式继续",
+    "oauth_soon": " OAuth 登录（即将上线）",
+    "enterprise_oidc": "企业 OIDC",
+    "sso_soon": " 单点登录（即将上线）",
+    "footer": "私有部署 · 数据不出内网 · 会话经 HttpOnly Cookie"
+  },
   "common": {
     "save": "保存",
     "cancel": "取消",

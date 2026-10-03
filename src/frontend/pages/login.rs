@@ -4,6 +4,7 @@ use leptos::task::spawn_local;
 use leptos_router::hooks::use_navigate;
 
 use crate::frontend::graphql_client::{allow_registration as fetch_allow_registration, login, register, set_token};
+use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::icons::ic_logo;
 use crate::frontend::use_auth;
 
@@ -11,6 +12,7 @@ use crate::frontend::use_auth;
 pub fn Login() -> impl IntoView {
     let auth = use_auth();
     let navigate = use_navigate();
+    let i18n: I18nController = use_i18n();
     let email = RwSignal::new(String::new());
     let password = RwSignal::new(String::new());
     let name = RwSignal::new(String::new());
@@ -76,50 +78,50 @@ pub fn Login() -> impl IntoView {
             <form class="panel login-card" on:submit=submit>
                 <div class="logo">
                     {ic_logo()}
-                    <b>"Rodeo"</b>
-                    <span class="chip dim">"任务 / 问题跟踪"</span>
+                    <b>{move || i18n.t("appbar.brand")}</b>
+                    <span class="chip dim">{move || i18n.t("login.tagline")}</span>
                 </div>
                 {move || if is_register.get() {
                     view! {
-                        <input class="inp" placeholder="姓名" prop:value=name on:input=move |ev| name.set(event_target_value(&ev)) />
+                        <input class="inp" placeholder={move || i18n.t("login.name")} prop:value=name on:input=move |ev| name.set(event_target_value(&ev)) />
                     }.into_any()
                 } else {
                     view! { <div></div> }.into_any()
                 }}
-                <input class="inp" type="email" placeholder="邮箱" prop:value=email on:input=move |ev| email.set(event_target_value(&ev)) />
-                <input class="inp" type="password" placeholder="密码（至少 8 位，含大小写和数字）" prop:value=password on:input=move |ev| password.set(event_target_value(&ev)) />
+                <input class="inp" type="email" placeholder={move || i18n.t("login.email")} prop:value=email on:input=move |ev| email.set(event_target_value(&ev)) />
+                <input class="inp" type="password" placeholder={move || i18n.t("login.password")} prop:value=password on:input=move |ev| password.set(event_target_value(&ev)) />
                 {move || auth.session_lost.get().then(|| view! {
-                    <p class="error">"登录已失效，请重新登录"</p>
+                    <p class="error">{move || i18n.t("login.session_lost")}</p>
                 })}
                 {move || error.get().map(|e| view! { <p class="error">{e}</p> })}
                 {move || (!ready.get()).then(|| view! {
-                    <p class="mut" style="text-align:center">"正在加载客户端资源，加载完成后即可登录…"</p>
+                    <p class="mut" style="text-align:center">{move || i18n.t("login.loading")}</p>
                 })}
                 <button class="btn pri" type="submit" style="justify-content:center;padding:9px" disabled=move || busy.get() || !ready.get()>
-                    {move || if is_register.get() { "注册并登录" } else { "登录" }}
+                    {move || if is_register.get() { i18n.t("login.submit_register") } else { i18n.t("login.submit_login") }}
                 </button>
                 <div style="display:flex;justify-content:space-between" class="mut">
                     {move || match allow_reg.get() {
                         Some(true) => view! {
                             <span class="link" on:click=move |_| is_register.update(|v| *v = !*v)>
-                                {if is_register.get() { "已有账号，去登录" } else { "立即注册" }}
+                                {move || if is_register.get() { i18n.t("login.to_login") } else { i18n.t("login.to_register") }}
                             </span>
                         }.into_any(),
                         Some(false) => view! {
-                            <span class="mut">"已关闭开放注册，请联系系统管理员"</span>
+                            <span class="mut">{move || i18n.t("login.reg_disabled")}</span>
                         }.into_any(),
                         None => ().into_any(),
                     }}
-                    <u class="mut">"忘记密码"</u>
+                    <u class="mut">{move || i18n.t("login.forgot_password")}</u>
                 </div>
-                <div class="divider">"或使用以下方式继续"</div>
+                <div class="divider">{move || i18n.t("login.or_continue")}</div>
                 <button class="btn" type="button" style="justify-content:center" disabled>
-                    <b>"GitHub"</b>" OAuth 登录（即将上线）"
+                    <b>"GitHub"</b>{move || i18n.t("login.oauth_soon")}
                 </button>
                 <button class="btn" type="button" style="justify-content:center" disabled>
-                    <b>"企业 OIDC"</b>" 单点登录（即将上线）"
+                    <b>{move || i18n.t("login.enterprise_oidc")}</b>{move || i18n.t("login.sso_soon")}
                 </button>
-                <div class="mut" style="text-align:center">"私有部署 · 数据不出内网 · 会话经 HttpOnly Cookie"</div>
+                <div class="mut" style="text-align:center">{move || i18n.t("login.footer")}</div>
             </form>
         </div>
     }
