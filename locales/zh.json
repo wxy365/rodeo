@@ -10,7 +10,12 @@
     "timeline_normal_to_tl": "切换到时间轴视图",
     "agent_panel": "Buckaroo 助手",
     "language": "语言",
-    "language_menu": "选择语言"
+    "language_menu": "选择语言",
+    "unread_count": "{n} 条未读消息",
+    "profile": "个人信息",
+    "history": "查看历史消息",
+    "admin": "系统管理",
+    "logout": "退出"
   },
   "common": {
     "save": "保存",

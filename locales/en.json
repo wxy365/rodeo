@@ -10,7 +10,12 @@
     "timeline_normal_to_tl": "Switch to timeline view",
     "agent_panel": "Buckaroo assistant",
     "language": "Language",
-    "language_menu": "Choose language"
+    "language_menu": "Choose language",
+    "unread_count": "{n} unread messages",
+    "profile": "Profile",
+    "history": "History",
+    "admin": "Admin",
+    "logout": "Log out"
   },
   "common": {
     "save": "Save",

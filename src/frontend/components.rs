@@ -432,6 +432,7 @@ pub fn Avatar(#[prop(into)] text: String, #[prop(optional)] large: bool) -> impl
 pub fn AvatarMenu() -> impl IntoView {
     let auth = use_auth();
     let navigate = use_navigate();
+    let i18n: I18nController = use_i18n();
 
     let unread = RwSignal::new(0i32);
     let panel_open = RwSignal::new(false);
@@ -538,7 +539,7 @@ pub fn AvatarMenu() -> impl IntoView {
                     return ().into_any();
                 }
                 view! {
-                    <span class="msg-badge" title=format!("{n} 条未读消息") on:click=move |ev: leptos::ev::MouseEvent| {
+                    <span class="msg-badge" title={move || i18n.tf("appbar.unread_count", &[("n", &n.to_string())])} on:click=move |ev: leptos::ev::MouseEvent| {
                         ev.stop_propagation();
                         panel_open.set(true);
                         unread.set(0);
@@ -551,9 +552,9 @@ pub fn AvatarMenu() -> impl IntoView {
                 }.into_any()
             }}
             <div class="avatar-drop">
-                <button class="mi" on:click=go_profile>{ic_profile()}"个人信息"</button>
+                <button class="mi" on:click=go_profile>{ic_profile()}{move || i18n.t("appbar.profile")}</button>
                 <button class="mi" on:click=move |_| panel_open.set(true)>
-                    {ic_history()}"查看历史消息"
+                    {ic_history()}{move || i18n.t("appbar.history")}
                 </button>
                 // 非管理员整项不渲染，而不是置灰：一个点不动的管理入口只会招来「为什么点不动」。
                 {move || {
@@ -562,10 +563,10 @@ pub fn AvatarMenu() -> impl IntoView {
                         <button class="mi" on:click=move |_| {
                             let t = nav_with_source("/admin", "/workspaces");
                             nav_admin(&t, Default::default());
-                        }>{ic_setting()}"系统管理"</button>
+                        }>{ic_setting()}{move || i18n.t("appbar.admin")}</button>
                     })
                 }}
-                <button class="mi" on:click=do_logout>{ic_logout()}"退出"</button>
+                <button class="mi" on:click=do_logout>{ic_logout()}{move || i18n.t("appbar.logout")}</button>
             </div>
         </div>
         {
