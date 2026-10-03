@@ -1751,3 +1751,49 @@ mod tests {
         assert!(bare.deleted_at.is_none());
     }
 }
+
+/// 当前启用的 OAuth provider 列表（决定登录页按钮渲染）。
+pub async fn oauth_providers() -> Result<Vec<String>, String> {
+    let data = graphql("query { oauthProviders }", json!({})).await?;
+    serde_json::from_value(data.get("oauthProviders").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+pub async fn bind_oauth_to_existing(
+    bind_token: &str,
+    email: &str,
+    password: &str,
+) -> Result<(String, User), String> {
+    let data = graphql(
+        "mutation($t: String!, $e: String!, $p: String!) { \
+         bindOAuthToExisting(bindToken: $t, email: $e, password: $p) \
+         { token account { id email name isAdmin } } }",
+        json!({ "t": bind_token, "e": email, "p": password }),
+    )
+    .await?;
+    let r = data.get("bindOAuthToExisting").ok_or("绑定响应缺失")?;
+    let token = r.get("token").and_then(|v| v.as_str()).ok_or("token 缺失")?.to_string();
+    let account: User = serde_json::from_value(r.get("account").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())?;
+    Ok((token, account))
+}
+
+pub async fn bind_oauth_to_new(
+    bind_token: &str,
+    email: &str,
+    name: &str,
+    password: Option<&str>,
+) -> Result<(String, User), String> {
+    let data = graphql(
+        "mutation($t: String!, $e: String!, $n: String!, $p: String) { \
+         bindOAuthToNew(bindToken: $t, email: $e, name: $n, password: $p) \
+         { token account { id email name isAdmin } } }",
+        json!({ "t": bind_token, "e": email, "n": name, "p": password }),
+    )
+    .await?;
+    let r = data.get("bindOAuthToNew").ok_or("绑定响应缺失")?;
+    let token = r.get("token").and_then(|v| v.as_str()).ok_or("token 缺失")?.to_string();
+    let account: User = serde_json::from_value(r.get("account").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())?;
+    Ok((token, account))
+}
