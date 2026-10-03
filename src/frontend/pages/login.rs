@@ -67,7 +67,7 @@ pub fn Login() -> impl IntoView {
             return;
         }
         spawn_local(async move {
-            if let Ok(p) = oauth_providers().await {
+            if let Ok(p) = crate::frontend::graphql_client::oauth_providers().await {
                 oauth_providers.set(p);
             }
         });
