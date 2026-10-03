@@ -8,6 +8,7 @@ use crate::frontend::graphql_client::{
     accept_invite, create_workspace, decline_invite, my_invites, restore_workspace, workspaces,
     Invite, WorkspaceItem,
 };
+use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::icons::{ic_add, ic_folder, ic_history, ic_search};
 use crate::frontend::use_auth;
 
@@ -17,6 +18,7 @@ use super::super::components::logged_out;
 pub fn WorkspaceList() -> impl IntoView {
     let auth = use_auth();
     let navigate = use_navigate();
+    let i18n: I18nController = use_i18n();
     let data: RwSignal<Option<Result<Vec<WorkspaceItem>, String>>> = RwSignal::new(None);
     // 收到但未接受的邀请。接受后才会出现在下面的工作空间卡片里。
     let inbox: RwSignal<Vec<Invite>> = RwSignal::new(Vec::new());
@@ -107,21 +109,21 @@ pub fn WorkspaceList() -> impl IntoView {
             // 这里的「我的工作空间」标题行只承担页面级 H1 与右侧搜索框——后者在 spec §14
             // 里被定成「全文检索本视图」的占位，未来服务端接通后用同一个 query bar 即可。
             <div style="display:flex;align-items:center;margin-bottom:16px;gap:12px">
-                <h2 style="font-size:20px;font-weight:500;margin:0">"我的工作空间"</h2>
+                <h2 style="font-size:20px;font-weight:500;margin:0">{move || i18n.t("workspaces.title")}</h2>
                 <label class="inp" style="margin-left:auto;display:flex;align-items:center;gap:6px;padding:0 12px;min-width:260px">
                     {ic_search()}
-                    <input placeholder="搜索工作空间名称 / 描述（即将上线）" disabled />
+                    <input placeholder={move || i18n.t("workspaces.search")} disabled />
                 </label>
             </div>
 
             {move || if show_create.get() {
                 view! {
                     <form class="panel ws-card" style="margin-bottom:16px;gap:12px" on:submit=create.clone()>
-                        <input class="inp" placeholder="名称" prop:value=name on:input=move |ev| name.set(event_target_value(&ev)) />
-                        <input class="inp" placeholder="描述（可选）" prop:value=desc on:input=move |ev| desc.set(event_target_value(&ev)) />
+                        <input class="inp" placeholder={move || i18n.t("workspaces.name")} prop:value=name on:input=move |ev| name.set(event_target_value(&ev)) />
+                        <input class="inp" placeholder={move || i18n.t("workspaces.desc")} prop:value=desc on:input=move |ev| desc.set(event_target_value(&ev)) />
                         <div style="display:flex;gap:8px">
-                            <button class="btn pri" type="submit">"创建"</button>
-                            <button class="btn" type="button" on:click=move |_| show_create.set(false)>"取消"</button>
+                            <button class="btn pri" type="submit">{move || i18n.t("common.create")}</button>
+                            <button class="btn" type="button" on:click=move |_| show_create.set(false)>{move || i18n.t("common.cancel")}</button>
                         </div>
                     </form>
                 }.into_any()
@@ -135,13 +137,33 @@ pub fn WorkspaceList() -> impl IntoView {
             // 邀请卡片用虚线 + 「邀请」角标与正式卡片区分；接受 / 拒绝仍随卡片就地操作。
             <div class="ws-grid">
                 {move || match data.get() {
-                    None => view! { <div class="empty">"加载中…"</div> }.into_any(),
+                    None => view! { <div class="empty">{move || i18n.t("workspaces.loading")}</div> }.into_any(),
                     Some(Err(e)) => view! { <div class="empty error">{e.clone()}</div> }.into_any(),
                     Some(Ok(list)) => {
                         let live: Vec<_> = list
                             .into_iter()
                             .filter(|w| w.workspace.deleted_at.is_none())
                             .collect();
+                        let inbox_now = inbox.get();
+                        // 真·空状态：没有任何工作空间 + 没有任何邀请。
+                        // 普通状态下网格外已经有那张小 dashed CTA，但用户初次进入时小卡夹
+                        // 在栅格里和正式卡片并列不显眼——hero 变体在这里给它一个独立的"邀请位"。
+                        let truly_empty = live.is_empty() && inbox_now.is_empty();
+                        if truly_empty {
+                            return view! {
+                                <div class="panel ws-card ws-hero">
+                                    {ic_folder()}
+                                    <h3>{move || i18n.t("workspaces.hero_title")}</h3>
+                                    <div class="mut">
+                                        {move || i18n.t("workspaces.hero_desc")}
+                                    </div>
+                                    <button class="btn pri" style="align-self:flex-start;margin-top:auto"
+                                        on:click=move |_| show_create.set(true)>
+                                        {ic_add()}<span>{move || i18n.t("workspaces.new_workspace")}</span>
+                                    </button>
+                                </div>
+                            }.into_any();
+                        }
                         view! {
                             // 邀请卡片：与正式卡片同栅格、视觉用虚线 / 「邀请」角标区分。
                             // 接受 / 拒绝按钮就地放在卡片上，避免在页面顶部再来一条横条收件箱。
@@ -149,22 +171,21 @@ pub fn WorkspaceList() -> impl IntoView {
                                 let accept_id = inv.workspace_id.clone();
                                 let slug = inv.workspace_slug.clone();
                                 let decline_id = inv.workspace_id.clone();
+                                let role_str = role_label(&inv.role);
+                                let inviter = inv.invited_by.trim().is_empty().then(|| inv.email.clone()).unwrap_or_else(|| inv.invited_by.clone());
                                 view! {
                                     <div class="panel ws-card ws-invite">
-                                        <h3>{ic_folder()}<span class="invite-tag">"邀请"</span>{inv.workspace_name.clone()}</h3>
+                                        <h3>{ic_folder()}<span class="invite-tag">{move || i18n.t("workspaces.invite_tag")}</span>{inv.workspace_name.clone()}</h3>
                                         <span class="code">{inv.workspace_slug.clone()}</span>
                                         <div class="mut">
-                                            {format!("{} 邀请你以 {} 身份加入",
-                                                inv.invited_by.trim().is_empty().then(|| inv.email.clone()).unwrap_or_else(|| inv.invited_by.clone()),
-                                                role_label(&inv.role)
-                                            )}
+                                            {move || i18n.tf("workspaces.invited_by", &[("inviter", &inviter), ("role", &role_str)])}
                                         </div>
                                         <div style="display:flex;gap:8px;align-items:center;margin-top:auto">
-                                            <span class=format!("chip {}", role_chip_class(&inv.role))>{role_label(&inv.role)}</span>
+                                            <span class=format!("chip {}", role_chip_class(&inv.role))>{role_str.clone()}</span>
                                             <button class="btn pri sm" style="margin-left:auto"
-                                                on:click=move |_| accept.run((accept_id.clone(), slug.clone()))>"接受"</button>
+                                                on:click=move |_| accept.run((accept_id.clone(), slug.clone()))>{move || i18n.t("workspaces.accept")}</button>
                                             <button class="btn sm"
-                                                on:click=move |_| decline.run(decline_id.clone())>"拒绝"</button>
+                                                on:click=move |_| decline.run(decline_id.clone())>{move || i18n.t("workspaces.decline")}</button>
                                         </div>
                                     </div>
                                 }
@@ -185,7 +206,7 @@ pub fn WorkspaceList() -> impl IntoView {
                                 }
                             }).collect::<Vec<_>>()}
                             <div class="panel ws-card" style="border-style:dashed;cursor:pointer;min-height:132px;align-items:center;justify-content:center" on:click=move |_| show_create.set(true)>
-                                <span class="mut" style="display:flex;gap:8px;align-items:center">{ic_add()}"新建工作空间（自动成为 Owner）"</span>
+                                <span class="mut" style="display:flex;gap:8px;align-items:center">{ic_add()}{move || i18n.t("workspaces.new_workspace_owner")}</span>
                             </div>
                         }.into_any()
                     }
@@ -207,8 +228,8 @@ pub fn WorkspaceList() -> impl IntoView {
                 let nav = nav_trash.clone();
                 view! {
                     <div class="ws-trash-head">
-                        {ic_history()}<b>"回收站"</b>
-                        <span class="mut">"已删除的工作空间，数据保留，可恢复。"</span>
+                        {ic_history()}<b>{move || i18n.t("workspaces.trash")}</b>
+                        <span class="mut">{move || i18n.t("workspaces.trash_desc")}</span>
                     </div>
                     <div class="ws-grid">
                         {trashed.into_iter().map(|w| {
@@ -217,16 +238,17 @@ pub fn WorkspaceList() -> impl IntoView {
                             let card = w.workspace;
                             let id = card.id.clone();
                             let deleted = card.deleted_at.clone().unwrap_or_default();
+                            let time_str = short_time(&deleted);
                             view! {
                                 <div class="panel ws-card ws-deleted">
                                     <h3 style="cursor:pointer" on:click=move |_| nav(&format!("/{}", slug), Default::default())>
                                         {ic_folder()}{card.name.clone()}
                                     </h3>
                                     <span class="code">{card.slug.clone()}</span>
-                                    <div class="mut">{format!("删除于 {}", short_time(&deleted))}</div>
+                                    <div class="mut">{move || i18n.tf("workspaces.deleted_at", &[("time", &time_str)])}</div>
                                     <div style="display:flex;gap:8px;align-items:center">
                                         <span class=format!("chip {}", role_chip_class(&w.role))>{role_label(&w.role)}</span>
-                                        <button class="btn sm" on:click=move |_| restore.run(id.clone())>"恢复"</button>
+                                        <button class="btn sm" on:click=move |_| restore.run(id.clone())>{move || i18n.t("workspaces.restore")}</button>
                                     </div>
                                 </div>
                             }

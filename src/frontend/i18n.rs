@@ -147,8 +147,13 @@ pub struct I18nController { pub locale: RwSignal<Locale> }
 
 impl I18nController {
     /// Look up an id in the current locale, fall back to en, fall back to the id itself.
+    ///
+    /// Reads `locale` via `get()` (not `get_untracked()`) so every `move || i18n.t(...)`
+    /// site subscribes to the locale signal and re-renders when the user picks a new
+    /// language. Locale changes are rare (only on language-button click), so the
+    /// extra tracking cost is negligible compared to the bug of stale strings.
     pub fn t(&self, id: &str) -> String {
-        let loc = self.locale.get_untracked();
+        let loc = self.locale.get();
         if let Some(v) = map_for(loc).get(id) { return v.clone(); }
         if let Some(v) = map_for(Locale::En).get(id) { return v.clone(); }
         id.to_string()
