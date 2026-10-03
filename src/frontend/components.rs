@@ -7,7 +7,10 @@ use serde_json::Value;
 use crate::frontend::graphql_client::{
     get_recent_colors, logout, push_recent_color, AuditLog, Member,
 };
+use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::icons::{ic_add, ic_check, ic_close, ic_copy, ic_folder, ic_history, ic_logo, ic_logout, ic_profile, ic_setting, ic_timeline};
+use crate::frontend::language_button::LanguageButton;
+use crate::frontend::theme::ThemeButton;
 use crate::frontend::use_auth;
 
 /// 账号的展示名：优先姓名，缺失时退回邮箱。
@@ -612,24 +615,27 @@ pub fn AppBar() -> impl IntoView {
     let panel_open = crate::frontend::agent_panel::use_agent_panel_open();
     // hover split 状态：只在 AppBar 这一个用到，留在组件内即可。
     let newentry_hover = RwSignal::new(false);
+    // i18n：品牌 / 新建 / 时间轴 / agent 面板标题在这里翻。`I18nController`
+    // 由 `ShellInner` 在解析 Parts 后 provide。
+    let i18n: I18nController = use_i18n();
 
     view! {
         <header class="appbar">
             <div class="appbar-left">
-                <a class="appbar-brand" href="/workspaces" title="Rodeo"
+                <a class="appbar-brand" href="/workspaces" title={move || i18n.t("appbar.brand")}
                     on:click=go_brand>
                     {ic_logo()}
-                    <span class="appbar-brand-name">"Rodeo"</span>
+                    <span class="appbar-brand-name">{move || i18n.t("appbar.brand")}</span>
                 </a>
             </div>
             <div class="appbar-right">
                 {move || new_menu_slot.current.get().map(|m| view! {
                     <div class="newentry-wrap"
                         on:mouseleave=move |_| newentry_hover.set(false)>
-                        <button class="newentry-btn" title="新建 Entry / 新建视图"
+                        <button class="newentry-btn" title={move || i18n.t("appbar.new_split_title")}
                             on:click=move |_| m.on_new_entry.run(())
                             on:mouseenter=move |_| newentry_hover.set(true)>
-                            {ic_add()}<span>"新建"</span>
+                            {ic_add()}<span>{move || i18n.t("appbar.new_entry")}</span>
                         </button>
                         {move || if newentry_hover.get() {
                             let on_entry = m.on_new_entry;
@@ -640,11 +646,11 @@ pub fn AppBar() -> impl IntoView {
                                     <button on:click=move |_| {
                                         newentry_hover.set(false);
                                         on_entry.run(());
-                                    }>{ic_add()}<span style="margin-left:6px">"新建 Entry"</span></button>
+                                    }>{ic_add()}<span style="margin-left:6px">{move || i18n.t("appbar.new_entry")}</span></button>
                                     <button on:click=move |_| {
                                         newentry_hover.set(false);
                                         on_view.run(());
-                                    }>{ic_folder()}<span style="margin-left:6px">"新建视图"</span></button>
+                                    }>{ic_folder()}<span style="margin-left:6px">{move || i18n.t("appbar.new_view")}</span></button>
                                 </div>
                             }.into_any()
                         } else {
@@ -657,7 +663,11 @@ pub fn AppBar() -> impl IntoView {
                     let is_timeline_mode = t.is_timeline_mode;
                     view! {
                         <button class=move || if is_timeline_mode.get() { "timeline-btn on" } else { "timeline-btn" }
-                            title=move || if is_timeline_mode.get() { "切换到普通视图" } else { "切换到时间轴视图" }
+                            title={move || if is_timeline_mode.get() {
+                                i18n.t("appbar.timeline_to_normal")
+                            } else {
+                                i18n.t("appbar.timeline_normal_to_tl")
+                            }}
                             on:click=move |_| on_toggle.run(())>
                             {ic_timeline()}
                         </button>
@@ -666,10 +676,14 @@ pub fn AppBar() -> impl IntoView {
                 // Agent 面板入口：复用 `timeline-btn` 的方形图标按钮样式，加 `.on`
                 // 态在面板展开时填主题色——与时间轴按钮视觉一致、好辨认。
                 <button class=move || if panel_open.0.get() { "agent-btn on" } else { "agent-btn" }
-                    title="Buckaroo 助手"
+                    title={move || i18n.t("appbar.agent_panel")}
                     on:click=move |_| panel_open.0.update(|n| *n = !*n)>
                     "AI"
                 </button>
+                // 语言切换：地球图标 + 当前 locale 短码，hover 弹六选项。
+                <LanguageButton/>
+                // 主题切换：太阳 / 月亮 / 自动 三态循环，跟 timeline-btn 同一视觉重量。
+                <ThemeButton/>
                 <AvatarMenu />
             </div>
         </header>

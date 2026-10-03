@@ -2,6 +2,30 @@
   "_meta": { "name": "English", "dir": "ltr" },
   "appbar": {
     "new_entry": "New Entry",
-    "new_view": "New View"
+    "new_view": "New View",
+    "new_split_title": "New Entry / New View",
+    "brand": "Rodeo",
+    "timeline": "Timeline view",
+    "timeline_to_normal": "Switch to normal view",
+    "timeline_normal_to_tl": "Switch to timeline view",
+    "agent_panel": "Buckaroo assistant",
+    "language": "Language",
+    "language_menu": "Choose language"
+  },
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "edit": "Edit",
+    "create": "Create",
+    "confirm": "Confirm",
+    "close": "Close",
+    "yes": "Yes",
+    "no": "No",
+    "search": "Search",
+    "loading": "Loading...",
+    "empty": "No data",
+    "error": "Error",
+    "back": "Back"
   }
 }

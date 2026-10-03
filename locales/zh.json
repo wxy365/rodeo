@@ -2,6 +2,30 @@
   "_meta": { "name": "中文", "dir": "ltr" },
   "appbar": {
     "new_entry": "新建 Entry",
-    "new_view": "新建视图"
+    "new_view": "新建视图",
+    "new_split_title": "新建 Entry / 新建视图",
+    "brand": "Rodeo",
+    "timeline": "时间轴视图",
+    "timeline_to_normal": "切换到普通视图",
+    "timeline_normal_to_tl": "切换到时间轴视图",
+    "agent_panel": "Buckaroo 助手",
+    "language": "语言",
+    "language_menu": "选择语言"
+  },
+  "common": {
+    "save": "保存",
+    "cancel": "取消",
+    "delete": "删除",
+    "edit": "编辑",
+    "create": "创建",
+    "confirm": "确认",
+    "close": "关闭",
+    "yes": "是",
+    "no": "否",
+    "search": "搜索",
+    "loading": "加载中…",
+    "empty": "暂无数据",
+    "error": "出错了",
+    "back": "返回"
   }
 }

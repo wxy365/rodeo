@@ -12,6 +12,7 @@ pub mod entry_picker;
 pub mod graphql_client;
 pub mod icons;
 pub mod label_editor;
+pub mod language_button;
 pub mod message_list;
 pub mod relations_panel;
 pub mod pages;

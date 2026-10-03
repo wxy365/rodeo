@@ -2638,3 +2638,54 @@ input[type="color"].sw:disabled {
     color: var(--ink3);
     cursor: not-allowed;
 }
+
+/* 语言按钮：与 .theme-btn 同视觉重量（32px 几何 + 圆角 + 透明底），下拉
+   用 :hover + :focus-within 双触发——与 AvatarMenu 同套路，无需 JS 切显隐。
+   Task 16 会再细调一版（暗色对比、RTL 镜像、激活态 hover）。 */
+.lang-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 32px;
+    padding: 0 8px;
+    border: 1px solid transparent;
+    border-radius: var(--r-s);
+    background: transparent;
+    color: var(--ink);
+    cursor: pointer;
+    font: inherit;
+}
+.lang-btn:hover { background: var(--bg2); }
+.lang-btn-cur { font-size: 12px; font-weight: 600; }
+
+.lang-menu { position: relative; display: inline-flex; }
+.lang-drop {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    display: none;
+    min-width: 160px;
+    padding: 4px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-m);
+    background: var(--bg);
+    box-shadow: 0 6px 20px rgb(0 0 0 / 14%);
+    z-index: 100;
+}
+.lang-menu:hover .lang-drop,
+.lang-menu:focus-within .lang-drop { display: block; }
+
+.lang-mi {
+    display: block;
+    width: 100%;
+    text-align: start;
+    padding: 6px 10px;
+    border: 0;
+    background: transparent;
+    color: var(--ink);
+    cursor: pointer;
+    border-radius: var(--r-s);
+    font: inherit;
+}
+.lang-mi:hover { background: var(--bg2); }
+.lang-mi-active { font-weight: 600; }

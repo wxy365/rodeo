@@ -224,3 +224,15 @@ pub fn ic_timeline() -> impl IntoView {
         </svg>
     }
 }
+
+/// 语言：地球 + 经线 / 纬线。`.lang-btn` 用；描边型，跟 `.theme-btn` 同视觉重量。
+pub fn ic_globe() -> impl IntoView {
+    view! {
+        <svg class="ic" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M3 12 H21" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M12 3 C8 8 8 16 12 21 M12 3 C16 8 16 16 12 21"
+                fill="none" stroke="currentColor" stroke-width="1.5"/>
+        </svg>
+    }
+}
