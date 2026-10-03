@@ -3,6 +3,7 @@ mod admin;
 mod entry;
 mod login;
 mod settings;
+mod wechat_bind;
 mod workspace_main;
 mod workspaces;
 
@@ -11,6 +12,7 @@ pub use admin::Admin;
 pub use entry::EntryFullScreen;
 pub use login::Login;
 pub use settings::WorkspaceSettings;
+pub use wechat_bind::WeChatBindPanel;
 pub use workspace_main::WorkspaceMain;
 pub use workspaces::WorkspaceList;
 
