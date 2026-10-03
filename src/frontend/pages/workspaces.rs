@@ -178,7 +178,7 @@ pub fn WorkspaceList() -> impl IntoView {
                                         <h3>{ic_folder()}<span class="invite-tag">{move || i18n.t("workspaces.invite_tag")}</span>{inv.workspace_name.clone()}</h3>
                                         <span class="code">{inv.workspace_slug.clone()}</span>
                                         <div class="mut">
-                                            {move || i18n.tf("workspaces.invited_by", &[("inviter", &inviter), ("role", &role_str)])}
+                                            {let role_for_invite = role_str.clone(); move || i18n.tf("workspaces.invited_by", &[("inviter", &inviter), ("role", &role_for_invite)])}
                                         </div>
                                         <div style="display:flex;gap:8px;align-items:center;margin-top:auto">
                                             <span class=format!("chip {}", role_chip_class(&inv.role))>{role_str.clone()}</span>
