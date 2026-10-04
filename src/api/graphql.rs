@@ -35,15 +35,20 @@ pub struct GqlAccount {
     email: String,
     name: String,
     is_admin: bool,
+    /// 是否已设置本地密码（OAuth-only 账号为 false）。
+    /// 只投影布尔状态，不暴露 `password_hash` 本体。
+    has_password: bool,
 }
 
 impl From<Account> for GqlAccount {
     fn from(a: Account) -> Self {
+        let has_password = a.has_password();
         Self {
             id: a.id.to_string().into(),
             email: a.email,
             name: a.name,
             is_admin: a.is_admin,
+            has_password,
         }
     }
 }
@@ -1829,6 +1834,27 @@ impl Mutation {
                 .auth
                 .change_password(auth.account_id, &old_password, &new_password)?;
         gql.services.auth.revoke_tokens(auth.account_id)?;
+        let token = gql.services.auth.sign_token(auth.account_id)?;
+        Ok(GqlAuthResult {
+            token,
+            account: account.into(),
+        })
+    }
+
+    /// OAuth-only 账号后补密码（不需要旧密码验证——OAuth 登录态本身就是信任根）。
+    /// 与 `change_password` 不同：不会调用 `revoke_tokens`，因为 OAuth-only 账号补密码
+    /// 不应把当前 OAuth 会话一并踢下线。
+    async fn set_password(
+        &self,
+        ctx: &Context<'_>,
+        new_password: String,
+    ) -> GqlResult<GqlAuthResult> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let account = gql
+            .services
+            .auth
+            .set_password(auth.account_id, &new_password)?;
         let token = gql.services.auth.sign_token(auth.account_id)?;
         Ok(GqlAuthResult {
             token,
