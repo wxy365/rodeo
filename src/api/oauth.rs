@@ -45,18 +45,12 @@ pub async fn wechat_start(
         .ok_or_else(|| AppError::OAuthNotConfigured(OAuthProvider::WeChat.as_str().to_string()))?;
 
     let csrf = crate::service::oauth_state::OAuthStateStore::new_token();
-    state.services.oauth_state.put_csrf(
-        csrf.clone(),
-        CsrfEntry {
-            return_to,
-            created_at: chrono::Utc::now(),
-        },
-    );
 
     // authorization_url 内的 redirect_uri 与 config 一致；我们这里再次传同一份是
     // 给 spec 留的口子 —— 未来若需要「每个回调动态 redirect_uri」也好扩展。
+    // 同时把它一起记进 csrf，callback 时比对供方回跳的 URL 是否与当时一致。
     let config_redirect = match state.services.config.auth.oauth.wechat.as_ref() {
-        Some(c) => &c.redirect_uri,
+        Some(c) => c.redirect_uri.clone(),
         None => {
             return Err(AppError::OAuthNotConfigured(
                 OAuthProvider::WeChat.as_str().to_string(),
@@ -64,7 +58,17 @@ pub async fn wechat_start(
         }
     };
 
-    let url = provider.authorization_url(&csrf, config_redirect);
+    state.services.oauth_state.put_csrf(
+        csrf.clone(),
+        CsrfEntry {
+            provider: OAuthProvider::WeChat.as_str().to_string(),
+            redirect_uri: config_redirect.clone(),
+            return_to,
+            created_at: chrono::Utc::now(),
+        },
+    );
+
+    let url = provider.authorization_url(&csrf, &config_redirect);
     Ok(Redirect::to(&url))
 }
 

@@ -17,6 +17,11 @@ use parking_lot::Mutex;
 use crate::domain::OAuthProvider;
 
 pub struct CsrfEntry {
+    /// 防跨 provider 重放：拿微信 csrf 走 Google callback 必须被拒。
+    /// 与 `redirect_uri` 一起记下，callback 处比对供方回跳的 URL 是否与当时
+    /// 我们跳出去时一致；不一致说明被中间人改写或客户端错配（spec §14）。
+    pub provider: String,
+    pub redirect_uri: String,
     pub return_to: String,
     pub created_at: DateTime<Utc>,
 }
