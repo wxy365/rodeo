@@ -3,6 +3,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use ulid::Ulid;
 
+use crate::domain::agent::{AssistantContent, ToolResultContent, UserContent};
 use crate::domain::{AgentMessage, AgentMessageRecord, AgentSession};
 use crate::error::AppError;
 use crate::storage::{cf, keys, BatchOp, DocStore};
@@ -224,5 +225,135 @@ impl AgentService {
             self.store.write_batch(ops)?;
         }
         Ok(())
+    }
+
+    /// 启动期一次性修复 `cf::AGENT_MESSAGES` 里的历史脏数据。Buckaroo 早期把
+    /// 消息直接 `bincode::serialize(&AgentMessage{role, content, tool_calls, …})`
+    /// 落库；后来改成 `AgentMessageRecord{message: rig::Message, …}` 又踩到
+    /// rig::Message 内部 serde tag + bincode 1.x 不兼容；最后用 shim 把
+    /// message 单独编成 JSON 字节。
+    ///
+    /// 旧 records 在新代码下 `bincode::deserialize::<AgentMessageRecord>` 全部
+    /// 失败——上一版「启动期整列清空」直接把用户历史会话内容一起抹掉，对话
+    /// 是会话级缓存、不影响业务但体感像丢数据。
+    ///
+    /// 这一版只动 decode 失败的那批：能按 OLD 形态解出来的转成 NEW 后写回
+    /// （丢掉的字段只是 tool_call 的 `result_preview` / `ok` 等 UI 装饰，
+    /// 主干 text + tool_call 结构保留），OLD 也解不出来的（rig 中间形态）
+    /// 才删——主键挂在那只会让 `collect_records` 多打一行 warn，没别的副作用。
+    /// 幂等：第二次启动 OLD 形态已被转写，不会再命中转换分支。
+    pub fn repair_legacy_messages(&self) -> Result<(usize, usize), AppError> {
+        let mut converted = 0usize;
+        let mut removed = 0usize;
+        let mut ops = Vec::new();
+        for (key, value) in self.store.scan_prefix(cf::AGENT_MESSAGES, b"")? {
+            // NEW 形态（shim）能解：保留不动。
+            if bincode::deserialize::<AgentMessageRecord>(&value).is_ok() {
+                continue;
+            }
+            // OLD 形态（Role enum + content + tool_calls）：转写回 NEW。
+            match bincode::deserialize::<LegacyAgentMessage>(&value) {
+                Ok(legacy) => {
+                    let record: AgentMessageRecord = legacy.into();
+                    ops.push(BatchOp::put(cf::AGENT_MESSAGES, key, &record)?);
+                    converted += 1;
+                }
+                Err(_) => {
+                    ops.push(BatchOp::delete(cf::AGENT_MESSAGES, key));
+                    removed += 1;
+                }
+            }
+        }
+        if !ops.is_empty() {
+            self.store.write_batch(ops)?;
+        }
+        if converted > 0 {
+            tracing::info!(
+                "agent 消息修复：{converted} 条 OLD 形态转写为 NEW 形态（rig shim）"
+            );
+        }
+        if removed > 0 {
+            tracing::warn!(
+                "agent 消息修复：{removed} 条 rig 中间形态无法解码，已删除"
+            );
+        }
+        Ok((converted, removed))
+    }
+}
+
+/// Buckaroo 早期 schema——`AgentMessage{role, content, tool_calls, tool_call_id,
+/// created_at}` 直接 bincode 落库。本身没有内部 serde tag，所以 bincode 1.x
+/// 能解；只用于启动期一次性 repair，新代码不再产出这种形态。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct LegacyAgentMessage {
+    id: Ulid,
+    session_id: Ulid,
+    role: LegacyRole,
+    content: String,
+    tool_calls: Vec<LegacyToolCall>,
+    tool_call_id: Option<String>,
+    created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+enum LegacyRole {
+    System,
+    User,
+    Assistant,
+    Tool,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct LegacyToolCall {
+    id: String,
+    name: String,
+    args: serde_json::Value,
+    /// OLD 形态里这两段是给 UI 直接展示的预览；NEW 形态下 tool_call 不带
+    /// result，对应的 result 走紧随其后的 Tool 消息（`UserContent::ToolResult`）
+    /// 承载。转写时把 `result_preview` 折进 content、`ok` 丢掉——主对话上下文
+    /// （id / name / args）完整保留；UI 重渲可能少一个 ✓ / ✗ 角标。
+    result_preview: String,
+    ok: bool,
+}
+
+impl From<LegacyAgentMessage> for AgentMessageRecord {
+    fn from(legacy: LegacyAgentMessage) -> Self {
+        let message = match legacy.role {
+            LegacyRole::System => AgentMessage::System {
+                content: legacy.content,
+            },
+            LegacyRole::User => AgentMessage::User {
+                content: vec![UserContent::text(legacy.content)],
+            },
+            LegacyRole::Assistant => {
+                let mut content = Vec::with_capacity(1 + legacy.tool_calls.len());
+                if !legacy.content.is_empty() {
+                    content.push(AssistantContent::text(legacy.content));
+                }
+                for tc in legacy.tool_calls {
+                    content.push(AssistantContent::tool_call(tc.id, tc.name, tc.args));
+                }
+                AgentMessage::Assistant {
+                    id: None,
+                    content,
+                }
+            }
+            LegacyRole::Tool => AgentMessage::User {
+                content: vec![UserContent::ToolResult(rig::message::ToolResult {
+                    call: rig::message::ToolCallId::new_or_mint(
+                        legacy.tool_call_id.unwrap_or_default(),
+                    ),
+                    provider: None,
+                    name: String::new(),
+                    content: vec![ToolResultContent::text(legacy.content)],
+                })],
+            },
+        };
+        AgentMessageRecord {
+            id: legacy.id,
+            session_id: legacy.session_id,
+            message,
+            created_at: legacy.created_at,
+        }
     }
 }

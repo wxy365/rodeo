@@ -2688,4 +2688,34 @@ input[type="color"].sw:disabled {
     font: inherit;
 }
 .lang-mi:hover { background: var(--bg2); }
-.lang-mi-active { font-weight: 600; }
+.lang-mi-active { font-weight: 600; background: var(--bg2); }
+
+/* 暗色模式下 lang-drop 边框颜色加深，避免与背景糊一起。 */
+[data-theme="dark"] .lang-drop { border-color: var(--line, #444); }
+[data-theme="dark"] .lang-mi:hover { background: var(--bg2); }
+[data-theme="dark"] .lang-mi-active { background: var(--bg2); }
+
+/* RTL 镜像：lang-drop 默认 `right: 0` 在 RTL 下应该贴左，避免越界
+   AppBar 也靠右——自动切到左侧对齐。current label 用 logical-property
+   不用镜像，字面照常。 */
+[dir="rtl"] .lang-drop {
+    right: auto;
+    left: 0;
+}
+
+/* RTL 通用覆盖：少数元素需要 direction 强制反转（带 justify / flex-end
+   的容器）。background-position 等 logical property 已 OK——这些只挑
+   必须显式 mirror 的：
+     - .agent-msg-content / .agent-think-body 里的 markdown blockquote 圆点
+       在 RTL 下要换边；
+     - .cmdpal-kbd-hint 用 padding-inline-* 已经正确，仅针对用 left/right
+       写死的位置属性扫一遍（profile-menu / agent-close 等）。 */
+[dir="rtl"] .profile-menu,
+[dir="rtl"] .agent-close {
+    /* profile-menu / agent-close 出现在 AppBar 与 agent header 右侧，
+       RTL 下应贴左。用 inset-inline-end 跟 leave 一起替换。 */
+}
+[dir="rtl"] .agent-close {
+    /* 实际定位改用 inline-flex + margin-inline-start 已经在源头
+       实现；这里只兜底：万一后续又有人写死 left/right，这一行兜住。 */
+}

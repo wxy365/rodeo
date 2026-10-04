@@ -279,5 +279,26 @@
     "send": "发送",
     "newline": "换行",
     "view_full_result": "查看完整 result"
+  },
+  "cmdpal": {
+    "placeholder": "搜索命令、工作空间、条目…",
+    "close_hint": " 关",
+    "empty": "无匹配项",
+    "cmd_workspaces": "我的工作空间",
+    "cmd_workspaces_sub": "跳转到工作空间列表",
+    "cmd_account": "账号设置",
+    "cmd_account_sub": "修改个人信息 / 密码",
+    "cmd_admin": "管理员面板",
+    "cmd_admin_sub": "系统级账户管理",
+    "cmd_settings": "「{slug}」设置",
+    "cmd_settings_sub": "工作空间配置 / 成员 / 标签",
+    "cmd_theme": "切换主题",
+    "cmd_theme_sub": "在浅色 / 暗色 / 跟随系统之间循环"
+  },
+  "theme": {
+    "title_system": "主题：跟随系统（点击切换）",
+    "title_light": "主题：浅色（点击切换）",
+    "title_dark": "主题：暗色（点击切换）",
+    "aria": "切换主题"
   }
 }

@@ -11,9 +11,9 @@ use leptos_router::hooks::{use_navigate, use_params_map};
 use crate::frontend::attachment_list::AttachmentList;
 use crate::frontend::comment_list::CommentList;
 use crate::frontend::components::{
-    display_enum_value, fmt_datetime, from_native, is_native_time_layout, label_chip_class,
-    logged_out, member_label, short_time, to_native, value_to_string, AccountPicker, AuditTimeline,
-    CodeCopy, ColorPick, TabBar,
+    chip_glyph, display_enum_value, fmt_datetime, from_native, is_native_time_layout,
+    label_chip_class, logged_out, member_label, short_time, to_native, value_to_string,
+    AccountPicker, AuditTimeline, CodeCopy, ColorPick, GlyphPos, TabBar,
 };
 use crate::frontend::graphql_client::{
     archive_entry, archived_entries, audit_logs, create_entry, create_view, delete_entry,
@@ -2689,6 +2689,29 @@ fn EntryTable(
                                                 } else {
                                                     display_enum_value(&s)
                                                 };
+                                                // 类型标点：扫一列 chip 时给眼睛一个锚点——日期 / 金额 / 账号 /
+                                                // boolean 一眼可分辨，不必读完 chip 全部内容。Boolean 标点
+                                                // 就是它的值（✓ / ○），text body 留空避免「true ✓」这种堆叠。
+                                                let vt = schema
+                                                    .map(|sch| sch.value_type.as_str())
+                                                    .unwrap_or("");
+                                                let glyph = schema.and_then(|sch| {
+                                                    chip_glyph(
+                                                        &sch.value_type,
+                                                        &v,
+                                                        sch.currency_symbol.as_deref(),
+                                                    )
+                                                });
+                                                let body = if vt == "boolean" {
+                                                    String::new()
+                                                } else {
+                                                    text.clone()
+                                                };
+                                                let glyph_left =
+                                                    matches!(glyph, Some((_, GlyphPos::Left)));
+                                                let glyph_right =
+                                                    matches!(glyph, Some((_, GlyphPos::Right)));
+                                                let glyph_char = glyph.map(|(g, _)| g);
                                                 // 值色优先（标签级配置），未配置回退 label_chip_class。
                                                 let color = schema.and_then(|sch| {
                                                     let base = sch.color.clone().map(Value::String);
@@ -2708,22 +2731,40 @@ fn EntryTable(
                                                         );
                                                         let cls = if inh { "chip inh" } else { "chip" };
                                                         view! {
-                                                            <td><span class=cls style=style title=hint>{text}</span></td>
+                                                            <td><span class=cls style=style title=hint>
+                                                                {glyph_left.then(|| view! { <span class="chip-glyph">{glyph_char.clone().unwrap_or_default()}</span> })}
+                                                                {body.clone()}
+                                                                {glyph_right.then(|| view! { <span class="chip-glyph">{glyph_char.clone().unwrap_or_default()}</span> })}
+                                                            </span></td>
                                                         }.into_any()
                                                     }
                                                     None if is_enum => {
                                                         let cls = label_chip_class(name, &s);
                                                         let cls = if inh { format!("chip {cls} inh") } else { format!("chip {cls}") };
                                                         view! {
-                                                            <td><span class=cls title=hint>{text}</span></td>
+                                                            <td><span class=cls title=hint>
+                                                                {glyph_left.then(|| view! { <span class="chip-glyph">{glyph_char.clone().unwrap_or_default()}</span> })}
+                                                                {body.clone()}
+                                                                {glyph_right.then(|| view! { <span class="chip-glyph">{glyph_char.clone().unwrap_or_default()}</span> })}
+                                                            </span></td>
                                                         }.into_any()
                                                     }
                                                     None if is_null => {
                                                         let cls = if inh { "chip inh" } else { "chip" };
-                                                        view! { <td><span class=cls title=hint>{text}</span></td> }.into_any()
+                                                        view! { <td><span class=cls title=hint>
+                                                            {glyph_left.then(|| view! { <span class="chip-glyph">{glyph_char.clone().unwrap_or_default()}</span> })}
+                                                            {body.clone()}
+                                                            {glyph_right.then(|| view! { <span class="chip-glyph">{glyph_char.clone().unwrap_or_default()}</span> })}
+                                                        </span></td> }.into_any()
                                                     }
                                                     None => {
-                                                        view! { <td title=hint>{text}</td> }.into_any()
+                                                        // 无 chip 包裹的兜底分支（整数 / 浮点 / 字符串 / 时间型），
+                                                        // 也带上标点——日期「◷ 09-12 14:30」和金额「¥ 1200」在此处拼出来。
+                                                        view! { <td title=hint>
+                                                            {glyph_left.then(|| view! { <span class="chip-glyph">{glyph_char.clone().unwrap_or_default()}</span> })}
+                                                            {body.clone()}
+                                                            {glyph_right.then(|| view! { <span class="chip-glyph">{glyph_char.clone().unwrap_or_default()}</span> })}
+                                                        </td> }.into_any()
                                                     }
                                                 }
                                             }

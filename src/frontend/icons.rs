@@ -253,3 +253,21 @@ pub fn ic_send() -> impl IntoView {
         </svg>
     }
 }
+
+pub fn ic_sun() -> impl IntoView {
+    view! {
+        <svg class="ic" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="4" fill="currentColor"/>
+            <path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.93 4.93l2.12 2.12M16.95 16.95l2.12 2.12M4.93 19.07l2.12-2.12M16.95 7.05l2.12-2.12"
+                stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+        </svg>
+    }
+}
+
+pub fn ic_moon() -> impl IntoView {
+    view! {
+        <svg class="ic" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" fill="currentColor"/>
+        </svg>
+    }
+}

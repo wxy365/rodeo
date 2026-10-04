@@ -20,7 +20,7 @@ use crate::api::graphql::{build_schema, AppSchema};
 use crate::config::Config;
 use crate::error::AppError;
 use crate::service::agent::runner::SessionTurns;
-use crate::storage::{cf, BatchOp, BlobStore, DocStore};
+use crate::storage::{BlobStore, DocStore};
 
 pub use agent::AgentService;
 pub use ai::{AiService, RigClient};
@@ -125,29 +125,13 @@ impl Services {
         // 形态，bincode 不能解；切到 struct 形态后旧记录会让 entryRelations 整个挂掉。
         // 启动期把读不出来的删掉，幂等，再启动就清干净了。
         services.relation.repair_undecodable()?;
-        // Agent 消息：buckaroo → rig 重写后旧 bincode 形态不可解码；
-        // 对话历史是会话级缓存、丢了不影响业务，直接整列族清空。失败不阻塞启动。
-        if let Err(e) = clear_legacy_agent_messages(&services.store) {
-            tracing::warn!("清空旧 agent 消息失败（不阻塞启动）: {e}");
+        // Agent 消息：buckaroo → rig 重写后旧 bincode 形态不可解码。
+        // AgentService::repair_legacy_messages 只动 decode 失败的那批：OLD 形态
+        // （Role + content + tool_calls）转写为 NEW，rig 中间形态删掉。
+        // 不再整列清空——避免把用户历史对话内容一起抹掉。
+        if let Err(e) = services.agent.repair_legacy_messages() {
+            tracing::warn!("agent 消息启动修复失败（不阻塞启动）: {e}");
         }
         Ok(services)
     }
-}
-
-/// 启动期 idempotent 清空 `cf::AGENT_MESSAGES`：旧 buckaroo 形态的 bincode 与
-/// rig `Message` 形态不兼容，逐条扫出全部键后一次性删除。空 CF 是 no-op。
-fn clear_legacy_agent_messages(store: &DocStore) -> Result<usize, AppError> {
-    let mut count = 0;
-    let mut ops = Vec::new();
-    for (key, _) in store.scan_prefix(cf::AGENT_MESSAGES, b"")? {
-        ops.push(BatchOp::delete(cf::AGENT_MESSAGES, key));
-        count += 1;
-    }
-    if !ops.is_empty() {
-        store.write_batch(ops)?;
-    }
-    if count > 0 {
-        tracing::info!("已清空 {count} 条旧 agent 消息（rig 重写，bincode 不兼容）");
-    }
-    Ok(count)
 }

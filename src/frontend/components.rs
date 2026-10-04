@@ -1124,13 +1124,13 @@ pub enum GlyphPos {
 /// 算一个标签 chip 该用什么标点（如 ✓ / ✗ / ¥ / 货币符号 / ⏰ / 📅 等），
 /// 画在标签名边上便于扫一列时一眼分辨类型。返回 `Some((char, pos))` 表示
 /// 有标点可画，`None` 表示该类型不带标点。
-pub fn chip_glyph(vt: &str, value: &Value, currency_symbol: Option<&str>) -> Option<(char, GlyphPos)> {
+pub fn chip_glyph(vt: &str, _value: &Value, currency_symbol: Option<&str>) -> Option<(String, GlyphPos)> {
     match vt {
-        "boolean" => Some(('✓', GlyphPos::Left)),
-        "currency" => Some((currency_symbol.unwrap_or('¥'), GlyphPos::Left)),
-        "date" | "datetime" => Some(('📅', GlyphPos::Right)),
-        "time" => Some(('⏰', GlyphPos::Right)),
-        "account" => Some(('👤', GlyphPos::Right)),
+        "boolean" => Some(("✓".to_string(), GlyphPos::Left)),
+        "currency" => Some((currency_symbol.unwrap_or("¥").to_string(), GlyphPos::Left)),
+        "date" | "datetime" => Some(("📅".to_string(), GlyphPos::Right)),
+        "time" => Some(("⏰".to_string(), GlyphPos::Right)),
+        "account" => Some(("👤".to_string(), GlyphPos::Right)),
         _ => None,
     }
 }

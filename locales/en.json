@@ -279,5 +279,26 @@
     "send": "Send",
     "newline": "Newline",
     "view_full_result": "View full result"
+  },
+  "cmdpal": {
+    "placeholder": "Search commands, workspaces, entries…",
+    "close_hint": " close",
+    "empty": "No matching items",
+    "cmd_workspaces": "My workspaces",
+    "cmd_workspaces_sub": "Go to the workspaces list",
+    "cmd_account": "Account settings",
+    "cmd_account_sub": "Edit profile / password",
+    "cmd_admin": "Admin panel",
+    "cmd_admin_sub": "System-wide account management",
+    "cmd_settings": "\"{slug}\" settings",
+    "cmd_settings_sub": "Workspace configuration / members / labels",
+    "cmd_theme": "Toggle theme",
+    "cmd_theme_sub": "Cycle through light / dark / system"
+  },
+  "theme": {
+    "title_system": "Theme: follow system (click to change)",
+    "title_light": "Theme: light (click to change)",
+    "title_dark": "Theme: dark (click to change)",
+    "aria": "Toggle theme"
   }
 }

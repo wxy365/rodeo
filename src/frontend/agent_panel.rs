@@ -758,7 +758,7 @@ pub fn AgentPanel() -> impl IntoView {
                                         <For
                                             each=move || messages.get()
                                             key=|m| m.id.clone()
-                                            children=|m: AgentMessage| {
+                                            children=move |m: AgentMessage| {
                                                 let content_html = render_markdown(&m.content);
                                                 let role_cls = format!(
                                                     "agent-msg agent-msg-{}",
@@ -791,7 +791,7 @@ pub fn AgentPanel() -> impl IntoView {
                                                         <For
                                                             each=move || tool_calls.clone()
                                                             key=|tc| tc.id.clone()
-                                                            children=|tc: crate::frontend::graphql_client::AgentToolCallRecord| {
+                                                            children=move |tc: crate::frontend::graphql_client::AgentToolCallRecord| {
                                                                 let name = tc.name.clone();
                                                                 let args_text = serde_json::to_string_pretty(&tc.args)
                                                                     .unwrap_or_else(|_| tc.args.to_string());

@@ -3182,6 +3182,9 @@ async fn build_agent_context_md(
                     v.query.to_expr(),
                     count,
                 ));
+                md.push_str(
+                    "\n> ⚠ 作答与工具调用请基于上述视图范围内：默认使用 query_entries 配合本视图的 表达式 字段；不要通过空条件 query_entries 查全工作空间。\n",
+                );
             }
             _ => md.push_str("(视图 id 无效或不属于当前工作空间)\n"),
         },
@@ -3211,6 +3214,9 @@ async fn build_agent_context_md(
                 entry.code, entry.title, snippet
             ));
         }
+        md.push_str(
+            "\n> ⚠ 优先围绕上述已选中条目作答；不要扩展到未选中条目。\n",
+        );
         md.push('\n');
     }
 
