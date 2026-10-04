@@ -114,6 +114,21 @@ pub fn Login() -> impl IntoView {
         }
     });
 
+    // OAuthCallback 失败跳转过来时带的提示（如 `#token` 缺失），显示在表单上方。
+    let oauth_error = RwSignal::new(None::<String>);
+    Effect::new_sync(move |_| {
+        if !cfg!(target_arch = "wasm32") {
+            return;
+        }
+        let search = window_search();
+        if let Some(code) = url_param(&search, "oauth_error") {
+            oauth_error.set(Some(match code.as_str() {
+                "missing_token" => "登录失败：未收到令牌，请重新扫码".to_string(),
+                _ => format!("登录失败：{code}"),
+            }));
+        }
+    });
+
     let submit = move |ev: SubmitEvent| {
         ev.prevent_default();
         let navigate = navigate.clone();
@@ -174,6 +189,9 @@ pub fn Login() -> impl IntoView {
                         <input class="inp" type="password" placeholder="密码（至少 8 位，含大小写和数字）" prop:value=password on:input=move |ev| password.set(event_target_value(&ev)) />
                         {move || auth.session_lost.get().then(|| view! {
                             <p class="error">"登录已失效，请重新登录"</p>
+                        })}
+                        {move || oauth_error.get().map(|m| view! {
+                            <p class="error">{m}</p>
                         })}
                         {move || error.get().map(|e| view! { <p class="error">{e}</p> })}
                         {move || (!ready.get()).then(|| view! {

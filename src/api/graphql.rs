@@ -2915,6 +2915,12 @@ impl Mutation {
                 return Err(AppError::InvalidCredentials.into());
             }
         }
+        // OAuth-only 账号没有 password_hash；`PasswordHash::new("")` 会崩成
+        // `Internal("密码哈希错误")`，把内部错误漏给前端。这里前置一道
+        // `has_password` 守卫，让它走和密码错一样的 `InvalidCredentials`。
+        if !account.has_password() {
+            return Err(AppError::InvalidCredentials.into());
+        }
 
         if !crate::service::auth::verify_password(&password, &account.password_hash)? {
             return Err(AppError::InvalidCredentials.into());
@@ -2992,18 +2998,12 @@ impl Mutation {
             return Err(AppError::EmailExists.into());
         }
 
-        let account = gql.services.oauth_bindings.create_account_via_oauth(
+        let account = gql.services.oauth_bindings.create_account_and_bind_oauth(
             &email_n,
             &name,
             password.as_deref(),
-        )?;
-
-        gql.services.oauth_bindings.upsert(
-            account.id,
             bind.provider,
             &bind.external_id,
-            None,
-            None,
         )?;
         let token = gql.services.auth.sign_token(account.id)?;
         Ok(GqlAuthResult {

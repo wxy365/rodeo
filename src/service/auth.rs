@@ -134,6 +134,11 @@ impl AuthService {
         new_password: &str,
     ) -> Result<Account, AppError> {
         let mut account = self.find_by_id(account_id)?.ok_or(AppError::NotFound)?;
+        // OAuth-only 账号没有 password_hash；不让它走到 verify_password 才崩成
+        // Internal。前置守卫与 login 路径保持一致。
+        if !account.has_password() {
+            return Err(AppError::InvalidCredentials);
+        }
         if !verify_password(old_password, &account.password_hash)? {
             return Err(AppError::InvalidQuery("当前密码不正确".to_string()));
         }

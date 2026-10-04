@@ -86,15 +86,21 @@ impl OAuthBindingsService {
         Ok(())
     }
 
-    /// 通过 OAuth 创建 Rodeo 账号。
+    /// 通过 OAuth 创建 Rodeo 账号 + 同时写入绑定关系。
+    ///
+    /// 原子写：`ACCOUNTS + ACCOUNTS_EMAIL_IDX + OAUTH_BINDINGS` 三张 CF
+    /// 在同一个 `write_batch` 里。要么都成、要么都不写——避免
+    /// `take_bind` 已消费、但 binding 落库失败时留下孤儿账号。
+    ///
     /// - `password.is_none()` 时 password_hash 留空串（OAuth-only 无密码）。
     /// - 与 `AuthService::register` 共用 `allow_registration` 守门规则，但调用方负责先查 config。
-    /// - 原子写：ACCOUNTS + ACCOUNTS_EMAIL_IDX。binding 由 GraphQL mutation 在外层写。
-    pub fn create_account_via_oauth(
+    pub fn create_account_and_bind_oauth(
         &self,
         email: &str,
         name: &str,
         password: Option<&str>,
+        provider: crate::domain::OAuthProvider,
+        external_id: &str,
     ) -> Result<crate::domain::Account, AppError> {
         use crate::domain::Account;
         use crate::service::auth::{hash_password, normalize_email, validate_password};
@@ -109,6 +115,16 @@ impl OAuthBindingsService {
             None => String::new(),
         };
         let account = Account::new(email.clone(), name.trim().to_string(), password_hash, false);
+        let now = chrono::Utc::now();
+        let binding = crate::domain::IdentityBinding {
+            account_id: account.id,
+            provider,
+            external_id: external_id.to_string(),
+            email: None,
+            display_name: None,
+            bound_at: now,
+            last_used_at: now,
+        };
 
         self.store.write_batch(vec![
             BatchOp::put(
@@ -121,6 +137,11 @@ impl OAuthBindingsService {
                 email.as_bytes().to_vec(),
                 account.id.to_bytes().to_vec(),
             ),
+            BatchOp::put(
+                crate::storage::cf::OAUTH_BINDINGS,
+                Self::key(provider, external_id),
+                &binding,
+            )?,
         ])?;
         Ok(account)
     }
