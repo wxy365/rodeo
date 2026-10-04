@@ -38,7 +38,10 @@ pub struct PageInput {
 
 impl Default for PageInput {
     fn default() -> Self {
-        Self { page: 1, page_size: 20 }
+        Self {
+            page: 1,
+            page_size: 20,
+        }
     }
 }
 
@@ -64,7 +67,13 @@ impl EntryService {
         relations: crate::service::relation::RelationService,
     ) -> Self {
         let rules = RuleEngine::new(store.clone());
-        Self { store, search: None, rules, messages, relations }
+        Self {
+            store,
+            search: None,
+            rules,
+            messages,
+            relations,
+        }
     }
 
     pub fn with_search(
@@ -74,15 +83,21 @@ impl EntryService {
         relations: crate::service::relation::RelationService,
     ) -> Self {
         let rules = RuleEngine::new(store.clone());
-        Self { store, search: Some(search), rules, messages, relations }
+        Self {
+            store,
+            search: Some(search),
+            rules,
+            messages,
+            relations,
+        }
     }
 
     fn reindex(&self, entry: &Entry) {
         let Some(search) = &self.search else { return };
         let labels = self.labelings(&entry.code).unwrap_or_default();
         // 评论正文也进检索：搜得到评论内容，但检索字段与标题/详情分开，不会互相干扰相关度。
-        let comments = crate::service::search::comments_text(&self.store, &entry.code)
-            .unwrap_or_default();
+        let comments =
+            crate::service::search::comments_text(&self.store, &entry.code).unwrap_or_default();
         // 归档与软删除一样，都让条目退出全文检索：归档条目不该再被搜索命中。
         let out_of_play = entry.is_deleted() || self.is_archived(&entry.code).unwrap_or(false);
         if out_of_play {
@@ -201,12 +216,9 @@ impl EntryService {
         ops.push(BatchOp::put(cf::ENTRIES, code.as_bytes().to_vec(), &entry)?);
         self.store.write_batch(ops)?;
         // 详情里新增的 @姓名 才发消息：上次已通知过的人直接跳过，避免重复打扰。
-        let previous = self.messages.notified_recipients(
-            entry.workspace_id,
-            &entry.code,
-            "entry",
-            None,
-        )?;
+        let previous =
+            self.messages
+                .notified_recipients(entry.workspace_id, &entry.code, "entry", None)?;
         self.dispatch_entry_mentions(actor, actor_name, &entry, &previous)?;
         self.reindex(&entry);
         Ok(entry)
@@ -222,13 +234,10 @@ impl EntryService {
         entry: &Entry,
         previous_notified: &std::collections::HashSet<Ulid>,
     ) -> Result<(), AppError> {
-        let members = self
-            .messages
-            .workspaces
-            .list_members(entry.workspace_id)?;
-        let names = crate::service::mention::extract_mention_names(&crate::service::mention::flat_text(
-            &entry.detail,
-        ));
+        let members = self.messages.workspaces.list_members(entry.workspace_id)?;
+        let names = crate::service::mention::extract_mention_names(
+            &crate::service::mention::flat_text(&entry.detail),
+        );
         let targets = crate::service::mention::resolve_mentions(&names, &members);
         let preview = if entry.title.trim().is_empty() {
             crate::service::mention::preview(&entry.detail, 80)
@@ -348,7 +357,10 @@ impl EntryService {
             Some(entry_snapshot(&entry, None)),
         );
         let mut ops = audit_ops(&audit)?;
-        ops.push(BatchOp::delete(cf::ENTRIES_ARCHIVED, code.as_bytes().to_vec()));
+        ops.push(BatchOp::delete(
+            cf::ENTRIES_ARCHIVED,
+            code.as_bytes().to_vec(),
+        ));
         self.store.write_batch(ops)?;
         self.reindex(&entry);
         Ok(())
@@ -356,7 +368,9 @@ impl EntryService {
 
     /// 列出工作空间内已归档的条目（不含已删除），按归档时间倒序。
     pub fn list_archived(&self, workspace_id: Ulid) -> Result<Vec<Entry>, AppError> {
-        let rows = self.store.scan_prefix(cf::ENTRIES_BY_WORKSPACE, &workspace_id.to_bytes())?;
+        let rows = self
+            .store
+            .scan_prefix(cf::ENTRIES_BY_WORKSPACE, &workspace_id.to_bytes())?;
         let mut entries = Vec::new();
         for (key, _) in rows {
             if key.len() <= 16 {
@@ -420,7 +434,9 @@ impl EntryService {
             value: Some(labeling.value.clone()),
             actor,
         };
-        let plan = self.rules.plan(entry.workspace_id, std::slice::from_ref(&staged))?;
+        let plan = self
+            .rules
+            .plan(entry.workspace_id, std::slice::from_ref(&staged))?;
         let mut affected = vec![entry_code.to_string()];
         if let Some(p) = plan {
             affected.extend(p.affected);
@@ -468,10 +484,7 @@ impl EntryService {
         for (name, value) in labelings {
             let schema = self
                 .store
-                .get::<LabelSchema>(
-                    cf::LABEL_SCHEMAS,
-                    &keys::label_schema_key(ws_id, name),
-                )?
+                .get::<LabelSchema>(cf::LABEL_SCHEMAS, &keys::label_schema_key(ws_id, name))?
                 .ok_or_else(|| AppError::InvalidQuery(format!("标签不存在: {name}")))?;
             let lv = LabelValue::from_json(value, &schema)?;
             crate::service::label::check_account_member(&self.store, ws_id, &lv)?;
@@ -483,18 +496,20 @@ impl EntryService {
             for (name, lv) in &resolved {
                 let vt = self
                     .store
-                    .get::<LabelSchema>(
-                        cf::LABEL_SCHEMAS,
-                        &keys::label_schema_key(ws_id, name),
-                    )?
+                    .get::<LabelSchema>(cf::LABEL_SCHEMAS, &keys::label_schema_key(ws_id, name))?
                     .map(|s| s.value_type)
                     .unwrap_or(LabelValueType::Null);
-                let labeling =
-                    Labeling::new(entry.code.clone(), name.clone(), lv.clone(), actor);
+                let labeling = Labeling::new(entry.code.clone(), name.clone(), lv.clone(), actor);
                 let before = self
                     .store
                     .get::<Labeling>(cf::LABELINGS, &keys::labeling_key(&entry.code, name))?;
-                ops.extend(labeling_set_ops(ws_id, &labeling, vt, actor, before.as_ref())?);
+                ops.extend(labeling_set_ops(
+                    ws_id,
+                    &labeling,
+                    vt,
+                    actor,
+                    before.as_ref(),
+                )?);
             }
         }
         let written = entries.len() * resolved.len();
@@ -559,7 +574,9 @@ impl EntryService {
             value: None,
             actor,
         };
-        let plan = self.rules.plan(entry.workspace_id, std::slice::from_ref(&staged))?;
+        let plan = self
+            .rules
+            .plan(entry.workspace_id, std::slice::from_ref(&staged))?;
         let mut affected = vec![entry_code.to_string()];
         if let Some(p) = plan {
             affected.extend(p.affected);
@@ -594,7 +611,8 @@ impl EntryService {
         let rows = self
             .store
             .scan_prefix(cf::LABELINGS_BY_WORKSPACE, &workspace_id.to_bytes())?;
-        let mut map: std::collections::HashMap<String, Vec<Labeling>> = std::collections::HashMap::new();
+        let mut map: std::collections::HashMap<String, Vec<Labeling>> =
+            std::collections::HashMap::new();
         for (_, v) in rows {
             let l: Labeling = bincode::deserialize(&v)?;
             map.entry(l.entry_code.clone()).or_default().push(l);
@@ -606,7 +624,10 @@ impl EntryService {
     /// `LABELINGS` 重建次级索引；已填充则直接返回 0（幂等）。
     /// 返回回填的 labeling 条数。
     pub fn labelings_by_workspace_backfill(&self, store: &DocStore) -> Result<usize, AppError> {
-        if !store.scan_prefix(cf::LABELINGS_BY_WORKSPACE, b"")?.is_empty() {
+        if !store
+            .scan_prefix(cf::LABELINGS_BY_WORKSPACE, b"")?
+            .is_empty()
+        {
             return Ok(0);
         }
         let mut ops = Vec::new();
@@ -617,7 +638,11 @@ impl EntryService {
                 let l: Labeling = bincode::deserialize(&lv)?;
                 ops.push(BatchOp::put(
                     cf::LABELINGS_BY_WORKSPACE,
-                    keys::labeling_by_workspace_key(entry.workspace_id, &l.entry_code, &l.label_name),
+                    keys::labeling_by_workspace_key(
+                        entry.workspace_id,
+                        &l.entry_code,
+                        &l.label_name,
+                    ),
                     &l,
                 )?);
                 count += 1;
@@ -638,8 +663,10 @@ impl EntryService {
             return Ok(0);
         }
         // 按工作空间缓存 schema，避免同一个 workspace 内每条打标都回查一次。
-        let mut schema_cache: std::collections::HashMap<Ulid, std::collections::HashMap<String, LabelValueType>> =
-            std::collections::HashMap::new();
+        let mut schema_cache: std::collections::HashMap<
+            Ulid,
+            std::collections::HashMap<String, LabelValueType>,
+        > = std::collections::HashMap::new();
         let mut ops = Vec::new();
         let mut count = 0;
         for (_, lv) in store.scan_prefix(cf::LABELINGS, b"")? {
@@ -649,16 +676,16 @@ impl EntryService {
                 None => continue,
             };
             let ws = entry.workspace_id;
-            let cache = schema_cache
-                .entry(ws)
-                .or_insert_with(|| match store.scan_prefix(cf::LABEL_SCHEMAS, &ws.to_bytes()) {
+            let cache = schema_cache.entry(ws).or_insert_with(|| {
+                match store.scan_prefix(cf::LABEL_SCHEMAS, &ws.to_bytes()) {
                     Ok(rows) => rows
                         .into_iter()
                         .filter_map(|(_, sv)| bincode::deserialize::<LabelSchema>(&sv).ok())
                         .map(|s| (s.name.clone(), s.value_type))
                         .collect(),
                     Err(_) => std::collections::HashMap::new(),
-                });
+                }
+            });
             let vt = match cache.get(&l.label_name) {
                 Some(vt) => *vt,
                 None => continue,
@@ -680,7 +707,10 @@ impl EntryService {
             ws,
             query,
             &SortSpec::default(),
-            PageInput { page: 1, page_size: 1 },
+            PageInput {
+                page: 1,
+                page_size: 1,
+            },
         )?;
         Ok(r.total)
     }
@@ -829,7 +859,11 @@ impl EntryService {
             let labels = labels_of(&e.code).to_vec();
             items.push((e, labels));
         }
-        Ok(QueryResult { items, total, label_names })
+        Ok(QueryResult {
+            items,
+            total,
+            label_names,
+        })
     }
 }
 
@@ -846,7 +880,9 @@ pub fn list_entries(store: &DocStore, workspace_id: Ulid) -> Result<Vec<Entry>, 
         }
         let code = std::str::from_utf8(&key[16..]).unwrap_or("").to_string();
         if let Some(e) = store.get::<Entry>(cf::ENTRIES, code.as_bytes())? {
-            let archived = store.get_raw(cf::ENTRIES_ARCHIVED, code.as_bytes())?.is_some();
+            let archived = store
+                .get_raw(cf::ENTRIES_ARCHIVED, code.as_bytes())?
+                .is_some();
             if !e.is_deleted() && !archived {
                 entries.push(e);
             }
@@ -930,12 +966,10 @@ fn codes_for_hint(
             }
             base_codes - &hits
         }
-        Op::Gt | Op::Ge | Op::Lt | Op::Le => {
-            match resolve_value_for_index(&hint.value, schema) {
-                Ok(threshold) => codes_in_range(store, ws, &hint.label_name, hint.op, &threshold),
-                Err(_) => HashSet::new(),
-            }
-        }
+        Op::Gt | Op::Ge | Op::Lt | Op::Le => match resolve_value_for_index(&hint.value, schema) {
+            Ok(threshold) => codes_in_range(store, ws, &hint.label_name, hint.op, &threshold),
+            Err(_) => HashSet::new(),
+        },
         _ => HashSet::new(),
     }
 }
@@ -950,12 +984,7 @@ fn resolve_value_for_index(
 }
 
 /// 严格相等：键前缀到编码后的字节完全匹配；scan_prefix 返回的 key 末尾 16 字节即 entry_code。
-fn codes_with_exact_value(
-    store: &DocStore,
-    ws: Ulid,
-    name: &str,
-    enc: &[u8],
-) -> HashSet<String> {
+fn codes_with_exact_value(store: &DocStore, ws: Ulid, name: &str, enc: &[u8]) -> HashSet<String> {
     let mut prefix = keys::labeling_by_label_prefix(ws, name);
     prefix.extend_from_slice(enc);
     let mut out = HashSet::new();
@@ -1047,7 +1076,10 @@ pub fn labeling_ops(
                 None,
             );
             let mut ops = audit_ops(&audit)?;
-            ops.push(BatchOp::delete(cf::LABELINGS, keys::labeling_key(code, label_name)));
+            ops.push(BatchOp::delete(
+                cf::LABELINGS,
+                keys::labeling_key(code, label_name),
+            ));
             ops.push(BatchOp::delete(
                 cf::LABELINGS_BY_WORKSPACE,
                 keys::labeling_by_workspace_key(ws, code, label_name),
@@ -1095,7 +1127,13 @@ fn labeling_set_ops(
     // 旧值不同则先把旧索引键删掉（更新场景下编码不同会变成「写入新的 + 漏删旧的」）。
     if let Some(prev) = before {
         if prev.value != labeling.value {
-            for op in label_index_deletes(ws, &labeling.entry_code, &labeling.label_name, &prev.value, value_type) {
+            for op in label_index_deletes(
+                ws,
+                &labeling.entry_code,
+                &labeling.label_name,
+                &prev.value,
+                value_type,
+            ) {
                 ops.push(op);
             }
         }
@@ -1278,7 +1316,10 @@ fn label_value_of<'a>(
 fn compare_values(a: &LabelValue, b: &LabelValue, vt: LabelValueType) -> Ordering {
     // 多值标签逐元素按字符串比较，字典序。
     if let (LabelValue::EnumList(x), LabelValue::EnumList(y)) = (a, b) {
-        return x.iter().map(String::as_str).cmp(y.iter().map(String::as_str));
+        return x
+            .iter()
+            .map(String::as_str)
+            .cmp(y.iter().map(String::as_str));
     }
     match vt {
         LabelValueType::Integer | LabelValueType::Float | LabelValueType::Currency => {
@@ -1349,19 +1390,28 @@ mod tests {
     fn query_filters_by_label_and_pages() {
         let (dir, store, _svc, ws_id, actor) = setup();
         let (_sdir, search) = temp_search();
-        let msg_svc = crate::service::message::MessageService::new(store.clone(), WorkspaceService::new(store.clone()));
+        let msg_svc = crate::service::message::MessageService::new(
+            store.clone(),
+            WorkspaceService::new(store.clone()),
+        );
         let rel_svc = crate::service::relation::RelationService::new(store.clone());
         let svc = EntryService::with_search(store.clone(), search, msg_svc, rel_svc);
         for i in 0..5 {
             let e = svc.create(actor, ws_id, &format!("条目{i}")).unwrap();
             if i % 2 == 0 {
-                svc.set_labeling(actor, &e.code, "Task", &serde_json::json!(null)).unwrap();
+                svc.set_labeling(actor, &e.code, "Task", &serde_json::json!(null))
+                    .unwrap();
             }
         }
         let q = Query::Cond(Condition {
-            field: Field::Label("Task".into()), op: Op::Present, value: None,
+            field: Field::Label("Task".into()),
+            op: Op::Present,
+            value: None,
         });
-        let page = PageInput { page: 1, page_size: 2 };
+        let page = PageInput {
+            page: 1,
+            page_size: 2,
+        };
         let r = svc.query(ws_id, &q, &SortSpec::default(), page).unwrap();
         assert_eq!(r.total, 3, "3 条被打了 Task");
         assert_eq!(r.items.len(), 2, "第一页取 2 条");
@@ -1373,19 +1423,41 @@ mod tests {
     fn query_fulltext_intersects_with_label_filter() {
         let (dir, store, _svc, ws_id, actor) = setup();
         let (_sdir, search) = temp_search();
-        let msg_svc = crate::service::message::MessageService::new(store.clone(), WorkspaceService::new(store.clone()));
+        let msg_svc = crate::service::message::MessageService::new(
+            store.clone(),
+            WorkspaceService::new(store.clone()),
+        );
         let rel_svc = crate::service::relation::RelationService::new(store.clone());
         let svc = EntryService::with_search(store.clone(), search, msg_svc, rel_svc);
         let a = svc.create(actor, ws_id, "找回密码失败").unwrap();
-        svc.update(actor, "tester", &a.code, &a.updated_at.to_rfc3339(), "找回密码失败", "验证码收不到").unwrap();
+        svc.update(
+            actor,
+            "tester",
+            &a.code,
+            &a.updated_at.to_rfc3339(),
+            "找回密码失败",
+            "验证码收不到",
+        )
+        .unwrap();
         let b = svc.create(actor, ws_id, "找回密码失败").unwrap();
-        svc.set_labeling(actor, &a.code, "Task", &serde_json::json!(null)).unwrap();
+        svc.set_labeling(actor, &a.code, "Task", &serde_json::json!(null))
+            .unwrap();
 
         let q = Query::And(vec![
-            Query::Cond(Condition { field: Field::Label("Task".into()), op: Op::Present, value: None }),
-            Query::Cond(Condition { field: Field::Text, op: Op::Contains, value: Some(serde_json::json!("密码")) }),
+            Query::Cond(Condition {
+                field: Field::Label("Task".into()),
+                op: Op::Present,
+                value: None,
+            }),
+            Query::Cond(Condition {
+                field: Field::Text,
+                op: Op::Contains,
+                value: Some(serde_json::json!("密码")),
+            }),
         ]);
-        let r = svc.query(ws_id, &q, &SortSpec::default(), PageInput::default()).unwrap();
+        let r = svc
+            .query(ws_id, &q, &SortSpec::default(), PageInput::default())
+            .unwrap();
         assert_eq!(r.total, 1);
         assert_eq!(r.items[0].0.code, a.code, "b 未打标，应被过滤掉");
         let _ = b;
@@ -1396,24 +1468,41 @@ mod tests {
     fn query_reports_label_names_of_matched_entries() {
         let (dir, store, _svc, ws_id, actor) = setup();
         let (_sdir, search) = temp_search();
-        let msg_svc = crate::service::message::MessageService::new(store.clone(), WorkspaceService::new(store.clone()));
+        let msg_svc = crate::service::message::MessageService::new(
+            store.clone(),
+            WorkspaceService::new(store.clone()),
+        );
         let rel_svc = crate::service::relation::RelationService::new(store.clone());
         let svc = EntryService::with_search(store.clone(), search, msg_svc, rel_svc);
         let a = svc.create(actor, ws_id, "甲").unwrap();
-        svc.set_labeling(actor, &a.code, "Task", &serde_json::json!(null)).unwrap();
-        svc.set_labeling(actor, &a.code, "Bug", &serde_json::json!(null)).unwrap();
+        svc.set_labeling(actor, &a.code, "Task", &serde_json::json!(null))
+            .unwrap();
+        svc.set_labeling(actor, &a.code, "Bug", &serde_json::json!(null))
+            .unwrap();
         let b = svc.create(actor, ws_id, "乙").unwrap();
-        svc.set_labeling(actor, &b.code, "Task", &serde_json::json!(null)).unwrap();
+        svc.set_labeling(actor, &b.code, "Task", &serde_json::json!(null))
+            .unwrap();
 
         // 不过滤时两个标签都出现；跨分页汇总，去重排序。
-        let r = svc.query(ws_id, &Query::all(), &SortSpec::default(), PageInput::default()).unwrap();
+        let r = svc
+            .query(
+                ws_id,
+                &Query::all(),
+                &SortSpec::default(),
+                PageInput::default(),
+            )
+            .unwrap();
         assert_eq!(r.label_names, vec!["Bug".to_string(), "Task".to_string()]);
 
         // 过滤到只剩「乙」时，只有它带过的 Task。
         let only_b = Query::Cond(Condition {
-            field: Field::Text, op: Op::Contains, value: Some(serde_json::json!("乙")),
+            field: Field::Text,
+            op: Op::Contains,
+            value: Some(serde_json::json!("乙")),
         });
-        let r = svc.query(ws_id, &only_b, &SortSpec::default(), PageInput::default()).unwrap();
+        let r = svc
+            .query(ws_id, &only_b, &SortSpec::default(), PageInput::default())
+            .unwrap();
         assert_eq!(r.items.len(), 1);
         assert_eq!(r.label_names, vec!["Task".to_string()]);
         std::fs::remove_dir_all(&dir).ok();
@@ -1423,20 +1512,37 @@ mod tests {
     fn query_sorts_by_title_both_directions() {
         let (dir, store, _svc, ws_id, actor) = setup();
         let (_sdir, search) = temp_search();
-        let msg_svc = crate::service::message::MessageService::new(store.clone(), WorkspaceService::new(store.clone()));
+        let msg_svc = crate::service::message::MessageService::new(
+            store.clone(),
+            WorkspaceService::new(store.clone()),
+        );
         let rel_svc = crate::service::relation::RelationService::new(store.clone());
         let svc = EntryService::with_search(store.clone(), search, msg_svc, rel_svc);
         for t in ["b", "a", "c"] {
             svc.create(actor, ws_id, t).unwrap();
         }
-        let asc = SortSpec { keys: vec![SortKey { field: SortField::Title, desc: false }] };
-        let r = svc.query(ws_id, &Query::all(), &asc, PageInput::default()).unwrap();
+        let asc = SortSpec {
+            keys: vec![SortKey {
+                field: SortField::Title,
+                desc: false,
+            }],
+        };
+        let r = svc
+            .query(ws_id, &Query::all(), &asc, PageInput::default())
+            .unwrap();
         let titles: Vec<String> = r.items.into_iter().map(|(e, _)| e.title).collect();
         assert_eq!(titles, vec!["a", "b", "c"]);
 
         // desc 是默认排序方向，必须单独覆盖。
-        let desc = SortSpec { keys: vec![SortKey { field: SortField::Title, desc: true }] };
-        let r = svc.query(ws_id, &Query::all(), &desc, PageInput::default()).unwrap();
+        let desc = SortSpec {
+            keys: vec![SortKey {
+                field: SortField::Title,
+                desc: true,
+            }],
+        };
+        let r = svc
+            .query(ws_id, &Query::all(), &desc, PageInput::default())
+            .unwrap();
         let titles: Vec<String> = r.items.into_iter().map(|(e, _)| e.title).collect();
         assert_eq!(titles, vec!["c", "b", "a"]);
         std::fs::remove_dir_all(&dir).ok();
@@ -1465,11 +1571,15 @@ mod tests {
         let (dir, _store, svc, ws_id, actor) = setup();
         let e = svc.create(actor, ws_id, "hello").unwrap();
         // 错误的时间戳 → 冲突
-        let err = svc.update(actor, "tester", &e.code, "2000-01-01T00:00:00Z", "x", "").unwrap_err();
+        let err = svc
+            .update(actor, "tester", &e.code, "2000-01-01T00:00:00Z", "x", "")
+            .unwrap_err();
         assert!(matches!(err, AppError::ConflictDetected));
         // 正确的时间戳 → 成功
         let expected = e.updated_at.to_rfc3339();
-        let u = svc.update(actor, "tester", &e.code, &expected, "改了", "详情").unwrap();
+        let u = svc
+            .update(actor, "tester", &e.code, &expected, "改了", "详情")
+            .unwrap();
         assert_eq!(u.title, "改了");
         assert_eq!(u.detail, "详情");
         std::fs::remove_dir_all(&dir).ok();
@@ -1491,11 +1601,15 @@ mod tests {
     fn archive_removes_from_list_but_keeps_entry_and_is_reversible() {
         let (dir, store, svc, ws_id, actor) = setup();
         let e = svc.create(actor, ws_id, "陈旧条目").unwrap();
-        svc.set_labeling(actor, &e.code, "Task", &serde_json::json!(null)).unwrap();
+        svc.set_labeling(actor, &e.code, "Task", &serde_json::json!(null))
+            .unwrap();
         assert_eq!(svc.list(ws_id).unwrap().len(), 1);
 
         svc.archive(actor, &e.code).unwrap();
-        assert!(svc.list(ws_id).unwrap().is_empty(), "归档后不该出现在默认列表");
+        assert!(
+            svc.list(ws_id).unwrap().is_empty(),
+            "归档后不该出现在默认列表"
+        );
         assert!(svc.is_archived(&e.code).unwrap());
         assert!(svc.get(&e.code).unwrap().is_some(), "归档不删除数据");
         assert_eq!(svc.labelings(&e.code).unwrap().len(), 1, "打标保留");
@@ -1533,16 +1647,23 @@ mod tests {
             .expect("必须产生 EntryArchived 审计");
         assert_eq!(log.resource_id, e.code);
         let after: serde_json::Value = serde_json::from_str(log.after.as_deref().unwrap()).unwrap();
-        assert!(after["archived_at"].is_string(), "after 快照必须携带 archived_at");
+        assert!(
+            after["archived_at"].is_string(),
+            "after 快照必须携带 archived_at"
+        );
         assert_eq!(
-            list.iter().filter(|l| l.action == AuditAction::EntryArchived).count(),
+            list.iter()
+                .filter(|l| l.action == AuditAction::EntryArchived)
+                .count(),
             1,
             "重复归档只留一条审计"
         );
 
         svc.unarchive(actor, &e.code).unwrap();
         let list2 = audit.list(ws_id, 100).unwrap();
-        assert!(list2.iter().any(|l| l.action == AuditAction::EntryUnarchived));
+        assert!(list2
+            .iter()
+            .any(|l| l.action == AuditAction::EntryUnarchived));
         drop(store);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1553,12 +1674,18 @@ mod tests {
         let a = svc.create(actor, ws_id, "先归档再删除").unwrap();
         svc.archive(actor, &a.code).unwrap();
         svc.soft_delete(actor, &a.code).unwrap();
-        assert!(svc.list_archived(ws_id).unwrap().is_empty(), "已删除的不该出现在归档列表");
+        assert!(
+            svc.list_archived(ws_id).unwrap().is_empty(),
+            "已删除的不该出现在归档列表"
+        );
 
         // 已删除的条目不能再归档。
         let b = svc.create(actor, ws_id, "先删除").unwrap();
         svc.soft_delete(actor, &b.code).unwrap();
-        assert!(matches!(svc.archive(actor, &b.code), Err(AppError::NotFound)));
+        assert!(matches!(
+            svc.archive(actor, &b.code),
+            Err(AppError::NotFound)
+        ));
         drop(store);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1567,7 +1694,10 @@ mod tests {
     fn archived_entries_are_excluded_from_fulltext_search() {
         let (dir, store, _svc, ws_id, actor) = setup();
         let (_sdir, search) = temp_search();
-        let msg_svc = crate::service::message::MessageService::new(store.clone(), WorkspaceService::new(store.clone()));
+        let msg_svc = crate::service::message::MessageService::new(
+            store.clone(),
+            WorkspaceService::new(store.clone()),
+        );
         let rel_svc = crate::service::relation::RelationService::new(store.clone());
         let svc = EntryService::with_search(store.clone(), search.clone(), msg_svc, rel_svc);
         let e = svc.create(actor, ws_id, "独一无二的关键词").unwrap();
@@ -1579,7 +1709,10 @@ mod tests {
 
         svc.unarchive(actor, &e.code).unwrap();
         assert_eq!(search.num_docs(), 1, "取消归档后重新入索引");
-        assert_eq!(search.search(ws_id, "关键词", 10).unwrap(), vec![e.code.clone()]);
+        assert_eq!(
+            search.search(ws_id, "关键词", 10).unwrap(),
+            vec![e.code.clone()]
+        );
         std::fs::remove_dir_all(&_sdir).ok();
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1587,7 +1720,10 @@ mod tests {
     #[test]
     fn search_backfill_skips_archived_entries() {
         let (dir, store, _svc, ws_id, actor) = setup();
-        let msg_svc = crate::service::message::MessageService::new(store.clone(), WorkspaceService::new(store.clone()));
+        let msg_svc = crate::service::message::MessageService::new(
+            store.clone(),
+            WorkspaceService::new(store.clone()),
+        );
         let rel_svc = crate::service::relation::RelationService::new(store.clone());
         let svc = EntryService::new(store.clone(), msg_svc, rel_svc);
         let keep = svc.create(actor, ws_id, "保留的条目").unwrap();
@@ -1598,7 +1734,10 @@ mod tests {
         let (sdir, fresh) = temp_search();
         assert_eq!(fresh.backfill(&store).unwrap(), 1, "只回填未归档条目");
         assert!(fresh.search(ws_id, "归档", 10).unwrap().is_empty());
-        assert_eq!(fresh.search(ws_id, "保留", 10).unwrap(), vec![keep.code.clone()]);
+        assert_eq!(
+            fresh.search(ws_id, "保留", 10).unwrap(),
+            vec![keep.code.clone()]
+        );
         std::fs::remove_dir_all(&sdir).ok();
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1607,7 +1746,8 @@ mod tests {
     fn remove_labeling_clears_value() {
         let (dir, _store, svc, ws_id, actor) = setup();
         let e = svc.create(actor, ws_id, "任务").unwrap();
-        svc.set_labeling(actor, &e.code, "Task", &serde_json::json!(null)).unwrap();
+        svc.set_labeling(actor, &e.code, "Task", &serde_json::json!(null))
+            .unwrap();
         assert_eq!(svc.labelings(&e.code).unwrap().len(), 1);
         svc.remove_labeling(actor, &e.code, "Task").unwrap();
         assert!(svc.labelings(&e.code).unwrap().is_empty());
@@ -1629,7 +1769,9 @@ mod tests {
         let (dir, store, svc, ws_id, actor) = setup();
         let e = svc.create(actor, ws_id, "hello").unwrap();
         let expected = e.updated_at.to_rfc3339();
-        let u = svc.update(actor, "tester", &e.code, &expected, "改了", "详情").unwrap();
+        let u = svc
+            .update(actor, "tester", &e.code, &expected, "改了", "详情")
+            .unwrap();
         assert_ne!(u.updated_at, e.updated_at, "update 必须推进 updated_at");
         assert_eq!(u.updated_by, actor);
         let reloaded = svc.get(&e.code).unwrap().unwrap();
@@ -1683,7 +1825,9 @@ mod tests {
         let e = svc.create(actor, ws_id, "将被删除").unwrap();
         svc.soft_delete(actor, &e.code).unwrap();
         let expected = e.updated_at.to_rfc3339();
-        let err = svc.update(actor, "tester", &e.code, &expected, "x", "").unwrap_err();
+        let err = svc
+            .update(actor, "tester", &e.code, &expected, "x", "")
+            .unwrap_err();
         assert!(matches!(err, AppError::NotFound), "已删除条目不可再更新");
         drop(store);
         std::fs::remove_dir_all(&dir).ok();
@@ -1703,7 +1847,10 @@ mod tests {
             .expect("必须产生 EntryDeleted 审计");
         assert_eq!(log.resource_id, e.code);
         let after: serde_json::Value = serde_json::from_str(log.after.as_deref().unwrap()).unwrap();
-        assert!(after["deleted_at"].is_string(), "after 快照必须携带 deleted_at");
+        assert!(
+            after["deleted_at"].is_string(),
+            "after 快照必须携带 deleted_at"
+        );
 
         // 重复删除幂等：不新增审计、不报错
         svc.soft_delete(actor, &e.code).unwrap();
@@ -1721,7 +1868,8 @@ mod tests {
     fn set_labeling_records_labeling_set_audit() {
         let (dir, store, svc, ws_id, actor) = setup();
         let e = svc.create(actor, ws_id, "任务").unwrap();
-        svc.set_labeling(actor, &e.code, "Task", &serde_json::json!(null)).unwrap();
+        svc.set_labeling(actor, &e.code, "Task", &serde_json::json!(null))
+            .unwrap();
         let audit = crate::service::audit::AuditService::new(store.clone());
         let list = audit.list(ws_id, 100).unwrap();
         let log = list
@@ -1850,7 +1998,8 @@ mod tests {
     fn labeling_index_tracks_set_and_remove() {
         let (dir, _store, svc, ws_id, actor) = setup();
         let e = svc.create(actor, ws_id, "任务").unwrap();
-        svc.set_labeling(actor, &e.code, "Task", &serde_json::json!(null)).unwrap();
+        svc.set_labeling(actor, &e.code, "Task", &serde_json::json!(null))
+            .unwrap();
 
         let map = svc.labelings_by_workspace(ws_id).unwrap();
         assert_eq!(map.get(&e.code).map(|v| v.len()), Some(1));
@@ -1865,7 +2014,8 @@ mod tests {
     fn remove_labeling_records_labeling_removed_audit() {
         let (dir, store, svc, ws_id, actor) = setup();
         let e = svc.create(actor, ws_id, "任务").unwrap();
-        svc.set_labeling(actor, &e.code, "Task", &serde_json::json!(null)).unwrap();
+        svc.set_labeling(actor, &e.code, "Task", &serde_json::json!(null))
+            .unwrap();
         svc.remove_labeling(actor, &e.code, "Task").unwrap();
         let audit = crate::service::audit::AuditService::new(store.clone());
         let list = audit.list(ws_id, 100).unwrap();

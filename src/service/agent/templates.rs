@@ -138,4 +138,3 @@ pub(super) fn first_identifier(s: &str) -> Option<&str> {
 // `async_graphql::Schema` 重名，这里改用 `SchemaAlias`。调用方一律使用 `AppSchema`。
 #[allow(dead_code)]
 pub type SchemaAlias = AppSchema;
-

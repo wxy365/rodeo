@@ -6,7 +6,7 @@ use super::components::{
     display_enum_value, from_native, is_native_time_layout, to_native, value_to_string,
     AccountPicker,
 };
-use super::graphql_client::{remove_labeling, set_labeling, Labeling, LabelSchema, Member};
+use super::graphql_client::{remove_labeling, set_labeling, LabelSchema, Labeling, Member};
 use super::icons::{ic_close, ic_tag};
 use super::query_eval::{derive_inherited, resolve_label_color};
 
@@ -322,10 +322,8 @@ fn LabelRow(
         Some(s) if matches!(s.value_type.as_str(), "date" | "time" | "datetime") => {
             let vt = s.value_type.clone();
             // 库里存的是常规表示法，解析前先翻成 Go 布局（兼容历史数据）。
-            let layout = crate::golayout::resolve(
-                s.format.as_deref(),
-                crate::golayout::default_go(&vt),
-            );
+            let layout =
+                crate::golayout::resolve(s.format.as_deref(), crate::golayout::default_go(&vt));
             let native_ok = is_native_time_layout(&vt, s.format.as_deref());
             if !native_ok {
                 // 自定义布局：原生控件表达不了，退回文本输入；解析通过才落库。
@@ -400,9 +398,7 @@ fn LabelRow(
                     if ids.is_empty() {
                         on_remove.run(());
                     } else {
-                        on_set.run(Value::Array(
-                            ids.into_iter().map(Value::String).collect(),
-                        ));
+                        on_set.run(Value::Array(ids.into_iter().map(Value::String).collect()));
                     }
                 } else {
                     match ids.into_iter().next() {
@@ -413,7 +409,11 @@ fn LabelRow(
             });
             let selected: Vec<String> = if s.multi {
                 // 多选：值是字符串数组；按元素拆开。
-                current.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+                current
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
             } else if current.is_empty() {
                 Vec::new()
             } else {
@@ -423,7 +423,7 @@ fn LabelRow(
                 <AccountPicker members=members.clone() selected=selected multi=s.multi
                     on_change=picked />
             }
-                .into_any()
+            .into_any()
         }
         // 邮箱：文本输入，仅做「含 @」的提示性校验（真正的校验在服务端）；清空即移除标签。
         Some(s) if s.value_type == "email" => {
@@ -484,7 +484,9 @@ fn LabelRow(
     // 配色直接落在 chip 上：底色淡、字色与描边用原色。
     let style = color
         .map(|c| {
-            format!("border-color:{c};background:color-mix(in srgb, {c} 12%, transparent);color:{c}")
+            format!(
+                "border-color:{c};background:color-mix(in srgb, {c} 12%, transparent);color:{c}"
+            )
         })
         .unwrap_or_default();
 

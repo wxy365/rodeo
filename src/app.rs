@@ -1,19 +1,91 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use leptos_meta::{
-    provide_meta_context, HashedStylesheet, MetaTags, Script, Stylesheet, Title,
-};
+use leptos_meta::{provide_meta_context, HashedStylesheet, MetaTags, Script, Stylesheet, Title};
 use leptos_router::components::{Route, Router, Routes};
+use leptos_router::hooks::use_navigate;
 use leptos_router::{ParamSegment, StaticSegment};
 
 use crate::frontend::agent_panel::{provide_agent_panel_open, AgentPanel};
 use crate::frontend::agent_side_effects::provide_agent_side_effects;
 use crate::frontend::components::AppBar;
-use crate::frontend::graphql_client::{clear_token, get_token, me};
+use crate::frontend::graphql_client::{clear_token, get_token, me, set_token};
 use crate::frontend::pages::{
     Account, Admin, EntryFullScreen, Home, Login, WorkspaceList, WorkspaceMain, WorkspaceSettings,
 };
 use crate::frontend::provide_auth;
+use crate::frontend::use_auth;
+
+/// `web_sys::window().location().hash()` 的 wasm/ssr 兼容壳。SSR 没有
+/// DOM，`web_sys` 也不在 ssr 依赖里——直接调用链接都过不去。SSR 侧返回
+/// 空串，下面的 Effect 因 `cfg!` 早 return 本来也不会用。
+#[cfg(target_arch = "wasm32")]
+fn read_window_hash() -> String {
+    web_sys::window()
+        .and_then(|w| w.location().hash().ok())
+        .unwrap_or_default()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn read_window_hash() -> String {
+    String::new()
+}
+
+#[component]
+pub fn OAuthCallback() -> impl IntoView {
+    let auth = use_auth();
+    let navigate = use_navigate();
+    let _ = Effect::new(move |_| {
+        if !cfg!(target_arch = "wasm32") {
+            return;
+        }
+        let hash = read_window_hash();
+        // 形如 "#token=xxx&return_to=/workspaces"
+        let mut token: Option<String> = None;
+        let mut return_to = "/workspaces".to_string();
+        for kv in hash.trim_start_matches('#').split('&') {
+            if let Some((k, v)) = kv.split_once('=') {
+                match k {
+                    "token" => {
+                        token = Some(
+                            urlencoding::decode(v)
+                                .map(|c| c.into_owned())
+                                .unwrap_or_else(|_| v.to_string()),
+                        )
+                    }
+                    "return_to" => {
+                        return_to = urlencoding::decode(v)
+                            .map(|c| c.into_owned())
+                            .unwrap_or_else(|_| v.to_string())
+                    }
+                    _ => {}
+                }
+            }
+        }
+        // `navigate` 是 Fn，不是 Copy；Effect 闭包是 FnMut，调用 `navigate(...)`
+        // 必须通过克隆走，否则闭包被推断成 FnOnce。克隆 `impl Fn(...) + Clone`
+        // 廉价，每帧一次能接受。
+        let navigate = navigate.clone();
+        if let Some(t) = token {
+            set_token(&t);
+            // 拉一下 me() 拿到 isAdmin / 完整 user，再 navigate
+            spawn_local(async move {
+                if let Ok(Some(user)) = me().await {
+                    auth.user.set(Some(user));
+                    auth.session_lost.set(false);
+                }
+                navigate(&return_to, Default::default());
+            });
+        } else {
+            navigate("/login?oauth_error=missing_token", Default::default());
+        }
+    });
+
+    view! {
+        <div class="oauth-callback">
+            <p class="mut" style="text-align:center">"正在完成登录…"</p>
+        </div>
+    }
+}
 
 pub fn shell(options: LeptosOptions) -> impl IntoView {
     view! {
@@ -90,6 +162,7 @@ pub fn App() -> impl IntoView {
                 <Routes fallback=|| view! { <p>"页面不存在"</p> }>
                     <Route path=StaticSegment("") view=Home/>
                     <Route path=StaticSegment("login") view=Login/>
+                    <Route path=StaticSegment("oauth/callback") view=OAuthCallback/>
                     <Route path=StaticSegment("workspaces") view=WorkspaceList/>
                     <Route path=StaticSegment("admin") view=Admin/>
                     <Route path=StaticSegment("account") view=Account/>

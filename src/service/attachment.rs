@@ -23,7 +23,11 @@ pub struct AttachmentService {
 
 impl AttachmentService {
     pub fn new(store: Arc<DocStore>, entries: EntryService, blobs: BlobStore) -> Self {
-        Self { store, entries, blobs }
+        Self {
+            store,
+            entries,
+            blobs,
+        }
     }
 
     /// 启动期探活附件后端，见 [`BlobStore::health_check`]。

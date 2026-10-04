@@ -116,7 +116,9 @@ pub fn CommentList(
     if let Some(eff) = use_context::<AgentSideEffects>() {
         Effect::new(move |_| {
             eff.tick.track();
-            let Some(hint) = eff.last.get_untracked() else { return; };
+            let Some(hint) = eff.last.get_untracked() else {
+                return;
+            };
             if hint.domain == "comment" {
                 load();
             }

@@ -8,6 +8,7 @@ pub mod comment;
 pub mod entry;
 pub mod label;
 pub mod message;
+pub mod oauth;
 pub mod query;
 pub mod relation;
 pub mod rule;
@@ -18,17 +19,20 @@ pub use account::{Account, AccountStatus};
 pub use agent::{AgentMessage, AgentSession, EntryAction, Role, SideEffect, ToolCall};
 pub use agent_events::AgentEvent;
 pub use ai::{NamedPrompt, WorkspaceAiConfig};
-pub use audit::{AuditAction, AuditLog};
 pub use attachment::{Attachment, ATTACHMENT_URL_PREFIX};
+pub use audit::{AuditAction, AuditLog};
 pub use comment::Comment;
 pub use entry::{generate_entry_code, Entry};
-pub use relation::{Relation, RelationSemantic, SemanticKind};
 pub use label::{
     default_layout, default_pattern, resolve_color, resolve_layout, DerivedLabel, InheritanceGraph,
     LabelLink, LabelSchema, LabelValue, LabelValueType, Labeling, LinkKind, ValueColor,
 };
 pub use message::Message;
+pub use oauth::{IdentityBinding, OAuthProvider};
 pub use query::{Condition, EvalEnv, Field, Op, Query, RESERVED_FIELDS};
-pub use rule::{ActionTarget, AutomationRule, LabelEvent, LabelWrite, RuleAction, ValueSource, WriteOp};
+pub use relation::{Relation, RelationSemantic, SemanticKind};
+pub use rule::{
+    ActionTarget, AutomationRule, LabelEvent, LabelWrite, RuleAction, ValueSource, WriteOp,
+};
 pub use view::{SortField, SortKey, SortSpec, TitleColorRule, View, ViewTimeline};
 pub use workspace::{Invite, Workspace, WorkspaceMember, WorkspaceRole};

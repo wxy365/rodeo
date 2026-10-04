@@ -93,7 +93,11 @@ pub fn derive_inherited(schemas: &[LabelSchema], labels: &[Labeling]) -> Vec<Der
 
 /// 表达式里是否出现了 `L4+`（含继承的标签字段）。
 fn uses_inherited_label(query: &Value) -> bool {
-    if let Some(list) = query.get("and").or_else(|| query.get("or")).and_then(Value::as_array) {
+    if let Some(list) = query
+        .get("and")
+        .or_else(|| query.get("or"))
+        .and_then(Value::as_array)
+    {
         return list.iter().any(uses_inherited_label);
     }
     if let Some(inner) = query.get("not") {
@@ -114,10 +118,14 @@ fn eval_inner(
     derived: &[DerivedLabel],
 ) -> bool {
     if let Some(list) = query.get("and").and_then(Value::as_array) {
-        return list.iter().all(|q| eval_inner(q, entry, labels, schemas, derived));
+        return list
+            .iter()
+            .all(|q| eval_inner(q, entry, labels, schemas, derived));
     }
     if let Some(list) = query.get("or").and_then(Value::as_array) {
-        return list.iter().any(|q| eval_inner(q, entry, labels, schemas, derived));
+        return list
+            .iter()
+            .any(|q| eval_inner(q, entry, labels, schemas, derived));
     }
     if let Some(inner) = query.get("not") {
         return !eval_inner(inner, entry, labels, schemas, derived);
@@ -230,7 +238,9 @@ fn eval_label(
         .filter(|v| !v.is_null());
     let held = direct.is_some() || (inherited && derived.iter().any(|(n, _, _)| n == name));
     // 值的来源：直接打标的值优先；没有直接打标时用继承来的值。
-    let value = direct.map(|l| &l.value).or(if inherited { dv } else { None });
+    let value = direct
+        .map(|l| &l.value)
+        .or(if inherited { dv } else { None });
     match op {
         "present" => held,
         "absent" => !held,
@@ -242,8 +252,10 @@ fn eval_label(
                     if matches!(s.value_type.as_str(), "date" | "time" | "datetime")
                         && matches!(op, "eq" | "ne" | "gt" | "ge" | "lt" | "le")
                     {
-                        let layout =
-                            crate::golayout::resolve(s.format.as_deref(), default_layout(&s.value_type));
+                        let layout = crate::golayout::resolve(
+                            s.format.as_deref(),
+                            default_layout(&s.value_type),
+                        );
                         return cmp_time_layout(v, &layout, op, want);
                     }
                 }
@@ -265,7 +277,11 @@ pub fn collect_label_names(query: &Value) -> Vec<String> {
 }
 
 fn collect_labels(query: &Value, out: &mut Vec<String>) {
-    if let Some(list) = query.get("and").or_else(|| query.get("or")).and_then(Value::as_array) {
+    if let Some(list) = query
+        .get("and")
+        .or_else(|| query.get("or"))
+        .and_then(Value::as_array)
+    {
         for q in list {
             collect_labels(q, out);
         }
@@ -413,9 +429,9 @@ fn eval_text(op: &str, want: Option<&Value>, entry: &Entry, labels: &[Labeling])
         || contains_ci(&entry.title, &needle)
         || contains_ci(&entry.detail, &needle);
     if !hit {
-        hit = labels.iter().any(|l| {
-            label_text(&l.value).is_some_and(|t| contains_ci(&t, &needle))
-        });
+        hit = labels
+            .iter()
+            .any(|l| label_text(&l.value).is_some_and(|t| contains_ci(&t, &needle)));
     }
     match op {
         "contains" => hit,
@@ -537,7 +553,11 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 ///
 /// `value_colors` 为 `[{color,min,max,value}]`：`value` 存在则精确匹配；
 /// 否则按数值区间 `min`（含）/ `max`（不含），`null` 表示无界；首个命中。
-pub fn resolve_label_color(base: Option<&Value>, value_colors: &Value, value: &Value) -> Option<String> {
+pub fn resolve_label_color(
+    base: Option<&Value>,
+    value_colors: &Value,
+    value: &Value,
+) -> Option<String> {
     if let Some(list) = value_colors.as_array() {
         for vc in list {
             let matched = match vc.get("value") {
@@ -546,7 +566,11 @@ pub fn resolve_label_color(base: Option<&Value>, value_colors: &Value, value: &V
                     Value::Array(a) => a.iter().any(|x| x == exact),
                     _ => exact == value,
                 },
-                _ => match (value.as_f64(), vc.get("min").and_then(Value::as_f64), vc.get("max").and_then(Value::as_f64)) {
+                _ => match (
+                    value.as_f64(),
+                    vc.get("min").and_then(Value::as_f64),
+                    vc.get("max").and_then(Value::as_f64),
+                ) {
                     (Some(v), min, max) => {
                         min.map_or(true, |lo| v >= lo) && max.map_or(true, |hi| v < hi)
                     }

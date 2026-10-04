@@ -24,7 +24,11 @@ impl CommentService {
         entries: EntryService,
         messages: crate::service::message::MessageService,
     ) -> Self {
-        Self { store, entries, messages }
+        Self {
+            store,
+            entries,
+            messages,
+        }
     }
 
     /// 某条目的全部评论。`comment_key` 的 ULID 后缀保证扫描顺序即时间升序。
@@ -90,7 +94,11 @@ impl CommentService {
             keys::comment_key(entry_code, comment.id),
             &comment,
         )?);
-        ops.push(BatchOp::put(cf::ENTRIES, entry_code.as_bytes().to_vec(), &entry)?);
+        ops.push(BatchOp::put(
+            cf::ENTRIES,
+            entry_code.as_bytes().to_vec(),
+            &entry,
+        )?);
         self.store.write_batch(ops)?;
         self.entries.reindex_by_code(entry_code)?;
         let entry_ref = self.entries.get(entry_code)?;
@@ -232,7 +240,9 @@ fn is_blank_body(body: &str) -> bool {
     if has_image_embed(body) {
         return false;
     }
-    crate::service::search::strip_rich_text(body).trim().is_empty()
+    crate::service::search::strip_rich_text(body)
+        .trim()
+        .is_empty()
 }
 
 /// Delta 里是否存在 `{"insert": {"image": …}}` 形式的嵌入。
@@ -247,11 +257,8 @@ fn has_image_embed(body: &str) -> bool {
         .cloned()
         .or_else(|| v.as_array().cloned());
     ops.map(|ops| {
-        ops.iter().any(|op| {
-            op.get("insert")
-                .and_then(|i| i.get("image"))
-                .is_some()
-        })
+        ops.iter()
+            .any(|op| op.get("insert").and_then(|i| i.get("image")).is_some())
     })
     .unwrap_or(false)
 }

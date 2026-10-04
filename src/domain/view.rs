@@ -85,7 +85,12 @@ pub struct SortSpec {
 
 impl Default for SortSpec {
     fn default() -> Self {
-        Self { keys: vec![SortKey { field: SortField::UpdatedAt, desc: true }] }
+        Self {
+            keys: vec![SortKey {
+                field: SortField::UpdatedAt,
+                desc: true,
+            }],
+        }
     }
 }
 
@@ -177,21 +182,30 @@ mod tests {
         use crate::domain::{Condition, Field, Op};
         // present（无值）与带值条件都要能过 bincode：后者曾是线上保存视图的报错来源。
         let cases: [(&str, Query); 3] = [
-            ("present/no-value", Query::Cond(Condition {
-                field: Field::Label("Task".into()),
-                op: Op::Present,
-                value: None,
-            })),
-            ("label/eq-value", Query::Cond(Condition {
-                field: Field::Label("Task".into()),
-                op: Op::Eq,
-                value: Some(serde_json::json!("Open")),
-            })),
-            ("text/contains", Query::Cond(Condition {
-                field: Field::Text,
-                op: Op::Contains,
-                value: Some(serde_json::json!("检索词")),
-            })),
+            (
+                "present/no-value",
+                Query::Cond(Condition {
+                    field: Field::Label("Task".into()),
+                    op: Op::Present,
+                    value: None,
+                }),
+            ),
+            (
+                "label/eq-value",
+                Query::Cond(Condition {
+                    field: Field::Label("Task".into()),
+                    op: Op::Eq,
+                    value: Some(serde_json::json!("Open")),
+                }),
+            ),
+            (
+                "text/contains",
+                Query::Cond(Condition {
+                    field: Field::Text,
+                    op: Op::Contains,
+                    value: Some(serde_json::json!("检索词")),
+                }),
+            ),
         ];
         for (label, query) in cases {
             let v = View {

@@ -211,8 +211,10 @@ pub fn AgentPanel() -> impl IntoView {
         }
         ev.prevent_default();
         dragging.set(true);
-        drag_origin.set((ev.client_x() as f64 - panel_left.get_untracked(),
-                         ev.client_y() as f64 - panel_top.get_untracked()));
+        drag_origin.set((
+            ev.client_x() as f64 - panel_left.get_untracked(),
+            ev.client_y() as f64 - panel_top.get_untracked(),
+        ));
     };
     // 右下角缩放起点：与 start_drag 同款约定，但起点记的是鼠标坐标和面板
     // 当前尺寸，松手时按位移增量算新尺寸。
@@ -220,10 +222,12 @@ pub fn AgentPanel() -> impl IntoView {
         ev.prevent_default();
         ev.stop_propagation();
         resizing.set(true);
-        resize_origin.set((ev.client_x() as f64,
-                           ev.client_y() as f64,
-                           panel_width.get_untracked(),
-                           panel_height.get_untracked()));
+        resize_origin.set((
+            ev.client_x() as f64,
+            ev.client_y() as f64,
+            panel_width.get_untracked(),
+            panel_height.get_untracked(),
+        ));
     };
 
     // 窗口级 mousemove / mouseup：跟手移动 + 释放时落 localStorage。
@@ -1092,7 +1096,11 @@ async fn open_stream(
 }
 
 #[cfg(target_arch = "wasm32")]
-fn handle_event(parsed: &Value, messages: &RwSignal<Vec<AgentMessage>>, effects: &AgentSideEffects) {
+fn handle_event(
+    parsed: &Value,
+    messages: &RwSignal<Vec<AgentMessage>>,
+    effects: &AgentSideEffects,
+) {
     let typ = parsed.get("type").and_then(|v| v.as_str()).unwrap_or("");
     match typ {
         "delta" => {
@@ -1143,10 +1151,7 @@ fn handle_event(parsed: &Value, messages: &RwSignal<Vec<AgentMessage>>, effects:
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let kind = parsed
-                .get("kind")
-                .and_then(|v| v.as_str())
-                .unwrap_or("ok");
+            let kind = parsed.get("kind").and_then(|v| v.as_str()).unwrap_or("ok");
             let (prefix, role) = match kind {
                 "bad_args" => ("[参数错]", "TOOL_RESULT_BAD_ARGS"),
                 "rejected" => ("[拒绝]", "TOOL_RESULT_REJECTED"),

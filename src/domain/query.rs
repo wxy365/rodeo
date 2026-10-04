@@ -61,7 +61,13 @@ impl Field {
 
 /// 内置元数据关键字（大小写不敏感）。供词法器与标签保留名校验共用。
 pub const RESERVED_FIELDS: [&str; 7] = [
-    "Code", "Title", "Detail", "CreatedBy", "CreatedAt", "UpdatedBy", "UpdatedAt",
+    "Code",
+    "Title",
+    "Detail",
+    "CreatedBy",
+    "CreatedAt",
+    "UpdatedBy",
+    "UpdatedAt",
 ];
 
 /// 可被 `LABELINGS_BY_LABEL` 二级索引加速的标签条件。
@@ -162,9 +168,7 @@ impl Query {
 
     fn collect_inherited_names(&self, out: &mut Vec<String>) {
         match self {
-            Query::And(v) | Query::Or(v) => {
-                v.iter().for_each(|q| q.collect_inherited_names(out))
-            }
+            Query::And(v) | Query::Or(v) => v.iter().for_each(|q| q.collect_inherited_names(out)),
             Query::Not(q) => q.collect_inherited_names(out),
             Query::Cond(c) => {
                 if let Field::LabelInherited(name) = &c.field {
@@ -197,9 +201,11 @@ impl Query {
         match self {
             Query::And(v) | Query::Or(v) => v.iter().find_map(Query::first_text_keyword),
             Query::Not(q) => q.first_text_keyword(),
-            Query::Cond(c) if matches!(c.field, Field::Text) => {
-                c.value.as_ref().and_then(|v| v.as_str()).map(str::to_string)
-            }
+            Query::Cond(c) if matches!(c.field, Field::Text) => c
+                .value
+                .as_ref()
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
             Query::Cond(_) => None,
         }
     }
@@ -252,9 +258,7 @@ impl Query {
         let mut kws = HashSet::new();
         collect_text_keywords(self, &mut kws);
         if kws.len() > 1 {
-            return Err(AppError::InvalidQuery(
-                "本轮仅支持单个全文条件".to_string(),
-            ));
+            return Err(AppError::InvalidQuery("本轮仅支持单个全文条件".to_string()));
         }
         match self {
             Query::And(v) | Query::Or(v) => v.iter().try_for_each(|q| q.validate_inner(schemas)),
@@ -335,9 +339,7 @@ impl Condition {
                     _ => {
                         if let Some(v) = &self.value {
                             if !v.is_string() {
-                                return Err(AppError::InvalidQuery(
-                                    "比较值须为字符串".to_string(),
-                                ));
+                                return Err(AppError::InvalidQuery("比较值须为字符串".to_string()));
                             }
                         }
                     }
@@ -356,7 +358,8 @@ impl Condition {
                     )));
                 }
                 // in / not in 的候选值必须落在 enum_values 内。
-                if matches!(self.op, Op::In | Op::NotIn) && schema.value_type == LabelValueType::Enum
+                if matches!(self.op, Op::In | Op::NotIn)
+                    && schema.value_type == LabelValueType::Enum
                 {
                     let ok = self.value.as_ref().is_some_and(|v| {
                         v.as_array().is_some_and(|arr| {
@@ -403,9 +406,7 @@ impl Condition {
                                 ));
                             }
                         } else if self.value.as_ref().is_some_and(|v| !v.is_string()) {
-                            return Err(AppError::InvalidQuery(
-                                "比较值须为字符串".to_string(),
-                            ));
+                            return Err(AppError::InvalidQuery("比较值须为字符串".to_string()));
                         }
                     }
                     _ => {}
@@ -452,7 +453,9 @@ impl Condition {
                 } else {
                     entry.updated_by
                 };
-                let Some((name, email)) = (env.account_of)(id) else { return false };
+                let Some((name, email)) = (env.account_of)(id) else {
+                    return false;
+                };
                 match self.op {
                     Op::Eq => acc_eq(&name, &email, self.value.as_ref()),
                     Op::Ne => !acc_eq(&name, &email, self.value.as_ref()),
@@ -506,13 +509,7 @@ impl Condition {
     ///
     /// 值比较只在「本条件能拿到一个值」时才成立：`L4+` 遇到一个只继承了 key 的
     /// L4（值为 `None`）会返回假——key 继承本就只承诺存在性。
-    fn eval_label(
-        &self,
-        name: &str,
-        inherited: bool,
-        labels: &[Labeling],
-        env: &EvalEnv,
-    ) -> bool {
+    fn eval_label(&self, name: &str, inherited: bool, labels: &[Labeling], env: &EvalEnv) -> bool {
         let direct = labels.iter().find(|l| &l.label_name == name);
         // 外层 `Option` = 有没有继承来，内层 = 继承来的那一份带没带值。两者不能混：
         // key 继承（`L5` 继承 `L3`，无关值）只承诺存在性，值仍是 `None`。
@@ -538,10 +535,8 @@ impl Condition {
                     if matches!(
                         vt,
                         LabelValueType::Date | LabelValueType::Time | LabelValueType::DateTime
-                    ) && matches!(
-                        self.op,
-                        Op::Eq | Op::Ne | Op::Gt | Op::Ge | Op::Lt | Op::Le
-                    ) {
+                    ) && matches!(self.op, Op::Eq | Op::Ne | Op::Gt | Op::Ge | Op::Lt | Op::Le)
+                    {
                         let layout = crate::domain::label::resolve_layout(fmt.as_deref(), vt);
                         return cmp_time_layout(
                             &value.to_json(),
@@ -558,18 +553,24 @@ impl Condition {
 }
 
 fn acc_eq(name: &str, email: &str, want: Option<&serde_json::Value>) -> bool {
-    let Some(w) = want.and_then(|v| v.as_str()) else { return false };
+    let Some(w) = want.and_then(|v| v.as_str()) else {
+        return false;
+    };
     name.eq_ignore_ascii_case(w) || email.eq_ignore_ascii_case(w)
 }
 
 fn acc_contains(name: &str, email: &str, want: Option<&serde_json::Value>) -> bool {
-    let Some(w) = want.and_then(|v| v.as_str()) else { return false };
+    let Some(w) = want.and_then(|v| v.as_str()) else {
+        return false;
+    };
     let w = w.to_lowercase();
     name.to_lowercase().contains(&w) || email.to_lowercase().contains(&w)
 }
 
 fn acc_in(name: &str, email: &str, want: Option<&serde_json::Value>) -> bool {
-    let Some(list) = want.and_then(|v| v.as_array()) else { return false };
+    let Some(list) = want.and_then(|v| v.as_array()) else {
+        return false;
+    };
     list.iter().any(|x| {
         x.as_str()
             .is_some_and(|w| name.eq_ignore_ascii_case(w) || email.eq_ignore_ascii_case(w))
@@ -699,7 +700,10 @@ fn op_allowed(vt: LabelValueType, op: Op) -> bool {
 
 /// 内置文本型元数据（Code/Title/Detail/CreatedBy/UpdatedBy）允许的运算符。
 fn string_field_op_allowed(op: Op) -> bool {
-    matches!(op, Op::Eq | Op::Ne | Op::Contains | Op::NotContains | Op::In | Op::NotIn)
+    matches!(
+        op,
+        Op::Eq | Op::Ne | Op::Contains | Op::NotContains | Op::In | Op::NotIn
+    )
 }
 
 fn as_f64(v: &serde_json::Value) -> Option<f64> {
@@ -742,7 +746,11 @@ fn cmp_value(got: &serde_json::Value, op: Op, want: Option<&serde_json::Value>) 
                 .map(str::to_string)
                 .unwrap_or_else(|| want.to_string());
             let hit = elem_strings(got).iter().any(|s| s == &want_s);
-            if op == Op::Eq { hit } else { !hit }
+            if op == Op::Eq {
+                hit
+            } else {
+                !hit
+            }
         }
         Op::Contains | Op::NotContains => {
             let Some(b) = want.as_str() else { return false };
@@ -758,10 +766,16 @@ fn cmp_value(got: &serde_json::Value, op: Op, want: Option<&serde_json::Value>) 
             let hit = elem_strings(got)
                 .iter()
                 .any(|s| s.to_lowercase().contains(&needle));
-            if op == Op::Contains { hit } else { !hit }
+            if op == Op::Contains {
+                hit
+            } else {
+                !hit
+            }
         }
         Op::In | Op::NotIn => {
-            let Some(list) = want.as_array() else { return false };
+            let Some(list) = want.as_array() else {
+                return false;
+            };
             let elems = elem_strings(got);
             // 数值候选先按数值比较（解析器产出的数字是 float，标签值可能是 int），
             // 其余按标量字符串集合语义：数组值任一元素命中候选即可。
@@ -769,7 +783,11 @@ fn cmp_value(got: &serde_json::Value, op: Op, want: Option<&serde_json::Value>) 
                 (Some(a), Some(b)) => a == b,
                 _ => scalar_string(x).is_some_and(|w| elems.iter().any(|s| s == &w)),
             });
-            if op == Op::In { hit } else { !hit }
+            if op == Op::In {
+                hit
+            } else {
+                !hit
+            }
         }
         Op::Gt | Op::Ge | Op::Lt | Op::Le => match (as_f64(got), as_f64(want)) {
             (Some(a), Some(b)) => match op {
@@ -823,7 +841,9 @@ fn parse_time(s: &str) -> Option<DateTime<Utc>> {
 }
 
 fn cmp_time(got: &DateTime<Utc>, op: Op, want: Option<&serde_json::Value>) -> bool {
-    let Some(s) = want.and_then(|v| v.as_str()) else { return false };
+    let Some(s) = want.and_then(|v| v.as_str()) else {
+        return false;
+    };
     let Some(t) = parse_time(s) else { return false };
     match op {
         Op::Eq => *got == t,
@@ -875,23 +895,62 @@ fn lex(input: &str) -> Result<Vec<Tok>, AppError> {
             continue;
         }
         match c {
-            '(' => { out.push(Tok::LParen); i += 1; }
-            ')' => { out.push(Tok::RParen); i += 1; }
-            ',' => { out.push(Tok::Comma); i += 1; }
-            '=' => { out.push(Tok::Eq); i += 1; }
+            '(' => {
+                out.push(Tok::LParen);
+                i += 1;
+            }
+            ')' => {
+                out.push(Tok::RParen);
+                i += 1;
+            }
+            ',' => {
+                out.push(Tok::Comma);
+                i += 1;
+            }
+            '=' => {
+                out.push(Tok::Eq);
+                i += 1;
+            }
             '>' => {
-                if chars.get(i + 1) == Some(&'=') { out.push(Tok::Ge); i += 2; } else { out.push(Tok::Gt); i += 1; }
+                if chars.get(i + 1) == Some(&'=') {
+                    out.push(Tok::Ge);
+                    i += 2;
+                } else {
+                    out.push(Tok::Gt);
+                    i += 1;
+                }
             }
             '<' => {
-                if chars.get(i + 1) == Some(&'=') { out.push(Tok::Le); i += 2; } else { out.push(Tok::Lt); i += 1; }
+                if chars.get(i + 1) == Some(&'=') {
+                    out.push(Tok::Le);
+                    i += 2;
+                } else {
+                    out.push(Tok::Lt);
+                    i += 1;
+                }
             }
             '!' => match chars.get(i + 1) {
-                Some('=') => { out.push(Tok::Ne); i += 2; }
-                Some('~') => { out.push(Tok::NotTilde); i += 2; }
-                _ => { out.push(Tok::Bang); i += 1; }
+                Some('=') => {
+                    out.push(Tok::Ne);
+                    i += 2;
+                }
+                Some('~') => {
+                    out.push(Tok::NotTilde);
+                    i += 2;
+                }
+                _ => {
+                    out.push(Tok::Bang);
+                    i += 1;
+                }
             },
-            '~' => { out.push(Tok::Tilde); i += 1; }
-            '+' => { out.push(Tok::Plus); i += 1; }
+            '~' => {
+                out.push(Tok::Tilde);
+                i += 1;
+            }
+            '+' => {
+                out.push(Tok::Plus);
+                i += 1;
+            }
             '$' => {
                 let start = i + 1;
                 let mut j = start;
@@ -903,9 +962,7 @@ fn lex(input: &str) -> Result<Vec<Tok>, AppError> {
                     "label" => out.push(Tok::EventField(Field::EventLabel)),
                     "old" => out.push(Tok::EventField(Field::EventOld)),
                     "new" => out.push(Tok::EventField(Field::EventNew)),
-                    _ => {
-                        return Err(AppError::InvalidQuery(format!("未知事件字段: ${word}")))
-                    }
+                    _ => return Err(AppError::InvalidQuery(format!("未知事件字段: ${word}"))),
                 }
                 i = j;
             }
@@ -932,19 +989,28 @@ fn lex(input: &str) -> Result<Vec<Tok>, AppError> {
                 out.push(Tok::Str(s));
             }
             _ => {
-                if c.is_ascii_digit() || (c == '-' && chars.get(i + 1).is_some_and(|n| n.is_ascii_digit())) {
+                if c.is_ascii_digit()
+                    || (c == '-' && chars.get(i + 1).is_some_and(|n| n.is_ascii_digit()))
+                {
                     let start = i;
                     i += 1;
-                    while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.' || chars[i] == '-') {
+                    while i < chars.len()
+                        && (chars[i].is_ascii_digit() || chars[i] == '.' || chars[i] == '-')
+                    {
                         i += 1;
                     }
                     let text: String = chars[start..i].iter().collect();
-                    let n = text.parse::<f64>().map_err(|_| AppError::InvalidQuery(format!("非法数字: {text}")))?;
+                    let n = text
+                        .parse::<f64>()
+                        .map_err(|_| AppError::InvalidQuery(format!("非法数字: {text}")))?;
                     out.push(Tok::Num(n));
                 } else if c.is_alphanumeric() || c == '_' || c == '-' {
                     let start = i;
                     while i < chars.len()
-                        && (chars[i].is_alphanumeric() || chars[i] == '_' || chars[i] == '-' || chars[i] == '.')
+                        && (chars[i].is_alphanumeric()
+                            || chars[i] == '_'
+                            || chars[i] == '-'
+                            || chars[i] == '.')
                     {
                         i += 1;
                     }
@@ -1043,7 +1109,11 @@ impl Parser {
             self.next();
             parts.push(self.parse_and()?);
         }
-        Ok(if parts.len() == 1 { parts.pop().unwrap() } else { Query::Or(parts) })
+        Ok(if parts.len() == 1 {
+            parts.pop().unwrap()
+        } else {
+            Query::Or(parts)
+        })
     }
 
     fn parse_and(&mut self) -> Result<Query, AppError> {
@@ -1052,7 +1122,11 @@ impl Parser {
             self.next();
             parts.push(self.parse_unary()?);
         }
-        Ok(if parts.len() == 1 { parts.pop().unwrap() } else { Query::And(parts) })
+        Ok(if parts.len() == 1 {
+            parts.pop().unwrap()
+        } else {
+            Query::And(parts)
+        })
     }
 
     fn parse_unary(&mut self) -> Result<Query, AppError> {
@@ -1066,11 +1140,15 @@ impl Parser {
             // 其余形式按普通一元否定处理，`!x` 即 `NOT x`。
             return Ok(match self.parse_primary()? {
                 // 字段原样带走：`!L4+` 是「直接与继承都没有」。
-                Query::Cond(Condition { field, op: Op::Present, value: None })
-                    if field.label_of().is_some() =>
-                {
-                    Query::Cond(Condition { field, op: Op::Absent, value: None })
-                }
+                Query::Cond(Condition {
+                    field,
+                    op: Op::Present,
+                    value: None,
+                }) if field.label_of().is_some() => Query::Cond(Condition {
+                    field,
+                    op: Op::Absent,
+                    value: None,
+                }),
                 other => Query::Not(Box::new(other)),
             });
         }
@@ -1089,7 +1167,11 @@ impl Parser {
                 self.next();
                 let op = self.comparison_op()?;
                 let v = self.scalar()?;
-                Ok(Query::Cond(Condition { field: Field::Text, op, value: Some(v) }))
+                Ok(Query::Cond(Condition {
+                    field: Field::Text,
+                    op,
+                    value: Some(v),
+                }))
             }
             Some(Tok::Builtin(_)) | Some(Tok::Ident(_)) | Some(Tok::EventField(_)) => {
                 self.parse_condition()
@@ -1129,7 +1211,8 @@ impl Parser {
     fn scalar(&mut self) -> Result<serde_json::Value, AppError> {
         match self.next() {
             Some(Tok::Str(s)) => Ok(serde_json::Value::String(s)),
-            Some(Tok::Num(n)) => Ok(serde_json::Number::from_f64(n).map(serde_json::Value::Number)
+            Some(Tok::Num(n)) => Ok(serde_json::Number::from_f64(n)
+                .map(serde_json::Value::Number)
                 .unwrap_or(serde_json::Value::Null)),
             Some(Tok::Bool(b)) => Ok(serde_json::Value::Bool(b)),
             Some(Tok::Ident(s)) => Ok(serde_json::Value::String(s)),
@@ -1176,9 +1259,24 @@ impl Parser {
             // 标签名后不接运算符时是存在性判断：`Task` 等价于旧的 present(Task)。
             if !matches!(
                 self.peek(),
-                Some(Tok::Eq | Tok::Ne | Tok::Gt | Tok::Ge | Tok::Lt | Tok::Le | Tok::Tilde | Tok::NotTilde | Tok::In | Tok::Not)
+                Some(
+                    Tok::Eq
+                        | Tok::Ne
+                        | Tok::Gt
+                        | Tok::Ge
+                        | Tok::Lt
+                        | Tok::Le
+                        | Tok::Tilde
+                        | Tok::NotTilde
+                        | Tok::In
+                        | Tok::Not
+                )
             ) {
-                return Ok(Query::Cond(Condition { field, op: Op::Present, value: None }));
+                return Ok(Query::Cond(Condition {
+                    field,
+                    op: Op::Present,
+                    value: None,
+                }));
             }
         }
         if matches!(field, Field::EventLabel | Field::EventOld | Field::EventNew) {
@@ -1191,9 +1289,24 @@ impl Parser {
             // 事件字段单独出现同样是存在性判断：`$new` 即「有值」，`!$new` 即「无值」。
             if !matches!(
                 self.peek(),
-                Some(Tok::Eq | Tok::Ne | Tok::Gt | Tok::Ge | Tok::Lt | Tok::Le | Tok::Tilde | Tok::NotTilde | Tok::In | Tok::Not)
+                Some(
+                    Tok::Eq
+                        | Tok::Ne
+                        | Tok::Gt
+                        | Tok::Ge
+                        | Tok::Lt
+                        | Tok::Le
+                        | Tok::Tilde
+                        | Tok::NotTilde
+                        | Tok::In
+                        | Tok::Not
+                )
             ) {
-                return Ok(Query::Cond(Condition { field, op: Op::Present, value: None }));
+                return Ok(Query::Cond(Condition {
+                    field,
+                    op: Op::Present,
+                    value: None,
+                }));
             }
         }
         let op = self.comparison_op()?;
@@ -1209,7 +1322,11 @@ impl Parser {
         } else {
             self.scalar()?
         };
-        Ok(Query::Cond(Condition { field, op, value: Some(value) }))
+        Ok(Query::Cond(Condition {
+            field,
+            op,
+            value: Some(value),
+        }))
     }
 }
 
@@ -1255,7 +1372,10 @@ impl Query {
         let mut p = Parser { toks, pos: 0 };
         let q = p.parse_or()?;
         if p.pos != p.toks.len() {
-            return Err(AppError::InvalidQuery(format!("表达式尾部有多余内容: pos {}", p.pos)));
+            return Err(AppError::InvalidQuery(format!(
+                "表达式尾部有多余内容: pos {}",
+                p.pos
+            )));
         }
         Ok(q)
     }
@@ -1323,7 +1443,11 @@ mod tests {
         let lv = match value {
             serde_json::Value::Bool(b) => LabelValue::Bool(b),
             serde_json::Value::Number(n) => {
-                if let Some(i) = n.as_i64() { LabelValue::Int(i) } else { LabelValue::Float(n.as_f64().unwrap()) }
+                if let Some(i) = n.as_i64() {
+                    LabelValue::Int(i)
+                } else {
+                    LabelValue::Float(n.as_f64().unwrap())
+                }
             }
             serde_json::Value::String(s) => LabelValue::Enum(s),
             _ => LabelValue::Null,
@@ -1364,7 +1488,10 @@ mod tests {
             assert_eq!(q, again, "round-trip 不稳定: {src} -> {expr}");
         }
         // 内置元数据字段往返稳定。
-        assert_eq!(Query::parse("Title ~ \"登录\"").unwrap().to_expr(), "Title ~ \"登录\"");
+        assert_eq!(
+            Query::parse("Title ~ \"登录\"").unwrap().to_expr(),
+            "Title ~ \"登录\""
+        );
     }
 
     #[test]
@@ -1374,9 +1501,19 @@ mod tests {
         let never = |_: &str| false;
         let no_acct = |_: Ulid| None;
         let no_label = |_: &str| None;
-        let env = EvalEnv { text_hit: &never, account_of: &no_acct, label_of: &no_label, event: None, derived: &[] };
-        assert!(Query::parse("Score = 7").unwrap().evaluate(&e, &labels, &env));
-        assert!(!Query::parse("Score != 7").unwrap().evaluate(&e, &labels, &env));
+        let env = EvalEnv {
+            text_hit: &never,
+            account_of: &no_acct,
+            label_of: &no_label,
+            event: None,
+            derived: &[],
+        };
+        assert!(Query::parse("Score = 7")
+            .unwrap()
+            .evaluate(&e, &labels, &env));
+        assert!(!Query::parse("Score != 7")
+            .unwrap()
+            .evaluate(&e, &labels, &env));
     }
 
     #[test]
@@ -1408,26 +1545,42 @@ mod tests {
         let never = |_: &str| false;
         let no_acct = |_: Ulid| None;
         let no_label = |_: &str| None;
-        let env = EvalEnv { text_hit: &never, account_of: &no_acct, label_of: &no_label, event: None, derived: &[] };
+        let env = EvalEnv {
+            text_hit: &never,
+            account_of: &no_acct,
+            label_of: &no_label,
+            event: None,
+            derived: &[],
+        };
 
         let present = Query::parse("Task").unwrap();
         assert!(present.evaluate(&e, &labels, &env));
         let absent = Query::parse("!Task").unwrap();
         assert!(!absent.evaluate(&e, &labels, &env));
-        assert!(Query::parse("!Priority").unwrap().evaluate(&e, &labels, &env));
+        assert!(Query::parse("!Priority")
+            .unwrap()
+            .evaluate(&e, &labels, &env));
 
         // 语法糖落成与旧函数等价的条件，且格式化后仍可回读。
         assert_eq!(Query::parse("Task").unwrap().to_expr(), "Task");
         assert_eq!(Query::parse("!Task").unwrap().to_expr(), "!Task");
         // `!` 后接比较时退化为普通取反。
-        assert!(Query::parse("!(Task = \"Done\")").unwrap().evaluate(&e, &labels, &env));
+        assert!(Query::parse("!(Task = \"Done\")")
+            .unwrap()
+            .evaluate(&e, &labels, &env));
         // 组合表达式中存在性判断不再需要括号。
-        assert!(Query::parse("Task AND !Priority").unwrap().evaluate(&e, &labels, &env));
+        assert!(Query::parse("Task AND !Priority")
+            .unwrap()
+            .evaluate(&e, &labels, &env));
     }
 
     #[test]
     fn removed_present_and_absent_functions_are_rejected() {
-        for src in ["present(Task)", "absent(Priority)", "Task AND present(Priority)"] {
+        for src in [
+            "present(Task)",
+            "absent(Priority)",
+            "Task AND present(Priority)",
+        ] {
             let err = Query::parse(src).unwrap_err();
             assert!(
                 err.to_string().contains("present"),
@@ -1443,16 +1596,32 @@ mod tests {
         let never = |_: &str| false;
         let no_acct = |_: Ulid| None;
         let no_label = |_: &str| None;
-        let env = EvalEnv { text_hit: &never, account_of: &no_acct, label_of: &no_label, event: None, derived: &[] };
+        let env = EvalEnv {
+            text_hit: &never,
+            account_of: &no_acct,
+            label_of: &no_label,
+            event: None,
+            derived: &[],
+        };
 
-        let present = Query::Cond(Condition { field: Field::Label("Task".into()), op: Op::Present, value: None });
+        let present = Query::Cond(Condition {
+            field: Field::Label("Task".into()),
+            op: Op::Present,
+            value: None,
+        });
         assert!(present.evaluate(&e, &labels, &env));
         // 打标缺失时比较一律 false
         let missing_cmp = Query::Cond(Condition {
-            field: Field::Label("Priority".into()), op: Op::Eq, value: Some(serde_json::json!("P0")),
+            field: Field::Label("Priority".into()),
+            op: Op::Eq,
+            value: Some(serde_json::json!("P0")),
         });
         assert!(!missing_cmp.evaluate(&e, &labels, &env));
-        let absent = Query::Cond(Condition { field: Field::Label("Priority".into()), op: Op::Absent, value: None });
+        let absent = Query::Cond(Condition {
+            field: Field::Label("Priority".into()),
+            op: Op::Absent,
+            value: None,
+        });
         assert!(absent.evaluate(&e, &labels, &env));
     }
 
@@ -1467,15 +1636,27 @@ mod tests {
         let never = |_: &str| false;
         let no_acct = |_: Ulid| None;
         let no_label = |_: &str| None;
-        let env = EvalEnv { text_hit: &never, account_of: &no_acct, label_of: &no_label, event: None, derived: &[] };
-        let cond = |name: &str, op: Op, v: serde_json::Value| Query::Cond(Condition {
-            field: Field::Label(name.into()), op, value: Some(v),
-        });
+        let env = EvalEnv {
+            text_hit: &never,
+            account_of: &no_acct,
+            label_of: &no_label,
+            event: None,
+            derived: &[],
+        };
+        let cond = |name: &str, op: Op, v: serde_json::Value| {
+            Query::Cond(Condition {
+                field: Field::Label(name.into()),
+                op,
+                value: Some(v),
+            })
+        };
 
         assert!(cond("Score", Op::Gt, serde_json::json!(5)).evaluate(&e, &labels, &env));
         assert!(!cond("Score", Op::Lt, serde_json::json!(5)).evaluate(&e, &labels, &env));
         assert!(cond("Title", Op::Contains, serde_json::json!("联调")).evaluate(&e, &labels, &env));
-        assert!(cond("Task", Op::In, serde_json::json!(["Open", "Done"])).evaluate(&e, &labels, &env));
+        assert!(
+            cond("Task", Op::In, serde_json::json!(["Open", "Done"])).evaluate(&e, &labels, &env)
+        );
         assert!(!cond("Task", Op::In, serde_json::json!(["Done"])).evaluate(&e, &labels, &env));
     }
 
@@ -1485,9 +1666,17 @@ mod tests {
         let never = |_: &str| false;
         let no_acct = |_: Ulid| None;
         let no_label = |_: &str| None;
-        let env = EvalEnv { text_hit: &never, account_of: &no_acct, label_of: &no_label, event: None, derived: &[] };
+        let env = EvalEnv {
+            text_hit: &never,
+            account_of: &no_acct,
+            label_of: &no_label,
+            event: None,
+            derived: &[],
+        };
         let future = Query::Cond(Condition {
-            field: Field::UpdatedAt, op: Op::Gt, value: Some(serde_json::json!("2099-01-01")),
+            field: Field::UpdatedAt,
+            op: Op::Gt,
+            value: Some(serde_json::json!("2099-01-01")),
         });
         assert!(!future.evaluate(&e, &[], &env));
         assert!(Query::Not(Box::new(future.clone())).evaluate(&e, &[], &env));
@@ -1499,14 +1688,28 @@ mod tests {
     fn evaluate_text_uses_closure() {
         let e = entry();
         let q = Query::Cond(Condition {
-            field: Field::Text, op: Op::Contains, value: Some(serde_json::json!("检索")),
+            field: Field::Text,
+            op: Op::Contains,
+            value: Some(serde_json::json!("检索")),
         });
         let hit = |kw: &str| kw == "检索";
         let miss = |_: &str| false;
         let no_acct = |_: Ulid| None;
         let no_label = |_: &str| None;
-        let hit_env = EvalEnv { text_hit: &hit, account_of: &no_acct, label_of: &no_label, event: None, derived: &[] };
-        let miss_env = EvalEnv { text_hit: &miss, account_of: &no_acct, label_of: &no_label, event: None, derived: &[] };
+        let hit_env = EvalEnv {
+            text_hit: &hit,
+            account_of: &no_acct,
+            label_of: &no_label,
+            event: None,
+            derived: &[],
+        };
+        let miss_env = EvalEnv {
+            text_hit: &miss,
+            account_of: &no_acct,
+            label_of: &no_label,
+            event: None,
+            derived: &[],
+        };
         assert!(q.evaluate(&e, &[], &hit_env));
         assert!(!q.evaluate(&e, &[], &miss_env));
     }
@@ -1514,20 +1717,30 @@ mod tests {
     #[test]
     fn validate_rejects_unknown_label_and_bad_op() {
         let schemas = vec![LabelSchema::new(
-            Ulid::new(), "Score".into(), "分数".into(), LabelValueType::Integer, vec![],
+            Ulid::new(),
+            "Score".into(),
+            "分数".into(),
+            LabelValueType::Integer,
+            vec![],
         )];
         let unknown = Query::Cond(Condition {
-            field: Field::Label("Nope".into()), op: Op::Present, value: None,
+            field: Field::Label("Nope".into()),
+            op: Op::Present,
+            value: None,
         });
         assert!(unknown.validate(&schemas).is_err());
 
         let bad_op = Query::Cond(Condition {
-            field: Field::Label("Score".into()), op: Op::Contains, value: Some(serde_json::json!("x")),
+            field: Field::Label("Score".into()),
+            op: Op::Contains,
+            value: Some(serde_json::json!("x")),
         });
         assert!(bad_op.validate(&schemas).is_err(), "Integer 不支持 ~");
 
         let ok = Query::Cond(Condition {
-            field: Field::Label("Score".into()), op: Op::Ge, value: Some(serde_json::json!(5)),
+            field: Field::Label("Score".into()),
+            op: Op::Ge,
+            value: Some(serde_json::json!(5)),
         });
         assert!(ok.validate(&schemas).is_ok());
     }
@@ -1536,13 +1749,17 @@ mod tests {
     fn validate_text_only_contains() {
         let schemas: Vec<LabelSchema> = vec![];
         let ok = Query::Cond(Condition {
-            field: Field::Text, op: Op::Contains, value: Some(serde_json::json!("检索")),
+            field: Field::Text,
+            op: Op::Contains,
+            value: Some(serde_json::json!("检索")),
         });
         assert!(ok.validate(&schemas).is_ok());
 
         for bad_op in [Op::Eq, Op::Ne, Op::NotContains, Op::In] {
             let q = Query::Cond(Condition {
-                field: Field::Text, op: bad_op, value: Some(serde_json::json!("检索")),
+                field: Field::Text,
+                op: bad_op,
+                value: Some(serde_json::json!("检索")),
             });
             assert!(
                 matches!(q.validate(&schemas), Err(AppError::InvalidQuery(_))),
@@ -1554,43 +1771,63 @@ mod tests {
     #[test]
     fn validate_enum_in_candidates_must_be_in_enum_values() {
         let schemas = vec![LabelSchema::new(
-            Ulid::new(), "Task".into(), "任务".into(), LabelValueType::Enum,
+            Ulid::new(),
+            "Task".into(),
+            "任务".into(),
+            LabelValueType::Enum,
             vec!["Open".into(), "Done".into()],
         )];
         let ok = Query::Cond(Condition {
-            field: Field::Label("Task".into()), op: Op::In,
+            field: Field::Label("Task".into()),
+            op: Op::In,
             value: Some(serde_json::json!(["Open", "Done"])),
         });
         assert!(ok.validate(&schemas).is_ok());
 
         let out_of_range = Query::Cond(Condition {
-            field: Field::Label("Task".into()), op: Op::In,
+            field: Field::Label("Task".into()),
+            op: Op::In,
             value: Some(serde_json::json!(["Open", "Nope"])),
         });
-        assert!(matches!(out_of_range.validate(&schemas), Err(AppError::InvalidQuery(_))));
+        assert!(matches!(
+            out_of_range.validate(&schemas),
+            Err(AppError::InvalidQuery(_))
+        ));
 
         let not_array = Query::Cond(Condition {
-            field: Field::Label("Task".into()), op: Op::NotIn,
+            field: Field::Label("Task".into()),
+            op: Op::NotIn,
             value: Some(serde_json::json!("Open")),
         });
-        assert!(matches!(not_array.validate(&schemas), Err(AppError::InvalidQuery(_))));
+        assert!(matches!(
+            not_array.validate(&schemas),
+            Err(AppError::InvalidQuery(_))
+        ));
     }
 
     #[test]
     fn validate_rejects_invalid_time_format() {
         let schemas: Vec<LabelSchema> = vec![];
         let bad = Query::Cond(Condition {
-            field: Field::UpdatedAt, op: Op::Ge, value: Some(serde_json::json!("2026-13-40")),
+            field: Field::UpdatedAt,
+            op: Op::Ge,
+            value: Some(serde_json::json!("2026-13-40")),
         });
-        assert!(matches!(bad.validate(&schemas), Err(AppError::InvalidQuery(_))));
+        assert!(matches!(
+            bad.validate(&schemas),
+            Err(AppError::InvalidQuery(_))
+        ));
 
         let ok_date = Query::Cond(Condition {
-            field: Field::CreatedAt, op: Op::Ge, value: Some(serde_json::json!("2026-09-01")),
+            field: Field::CreatedAt,
+            op: Op::Ge,
+            value: Some(serde_json::json!("2026-09-01")),
         });
         assert!(ok_date.validate(&schemas).is_ok());
 
         let ok_rfc = Query::Cond(Condition {
-            field: Field::UpdatedAt, op: Op::Le,
+            field: Field::UpdatedAt,
+            op: Op::Le,
             value: Some(serde_json::json!("2026-09-01T00:00:00Z")),
         });
         assert!(ok_rfc.validate(&schemas).is_ok());
@@ -1601,34 +1838,52 @@ mod tests {
         let schemas: Vec<LabelSchema> = vec![];
         let two = Query::And(vec![
             Query::Cond(Condition {
-                field: Field::Text, op: Op::Contains, value: Some(serde_json::json!("a")),
+                field: Field::Text,
+                op: Op::Contains,
+                value: Some(serde_json::json!("a")),
             }),
             Query::Cond(Condition {
-                field: Field::Text, op: Op::Contains, value: Some(serde_json::json!("b")),
+                field: Field::Text,
+                op: Op::Contains,
+                value: Some(serde_json::json!("b")),
             }),
         ]);
-        assert!(matches!(two.validate(&schemas), Err(AppError::InvalidQuery(_))));
+        assert!(matches!(
+            two.validate(&schemas),
+            Err(AppError::InvalidQuery(_))
+        ));
 
         // 相同关键词只算一个，仍然允许。
         let same = Query::And(vec![
             Query::Cond(Condition {
-                field: Field::Text, op: Op::Contains, value: Some(serde_json::json!("a")),
+                field: Field::Text,
+                op: Op::Contains,
+                value: Some(serde_json::json!("a")),
             }),
             Query::Cond(Condition {
-                field: Field::Text, op: Op::Contains, value: Some(serde_json::json!("a")),
+                field: Field::Text,
+                op: Op::Contains,
+                value: Some(serde_json::json!("a")),
             }),
         ]);
         assert!(same.validate(&schemas).is_ok());
 
         let nested = Query::Not(Box::new(Query::Cond(Condition {
-            field: Field::Text, op: Op::Contains, value: Some(serde_json::json!("x")),
+            field: Field::Text,
+            op: Op::Contains,
+            value: Some(serde_json::json!("x")),
         })));
         let nested_two = Query::And(vec![
             nested,
             Query::Cond(Condition {
-                field: Field::Text, op: Op::Contains, value: Some(serde_json::json!("y")),
+                field: Field::Text,
+                op: Op::Contains,
+                value: Some(serde_json::json!("y")),
             }),
         ]);
-        assert!(matches!(nested_two.validate(&schemas), Err(AppError::InvalidQuery(_))));
+        assert!(matches!(
+            nested_two.validate(&schemas),
+            Err(AppError::InvalidQuery(_))
+        ));
     }
 }

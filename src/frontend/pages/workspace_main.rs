@@ -1127,7 +1127,10 @@ pub fn WorkspaceMain() -> impl IntoView {
         // 是当前视图关心的，新条目本来就该带着它们。
         if !show_new.get_untracked() {
             let auto = auto_label_names(
-                active_view.get_untracked().map(|v| v.columns).unwrap_or_default(),
+                active_view
+                    .get_untracked()
+                    .map(|v| v.columns)
+                    .unwrap_or_default(),
                 &query_ast.get_untracked(),
             );
             new_labels.set(
@@ -1173,10 +1176,11 @@ pub fn WorkspaceMain() -> impl IntoView {
     // 把信号搬过去当视觉态驱动即可。
     if let Some(slot) = crate::frontend::use_context::<crate::frontend::WorkspaceTimelineSlot>() {
         let on_toggle = Callback::new(move |_| timeline_mode.set(!timeline_mode.get()));
-        slot.current.set(Some(crate::frontend::WorkspaceTimelineToggle {
-            on_toggle,
-            is_timeline_mode: timeline_mode,
-        }));
+        slot.current
+            .set(Some(crate::frontend::WorkspaceTimelineToggle {
+                on_toggle,
+                is_timeline_mode: timeline_mode,
+            }));
         on_cleanup(move || slot.current.set(None));
     }
 
@@ -2733,7 +2737,9 @@ fn EntryPanel(
     if let Some(eff) = use_context::<crate::frontend::agent_side_effects::AgentSideEffects>() {
         Effect::new(move |_| {
             eff.tick.track();
-            let Some(hint) = eff.last.get_untracked() else { return; };
+            let Some(hint) = eff.last.get_untracked() else {
+                return;
+            };
             if hint.domain == "labeling" {
                 load(false);
             }

@@ -11,7 +11,10 @@ async fn main() {
     use leptos_axum::{generate_route_list, LeptosRoutes};
     use tower_http::limit::RequestBodyLimitLayer;
 
-    use rodeo::api::{agent_stream_handler, build_schema, download_attachment, graphql_handler, AppState};
+    use rodeo::api::{
+        agent_stream_handler, build_schema, download_attachment, github_callback, github_start,
+        graphql_handler, google_callback, google_start, wechat_callback, wechat_start, AppState,
+    };
     use rodeo::app::*;
     use rodeo::config::Config;
     use rodeo::service::Services;
@@ -73,9 +76,18 @@ async fn main() {
             "/api/graphql",
             post(graphql_handler).layer(RequestBodyLimitLayer::new(GRAPHQL_BODY_LIMIT)),
         )
+        .route("/api/auth/wechat/start", get(wechat_start))
+        .route("/api/auth/wechat/callback", get(wechat_callback))
+        .route("/api/auth/google/start", get(google_start))
+        .route("/api/auth/google/callback", get(google_callback))
+        .route("/api/auth/github/start", get(github_start))
+        .route("/api/auth/github/callback", get(github_callback))
         .route("/api/health", get(|| async { "ok" }))
         .route("/api/attachments/{id}", get(download_attachment))
-        .route("/api/agent/turns/{turn_id}/stream", get(agent_stream_handler))
+        .route(
+            "/api/agent/turns/{turn_id}/stream",
+            get(agent_stream_handler),
+        )
         .leptos_routes(&leptos_options, routes, {
             let leptos_options = leptos_options.clone();
             move || shell(leptos_options.clone())
@@ -104,7 +116,9 @@ async fn main() {
         None => {
             tracing::info!("listening on http://{addr}（来源 {addr_src}）");
             let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-            axum::serve(listener, app.into_make_service()).await.unwrap();
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
         }
     }
 }
