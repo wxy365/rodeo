@@ -184,5 +184,100 @@
     "delete_confirm_yes": "确认删除",
     "editing_hint": "正在编辑评论，保存或取消后可继续发表",
     "submit": "发表评论"
+  },
+  "attachment": {
+    "section_title": "附件",
+    "empty": "暂无附件",
+    "uploading": "上传中…",
+    "upload": "上传附件"
+  },
+  "label": {
+    "add": "＋ 添加标签",
+    "select_placeholder": "选择…",
+    "set": "设置",
+    "remove": "移除标签",
+    "derived_hint": "以下标签由继承 / 覆盖关系得来，不能在这里移除",
+    "derived_title": "由「{src}」继承而来，未直接打在本条上"
+  },
+  "message": {
+    "title": "消息",
+    "mark_all_read": "全部已读",
+    "empty": "暂无消息",
+    "mentioned_in": " 中提到你"
+  },
+  "entry_picker": {
+    "placeholder": "搜索目标条目（按标题或编码）",
+    "clear": "清除选择",
+    "searching": "搜索中…",
+    "no_matches": "无匹配条目"
+  },
+  "relation": {
+    "empty": "暂无关联",
+    "incoming_suffix": " (来自)",
+    "pick_target": "请选择目标条目",
+    "no_entry": "当前条目未加载",
+    "no_self": "不能关联到自身",
+    "custom_required": "自定义语义需要给个名字",
+    "custom_placeholder": "自定义语义名",
+    "add": "添加",
+    "kind": {
+      "contains": "包含",
+      "derives": "派生",
+      "belongs_to": "归属",
+      "blocks": "阻塞",
+      "relates_to": "关联",
+      "custom": "自定义"
+    }
+  },
+  "timeline": {
+    "config_invalid": "时间轴引用的标签已不存在或类型不再匹配，请在「视图配置」里重设。",
+    "too_many": "条目较多，仅展示前 {n} 条",
+    "unscheduled": "未排期（{n}）"
+  },
+  "ai": {
+    "prompt_placeholder": "提示词",
+    "add_row": "添加一行"
+  },
+  "automation": {
+    "title": "自动化规则",
+    "description": "标签被写入时触发。触发条件用 $label / $old / $new 引用本次变更，也可以直接用标签名（如 Priority >= 3）判断事件源条目的写入后状态。",
+    "empty": "还没有规则",
+    "col_name": "名称",
+    "col_trigger": "触发条件",
+    "col_action": "动作",
+    "col_enabled": "启用",
+    "create": "新建规则",
+    "edit_title": "编辑规则",
+    "create_title": "新建规则",
+    "field_name": "名称",
+    "field_enabled": "启用",
+    "field_trigger": "触发条件",
+    "trigger_help": "可用关键字：$label（本次变更的标签名）、$old（旧值，新增时用 !$old）、$new（新值，删除时用 !$new）。",
+    "validate": "校验",
+    "field_target": "动作目标",
+    "field_target_query": "圈定表达式",
+    "field_writes": "标签动作",
+    "add_action": "＋ 添加动作",
+    "name_required": "请填写规则名称",
+    "readonly_note": "仅 Maintainer 及以上可编辑",
+    "target_event": "事件源条目",
+    "target_query": "表达式圈定",
+    "op_set": "写入",
+    "op_remove": "删除",
+    "kind_literal": "固定值",
+    "kind_now": "当前时间",
+    "kind_new": "事件新值",
+    "kind_old": "事件旧值"
+  },
+  "agent": {
+    "new_session": "+ 新建",
+    "delete_session": "删除会话",
+    "thinking": "思考过程",
+    "thinking_in_progress": "Buckaroo 正在思考…",
+    "retrying": "LLM 正在重试第 {turn} 轮",
+    "placeholder": "向 Buckaroo 提问…",
+    "send": "发送",
+    "newline": "换行",
+    "view_full_result": "查看完整 result"
   }
 }

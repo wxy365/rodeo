@@ -9,6 +9,7 @@ use crate::frontend::components::{member_label, PRESET_COLORS};
 use crate::frontend::graphql_client::{
     Entry, LabelSchema, Member, ViewTimeline, Workspace, TIMELINE_MAX_ENTRIES,
 };
+use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::query_eval::{self, DerivedLabel};
 use crate::golayout;
 
@@ -434,6 +435,7 @@ pub fn TimelineView(
     /// 双击色块 → 打开条目全屏页。
     on_open: Callback<String>,
 ) -> impl IntoView {
+    let i18n: I18nController = use_i18n();
     // 最近一次色块 / 未排期条目的单击落点：(code, 视口 x, 视口 y)。
     let last_pick: RwSignal<Option<(String, i32, i32)>> = RwSignal::new(None);
     // 认领窗口的代次：过期清空与再次单击都靠它判断「这条记录还是不是当前那次」。
@@ -558,7 +560,7 @@ pub fn TimelineView(
                     return ().into_any();
                 };
                 let entries = match data.get() {
-                    None => return view! { <p class="empty">"加载中…"</p> }.into_any(),
+                    None => return view! { <p class="empty">{move || i18n.t("common.loading")}</p> }.into_any(),
                     Some(Err(e)) => {
                         return view! { <p class="empty error">{e}</p> }.into_any()
                     }
@@ -569,7 +571,7 @@ pub fn TimelineView(
                 let Some(p) = plan(&entries, &sc, &cfg) else {
                     return view! {
                         <p class="empty">
-                            "时间轴引用的标签已不存在或类型不再匹配，请在「视图配置」里重设。"
+                            {move || i18n.t("timeline.config_invalid")}
                         </p>
                     }
                     .into_any();
@@ -697,6 +699,7 @@ pub fn TimelineView(
                         }
                     })
                     .collect::<Vec<_>>();
+                let uns_count = uns.len();
 
                 view! {
                     <div class="tl-scroll">
@@ -751,12 +754,12 @@ pub fn TimelineView(
                     </div>
                     {(entries.len() >= TIMELINE_MAX_ENTRIES).then(|| view! {
                         <p class="mut tl-note">
-                            {format!("条目较多，仅展示前 {TIMELINE_MAX_ENTRIES} 条")}
+                            {move || i18n.tf("timeline.too_many", &[("n", &TIMELINE_MAX_ENTRIES.to_string())])}
                         </p>
                     })}
                     <div class="tl-uns-wrap">
                         <span class="tl-uns-head">
-                            {format!("未排期（{}）", uns.len())}
+                            {move || i18n.tf("timeline.unscheduled", &[("n", &uns_count.to_string())])}
                         </span>
                         {uns}
                     </div>

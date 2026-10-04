@@ -236,3 +236,20 @@ pub fn ic_globe() -> impl IntoView {
         </svg>
     }
 }
+
+pub fn ic_loading() -> impl IntoView {
+    view! {
+        <svg class="ic ic-spin" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2" opacity="0.25"/>
+            <path d="M21 12a9 9 0 0 0-9-9" fill="none" stroke="currentColor" stroke-width="2"/>
+        </svg>
+    }
+}
+
+pub fn ic_send() -> impl IntoView {
+    view! {
+        <svg class="ic" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M3.4 20.4l17.45-7.48a1 1 0 0 0 0-1.84L3.4 3.6a1 1 0 0 0-1.39 1.21L4.5 11l8 1-8 1-2.49 6.19a1 1 0 0 0 1.39 1.21z"/>
+        </svg>
+    }
+}

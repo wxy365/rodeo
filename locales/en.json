@@ -184,5 +184,100 @@
     "delete_confirm_yes": "Confirm delete",
     "editing_hint": "You're editing a comment — save or cancel before posting another",
     "submit": "Post comment"
+  },
+  "attachment": {
+    "section_title": "Attachments",
+    "empty": "No attachments yet",
+    "uploading": "Uploading…",
+    "upload": "Upload attachment"
+  },
+  "label": {
+    "add": "+ Add label",
+    "select_placeholder": "Select…",
+    "set": "Set",
+    "remove": "Remove label",
+    "derived_hint": "These labels come from inheritance / override — they can't be removed here",
+    "derived_title": "Inherited from \"{src}\" — not set directly on this entry"
+  },
+  "message": {
+    "title": "Messages",
+    "mark_all_read": "Mark all read",
+    "empty": "No messages yet",
+    "mentioned_in": " mentioned you"
+  },
+  "entry_picker": {
+    "placeholder": "Search entries by title or code",
+    "clear": "Clear selection",
+    "searching": "Searching…",
+    "no_matches": "No matching entries"
+  },
+  "relation": {
+    "empty": "No relations yet",
+    "incoming_suffix": " (incoming)",
+    "pick_target": "Pick a target entry",
+    "no_entry": "Current entry not loaded",
+    "no_self": "Can't relate to itself",
+    "custom_required": "Custom semantic needs a name",
+    "custom_placeholder": "Custom semantic name",
+    "add": "Add",
+    "kind": {
+      "contains": "Contains",
+      "derives": "Derives",
+      "belongs_to": "Belongs to",
+      "blocks": "Blocks",
+      "relates_to": "Relates to",
+      "custom": "Custom"
+    }
+  },
+  "timeline": {
+    "config_invalid": "The labels referenced by the timeline no longer exist or have a different type. Reset them in \"View configuration\".",
+    "too_many": "Too many entries — showing the first {n} only",
+    "unscheduled": "Unscheduled ({n})"
+  },
+  "ai": {
+    "prompt_placeholder": "Prompt",
+    "add_row": "Add row"
+  },
+  "automation": {
+    "title": "Automation rules",
+    "description": "Triggered when a label is written. Use $label / $old / $new in the trigger to refer to the current change, or use the label name directly (e.g. Priority >= 3) to test the post-write state of the source entry.",
+    "empty": "No rules yet",
+    "col_name": "Name",
+    "col_trigger": "Trigger",
+    "col_action": "Action",
+    "col_enabled": "Enabled",
+    "create": "New rule",
+    "edit_title": "Edit rule",
+    "create_title": "New rule",
+    "field_name": "Name",
+    "field_enabled": "Enabled",
+    "field_trigger": "Trigger",
+    "trigger_help": "Keywords: $label (name of the changed label), $old (old value; !$old for new), $new (new value; !$new for delete).",
+    "validate": "Validate",
+    "field_target": "Action target",
+    "field_target_query": "Target query",
+    "field_writes": "Label actions",
+    "add_action": "+ Add action",
+    "name_required": "Rule name is required",
+    "readonly_note": "Maintainer or above only",
+    "target_event": "Source entry",
+    "target_query": "Query-defined",
+    "op_set": "Set",
+    "op_remove": "Remove",
+    "kind_literal": "Literal",
+    "kind_now": "Now",
+    "kind_new": "Event new",
+    "kind_old": "Event old"
+  },
+  "agent": {
+    "new_session": "+ New",
+    "delete_session": "Delete session",
+    "thinking": "Reasoning",
+    "thinking_in_progress": "Buckaroo is thinking…",
+    "retrying": "LLM is retrying turn {turn}",
+    "placeholder": "Ask Buckaroo…",
+    "send": "Send",
+    "newline": "Newline",
+    "view_full_result": "View full result"
   }
 }

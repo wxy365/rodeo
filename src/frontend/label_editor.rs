@@ -3,10 +3,11 @@ use leptos::task::spawn_local;
 use serde_json::Value;
 
 use super::components::{
-    display_enum_value, from_native, is_native_time_layout, to_native, value_to_string,
-    AccountPicker,
+    chip_glyph, display_enum_value, from_native, is_native_time_layout, to_native, value_to_string,
+    AccountPicker, GlyphPos,
 };
 use super::graphql_client::{remove_labeling, set_labeling, Labeling, LabelSchema, Member};
+use super::i18n::{use_i18n, I18nController};
 use super::icons::{ic_close, ic_tag};
 use super::query_eval::{derive_inherited, resolve_label_color};
 
@@ -27,6 +28,7 @@ pub fn LabelEditor(
     members: RwSignal<Vec<Member>>,
     on_changed: Callback<()>,
 ) -> impl IntoView {
+    let i18n: I18nController = use_i18n();
     // 正在新增、还没落库的标签名（本地待定行）。
     let pending = RwSignal::new(None::<String>);
 
@@ -126,7 +128,7 @@ pub fn LabelEditor(
                             pending.set(Some(v));
                         }
                     }>
-                        <option value="" selected=true>"＋ 添加标签"</option>
+                        <option value="" selected=true>{move || i18n.t("label.add")}</option>
                         {avail
                             .into_iter()
                             .map(|s| {
@@ -148,17 +150,35 @@ pub fn LabelEditor(
                 }
                 view! {
                     <div class="inhgroup">
-                        <div class="hint">"以下标签由继承 / 覆盖关系得来，不能在这里移除"</div>
+                        <div class="hint">{move || i18n.t("label.derived_hint")}</div>
                         {derived
                             .into_iter()
                             .map(|(name, value, src)| {
                                 let schema = schemas_now.iter().find(|s| s.name == name).cloned();
                                 let color = row_color(&schema, &value);
                                 let title = row_title(&schema, &name);
+                                let vt = schema
+                                    .as_ref()
+                                    .map(|sch| sch.value_type.as_str())
+                                    .unwrap_or("");
                                 let text = match &value {
                                     Value::Null => title,
+                                    // Boolean 的标点就是它的值：body 留空，避免「Done=true ✓」。
+                                    _ if vt == "boolean" => title,
                                     v => format!("{title}={}", value_to_string(v)),
                                 };
+                                let glyph = schema.as_ref().and_then(|sch| {
+                                    chip_glyph(
+                                        &sch.value_type,
+                                        &value,
+                                        sch.currency_symbol.as_deref(),
+                                    )
+                                });
+                                let glyph_left =
+                                    matches!(glyph, Some((_, GlyphPos::Left)));
+                                let glyph_right =
+                                    matches!(glyph, Some((_, GlyphPos::Right)));
+                                let glyph_char = glyph.map(|(g, _)| g);
                                 let style = color
                                     .map(|c| {
                                         format!(
@@ -166,10 +186,16 @@ pub fn LabelEditor(
                                         )
                                     })
                                     .unwrap_or_default();
+                                let src_for_title = src.clone();
                                 view! {
                                     <div class="lblrow inh" style=style
-                                        title=format!("由「{src}」继承而来，未直接打在本条上")>
-                                        <span class="k">{ic_tag()}{text}</span>
+                                        title=move || i18n.tf("label.derived_title", &[("src", &src_for_title)])>
+                                        <span class="k">
+                                            {ic_tag()}
+                                            {glyph_left.then(|| view! { <span class="chip-glyph">{glyph_char.clone().unwrap_or_default()}</span> })}
+                                            {text}
+                                            {glyph_right.then(|| view! { <span class="chip-glyph">{glyph_char.clone().unwrap_or_default()}</span> })}
+                                        </span>
                                     </div>
                                 }
                             })
@@ -220,6 +246,7 @@ fn LabelRow(
     on_set: Callback<Value>,
     on_remove: Callback<()>,
 ) -> impl IntoView {
+    let i18n: I18nController = use_i18n();
     let current = value.as_ref().map(value_to_string).unwrap_or_default();
     // 各分支的闭包都要各自持有一份值，故在 match 之前克隆一份（`value` 之后不再使用）。
     let value_owned = value.clone();
@@ -298,7 +325,7 @@ fn LabelRow(
                         on_set.run(Value::String(v));
                     }
                 }>
-                    <option value="" selected=cur.is_empty() disabled>"选择…"</option>
+                    <option value="" selected=cur.is_empty() disabled>{move || i18n.t("label.select_placeholder")}</option>
                     {opts
                         .into_iter()
                         .map(|o| {
@@ -387,7 +414,7 @@ fn LabelRow(
                         {
                             on_set.run(Value::Number(n));
                         }
-                    }>"设置"</button>
+                    }>{move || i18n.t("label.set")}</button>
                 </div>
             }
             .into_any()
@@ -441,7 +468,7 @@ fn LabelRow(
                         if v.contains('@') {
                             on_set.run(Value::String(v));
                         }
-                    }>"设置"</button>
+                    }>{move || i18n.t("label.set")}</button>
                 </div>
             }
             .into_any()
@@ -474,7 +501,7 @@ fn LabelRow(
                         if let Some(val) = value {
                             on_set.run(val);
                         }
-                    }>"设置"</button>
+                    }>{move || i18n.t("label.set")}</button>
                 </div>
             }
             .into_any()
@@ -492,7 +519,7 @@ fn LabelRow(
         <div class="lblrow" style=style>
             <span class="k">{title}</span>
             {control}
-            <button class="ibtn" title="移除标签" on:click=move |_| on_remove.run(())>{ic_close()}</button>
+            <button class="ibtn" title=move || i18n.t("label.remove") on:click=move |_| on_remove.run(())>{ic_close()}</button>
         </div>
     }
 }

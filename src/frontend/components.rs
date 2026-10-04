@@ -1114,6 +1114,27 @@ pub fn value_type_label(vt: &str) -> String {
     .to_string()
 }
 
+/// 标签 chip 标点的位置。`Left` 标点放在名称前，`Right` 标点放在名称后。
+#[derive(Clone, Copy)]
+pub enum GlyphPos {
+    Left,
+    Right,
+}
+
+/// 算一个标签 chip 该用什么标点（如 ✓ / ✗ / ¥ / 货币符号 / ⏰ / 📅 等），
+/// 画在标签名边上便于扫一列时一眼分辨类型。返回 `Some((char, pos))` 表示
+/// 有标点可画，`None` 表示该类型不带标点。
+pub fn chip_glyph(vt: &str, value: &Value, currency_symbol: Option<&str>) -> Option<(char, GlyphPos)> {
+    match vt {
+        "boolean" => Some(('✓', GlyphPos::Left)),
+        "currency" => Some((currency_symbol.unwrap_or('¥'), GlyphPos::Left)),
+        "date" | "datetime" => Some(('📅', GlyphPos::Right)),
+        "time" => Some(('⏰', GlyphPos::Right)),
+        "account" => Some(('👤', GlyphPos::Right)),
+        _ => None,
+    }
+}
+
 /// 复制文本到系统剪贴板。非 wasm 目标下为空实现，便于 `cargo check` 通过。
 #[cfg(target_arch = "wasm32")]
 pub fn copy_to_clipboard(text: &str) {

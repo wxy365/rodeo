@@ -13,6 +13,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::frontend::graphql_client::{search_entries, Entry};
+use crate::frontend::i18n::{use_i18n, I18nController};
 
 const DEBOUNCE_MS: u32 = 200;
 const SEARCH_LIMIT: i64 = 10;
@@ -44,6 +45,7 @@ pub fn EntryPicker(
     /// 选中状态（外部持有，提交时由父组件读）。
     selected: RwSignal<Option<Entry>>,
 ) -> impl IntoView {
+    let i18n: I18nController = use_i18n();
     let query = RwSignal::new(String::new());
     let results = RwSignal::new(Vec::<Entry>::new());
     let loading = RwSignal::new(false);
@@ -147,7 +149,7 @@ pub fn EntryPicker(
                 <input
                     type="text"
                     class="inp"
-                    placeholder="搜索目标条目（按标题或编码）"
+                    placeholder=move || i18n.t("entry_picker.placeholder")
                     prop:value=move || query.get()
                     on:input=move |ev| {
                         // 用户开始改输入框即视为放弃当前选择（避免「选中态但显示的标题与输入框文字不一致」）。
@@ -163,7 +165,7 @@ pub fn EntryPicker(
                     }
                 />
                 {move || if selected.get().is_some() {
-                    view! { <button class="ibtn" type="button" on:click=clear title="清除选择">"×"</button> }.into_any()
+                    view! { <button class="ibtn" type="button" on:click=clear title=move || i18n.t("entry_picker.clear")>"×"</button> }.into_any()
                 } else {
                     view! { <span></span> }.into_any()
                 }}
@@ -173,14 +175,14 @@ pub fn EntryPicker(
                     return view! { <span></span> }.into_any();
                 }
                 if loading.get() && results.get().is_empty() {
-                    return view! { <div class="entry-picker-results"><div class="mut">"搜索中…"</div></div> }.into_any();
+                    return view! { <div class="entry-picker-results"><div class="mut">{move || i18n.t("entry_picker.searching")}</div></div> }.into_any();
                 }
                 if let Some(err) = error.get() {
                     return view! { <div class="entry-picker-results"><div class="hint">{"⚠ "}{err}</div></div> }.into_any();
                 }
                 let list = results.get();
                 if list.is_empty() {
-                    return view! { <div class="entry-picker-results"><div class="mut">"无匹配条目"</div></div> }.into_any();
+                    return view! { <div class="entry-picker-results"><div class="mut">{move || i18n.t("entry_picker.no_matches")}</div></div> }.into_any();
                 }
                 view! {
                     <ul class="entry-picker-results">

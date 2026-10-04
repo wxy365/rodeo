@@ -4,6 +4,7 @@ use leptos::task::spawn_local;
 use crate::frontend::graphql_client::{
     mark_all_messages_read, mark_message_read, messages as fetch_messages, GqlMessage,
 };
+use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::icons::ic_close;
 
 /// 站内消息列表。点开气泡时挂载，关掉时卸载。
@@ -11,6 +12,7 @@ use crate::frontend::icons::ic_close;
 /// 信息；当前 `GqlMessage` 不携带，留作后续增强）。
 #[component]
 pub fn MessageList(visible: Signal<bool>, on_close: Callback<()>) -> impl IntoView {
+    let i18n: I18nController = use_i18n();
     let items = RwSignal::new(None::<Result<Vec<GqlMessage>, String>>);
     let close = move |_| on_close.run(());
 
@@ -36,22 +38,22 @@ pub fn MessageList(visible: Signal<bool>, on_close: Callback<()>) -> impl IntoVi
     view! {
         <div class="msg-panel" class:hidden=move || !visible.get()>
             <div class="msg-head">
-                <span>"消息"</span>
+                <span>{move || i18n.t("message.title")}</span>
                 <button class="btn sm" on:click=move |_| {
                     spawn_local(async move {
                         let _ = mark_all_messages_read().await;
                         reload();
                     });
-                }>"全部已读"</button>
+                }>{move || i18n.t("message.mark_all_read")}</button>
                 <button class="btn sm icon-only" on:click=close>{ic_close()}</button>
             </div>
             <div class="msg-body">
                 {move || match items.get() {
-                    None => view! { <div class="mut">"加载中…"</div> }.into_any(),
+                    None => view! { <div class="mut">{move || i18n.t("common.loading")}</div> }.into_any(),
                     Some(Err(e)) => view! { <div class="mut">{e}</div> }.into_any(),
                     Some(Ok(list)) => {
                         if list.is_empty() {
-                            view! { <div class="mut">"暂无消息"</div> }.into_any()
+                            view! { <div class="mut">{move || i18n.t("message.empty")}</div> }.into_any()
                         } else {
                             list.into_iter().map(|m| {
                                 let id = m.id.clone();
@@ -80,9 +82,8 @@ pub fn MessageList(visible: Signal<bool>, on_close: Callback<()>) -> impl IntoVi
                                     }>
                                         <div class="msg-meta">
                                             <span class="msg-actor">{m.actor_name}</span>
-                                            <span class="mut">" 在 "</span>
+                                            <span class="mut">{move || i18n.t("message.mentioned_in")}</span>
                                             <span class="msg-ws">{m.workspace_name}</span>
-                                            <span class="mut">" 中提到你"</span>
                                         </div>
                                         <div class="msg-preview">{m.preview}</div>
                                     </div>

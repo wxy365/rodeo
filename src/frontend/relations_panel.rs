@@ -15,16 +15,17 @@ use crate::frontend::graphql_client::{
     add_entry_relation, delete_entry_relation, entry_relations, my_role, Entry, Relation,
     RelationSemantic,
 };
+use crate::frontend::i18n::{use_i18n, I18nController};
 
-/// 与服务端语义枚举一一对应：内置 key + 中文展示名。自定义形态 key="custom"，
-/// 实际词走 `value`，表单里临时给一个 input 框。
-const PRESETS: &[(&str, &str)] = &[
-    ("contains", "包含"),
-    ("derives", "派生"),
-    ("belongs_to", "归属"),
-    ("blocks", "阻塞"),
-    ("relates_to", "关联"),
-    ("custom", "自定义"),
+/// 内置语义 key 列表。自定义形态 key="custom"，实际词走 `value`，
+/// 表单里临时给一个 input 框。展示名走 i18n（relation.<kind>）。
+const PRESET_KINDS: &[&str] = &[
+    "contains",
+    "derives",
+    "belongs_to",
+    "blocks",
+    "relates_to",
+    "custom",
 ];
 
 /// 把服务端给的 RelationSemantic 转回 (kind, value)：内置形态 value 永远是 None。
@@ -59,6 +60,7 @@ pub fn RelationsPanel(
     /// 关联变更后通知外层：详情面板的徽标与更新时间。
     on_changed: Callback<()>,
 ) -> impl IntoView {
+    let i18n: I18nController = use_i18n();
     let items = RwSignal::new(None::<Result<Vec<Relation>, String>>);
     let role = RwSignal::new(String::new());
     // EntryPicker 选中状态；submit 时从这里拿目标 code。
@@ -114,22 +116,22 @@ pub fn RelationsPanel(
     let submit = move |_| {
         let from = code.get();
         let Some(target) = picked.get() else {
-            error.set(Some("请选择目标条目".to_string()));
+            error.set(Some(i18n.t("relation.pick_target")));
             return;
         };
         let to = target.code.clone();
         let kind = new_kind.get();
         let custom = new_custom.get();
         if from.is_empty() {
-            error.set(Some("当前条目未加载".to_string()));
+            error.set(Some(i18n.t("relation.no_entry")));
             return;
         }
         if from == to {
-            error.set(Some("不能关联到自身".to_string()));
+            error.set(Some(i18n.t("relation.no_self")));
             return;
         }
         if kind == "custom" && custom.trim().is_empty() {
-            error.set(Some("自定义语义需要给个名字".to_string()));
+            error.set(Some(i18n.t("relation.custom_required")));
             return;
         }
         let custom_for_payload = if kind == "custom" {
@@ -173,11 +175,11 @@ pub fn RelationsPanel(
 
             {move || {
                 match items.get() {
-                    None => view! { <div class="mut">"加载中…"</div> }.into_any(),
+                    None => view! { <div class="mut">{move || i18n.t("common.loading")}</div> }.into_any(),
                     Some(Err(e)) => view! { <div class="mut">{e}</div> }.into_any(),
                     Some(Ok(list)) => {
                         if list.is_empty() {
-                            view! { <div class="mut">"暂无关联"</div> }.into_any()
+                            view! { <div class="mut">{move || i18n.t("relation.empty")}</div> }.into_any()
                         } else {
                             view! {
                                 <ul class="rel-list">
@@ -204,7 +206,7 @@ pub fn RelationsPanel(
                                                 <span class="rel-arrow">{arrow}</span>
                                                 <span class="rel-target">{other_title}</span>
                                                 {is_incoming.then(|| view! {
-                                                    <span class="mut" style="font-size:0.85em">" (来自)"</span>
+                                                    <span class="mut" style="font-size:0.85em">{move || i18n.t("relation.incoming_suffix")}</span>
                                                 })}
                                                 {move || {
                                                     let pending = confirm_del.get();
@@ -217,11 +219,11 @@ pub fn RelationsPanel(
                                                                         let id = rid_for_del.clone();
                                                                         move |_| do_delete(id.clone())
                                                                     }
-                                                                >"确认删除"</button>
+                                                                >{move || i18n.t("common.confirm_delete")}</button>
                                                                 <button
                                                                     class="btn sm"
                                                                     on:click=move |_| confirm_del.set(None)
-                                                                >"取消"</button>
+                                                                >{move || i18n.t("common.cancel")}</button>
                                                             </span>
                                                         }.into_any()
                                                     } else {
@@ -232,7 +234,7 @@ pub fn RelationsPanel(
                                                                     let id = rid.clone();
                                                                     move |_| confirm_del.set(Some(id.clone()))
                                                                 }
-                                                            >"删除"</button>
+                                                            >{move || i18n.t("common.delete")}</button>
                                                         }.into_any()
                                                     }
                                                 }}
@@ -263,11 +265,14 @@ pub fn RelationsPanel(
                             class="rel-select"
                             on:change=move |ev| new_kind.set(event_target_value(&ev))
                         >
-                            {PRESETS.iter().map(|(k, v)| {
-                                let v = v.to_string();
+                            {PRESET_KINDS.iter().map(|k| {
                                 let k = k.to_string();
+                                let kind_for_label = k.clone();
                                 view! {
-                                    <option value=k.clone()>{v}</option>
+                                    <option value=k.clone()>{move || {
+                                        let key = format!("relation.kind.{}", kind_for_label);
+                                        i18n.t(&key)
+                                    }}</option>
                                 }
                             }).collect::<Vec<_>>()}
                         </select>
@@ -275,7 +280,7 @@ pub fn RelationsPanel(
                             view! {
                                 <input
                                     class="rel-input"
-                                    placeholder="自定义语义名"
+                                    placeholder=move || i18n.t("relation.custom_placeholder")
                                     prop:value=move || new_custom.get()
                                     on:input=move |ev| new_custom.set(event_target_value(&ev))
                                 />
@@ -288,7 +293,7 @@ pub fn RelationsPanel(
                             workspace_id=ws_for_picker
                             selected=picked
                         />
-                        <button class="btn pri sm" on:click=submit>"添加"</button>
+                        <button class="btn pri sm" on:click=submit>{move || i18n.t("relation.add")}</button>
                     </div>
                 }.into_any()
             }}

@@ -7,6 +7,7 @@ use super::graphql_client::{
     automation_rules, create_automation_rule, delete_automation_rule, parse_rule_trigger,
     update_automation_rule, AutomationRule, LabelSchema,
 };
+use super::i18n::{use_i18n, I18nController};
 
 /// 编辑表单里的一行动作。信号放在行内，删除行时随之释放。
 /// 标记 Copy 才能被同一行的多个事件闭包各自捕获。
@@ -65,6 +66,7 @@ pub fn AutomationTab(
     can_manage: bool,
     on_changed: Callback<()>,
 ) -> impl IntoView {
+    let i18n: I18nController = use_i18n();
     let rules = RwSignal::new(Vec::<AutomationRule>::new());
     let error = RwSignal::new(None::<String>);
     let loaded = RwSignal::new(false);
@@ -182,7 +184,7 @@ pub fn AutomationTab(
         let id = ws_id.get_untracked();
         let name = f_name.get_untracked();
         if name.trim().is_empty() {
-            form_error.set(Some("请填写规则名称".to_string()));
+            form_error.set(Some(i18n.t("automation.name_required")));
             return;
         }
         let writes: Vec<Value> = f_writes
@@ -256,26 +258,25 @@ pub fn AutomationTab(
     });
 
     view! {
-        <h2>"自动化规则"</h2>
+        <h2>{move || i18n.t("automation.title")}</h2>
         <p class="note">
-            "标签被写入时触发。触发条件用 $label / $old / $new 引用本次变更，"
-            "也可以直接用标签名（如 Priority >= 3）判断事件源条目的写入后状态。"
+            {move || i18n.t("automation.description")}
         </p>
         {move || error.get().map(|e| view! { <p class="error">{e}</p> })}
         {move || {
             if !loaded.get() {
-                view! { <div class="empty">"加载中…"</div> }.into_any()
+                view! { <div class="empty">{move || i18n.t("common.loading")}</div> }.into_any()
             } else if rules.get().is_empty() {
-                view! { <div class="empty">"还没有规则"</div> }.into_any()
+                view! { <div class="empty">{move || i18n.t("automation.empty")}</div> }.into_any()
             } else {
                 view! {
                     <table class="tbl">
                         <thead>
                             <tr>
-                                <th>"名称"</th>
-                                <th>"触发条件"</th>
-                                <th>"动作"</th>
-                                <th>"启用"</th>
+                                <th>{move || i18n.t("automation.col_name")}</th>
+                                <th>{move || i18n.t("automation.col_trigger")}</th>
+                                <th>{move || i18n.t("automation.col_action")}</th>
+                                <th>{move || i18n.t("automation.col_enabled")}</th>
                                 <th></th>
                             </tr>
                         </thead>
@@ -292,9 +293,9 @@ pub fn AutomationTab(
                                             <td>{r.name.clone()}</td>
                                             <td class="mono">{r.trigger_expr.clone()}</td>
                                             <td>
-                                                {format!(
+                                                {move || format!(
                                                     "{} → {}",
-                                                    if r.target_event_source { "事件源条目" } else { "表达式圈定" },
+                                                    if r.target_event_source { i18n.t("automation.target_event") } else { i18n.t("automation.target_query") },
                                                     r.writes
                                                         .iter()
                                                         .map(|w| format!("{}({})", w.label_name, w.op))
@@ -302,15 +303,15 @@ pub fn AutomationTab(
                                                         .join("、"),
                                                 )}
                                             </td>
-                                            <td>{if enabled { "是" } else { "否" }}</td>
+                                            <td>{if enabled { i18n.t("common.yes") } else { i18n.t("common.no") }}</td>
                                             <td>
                                                 {if can_manage {
                                                     view! {
                                                         <button class="btn sm" on:click=move |_| open_edit.run(open.clone())>
-                                                            "编辑"
+                                                            {move || i18n.t("common.edit")}
                                                         </button>
                                                         <button class="btn sm dgr" on:click=move |_| remove.run(id.clone())>
-                                                            "删除"
+                                                            {move || i18n.t("common.delete")}
                                                         </button>
                                                     }.into_any()
                                                 } else {
@@ -329,11 +330,11 @@ pub fn AutomationTab(
         {if can_manage {
             view! {
                 <button class="btn pri" on:click=open_new style="align-self:flex-start">
-                    "新建规则"
+                    {move || i18n.t("automation.create")}
                 </button>
             }.into_any()
         } else {
-            view! { <p class="note">"仅 Maintainer 及以上可编辑"</p> }.into_any()
+            view! { <p class="note">{move || i18n.t("automation.readonly_note")}</p> }.into_any()
         }}
 
         {move || {
@@ -344,27 +345,25 @@ pub fn AutomationTab(
             view! {
                 <div class="dmodal on">
                     <form class="dmbox stack" on:submit=submit>
-                        <h3>{move || if editing_id.get().is_some() { "编辑规则" } else { "新建规则" }}</h3>
+                        <h3>{move || if editing_id.get().is_some() { i18n.t("automation.edit_title") } else { i18n.t("automation.create_title") }}</h3>
                         {move || form_error.get().map(|e| view! { <p class="error">{e}</p> })}
                         <label class="fld">
-                            <span>"名称"</span>
+                            <span>{move || i18n.t("automation.field_name")}</span>
                             <input class="inp" prop:value=f_name
                                 on:input=move |ev| f_name.set(event_target_value(&ev)) />
                         </label>
                         <label class="fld">
-                            <span>"启用"</span>
+                            <span>{move || i18n.t("automation.field_enabled")}</span>
                             <input type="checkbox" prop:checked=move || f_enabled.get()
                                 on:change=move |ev| f_enabled.set(event_target_checked(&ev)) />
                         </label>
                         <label class="fld">
-                            <span>"触发条件"</span>
+                            <span>{move || i18n.t("automation.field_trigger")}</span>
                             <textarea class="inp mono" rows="3" prop:value=f_trigger
                                 on:input=move |ev| f_trigger.set(event_target_value(&ev))></textarea>
                         </label>
                         <div class="note">
-                            "可用关键字：" <code>"$label"</code> "（本次变更的标签名）、"
-                            <code>"$old"</code> "（旧值，新增时用 " <code>"!$old"</code> "）、"
-                            <code>"$new"</code> "（新值，删除时用 " <code>"!$new"</code> "）。"
+                            {move || i18n.t("automation.trigger_help")}
                         </div>
                         <div style="display:flex;gap:8px;flex-wrap:wrap">
                             {schema_list
@@ -382,14 +381,14 @@ pub fn AutomationTab(
                                     }
                                 })
                                 .collect::<Vec<_>>()}
-                            <button type="button" class="btn sm" on:click=check_trigger>"校验"</button>
+                            <button type="button" class="btn sm" on:click=check_trigger>{move || i18n.t("automation.validate")}</button>
                         </div>
                         <label class="fld">
-                            <span>"动作目标"</span>
+                            <span>{move || i18n.t("automation.field_target")}</span>
                             <select class="inp" prop:value=move || if f_event_source.get() { "event" } else { "query" }
                                 on:change=move |ev| f_event_source.set(event_target_value(&ev) == "event")>
-                                <option value="event">"事件源条目"</option>
-                                <option value="query">"表达式圈定"</option>
+                                <option value="event">{move || i18n.t("automation.target_event")}</option>
+                                <option value="query">{move || i18n.t("automation.target_query")}</option>
                             </select>
                         </label>
                         {move || {
@@ -398,14 +397,14 @@ pub fn AutomationTab(
                             }
                             view! {
                                 <label class="fld">
-                                    <span>"圈定表达式"</span>
+                                    <span>{move || i18n.t("automation.field_target_query")}</span>
                                     <input class="inp mono" prop:value=f_target
                                         on:input=move |ev| f_target.set(event_target_value(&ev)) />
                                 </label>
                             }.into_any()
                         }}
                         <div class="fld">
-                            <span>"标签动作"</span>
+                            <span>{move || i18n.t("automation.field_writes")}</span>
                             {move || {
                                 f_writes
                                     .get()
@@ -432,18 +431,18 @@ pub fn AutomationTab(
                                                 <select class="inp" style="width:110px"
                                                     prop:value=move || w.op.get()
                                                     on:change=move |ev| w.op.set(event_target_value(&ev))>
-                                                    <option value="set">"写入"</option>
-                                                    <option value="remove">"删除"</option>
+                                                    <option value="set">{move || i18n.t("automation.op_set")}</option>
+                                                    <option value="remove">{move || i18n.t("automation.op_remove")}</option>
                                                 </select>
                                                 {(!is_remove)
                                                     .then(|| {
                                                         view! {
                                                             <select class="inp" style="width:130px" prop:value=move || w.value_kind.get()
                                                                 on:change=move |ev| w.value_kind.set(event_target_value(&ev))>
-                                                                <option value="literal">"固定值"</option>
-                                                                <option value="now">"当前时间"</option>
-                                                                <option value="new">"事件新值"</option>
-                                                                <option value="old">"事件旧值"</option>
+                                                                <option value="literal">{move || i18n.t("automation.kind_literal")}</option>
+                                                                <option value="now">{move || i18n.t("automation.kind_now")}</option>
+                                                                <option value="new">{move || i18n.t("automation.kind_new")}</option>
+                                                                <option value="old">{move || i18n.t("automation.kind_old")}</option>
                                                             </select>
                                                             <input class="inp" style="width:160px"
                                                                 prop:value=move || w.value.get()
@@ -457,18 +456,18 @@ pub fn AutomationTab(
                                                             ws.remove(idx);
                                                         }
                                                     })>
-                                                    "移除"
+                                                    {move || i18n.t("common.delete")}
                                                 </button>
                                             </div>
                                         }
                                     })
                                     .collect::<Vec<_>>()
                             }}
-                            <button type="button" class="btn sm" on:click=add_write>"＋ 添加动作"</button>
+                            <button type="button" class="btn sm" on:click=add_write>{move || i18n.t("automation.add_action")}</button>
                         </div>
                         <div style="display:flex;gap:8px">
-                            <button class="btn pri" type="submit" disabled=move || busy.get()>"保存"</button>
-                            <button class="btn" type="button" on:click=move |_| form_open.set(false)>"取消"</button>
+                            <button class="btn pri" type="submit" disabled=move || busy.get()>{move || i18n.t("common.save")}</button>
+                            <button class="btn" type="button" on:click=move |_| form_open.set(false)>{move || i18n.t("common.cancel")}</button>
                         </div>
                     </form>
                 </div>

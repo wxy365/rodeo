@@ -42,6 +42,8 @@ use crate::frontend::agent_side_effects::SideEffectHint;
 #[cfg(target_arch = "wasm32")]
 use crate::frontend::graphql_client::get_token;
 use crate::frontend::components::human_size;
+use crate::frontend::icons::{ic_loading, ic_send, ic_upload};
+use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::graphql_client::{
     cancel_agent_turn, create_agent_session, delete_agent_session, list_agent_messages,
     list_agent_sessions, send_agent_message, AgentMessage, AgentMessageContext, AgentSession,
@@ -130,6 +132,7 @@ pub fn use_agent_context() -> Option<AgentContext> {
 
 #[component]
 pub fn AgentPanel() -> impl IntoView {
+    let i18n: I18nController = use_i18n();
     let open = use_agent_panel_open();
     let effects = use_context::<AgentSideEffects>().expect("AgentSideEffects 未提供");
     let agent_ctx = use_agent_context();
@@ -634,12 +637,12 @@ pub fn AgentPanel() -> impl IntoView {
                         </svg>
                     </span>
                     <span class="agent-title">"Buckaroo"</span>
-                    <button class="agent-new" on:click=on_new_session>"+ 新建"</button>
+                    <button class="agent-new" on:click=on_new_session>{move || i18n.t("agent.new_session")}</button>
                     <button class="agent-close" on:click=move |_| open.0.set(false)>"×"</button>
                 </header>
-                <Suspense fallback=move || view! { <div class="agent-loading">"加载中…"</div> }>
+                <Suspense fallback=move || view! { <div class="agent-loading">{move || i18n.t("common.loading")}</div> }>
                     {move || match workspace_id_resolved.get() {
-                        None => view! { <div class="agent-loading">"加载中…"</div> }.into_any(),
+                        None => view! { <div class="agent-loading">{move || i18n.t("common.loading")}</div> }.into_any(),
                         Some(_) => view! {
                             <div class="agent-body">
                                 <aside class="agent-sessions">
@@ -707,7 +710,7 @@ pub fn AgentPanel() -> impl IntoView {
                                                     <span class="agent-session-title">{session_label(&s)}</span>
                                                     <button
                                                         class="agent-session-del"
-                                                        title="删除会话"
+                                                        title=move || i18n.t("agent.delete_session")
                                                         on:click=on_delete
                                                     >"×"</button>
                                                 </div>
@@ -748,7 +751,7 @@ pub fn AgentPanel() -> impl IntoView {
                                             <div class="retry-banner" aria-live="polite">
                                                 {move || {
                                                     let turn = retry_signal.get().unwrap_or(0);
-                                                    format!("LLM 正在重试第 {turn} 轮")
+                                                    i18n.tf("agent.retrying", &[("turn", &turn.to_string())])
                                                 }}
                                             </div>
                                         </Show>
@@ -780,7 +783,7 @@ pub fn AgentPanel() -> impl IntoView {
                                                             fallback=move || view! { <span></span> }
                                                         >
                                                             <details class="agent-think">
-                                                                <summary>"思考过程"</summary>
+                                                                <summary>{move || i18n.t("agent.thinking")}</summary>
                                                                 <div class="agent-think-body" inner_html=reasoning_html.clone()></div>
                                                             </details>
                                                         </Show>
@@ -812,7 +815,7 @@ pub fn AgentPanel() -> impl IntoView {
                                                                             // 截断后才把全文写进一个隐藏的 <pre>，由 CSS 在 details[open]
                                                                             // 时把它显示出来——避免 SSE 期间重复渲染几百行字符串。
                                                                             <details class="agent-tool-result-full">
-                                                                                <summary>"查看完整 result"</summary>
+                                                                                <summary>{move || i18n.t("agent.view_full_result")}</summary>
                                                                                 <pre>{preview_full}</pre>
                                                                             </details>
                                                                         </div>
@@ -915,58 +918,42 @@ pub fn AgentPanel() -> impl IntoView {
                                         }}
                                     </div>
                                     <div class="agent-input">
-                                        <div class="agent-attachments-bar">
-                                            <label class="agent-attach-pick">
-                                                {move || if attachments_uploading.get() {
-                                                    "上传中…"
-                                                } else {
-                                                    "📎 附件"
-                                                }}
-                                                <input
-                                                    type="file"
-                                                    multiple=true
-                                                    style="display:none"
-                                                    prop:disabled=move || attachments_uploading.get() || streaming.get()
-                                                    on:change=on_pick_files
-                                                />
-                                            </label>
-                                            // 已选附件 chip 列表：点击 × 把对应附件从 attachments 里剔掉。
-                                            // 这里没用 <For> key 索引 id——ids 是 ULID，重复概率极低，
-                                            // 且渲染顺序就是添加顺序，键稳定。
-                                            {move || {
-                                                let chips = attachments.get();
-                                                if chips.is_empty() {
-                                                    view! { <span></span> }.into_any()
-                                                } else {
-                                                    view! {
-                                                        <div class="agent-attach-chips">
-                                                            {chips.into_iter().map(|chip| {
-                                                                let remove_id = chip.id.clone();
-                                                                let name = chip.filename.clone();
-                                                                let size = human_size(chip.size);
-                                                                view! {
-                                                                    <span class="agent-attach-chip">
-                                                                        <span class="agent-attach-chip-name">{name}</span>
-                                                                        <span class="agent-attach-chip-size">{size}</span>
-                                                                        <button
-                                                                            class="agent-attach-chip-x"
-                                                                            title="移除"
-                                                                            on:click={
-                                                                                let rid = remove_id.clone();
-                                                                                move |_| {
-                                                                                    attachments.update(|l| {
-                                                                                        l.retain(|c| c.id != rid)
-                                                                                    });
-                                                                                }
-                                                                            }
-                                                                        >"×"</button>
-                                                                    </span>
-                                                                }
-                                                            }).collect::<Vec<_>>()}
-                                                        </div>
-                                                    }.into_any()
+                                        // 已选附件 chip 横滚条：空时拿 .agent-attach-empty
+                                        // 触发 CSS `display: none`，不占行高；非空时
+                                        // overflow-x: auto 把溢出 chip 收进横向滚动。
+                                        // 这里没用 <For> key 索引 id——ids 是 ULID，
+                                        // 重复概率极低，且渲染顺序就是添加顺序，键稳定。
+                                        <div
+                                            class="agent-attachments-chips-bar"
+                                            class:agent-attach-empty=move || attachments.get().is_empty()
+                                        >
+                                            <div class="agent-attach-chips">
+                                                {move || {
+                                                    attachments.get().into_iter().map(|chip| {
+                                                        let remove_id = chip.id.clone();
+                                                        let name = chip.filename.clone();
+                                                        let size = human_size(chip.size);
+                                                        view! {
+                                                            <span class="agent-attach-chip">
+                                                                <span class="agent-attach-chip-name">{name}</span>
+                                                                <span class="agent-attach-chip-size">{size}</span>
+                                                                <button
+                                                                    class="agent-attach-chip-x"
+                                                                    title=move || i18n.t("common.delete")
+                                                                    on:click={
+                                                                        let rid = remove_id.clone();
+                                                                        move |_| {
+                                                                            attachments.update(|l| {
+                                                                                l.retain(|c| c.id != rid)
+                                                                            });
+                                                                        }
+                                                                    }
+                                                                >"×"</button>
+                                                            </span>
+                                                        }
+                                                    }).collect::<Vec<_>>()}
                                                 }
-                                            }}
+                                            </div>
                                         </div>
                                         <Show
                                             when=move || attachments_error.get().is_some()
@@ -976,37 +963,87 @@ pub fn AgentPanel() -> impl IntoView {
                                                 {move || attachments_error.get().unwrap_or_default()}
                                             </p>
                                         </Show>
-                                        <textarea
-                                            class="agent-textarea"
-                                            bind:value=input
-                                            prop:disabled=move || streaming.get()
-                                            placeholder="向 Buckaroo 提问…回车发送，Ctrl/⌘+回车换行"
-                                            on:keydown=move |ev: leptos::ev::KeyboardEvent| {
-                                                // 回车直接发送：与主流 IM / 聊天面板一致;
-                                                // Shift+Enter / Ctrl+Enter / ⌘+Enter 留给浏览器默认
-                                                // （插入换行）——避免与全局快捷键（Ctrl+Enter 也
-                                                // 经常被绑成「换行」以外的语义）冲突。
-                                                // 输入期间按下时 textarea 仍是焦点元素,
-                                                // prevent_default 阻止浏览器在按 Enter 时
-                                                // 默认的「插入换行」生效——on_send 触发的发送流程
-                                                // 负责清空 textarea。
-                                                if ev.key() == "Enter"
-                                                    && !ev.shift_key()
-                                                    && !ev.ctrl_key()
-                                                    && !ev.meta_key()
-                                                {
-                                                    ev.prevent_default();
-                                                    on_send();
+                                        // 输入行：textarea 撑满水平空间，右侧 .agent-side-actions
+                                        // 纵向堆叠附件 + 发送两个 32×28 图标按钮——几何由 .agent-icon-btn
+                                        // 基类托管，textarea min-height 60px 跟两按钮 + 4px gap 严格相等。
+                                        <div class="agent-input-row">
+                                            <textarea
+                                                class="agent-textarea"
+                                                bind:value=input
+                                                prop:disabled=move || streaming.get()
+                                                placeholder=move || i18n.t("agent.placeholder")
+                                                on:keydown=move |ev: leptos::ev::KeyboardEvent| {
+                                                    // 回车直接发送：与主流 IM / 聊天面板一致;
+                                                    // Shift+Enter / Ctrl+Enter / ⌘+Enter 留给浏览器默认
+                                                    // （插入换行）——避免与全局快捷键（Ctrl+Enter 也
+                                                    // 经常被绑成「换行」以外的语义）冲突。
+                                                    // 输入期间按下时 textarea 仍是焦点元素,
+                                                    // prevent_default 阻止浏览器在按 Enter 时
+                                                    // 默认的「插入换行」生效——on_send 触发的发送流程
+                                                    // 负责清空 textarea。
+                                                    if ev.key() == "Enter"
+                                                        && !ev.shift_key()
+                                                        && !ev.ctrl_key()
+                                                        && !ev.meta_key()
+                                                    {
+                                                        ev.prevent_default();
+                                                        on_send();
+                                                    }
                                                 }
-                                            }
-                                        />
-                                        <button
-                                            class="agent-send"
-                                            on:click=move |_| on_send()
-                                            prop:disabled=move || streaming.get() || attachments_uploading.get()
-                                        >
-                                            {move || if streaming.get() { "..." } else { "发送" }}
-                                        </button>
+                                            />
+                                            <div class="agent-side-actions">
+                                                // 附件按钮：作为 <label> 包裹隐藏的 <input type=file>，
+                                                // 点图标触发原生文件选择对话框；uploading / streaming
+                                                // 时 input 被 prop:disabled，CSS :has(input:disabled)
+                                                // 给 label 换灰。
+                                                <label
+                                                    class="agent-icon-btn agent-attach-pick"
+                                                    title=move || if attachments_uploading.get() {
+                                                        i18n.t("attachment.uploading")
+                                                    } else {
+                                                        i18n.t("attachment.section_title")
+                                                    }
+                                                >
+                                                    {ic_upload()}
+                                                    <input
+                                                        type="file"
+                                                        multiple=true
+                                                        style="display:none"
+                                                        prop:disabled=move || attachments_uploading.get() || streaming.get()
+                                                        on:change=on_pick_files
+                                                    />
+                                                </label>
+                                                // 发送按钮：输入为空 / 流式响应 / 附件上传中时置灰。
+                                                // trim().is_empty() 处理纯空格输入——避免只敲了一堆
+                                                // 空白就能发出去这种边缘 case。
+                                                <button
+                                                    class="agent-icon-btn agent-send"
+                                                    on:click=move |_| on_send()
+                                                    prop:disabled=move || {
+                                                        input.get().trim().is_empty()
+                                                            || streaming.get()
+                                                            || attachments_uploading.get()
+                                                    }
+                                                    title=move || i18n.t("agent.send")
+                                                >
+                                                    {move || if streaming.get() {
+                                                        ic_loading().into_any()
+                                                    } else {
+                                                        ic_send().into_any()
+                                                    }}
+                                                </button>
+                                            </div>
+                                        </div>
+                                        // 快捷键提示：从 placeholder 搬到面板底部，套 `<kbd>` 让「键帽」视觉成立。
+                                        // 不用 `.mut`（那是更弱的灰）；用 `.agent-shortcut-hint` 单挂样式，色比 `.mut` 深一档
+                                        // 但仍然低于正文，避免抢 textarea 焦点感。
+                                        <div class="agent-shortcut-hint">
+                                            <kbd>"Enter"</kbd>
+                                            <span>{move || i18n.t("agent.send")}</span>
+                                            <span class="agent-shortcut-sep">"·"</span>
+                                            <kbd>"Ctrl/⌘+Enter"</kbd>
+                                            <span>{move || i18n.t("agent.newline")}</span>
+                                        </div>
                                         // 取消按钮：只在 streaming 期间出现。
                                         // 调 cancelAgentTurn，服务端 finish() 把 turn
                                         // 从 SessionTurns 注册表移除；runner 还在跑也
@@ -1043,7 +1080,7 @@ pub fn AgentPanel() -> impl IntoView {
                                                     }
                                                 }
                                             >
-                                                "取消"
+                                                {move || i18n.t("common.cancel")}
                                             </button>
                                         </Show>
                                     </div>
@@ -1057,7 +1094,7 @@ pub fn AgentPanel() -> impl IntoView {
                                     >
                                         <div class="agent-streaming" aria-live="polite">
                                             <span class="agent-spinner" aria-hidden="true"></span>
-                                            <span class="agent-streaming-text">"Buckaroo 正在思考…"</span>
+                                            <span class="agent-streaming-text">{move || i18n.t("agent.thinking_in_progress")}</span>
                                         </div>
                                     </Show>
                                 </main>
@@ -1312,29 +1349,46 @@ fn first_path_segment(pathname: &str) -> String {
         .to_string()
 }
 
+/// 把 RFC3339 UTC 时间（`updatedAt`，由服务端 `DateTime<Utc>` 序列化）
+/// 转成 `MM-DD HH:mm`。wasm32 走浏览器原生 `Date` 转本地时区——避免
+/// 把 chrono 拖进 wasm runtime。非 wasm32（SSR / native target）按 UTC
+/// 切片兜底，hydrate 之后会被客户端重新计算覆盖。
+#[cfg(target_arch = "wasm32")]
+fn iso_to_local_short(iso: &str) -> Option<String> {
+    let date = js_sys::Date::new(&wasm_bindgen::JsValue::from_str(iso));
+    if date.get_time().is_nan() {
+        return None;
+    }
+    // `get_month` 是 0-indexed；`get_hours` / `get_minutes` 已经按本地时区。
+    let month = date.get_month() + 1;
+    let day = date.get_date();
+    let hh = date.get_hours();
+    let mm = date.get_minutes();
+    Some(format!("{month:02}-{day:02} {hh:02}:{mm:02}"))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn iso_to_local_short(iso: &str) -> Option<String> {
+    let bytes = iso.as_bytes();
+    let take = |start: usize, len: usize| -> Option<&str> {
+        let end = start.checked_add(len)?;
+        std::str::from_utf8(bytes.get(start..end)?).ok()
+    };
+    let month = take(5, 2)?;
+    let day = take(8, 2)?;
+    let hh = take(11, 2)?;
+    let mm = take(14, 2)?;
+    Some(format!("{month}-{day} {hh}:{mm}"))
+}
+
 /// 会话列表里显示的标题：有 `title` 就用，否则用 `updatedAt` 渲染成
 /// `M-D HH:mm`。新建会话 `title` 是空串，标题列没东西渲染用户就
-/// 看不见条目；用更新时间占位还能区分同日多次新建。`updatedAt` 是
-/// `chrono::DateTime<Utc>` 序列化的 ISO 字符串，手工解前缀避免拖进
-/// chrono 这个 wasm-only 重型依赖。
+/// 看不见条目；用更新时间占位还能区分同日多次新建。
 fn session_label(s: &crate::frontend::graphql_client::AgentSession) -> String {
     if !s.title.is_empty() {
         return s.title.clone();
     }
-    let iso = &s.updated_at;
-    let formatted = (|| -> Option<String> {
-        let bytes = iso.as_bytes();
-        let take = |start: usize, len: usize| -> Option<&str> {
-            let end = start.checked_add(len)?;
-            std::str::from_utf8(bytes.get(start..end)?).ok()
-        };
-        let month = take(5, 2)?;
-        let day = take(8, 2)?;
-        let hh = take(11, 2)?;
-        let mm = take(14, 2)?;
-        Some(format!("{month}-{day} {hh}:{mm}"))
-    })();
-    formatted.unwrap_or_else(|| iso.to_string())
+    iso_to_local_short(&s.updated_at).unwrap_or_else(|| s.updated_at.clone())
 }
 
 /// 视口尺寸（宽, 高），拿不到（SSR / 权限拒绝）返回 None。AgentPanel

@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 
 use crate::frontend::graphql_client::NamedPrompt;
+use crate::frontend::i18n::{use_i18n, I18nController};
 
 /// 一行「名称 + 提示词」。两个字段各自独立更新，和 `workspace_main.rs` 里的
 /// `DraftLabel` 同一路数：RwSignal 字段让单行可以就地改，不必整表重建。
@@ -48,6 +49,7 @@ pub fn rows_to_value(rows: &RwSignal<Vec<PromptRow>>) -> Vec<serde_json::Value> 
 /// 一组可增删的「名称 + 提示词」行，场景与语气共用。
 #[component]
 pub fn PromptRows(rows: RwSignal<Vec<PromptRow>>, placeholder: String) -> impl IntoView {
+    let i18n: I18nController = use_i18n();
     view! {
         <div class="stack">
             {move || {
@@ -60,12 +62,12 @@ pub fn PromptRows(rows: RwSignal<Vec<PromptRow>>, placeholder: String) -> impl I
                                 <input class="inp" style="width:160px" placeholder=placeholder.clone()
                                     prop:value=move || r.name.get()
                                     on:input=move |ev| r.name.set(event_target_value(&ev)) />
-                                <textarea class="inp" rows="2" placeholder="提示词"
+                                <textarea class="inp" rows="2" placeholder=move || i18n.t("ai.prompt_placeholder")
                                     prop:value=move || r.prompt.get()
                                     on:input=move |ev| r.prompt.set(event_target_value(&ev))></textarea>
                                 <button class="btn sm" type="button"
                                     on:click=move |_| rows.update(|v| { if i < v.len() { v.remove(i); } })>
-                                    "删除"
+                                    {move || i18n.t("common.delete")}
                                 </button>
                             </div>
                         }
@@ -74,7 +76,7 @@ pub fn PromptRows(rows: RwSignal<Vec<PromptRow>>, placeholder: String) -> impl I
             }}
             <button class="btn sm" type="button" style="align-self:flex-start"
                 on:click=move |_| rows.update(|v| v.push(PromptRow::new(String::new(), String::new())))>
-                "添加一行"
+                {move || i18n.t("ai.add_row")}
             </button>
         </div>
     }

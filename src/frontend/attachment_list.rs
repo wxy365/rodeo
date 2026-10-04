@@ -6,6 +6,7 @@ use crate::frontend::graphql_client::{attachments, delete_attachment, me, my_rol
 // `upload_attachment` 只存在于 wasm 目标（`web_sys::File` 参数），单独按 cfg 引进来。
 #[cfg(target_arch = "wasm32")]
 use crate::frontend::graphql_client::upload_attachment;
+use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::icons::{ic_folder, ic_upload};
 
 /// 把选中的文件传上去。`upload_attachment` 与 `web_sys` 都只在 wasm 目标下存在，
@@ -99,6 +100,7 @@ pub fn AttachmentList(
     /// 增删后通知外层：条目的「更新时间」要跟着刷新。
     on_changed: Callback<()>,
 ) -> impl IntoView {
+    let i18n: I18nController = use_i18n();
     let items = RwSignal::new(None::<Result<Vec<Attachment>, String>>);
     let role = RwSignal::new(String::new());
     let my_id = RwSignal::new(String::new());
@@ -175,7 +177,8 @@ pub fn AttachmentList(
         <div class="grp-h">
             {ic_upload()}
             {move || format!(
-                "附件（{}）",
+                "{}（{}）",
+                i18n.t("attachment.section_title"),
                 items.get().and_then(|r| r.ok()).map(|v| v.len()).unwrap_or(0),
             )}
         </div>
@@ -186,11 +189,11 @@ pub fn AttachmentList(
             let can_moderate = role_at_least(&role.get(), "maintainer");
             let mine = my_id.get();
             match items.get() {
-                None => view! { <div class="mut">"加载中…"</div> }.into_any(),
+                None => view! { <div class="mut">{move || i18n.t("common.loading")}</div> }.into_any(),
                 Some(Err(e)) => view! { <div class="mut">{e}</div> }.into_any(),
                 Some(Ok(list)) => {
                     if list.is_empty() {
-                        view! { <div class="mut">"暂无附件"</div> }.into_any()
+                        view! { <div class="mut">{move || i18n.t("attachment.empty")}</div> }.into_any()
                     } else {
                         view! {
                             {list.into_iter().map(|a| {
@@ -210,17 +213,17 @@ pub fn AttachmentList(
                                                     let sid = id.clone();
                                                     move |_| confirm_del.set(Some(sid.clone()))
                                                 }
-                                            >"删除"</button>
+                                            >{move || i18n.t("common.delete")}</button>
                                         })}
                                     </div>
                                     {confirming.then(|| view! {
                                         <div class="c-confirm">
-                                            <span class="mut">"删除后不可恢复，确定？"</span>
+                                            <span class="mut">{move || i18n.t("comment.delete_confirm")}</span>
                                             <button class="btn danger sm" on:click={
                                                 let sid = id_for_confirm.clone();
                                                 move |_| do_delete(sid.clone())
-                                            }>"确认删除"</button>
-                                            <button class="btn sm" on:click=move |_| confirm_del.set(None)>"取消"</button>
+                                            }>{move || i18n.t("comment.delete_confirm_yes")}</button>
+                                            <button class="btn sm" on:click=move |_| confirm_del.set(None)>{move || i18n.t("common.cancel")}</button>
                                         </div>
                                     })}
                                 }
@@ -237,7 +240,7 @@ pub fn AttachmentList(
             }
             view! {
                 <label class="btn sm" style="margin-top:8px">
-                    {move || if uploading.get() { "上传中…" } else { "上传附件" }}
+                    {move || if uploading.get() { i18n.t("attachment.uploading") } else { i18n.t("attachment.upload") }}
                     <input
                         type="file"
                         style="display:none"
