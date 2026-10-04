@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
-use rand_core::{OsRng, RngCore};
 use chrono::{Duration, Utc};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 
@@ -81,7 +81,12 @@ impl AuthService {
             return Err(AppError::EmailExists);
         }
         let password_hash = hash_password(password)?;
-        let account = Account::new(email.clone(), name.trim().to_string(), password_hash, is_admin);
+        let account = Account::new(
+            email.clone(),
+            name.trim().to_string(),
+            password_hash,
+            is_admin,
+        );
 
         let id_key = account.id.to_bytes();
         self.store.put(cf::ACCOUNTS, &id_key, &account)?;
@@ -95,6 +100,12 @@ impl AuthService {
         let account = self
             .find_by_email(&email)?
             .ok_or(AppError::InvalidCredentials)?;
+        // 无密码账号（OAuth-only）走专用文案 —— 用户已主动输邮箱，不存在邮箱存在性探测。
+        if !account.has_password() {
+            return Err(AppError::InvalidQuery(
+                "此账号未设置密码，请使用第三方登录".to_string(),
+            ));
+        }
         if !verify_password(password, &account.password_hash)? {
             return Err(AppError::InvalidCredentials);
         }
@@ -123,6 +134,11 @@ impl AuthService {
         new_password: &str,
     ) -> Result<Account, AppError> {
         let mut account = self.find_by_id(account_id)?.ok_or(AppError::NotFound)?;
+        // OAuth-only 账号没有 password_hash；不让它走到 verify_password 才崩成
+        // Internal。前置守卫与 login 路径保持一致。
+        if !account.has_password() {
+            return Err(AppError::InvalidCredentials);
+        }
         if !verify_password(old_password, &account.password_hash)? {
             return Err(AppError::InvalidQuery("当前密码不正确".to_string()));
         }
@@ -133,7 +149,27 @@ impl AuthService {
             ));
         }
         account.password_hash = hash_password(new_password)?;
-        self.store.put(cf::ACCOUNTS, &account.id.to_bytes(), &account)?;
+        self.store
+            .put(cf::ACCOUNTS, &account.id.to_bytes(), &account)?;
+        Ok(account)
+    }
+
+    /// 后补密码：仅 OAuth-only 账号（`!has_password()`）允许。
+    ///
+    /// 与 `change_password` 的区别：这里不需要旧密码（用户根本没设过），
+    /// 且**不**调 `revoke_tokens`——这是 OAuth-only 账号给自身加备用登录方式，
+    /// 吊销会把用户在唯一登录方式踢下线。
+    pub fn set_password(&self, account_id: Ulid, new_password: &str) -> Result<Account, AppError> {
+        let mut account = self.find_by_id(account_id)?.ok_or(AppError::NotFound)?;
+        if account.has_password() {
+            return Err(AppError::InvalidQuery(
+                "此账号已有密码，请使用 changePassword 修改".to_string(),
+            ));
+        }
+        validate_password(new_password)?;
+        account.password_hash = hash_password(new_password)?;
+        self.store
+            .put(cf::ACCOUNTS, &account.id.to_bytes(), &account)?;
         Ok(account)
     }
 
@@ -158,12 +194,16 @@ impl AuthService {
         let mut account = self.find_by_id(id)?.ok_or(AppError::NotFound)?;
         account.name = name.to_string();
         account.is_admin = is_admin;
-        self.store.put(cf::ACCOUNTS, &account.id.to_bytes(), &account)?;
+        self.store
+            .put(cf::ACCOUNTS, &account.id.to_bytes(), &account)?;
         Ok(account)
     }
 
     pub fn find_by_email(&self, email: &str) -> Result<Option<Account>, AppError> {
-        let Some(raw) = self.store.get_raw(cf::ACCOUNTS_EMAIL_IDX, email.as_bytes())? else {
+        let Some(raw) = self
+            .store
+            .get_raw(cf::ACCOUNTS_EMAIL_IDX, email.as_bytes())?
+        else {
             return Ok(None);
         };
         let id_bytes: [u8; 16] = raw
@@ -195,11 +235,7 @@ impl AuthService {
     /// 注销另删邮箱索引，使该地址可被重新注册。**注销是终态**：把已注销账号设回
     /// `Active` 会被拒。只靠前端隐藏按钮不够——直接调 API 就能绕过去，而那时邮箱
     /// 索引并不会恢复，于是得到一个「状态正常、却永远登不进去」的死账号。
-    pub fn set_status(
-        &self,
-        id: Ulid,
-        status: AccountStatus,
-    ) -> Result<Account, AppError> {
+    pub fn set_status(&self, id: Ulid, status: AccountStatus) -> Result<Account, AppError> {
         let account = self.find_by_id(id)?.ok_or(AppError::NotFound)?;
         if status == AccountStatus::Active && self.status(id)? == AccountStatus::Deactivated {
             return Err(AppError::InvalidQuery("已注销的账号无法恢复".to_string()));
@@ -305,7 +341,7 @@ impl AuthService {
     }
 }
 
-fn normalize_email(email: &str) -> Result<String, AppError> {
+pub(crate) fn normalize_email(email: &str) -> Result<String, AppError> {
     let email = email.trim().to_lowercase();
     if !email.contains('@') || email.len() < 3 {
         return Err(AppError::Internal("邮箱格式无效".to_string()));
@@ -313,7 +349,7 @@ fn normalize_email(email: &str) -> Result<String, AppError> {
     Ok(email)
 }
 
-fn validate_password(password: &str) -> Result<(), AppError> {
+pub(crate) fn validate_password(password: &str) -> Result<(), AppError> {
     let has_upper = password.chars().any(|c| c.is_ascii_uppercase());
     let has_lower = password.chars().any(|c| c.is_ascii_lowercase());
     let has_digit = password.chars().any(|c| c.is_ascii_digit());
@@ -323,7 +359,7 @@ fn validate_password(password: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-fn hash_password(password: &str) -> Result<String, AppError> {
+pub(crate) fn hash_password(password: &str) -> Result<String, AppError> {
     let salt = SaltString::generate(&mut OsRng);
     let hash = Argon2::default()
         .hash_password(password.as_bytes(), &salt)?
@@ -368,7 +404,7 @@ fn pick(rng: &mut impl RngCore, n: usize) -> usize {
     (rng.next_u32() as usize) % n
 }
 
-fn verify_password(password: &str, hash: &str) -> Result<bool, AppError> {
+pub(crate) fn verify_password(password: &str, hash: &str) -> Result<bool, AppError> {
     let parsed = PasswordHash::new(hash)?;
     Ok(Argon2::default()
         .verify_password(password.as_bytes(), &parsed)
@@ -395,7 +431,9 @@ mod tests {
 
         assert!(auth.register("user@x.io", "User", "Passw0rd!").is_err());
         // 管理员建号不受开关限制，否则关闭注册后连管理员都建不出来。
-        assert!(auth.create_by_admin("admin@x.io", "Admin", "Passw0rd!", true).is_ok());
+        assert!(auth
+            .create_by_admin("admin@x.io", "Admin", "Passw0rd!", true)
+            .is_ok());
 
         std::fs::remove_dir_all(&dir).ok();
     }

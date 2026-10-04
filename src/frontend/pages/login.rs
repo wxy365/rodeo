@@ -6,7 +6,53 @@ use leptos_router::hooks::use_navigate;
 use crate::frontend::graphql_client::{allow_registration as fetch_allow_registration, login, register, set_token};
 use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::icons::ic_logo;
+use crate::frontend::pages::wechat_bind::WeChatBindPanel;
 use crate::frontend::use_auth;
+
+fn url_param(search: &str, key: &str) -> Option<String> {
+    search.trim_start_matches('?').split('&').find_map(|kv| {
+        kv.split_once('=')
+            .filter(|(k, _)| *k == key)
+            .map(|(_, v)| urlencoding_decode(v))
+    })
+}
+
+fn urlencoding_decode(s: &str) -> String {
+    urlencoding::decode(s)
+        .map(|c| c.into_owned())
+        .unwrap_or_else(|_| s.to_string())
+}
+
+fn return_to_default() -> String {
+    // 简单起见总是 /workspaces；如果以后想从 session 取上次访问点可改这里。
+    "/workspaces".to_string()
+}
+
+/// `web_sys::window().location().search()` 的 wasm/ssr 兼容壳。SSR 没有
+/// DOM，`web_sys` 也不在 ssr 依赖里——直接调用链接都过不去。SSR 侧返回
+/// 空串，下面的 Effect 因 `cfg!` 早 return 本来也不会用。
+#[cfg(target_arch = "wasm32")]
+fn window_search() -> String {
+    web_sys::window()
+        .and_then(|w| w.location().search().ok())
+        .unwrap_or_default()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn window_search() -> String {
+    String::new()
+}
+
+/// `window.location().set_href(...)` 的 wasm/ssr 兼容壳。SSR 端是 no-op。
+#[cfg(target_arch = "wasm32")]
+fn window_set_href(url: &str) {
+    if let Some(w) = web_sys::window() {
+        w.location().set_href(url).ok();
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn window_set_href(_url: &str) {}
 
 #[component]
 pub fn Login() -> impl IntoView {
@@ -39,6 +85,48 @@ pub fn Login() -> impl IntoView {
         spawn_local(async move {
             allow_reg.set(Some(fetch_allow_registration().await));
         });
+    });
+
+    let oauth_providers = RwSignal::new(Vec::<String>::new());
+    Effect::new_sync(move |_| {
+        if !cfg!(target_arch = "wasm32") {
+            return;
+        }
+        spawn_local(async move {
+            if let Ok(p) = crate::frontend::graphql_client::oauth_providers().await {
+                oauth_providers.set(p);
+            }
+        });
+    });
+
+    // SSR 直出时 window.location 不存在；只 wasm 跑
+    let bind_info = RwSignal::new(None::<(String, String, String)>);
+    Effect::new_sync(move |_| {
+        if !cfg!(target_arch = "wasm32") {
+            return;
+        }
+        let search = window_search();
+        if let Some(bind_token) = url_param(&search, "bind") {
+            let provider = url_param(&search, "provider").unwrap_or_default();
+            let return_to =
+                url_param(&search, "return_to").unwrap_or_else(|| "/workspaces".to_string());
+            bind_info.set(Some((bind_token, provider, return_to)));
+        }
+    });
+
+    // OAuthCallback 失败跳转过来时带的提示（如 `#token` 缺失），显示在表单上方。
+    let oauth_error = RwSignal::new(None::<String>);
+    Effect::new_sync(move |_| {
+        if !cfg!(target_arch = "wasm32") {
+            return;
+        }
+        let search = window_search();
+        if let Some(code) = url_param(&search, "oauth_error") {
+            oauth_error.set(Some(match code.as_str() {
+                "missing_token" => "登录失败：未收到令牌，请重新扫码".to_string(),
+                _ => format!("登录失败：{code}"),
+            }));
+        }
     });
 
     let submit = move |ev: SubmitEvent| {
@@ -75,54 +163,96 @@ pub fn Login() -> impl IntoView {
 
     view! {
         <div class="login-wrap">
-            <form class="panel login-card" on:submit=submit>
-                <div class="logo">
-                    {ic_logo()}
-                    <b>{move || i18n.t("appbar.brand")}</b>
-                    <span class="chip dim">{move || i18n.t("login.tagline")}</span>
-                </div>
-                {move || if is_register.get() {
-                    view! {
-                        <input class="inp" placeholder={move || i18n.t("login.name")} prop:value=name on:input=move |ev| name.set(event_target_value(&ev)) />
-                    }.into_any()
-                } else {
-                    view! { <div></div> }.into_any()
-                }}
-                <input class="inp" type="email" placeholder={move || i18n.t("login.email")} prop:value=email on:input=move |ev| email.set(event_target_value(&ev)) />
-                <input class="inp" type="password" placeholder={move || i18n.t("login.password")} prop:value=password on:input=move |ev| password.set(event_target_value(&ev)) />
-                {move || auth.session_lost.get().then(|| view! {
-                    <p class="error">{move || i18n.t("login.session_lost")}</p>
-                })}
-                {move || error.get().map(|e| view! { <p class="error">{e}</p> })}
-                {move || (!ready.get()).then(|| view! {
-                    <p class="mut" style="text-align:center">{move || i18n.t("login.loading")}</p>
-                })}
-                <button class="btn pri" type="submit" style="justify-content:center;padding:9px" disabled=move || busy.get() || !ready.get()>
-                    {move || if is_register.get() { i18n.t("login.submit_register") } else { i18n.t("login.submit_login") }}
-                </button>
-                <div style="display:flex;justify-content:space-between" class="mut">
-                    {move || match allow_reg.get() {
-                        Some(true) => view! {
-                            <span class="link" on:click=move |_| is_register.update(|v| *v = !*v)>
-                                {move || if is_register.get() { i18n.t("login.to_login") } else { i18n.t("login.to_register") }}
-                            </span>
-                        }.into_any(),
-                        Some(false) => view! {
-                            <span class="mut">{move || i18n.t("login.reg_disabled")}</span>
-                        }.into_any(),
-                        None => ().into_any(),
-                    }}
-                    <u class="mut">{move || i18n.t("login.forgot_password")}</u>
-                </div>
-                <div class="divider">{move || i18n.t("login.or_continue")}</div>
-                <button class="btn" type="button" style="justify-content:center" disabled>
-                    <b>"GitHub"</b>{move || i18n.t("login.oauth_soon")}
-                </button>
-                <button class="btn" type="button" style="justify-content:center" disabled>
-                    <b>{move || i18n.t("login.enterprise_oidc")}</b>{move || i18n.t("login.sso_soon")}
-                </button>
-                <div class="mut" style="text-align:center">{move || i18n.t("login.footer")}</div>
-            </form>
+            {move || bind_info.get().map(|(t, p, r)| view! {
+                <WeChatBindPanel bind_token=t provider=p return_to=r />
+            }.into_any()).unwrap_or_else(|| {
+                // `submit` 是 `move`-capture 的非 `Copy` 闭包。`unwrap_or_else`
+                // 自身是 FnOnce，里面 `view!` 又要把 `submit` move 到 `<form on:submit>`
+                // 里——外层 `move ||` 一并变 FnOnce，leptos 重渲就坏了。提前克隆
+                // 一份给 form，让 view! 拿的是独立副本。
+                let submit_for_form = submit.clone();
+                view! {
+                    <form class="panel login-card" on:submit=submit_for_form>
+                        <div class="logo">
+                            {ic_logo()}
+                            <b>{move || i18n.t("appbar.brand")}</b>
+                            <span class="chip dim">{move || i18n.t("login.tagline")}</span>
+                        </div>
+                        {move || if is_register.get() {
+                            view! {
+                                <input class="inp" placeholder={move || i18n.t("login.name")} prop:value=name on:input=move |ev| name.set(event_target_value(&ev)) />
+                            }.into_any()
+                        } else {
+                            view! { <div></div> }.into_any()
+                        }}
+                        <input class="inp" type="email" placeholder={move || i18n.t("login.email")} prop:value=email on:input=move |ev| email.set(event_target_value(&ev)) />
+                        <input class="inp" type="password" placeholder={move || i18n.t("login.password")} prop:value=password on:input=move |ev| password.set(event_target_value(&ev)) />
+                        {move || auth.session_lost.get().then(|| view! {
+                            <p class="error">{move || i18n.t("login.session_lost")}</p>
+                        })}
+                        {move || oauth_error.get().map(|m| view! {
+                            <p class="error">{m}</p>
+                        })}
+                        {move || error.get().map(|e| view! { <p class="error">{e}</p> })}
+                        {move || (!ready.get()).then(|| view! {
+                            <p class="mut" style="text-align:center">{move || i18n.t("login.loading")}</p>
+                        })}
+                        <button class="btn pri" type="submit" style="justify-content:center;padding:9px" disabled=move || busy.get() || !ready.get()>
+                            {move || if is_register.get() { i18n.t("login.submit_register") } else { i18n.t("login.submit_login") }}
+                        </button>
+                        <div style="display:flex;justify-content:space-between" class="mut">
+                            {move || match allow_reg.get() {
+                                Some(true) => view! {
+                                    <span class="link" on:click=move |_| is_register.update(|v| *v = !*v)>
+                                        {move || if is_register.get() { i18n.t("login.to_login") } else { i18n.t("login.to_register") }}
+                                    </span>
+                                }.into_any(),
+                                Some(false) => view! {
+                                    <span class="mut">{move || i18n.t("login.reg_disabled")}</span>
+                                }.into_any(),
+                                None => ().into_any(),
+                            }}
+                            <u class="mut">{move || i18n.t("login.forgot_password")}</u>
+                        </div>
+                        {move || {
+                            let ps = oauth_providers.get();
+                            if ps.is_empty() {
+                                None
+                            } else {
+                                // 先把每个 provider 的 label + start_url 算成 owned 字符串，
+                                // 收集成 `Vec<(String, String)>` 再交给 view!——直接 `ps.iter()`
+                                // 会让 view! 借 `ps`，而 `ps` 是这个闭包的栈帧局部，view! 的
+                                // 生命周期跟闭包返回点对不上，会爆 E0515。
+                                let buttons: Vec<(String, String)> = ps.iter().map(|name| {
+                                    let label = match name.as_str() {
+                                        "wechat" => "微信扫码登录",
+                                        "google" => "Google 账号登录",
+                                        "github" => "GitHub 账号登录",
+                                        _ => name.as_str(),
+                                    };
+                                    let start_url = format!(
+                                        "/api/auth/{}/start?return_to={}",
+                                        name,
+                                        urlencoding::encode(&return_to_default()),
+                                    );
+                                    (label.to_string(), start_url)
+                                }).collect();
+                                Some(view! {
+                                    <div class="divider">{move || i18n.t("login.or_continue")}</div>
+                                    {buttons.into_iter().map(|(label, start_url)| view! {
+                                        <button class="btn" type="button"
+                                            style="justify-content:center"
+                                            on:click=move |_| window_set_href(&start_url)>
+                                            <b>{label}</b>
+                                        </button>
+                                    }).collect::<Vec<_>>()}
+                                })
+                            }
+                        }}
+                        <div class="mut" style="text-align:center">{move || i18n.t("login.footer")}</div>
+                    </form>
+                }.into_any()
+            })}
         </div>
     }
 }

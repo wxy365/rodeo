@@ -116,11 +116,13 @@ impl SearchIndex {
             Ok(existing) => existing,
             Err(_) => Index::create_in_dir(Path::new(dir), schema.clone()).map_err(srch_err)?,
         };
-        let analyzer = TextAnalyzer::builder(NgramTokenizer::new(1, 2, false).map_err(srch_err)?)
-            .build();
+        let analyzer =
+            TextAnalyzer::builder(NgramTokenizer::new(1, 2, false).map_err(srch_err)?).build();
         index.tokenizers().register(TOKENIZER, analyzer);
 
-        let writer = index.writer_with_num_threads(1, 50_000_000).map_err(srch_err)?;
+        let writer = index
+            .writer_with_num_threads(1, 50_000_000)
+            .map_err(srch_err)?;
         let reader = index.reader().map_err(srch_err)?;
 
         Ok(Self {
@@ -310,7 +312,8 @@ mod tests {
         let ws = Ulid::new();
         let mut e = Entry::new(ws, "找回密码失败".to_string(), Ulid::new());
         e.detail = r#"{"ops":[{"insert":"用户反馈邮箱收不到验证码"}]}"#.to_string();
-        idx.index_entry(&e, &[], "评论区补充：验证码有过期时间").unwrap();
+        idx.index_entry(&e, &[], "评论区补充：验证码有过期时间")
+            .unwrap();
 
         let hits = idx.search(ws, "密码", 10).unwrap();
         assert_eq!(hits, vec![e.code.clone()], "中文子串必须命中");
@@ -334,7 +337,10 @@ mod tests {
         idx.index_entry(&e, &[], "").unwrap();
 
         // 整段 Code 与其中一段子串都应命中。
-        assert_eq!(idx.search(ws, "RD-kM3vB7dR", 10).unwrap(), vec![e.code.clone()]);
+        assert_eq!(
+            idx.search(ws, "RD-kM3vB7dR", 10).unwrap(),
+            vec![e.code.clone()]
+        );
         assert_eq!(idx.search(ws, "kM3v", 10).unwrap(), vec![e.code.clone()]);
         drop(idx);
         std::fs::remove_dir_all(&dir).ok();
@@ -355,7 +361,8 @@ mod tests {
         {
             let index = Index::create_in_dir(Path::new(&dir), old).unwrap();
             let mut w = index.writer_with_num_threads(1, 15_000_000).unwrap();
-            w.add_document(doc!(f_code => "RD-old", f_ws => Ulid::new().to_string())).unwrap();
+            w.add_document(doc!(f_code => "RD-old", f_ws => Ulid::new().to_string()))
+                .unwrap();
             w.commit().unwrap();
         }
 
@@ -365,7 +372,10 @@ mod tests {
         let ws = Ulid::new();
         let e = Entry::new(ws, "重建后".to_string(), Ulid::new());
         idx.index_entry(&e, &[], "").unwrap();
-        assert_eq!(idx.search(ws, e.code.as_str(), 10).unwrap(), vec![e.code.clone()]);
+        assert_eq!(
+            idx.search(ws, e.code.as_str(), 10).unwrap(),
+            vec![e.code.clone()]
+        );
         drop(idx);
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -395,7 +405,12 @@ mod tests {
         let idx = SearchIndex::open(&dir).unwrap();
         let ws = Ulid::new();
         let e = Entry::new(ws, "t".to_string(), Ulid::new());
-        let l = Labeling::new(e.code.clone(), "Owner".to_string(), LabelValue::Enum("陈晨".to_string()), Ulid::new());
+        let l = Labeling::new(
+            e.code.clone(),
+            "Owner".to_string(),
+            LabelValue::Enum("陈晨".to_string()),
+            Ulid::new(),
+        );
         idx.index_entry(&e, &[l], "").unwrap();
         assert_eq!(idx.search(ws, "陈晨", 10).unwrap(), vec![e.code.clone()]);
         drop(idx);

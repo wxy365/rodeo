@@ -40,7 +40,10 @@ impl RuleService {
                 continue;
             }
             let id = Ulid::from_bytes(key[16..32].try_into().unwrap());
-            match self.store.get::<AutomationRule>(cf::AUTOMATION_RULES, &keys::rule_key(id)) {
+            match self
+                .store
+                .get::<AutomationRule>(cf::AUTOMATION_RULES, &keys::rule_key(id))
+            {
                 Ok(Some(r)) => out.push(r),
                 Ok(None) => {}
                 // 读不出来的记录（旧编码残留）不该拖垮整个规则列表：跳过并记一笔。
@@ -87,7 +90,8 @@ impl RuleService {
             target_expr,
             writes,
         )?;
-        let rule = AutomationRule::new(ws, name.trim().to_string(), enabled, trigger, action, actor);
+        let rule =
+            AutomationRule::new(ws, name.trim().to_string(), enabled, trigger, action, actor);
         let audit = AuditLog::new(
             AuditAction::RuleCreated,
             actor,
@@ -98,7 +102,11 @@ impl RuleService {
             Some(serde_json::to_string(&rule).unwrap_or_default()),
         );
         let mut ops = audit_ops(&audit)?;
-        ops.push(BatchOp::put(cf::AUTOMATION_RULES, keys::rule_key(rule.id).to_vec(), &rule)?);
+        ops.push(BatchOp::put(
+            cf::AUTOMATION_RULES,
+            keys::rule_key(rule.id).to_vec(),
+            &rule,
+        )?);
         ops.push(BatchOp::put_raw(
             cf::AUTOMATION_RULES_BY_WORKSPACE,
             keys::rule_by_workspace_key(ws, rule.id).to_vec(),
@@ -145,7 +153,11 @@ impl RuleService {
             Some(serde_json::to_string(&rule).unwrap_or_default()),
         );
         let mut ops = audit_ops(&audit)?;
-        ops.push(BatchOp::put(cf::AUTOMATION_RULES, keys::rule_key(id).to_vec(), &rule)?);
+        ops.push(BatchOp::put(
+            cf::AUTOMATION_RULES,
+            keys::rule_key(id).to_vec(),
+            &rule,
+        )?);
         self.store.write_batch(ops)?;
         Ok(rule)
     }
@@ -162,7 +174,10 @@ impl RuleService {
             None,
         );
         let mut ops = audit_ops(&audit)?;
-        ops.push(BatchOp::delete(cf::AUTOMATION_RULES, keys::rule_key(id).to_vec()));
+        ops.push(BatchOp::delete(
+            cf::AUTOMATION_RULES,
+            keys::rule_key(id).to_vec(),
+        ));
         ops.push(BatchOp::delete(
             cf::AUTOMATION_RULES_BY_WORKSPACE,
             keys::rule_by_workspace_key(rule.workspace_id, id).to_vec(),
@@ -190,7 +205,9 @@ impl RuleService {
         let trigger = Query::parse(trigger_expr)?;
         trigger.validate_for_rule(&schemas, true)?;
         if writes.is_empty() {
-            return Err(AppError::InvalidQuery("规则至少要有一个标签动作".to_string()));
+            return Err(AppError::InvalidQuery(
+                "规则至少要有一个标签动作".to_string(),
+            ));
         }
         let target = if target_event_source {
             ActionTarget::EventSource
@@ -227,22 +244,13 @@ impl RuleService {
                 (WriteOp::Set, Some(ValueSource::Literal(v))) => {
                     // 字面量不合法在保存时就报出来，不留到运行时才发现。
                     LabelValue::from_json(v, schema).map_err(|_| {
-                        AppError::InvalidQuery(format!(
-                            "标签 {} 的值不合法: {v}",
-                            w.label_name
-                        ))
+                        AppError::InvalidQuery(format!("标签 {} 的值不合法: {v}", w.label_name))
                     })?;
                 }
                 (WriteOp::Set, Some(_)) => {}
             }
         }
-        Ok((
-            trigger,
-            RuleAction {
-                target,
-                writes,
-            },
-        ))
+        Ok((trigger, RuleAction { target, writes }))
     }
 
     pub(crate) fn schemas(&self, ws: Ulid) -> Result<Vec<LabelSchema>, AppError> {
@@ -287,8 +295,10 @@ struct Overlay {
 
 impl Overlay {
     fn load(store: &DocStore, ws: Ulid) -> Result<Self, AppError> {
-        let mut labels: std::collections::HashMap<String, std::collections::HashMap<String, Labeling>> =
-            std::collections::HashMap::new();
+        let mut labels: std::collections::HashMap<
+            String,
+            std::collections::HashMap<String, Labeling>,
+        > = std::collections::HashMap::new();
         for (_, v) in store.scan_prefix(cf::LABELINGS_BY_WORKSPACE, &ws.to_bytes())? {
             if let Ok(l) = bincode::deserialize::<Labeling>(&v) {
                 labels
@@ -321,7 +331,12 @@ impl Overlay {
             Some(v) => {
                 entry.insert(
                     w.label_name.clone(),
-                    Labeling::new(w.entry_code.clone(), w.label_name.clone(), v.clone(), w.actor),
+                    Labeling::new(
+                        w.entry_code.clone(),
+                        w.label_name.clone(),
+                        v.clone(),
+                        w.actor,
+                    ),
                 );
             }
             None => {
@@ -351,7 +366,9 @@ impl Schemas {
     }
 
     fn label_of(&self, name: &str) -> Option<(crate::domain::LabelValueType, Option<String>)> {
-        self.by_name.get(name).map(|s| (s.value_type, s.format.clone()))
+        self.by_name
+            .get(name)
+            .map(|s| (s.value_type, s.format.clone()))
     }
 }
 
@@ -374,7 +391,11 @@ impl RuleEngine {
     /// 给定一次请求内的用户标签写入，算出规则动作要补的全部 ops。
     /// 没有启用规则时返回 `Ok(None)`——常态写入因此不为规则付出任何代价。
     /// **必须在用户写入提交之前调用**：`before` 取自库里的前像。
-    pub fn plan(&self, ws: Ulid, user_writes: &[StagedWrite]) -> Result<Option<RulePlan>, AppError> {
+    pub fn plan(
+        &self,
+        ws: Ulid,
+        user_writes: &[StagedWrite],
+    ) -> Result<Option<RulePlan>, AppError> {
         let rules: Vec<AutomationRule> = RuleService::new(self.store.clone())
             .list(ws)?
             .into_iter()
@@ -728,7 +749,10 @@ fn resolve_value(
 }
 
 /// `now` 只对时间型标签有意义：按 schema 的布局渲染成存储串。
-fn now_value(schema: &LabelSchema, now: chrono::DateTime<chrono::Utc>) -> Result<LabelValue, String> {
+fn now_value(
+    schema: &LabelSchema,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<LabelValue, String> {
     use crate::domain::LabelValueType::*;
     use chrono::{Datelike, Timelike};
     if !matches!(schema.value_type, Date | Time | DateTime) {
@@ -878,9 +902,20 @@ mod tests {
 
     #[test]
     fn event_fields_match_label_and_new_value() {
-        let ev = event(Some(LabelValue::Enum("InProgress".into())), Some(LabelValue::Enum("Finished".into())));
-        assert!(matches(r#"$label = "Status" AND $new = "Finished""#, &ev, &[]));
-        assert!(matches(r#"$label = "Status" AND $old = "InProgress""#, &ev, &[]));
+        let ev = event(
+            Some(LabelValue::Enum("InProgress".into())),
+            Some(LabelValue::Enum("Finished".into())),
+        );
+        assert!(matches(
+            r#"$label = "Status" AND $new = "Finished""#,
+            &ev,
+            &[]
+        ));
+        assert!(matches(
+            r#"$label = "Status" AND $old = "InProgress""#,
+            &ev,
+            &[]
+        ));
         assert!(!matches(r#"$new = "Aborted""#, &ev, &[]));
     }
 
@@ -911,7 +946,12 @@ mod tests {
     #[test]
     fn entry_conditions_see_the_event_source_entry() {
         let ev = event(None, None);
-        let labels = vec![Labeling::new("E1".into(), "Priority".into(), LabelValue::Int(5), Ulid::new())];
+        let labels = vec![Labeling::new(
+            "E1".into(),
+            "Priority".into(),
+            LabelValue::Int(5),
+            Ulid::new(),
+        )];
         assert!(matches("Priority >= 3", &ev, &labels));
         assert!(!matches("Priority >= 9", &ev, &labels));
     }
@@ -934,19 +974,28 @@ mod tests {
         let schemas = schemas();
         let ev_field = Query::parse(r#"$label = "Status""#).unwrap();
         assert!(ev_field.validate(&schemas).is_err(), "视图不得使用事件字段");
-        assert!(ev_field.validate_for_rule(&schemas, true).is_ok(), "触发条件允许事件字段");
+        assert!(
+            ev_field.validate_for_rule(&schemas, true).is_ok(),
+            "触发条件允许事件字段"
+        );
         assert!(
             ev_field.validate_for_rule(&schemas, false).is_err(),
             "动作目标是对条目的过滤，不得使用事件字段"
         );
         let text = Query::parse(r#"text ~ "报错""#).unwrap();
-        assert!(text.validate_for_rule(&schemas, true).is_err(), "规则不得使用全文条件");
+        assert!(
+            text.validate_for_rule(&schemas, true).is_err(),
+            "规则不得使用全文条件"
+        );
     }
 
     #[test]
     fn unknown_event_field_is_rejected_with_readable_message() {
         let err = Query::parse("$nope = 1").unwrap_err();
-        assert!(err.to_string().contains("nope"), "错误信息应指出未知字段: {err}");
+        assert!(
+            err.to_string().contains("nope"),
+            "错误信息应指出未知字段: {err}"
+        );
     }
 
     #[test]
@@ -990,24 +1039,57 @@ mod tests {
 
         for bad in ["", "   ", "\t\n"] {
             let err = svc
-                .create(actor, ws, bad, true, r#"$new = "Done""#, true, None, writes())
+                .create(
+                    actor,
+                    ws,
+                    bad,
+                    true,
+                    r#"$new = "Done""#,
+                    true,
+                    None,
+                    writes(),
+                )
                 .unwrap_err();
             assert!(
                 matches!(err, AppError::InvalidQuery(_)),
                 "名字 {bad:?} 应被拒: {err}"
             );
         }
-        assert!(svc.list(ws).unwrap().is_empty(), "被拒的规则不得留下索引残留");
+        assert!(
+            svc.list(ws).unwrap().is_empty(),
+            "被拒的规则不得留下索引残留"
+        );
 
         let rule = svc
-            .create(actor, ws, "  有效名  ", true, r#"$new = "Done""#, true, None, writes())
+            .create(
+                actor,
+                ws,
+                "  有效名  ",
+                true,
+                r#"$new = "Done""#,
+                true,
+                None,
+                writes(),
+            )
             .unwrap();
         assert_eq!(rule.name, "有效名", "合法名字应去除首尾空白后落库");
 
         let err = svc
-            .update(actor, rule.id, "  ", true, r#"$new = "Done""#, true, None, writes())
+            .update(
+                actor,
+                rule.id,
+                "  ",
+                true,
+                r#"$new = "Done""#,
+                true,
+                None,
+                writes(),
+            )
             .unwrap_err();
-        assert!(matches!(err, AppError::InvalidQuery(_)), "更新为空名应被拒: {err}");
+        assert!(
+            matches!(err, AppError::InvalidQuery(_)),
+            "更新为空名应被拒: {err}"
+        );
         assert_eq!(
             svc.get(rule.id).unwrap().unwrap().name,
             "有效名",
@@ -1087,11 +1169,27 @@ mod tests {
         }
 
         /// 直接落一个标签（不走规则），用于构造前像。
-        fn set(store: &Arc<DocStore>, ws: Ulid, code: &str, name: &str, lv: LabelValue, actor: Ulid) {
+        fn set(
+            store: &Arc<DocStore>,
+            ws: Ulid,
+            code: &str,
+            name: &str,
+            lv: LabelValue,
+            actor: Ulid,
+        ) {
             let before = store
                 .get::<Labeling>(cf::LABELINGS, &keys::labeling_key(code, name))
                 .unwrap();
-            let ops = labeling_ops(ws, code, name, value_type_for(name), Some(&lv), actor, before.as_ref()).unwrap();
+            let ops = labeling_ops(
+                ws,
+                code,
+                name,
+                value_type_for(name),
+                Some(&lv),
+                actor,
+                before.as_ref(),
+            )
+            .unwrap();
             store.write_batch(ops).unwrap();
         }
 
@@ -1109,7 +1207,10 @@ mod tests {
             let mut ops = Vec::new();
             for w in writes {
                 let before = store
-                    .get::<Labeling>(cf::LABELINGS, &keys::labeling_key(&w.entry_code, &w.label_name))
+                    .get::<Labeling>(
+                        cf::LABELINGS,
+                        &keys::labeling_key(&w.entry_code, &w.label_name),
+                    )
                     .unwrap();
                 ops.extend(
                     labeling_ops(
@@ -1141,12 +1242,16 @@ mod tests {
             let (dir, store, ws, actor) = setup();
             let entry = entry_svc(&store).create(actor, ws, "任务").unwrap();
             rule_set_finished_at(&store, ws, actor);
-            apply(&store, ws, &[StagedWrite {
-                entry_code: entry.code.clone(),
-                label_name: "Status".into(),
-                value: Some(LabelValue::Enum("Finished".into())),
-                actor,
-            }]);
+            apply(
+                &store,
+                ws,
+                &[StagedWrite {
+                    entry_code: entry.code.clone(),
+                    label_name: "Status".into(),
+                    value: Some(LabelValue::Enum("Finished".into())),
+                    actor,
+                }],
+            );
             let got = get(&store, &entry.code, "FinishedAt");
             assert!(got.is_some(), "Status=Finished 应触发 FinishedAt 写入");
             std::fs::remove_dir_all(&dir).ok();
@@ -1158,21 +1263,33 @@ mod tests {
             let entry = entry_svc(&store).create(actor, ws, "任务").unwrap();
             rule_set_finished_at(&store, ws, actor);
             // 先真的写一次 Finished，让规则触发。
-            apply(&store, ws, &[StagedWrite {
-                entry_code: entry.code.clone(),
-                label_name: "Status".into(),
-                value: Some(LabelValue::Enum("Finished".into())),
-                actor,
-            }]);
+            apply(
+                &store,
+                ws,
+                &[StagedWrite {
+                    entry_code: entry.code.clone(),
+                    label_name: "Status".into(),
+                    value: Some(LabelValue::Enum("Finished".into())),
+                    actor,
+                }],
+            );
             let first = get(&store, &entry.code, "FinishedAt");
             // 再把同一个值写一遍：值没变，不产生事件，规则不该重跑。
-            apply(&store, ws, &[StagedWrite {
-                entry_code: entry.code.clone(),
-                label_name: "Status".into(),
-                value: Some(LabelValue::Enum("Finished".into())),
-                actor,
-            }]);
-            assert_eq!(get(&store, &entry.code, "FinishedAt"), first, "重复写同值不得刷新 FinishedAt");
+            apply(
+                &store,
+                ws,
+                &[StagedWrite {
+                    entry_code: entry.code.clone(),
+                    label_name: "Status".into(),
+                    value: Some(LabelValue::Enum("Finished".into())),
+                    actor,
+                }],
+            );
+            assert_eq!(
+                get(&store, &entry.code, "FinishedAt"),
+                first,
+                "重复写同值不得刷新 FinishedAt"
+            );
             std::fs::remove_dir_all(&dir).ok();
         }
 
@@ -1186,26 +1303,55 @@ mod tests {
             // 两条规则都因 Priority 事件触发（`Priority` 条件对任意 Priority 值成立），
             // 同一层里先后写 Priority = 1、2。
             let svc = RuleService::new(store.clone());
-            svc.create(actor, ws, "P+A", true, "Priority", true, None, vec![LabelWrite {
-                label_name: "Priority".into(), op: WriteOp::Set,
-                value: Some(ValueSource::Literal(serde_json::json!(1))),
-            }]).unwrap();
+            svc.create(
+                actor,
+                ws,
+                "P+A",
+                true,
+                "Priority",
+                true,
+                None,
+                vec![LabelWrite {
+                    label_name: "Priority".into(),
+                    op: WriteOp::Set,
+                    value: Some(ValueSource::Literal(serde_json::json!(1))),
+                }],
+            )
+            .unwrap();
             // `Ulid::new()` 只是 from_datetime(now())，毫秒内的低 80 位是随机的、并不单调，
             // 两条规则若落在同一毫秒，id 相对顺序就是随机的；sleep 隔开时间戳才能保证 id 升序 = 创建顺序。
             std::thread::sleep(std::time::Duration::from_millis(2));
-            svc.create(actor, ws, "P+B", true, "Priority", true, None, vec![LabelWrite {
-                label_name: "Priority".into(), op: WriteOp::Set,
-                value: Some(ValueSource::Literal(serde_json::json!(2))),
-            }]).unwrap();
+            svc.create(
+                actor,
+                ws,
+                "P+B",
+                true,
+                "Priority",
+                true,
+                None,
+                vec![LabelWrite {
+                    label_name: "Priority".into(),
+                    op: WriteOp::Set,
+                    value: Some(ValueSource::Literal(serde_json::json!(2))),
+                }],
+            )
+            .unwrap();
             // 层内后者覆盖前者 → 2；下一轮两条规则再算出的仍是 2，与当前值相同被丢弃，
             // 级联就此收敛。
-            apply(&store, ws, &[StagedWrite {
-                entry_code: entry.code.clone(),
-                label_name: "Priority".into(),
-                value: Some(LabelValue::Int(0)),
-                actor,
-            }]);
-            assert_eq!(get(&store, &entry.code, "Priority"), Some(LabelValue::Int(2)));
+            apply(
+                &store,
+                ws,
+                &[StagedWrite {
+                    entry_code: entry.code.clone(),
+                    label_name: "Priority".into(),
+                    value: Some(LabelValue::Int(0)),
+                    actor,
+                }],
+            );
+            assert_eq!(
+                get(&store, &entry.code, "Priority"),
+                Some(LabelValue::Int(2))
+            );
             std::fs::remove_dir_all(&dir).ok();
         }
 
@@ -1214,19 +1360,28 @@ mod tests {
             let (dir, store, ws, actor) = setup();
             let entry = entry_svc(&store).create(actor, ws, "任务").unwrap();
             rule_set_finished_at(&store, ws, actor);
-            apply(&store, ws, &[StagedWrite {
-                entry_code: entry.code.clone(),
-                label_name: "Status".into(),
-                value: Some(LabelValue::Enum("Finished".into())),
-                actor,
-            }]);
-            let audits = crate::service::AuditService::new(store.clone()).list(ws, 100).unwrap();
+            apply(
+                &store,
+                ws,
+                &[StagedWrite {
+                    entry_code: entry.code.clone(),
+                    label_name: "Status".into(),
+                    value: Some(LabelValue::Enum("Finished".into())),
+                    actor,
+                }],
+            );
+            let audits = crate::service::AuditService::new(store.clone())
+                .list(ws, 100)
+                .unwrap();
             let applied = audits
                 .iter()
                 .find(|a| a.action == AuditAction::RuleApplied)
                 .expect("规则命中应写一条 RuleApplied");
             let after = applied.after.as_deref().unwrap_or("");
-            assert!(after.contains("FinishedAt"), "审计应记录规则写了哪些标签: {after}");
+            assert!(
+                after.contains("FinishedAt"),
+                "审计应记录规则写了哪些标签: {after}"
+            );
             std::fs::remove_dir_all(&dir).ok();
         }
 
@@ -1243,20 +1398,72 @@ mod tests {
                 value,
             };
             // 链：Status=Finished → FinishedAt=now → Priority=1 → Status=InProgress → Priority=2。
-            svc.create(actor, ws, "R1", true, r#"$label = "Status" AND $new = "Finished""#, true, None,
-                vec![write("FinishedAt", WriteOp::Set, Some(ValueSource::Now))]).unwrap();
-            svc.create(actor, ws, "R2", true, r#"$label = "FinishedAt""#, true, None,
-                vec![write("Priority", WriteOp::Set, Some(ValueSource::Literal(serde_json::json!(1))))]).unwrap();
-            svc.create(actor, ws, "R3", true, r#"$label = "Priority""#, true, None,
-                vec![write("Status", WriteOp::Set, Some(ValueSource::Literal(serde_json::json!("InProgress"))))]).unwrap();
-            svc.create(actor, ws, "R4", true, r#"$label = "Status" AND $new = "InProgress""#, true, None,
-                vec![write("Priority", WriteOp::Set, Some(ValueSource::Literal(serde_json::json!(2))))]).unwrap();
-            apply(&store, ws, &[StagedWrite {
-                entry_code: entry.code.clone(),
-                label_name: "Status".into(),
-                value: Some(LabelValue::Enum("Finished".into())),
+            svc.create(
                 actor,
-            }]);
+                ws,
+                "R1",
+                true,
+                r#"$label = "Status" AND $new = "Finished""#,
+                true,
+                None,
+                vec![write("FinishedAt", WriteOp::Set, Some(ValueSource::Now))],
+            )
+            .unwrap();
+            svc.create(
+                actor,
+                ws,
+                "R2",
+                true,
+                r#"$label = "FinishedAt""#,
+                true,
+                None,
+                vec![write(
+                    "Priority",
+                    WriteOp::Set,
+                    Some(ValueSource::Literal(serde_json::json!(1))),
+                )],
+            )
+            .unwrap();
+            svc.create(
+                actor,
+                ws,
+                "R3",
+                true,
+                r#"$label = "Priority""#,
+                true,
+                None,
+                vec![write(
+                    "Status",
+                    WriteOp::Set,
+                    Some(ValueSource::Literal(serde_json::json!("InProgress"))),
+                )],
+            )
+            .unwrap();
+            svc.create(
+                actor,
+                ws,
+                "R4",
+                true,
+                r#"$label = "Status" AND $new = "InProgress""#,
+                true,
+                None,
+                vec![write(
+                    "Priority",
+                    WriteOp::Set,
+                    Some(ValueSource::Literal(serde_json::json!(2))),
+                )],
+            )
+            .unwrap();
+            apply(
+                &store,
+                ws,
+                &[StagedWrite {
+                    entry_code: entry.code.clone(),
+                    label_name: "Status".into(),
+                    value: Some(LabelValue::Enum("Finished".into())),
+                    actor,
+                }],
+            );
             assert_eq!(
                 get(&store, &entry.code, "Priority"),
                 Some(LabelValue::Int(1)),
@@ -1294,12 +1501,16 @@ mod tests {
                     }],
                 )
                 .unwrap();
-            apply(&store, ws, &[StagedWrite {
-                entry_code: entry.code.clone(),
-                label_name: "Status".into(),
-                value: Some(LabelValue::Enum("Finished".into())),
-                actor,
-            }]);
+            apply(
+                &store,
+                ws,
+                &[StagedWrite {
+                    entry_code: entry.code.clone(),
+                    label_name: "Status".into(),
+                    value: Some(LabelValue::Enum("Finished".into())),
+                    actor,
+                }],
+            );
             let sets = crate::service::AuditService::new(store.clone())
                 .list(ws, 100)
                 .unwrap()
@@ -1315,7 +1526,14 @@ mod tests {
         fn remove_action_deletes_the_label() {
             let (dir, store, ws, actor) = setup();
             let entry = entry_svc(&store).create(actor, ws, "任务").unwrap();
-            set(&store, ws, &entry.code, "Priority", LabelValue::Int(5), actor);
+            set(
+                &store,
+                ws,
+                &entry.code,
+                "Priority",
+                LabelValue::Int(5),
+                actor,
+            );
             RuleService::new(store.clone())
                 .create(
                     actor,
@@ -1332,13 +1550,21 @@ mod tests {
                     }],
                 )
                 .unwrap();
-            apply(&store, ws, &[StagedWrite {
-                entry_code: entry.code.clone(),
-                label_name: "Status".into(),
-                value: Some(LabelValue::Enum("Finished".into())),
-                actor,
-            }]);
-            assert_eq!(get(&store, &entry.code, "Priority"), None, "Remove 动作应删掉该标签");
+            apply(
+                &store,
+                ws,
+                &[StagedWrite {
+                    entry_code: entry.code.clone(),
+                    label_name: "Status".into(),
+                    value: Some(LabelValue::Enum("Finished".into())),
+                    actor,
+                }],
+            );
+            assert_eq!(
+                get(&store, &entry.code, "Priority"),
+                None,
+                "Remove 动作应删掉该标签"
+            );
             std::fs::remove_dir_all(&dir).ok();
         }
 
@@ -1363,13 +1589,21 @@ mod tests {
                     }],
                 )
                 .unwrap();
-            apply(&store, ws, &[StagedWrite {
-                entry_code: entry.code.clone(),
-                label_name: "Status".into(),
-                value: Some(LabelValue::Enum("Finished".into())),
-                actor,
-            }]);
-            assert_eq!(get(&store, &entry.code, "FinishedAt"), None, "$old 缺值应跳过该条写入");
+            apply(
+                &store,
+                ws,
+                &[StagedWrite {
+                    entry_code: entry.code.clone(),
+                    label_name: "Status".into(),
+                    value: Some(LabelValue::Enum("Finished".into())),
+                    actor,
+                }],
+            );
+            assert_eq!(
+                get(&store, &entry.code, "FinishedAt"),
+                None,
+                "$old 缺值应跳过该条写入"
+            );
             assert_eq!(
                 get(&store, &entry.code, "Status"),
                 Some(LabelValue::Enum("Finished".into())),
@@ -1383,7 +1617,14 @@ mod tests {
         fn missing_new_on_delete_event_skips_the_write() {
             let (dir, store, ws, actor) = setup();
             let entry = entry_svc(&store).create(actor, ws, "任务").unwrap();
-            set(&store, ws, &entry.code, "Status", LabelValue::Enum("Finished".into()), actor);
+            set(
+                &store,
+                ws,
+                &entry.code,
+                "Status",
+                LabelValue::Enum("Finished".into()),
+                actor,
+            );
             RuleService::new(store.clone())
                 .create(
                     actor,
@@ -1401,14 +1642,26 @@ mod tests {
                 )
                 .unwrap();
             // 用户删除 Status：没有新值可转发。
-            apply(&store, ws, &[StagedWrite {
-                entry_code: entry.code.clone(),
-                label_name: "Status".into(),
-                value: None,
-                actor,
-            }]);
-            assert_eq!(get(&store, &entry.code, "FinishedAt"), None, "$new 在删除事件里无值，应跳过该条写入");
-            assert_eq!(get(&store, &entry.code, "Status"), None, "删标签的请求照常生效");
+            apply(
+                &store,
+                ws,
+                &[StagedWrite {
+                    entry_code: entry.code.clone(),
+                    label_name: "Status".into(),
+                    value: None,
+                    actor,
+                }],
+            );
+            assert_eq!(
+                get(&store, &entry.code, "FinishedAt"),
+                None,
+                "$new 在删除事件里无值，应跳过该条写入"
+            );
+            assert_eq!(
+                get(&store, &entry.code, "Status"),
+                None,
+                "删标签的请求照常生效"
+            );
             std::fs::remove_dir_all(&dir).ok();
         }
 
@@ -1435,13 +1688,19 @@ mod tests {
                     }],
                 )
                 .unwrap();
-            apply(&store, ws, &[StagedWrite {
-                entry_code: entry.code.clone(),
-                label_name: "Status".into(),
-                value: Some(LabelValue::Enum("Finished".into())),
-                actor,
-            }]);
-            let audits = crate::service::AuditService::new(store.clone()).list(ws, 100).unwrap();
+            apply(
+                &store,
+                ws,
+                &[StagedWrite {
+                    entry_code: entry.code.clone(),
+                    label_name: "Status".into(),
+                    value: Some(LabelValue::Enum("Finished".into())),
+                    actor,
+                }],
+            );
+            let audits = crate::service::AuditService::new(store.clone())
+                .list(ws, 100)
+                .unwrap();
             let applied = audits
                 .iter()
                 .find(|a| a.action == AuditAction::RuleApplied)
@@ -1456,7 +1715,11 @@ mod tests {
             );
             let writes = after["writes"].as_array().expect("writes 是数组");
             assert_eq!(writes.len(), 1, "算过一条写入就要记一条: {after}");
-            assert_eq!(writes[0]["applied"], serde_json::json!(false), "被去重丢弃的写入记 applied=false");
+            assert_eq!(
+                writes[0]["applied"],
+                serde_json::json!(false),
+                "被去重丢弃的写入记 applied=false"
+            );
             std::fs::remove_dir_all(&dir).ok();
         }
 
@@ -1483,13 +1746,19 @@ mod tests {
                 )
                 .unwrap();
             // 新增 Status 时 $old 无值，动作整体跳过，`staged` 为空。
-            apply(&store, ws, &[StagedWrite {
-                entry_code: entry.code.clone(),
-                label_name: "Status".into(),
-                value: Some(LabelValue::Enum("Finished".into())),
-                actor,
-            }]);
-            let audits = crate::service::AuditService::new(store.clone()).list(ws, 100).unwrap();
+            apply(
+                &store,
+                ws,
+                &[StagedWrite {
+                    entry_code: entry.code.clone(),
+                    label_name: "Status".into(),
+                    value: Some(LabelValue::Enum("Finished".into())),
+                    actor,
+                }],
+            );
+            let audits = crate::service::AuditService::new(store.clone())
+                .list(ws, 100)
+                .unwrap();
             let applied = audits
                 .iter()
                 .find(|a| a.action == AuditAction::RuleApplied)
@@ -1540,37 +1809,54 @@ mod tests {
                 r#"$label = "Priority""#,
                 true,
                 None,
-                vec![set_write("Status", ValueSource::Literal(serde_json::json!("InProgress")))],
+                vec![set_write(
+                    "Status",
+                    ValueSource::Literal(serde_json::json!("InProgress")),
+                )],
             )
             .unwrap();
-            apply(&store, ws, &[
-                StagedWrite {
-                    entry_code: entry.code.clone(),
-                    label_name: "Status".into(),
-                    value: Some(LabelValue::Enum("Finished".into())),
-                    actor,
-                },
-                StagedWrite {
-                    entry_code: entry.code.clone(),
-                    label_name: "Priority".into(),
-                    value: Some(LabelValue::Int(1)),
-                    actor,
-                },
-            ]);
-            let audits = crate::service::AuditService::new(store.clone()).list(ws, 100).unwrap();
+            apply(
+                &store,
+                ws,
+                &[
+                    StagedWrite {
+                        entry_code: entry.code.clone(),
+                        label_name: "Status".into(),
+                        value: Some(LabelValue::Enum("Finished".into())),
+                        actor,
+                    },
+                    StagedWrite {
+                        entry_code: entry.code.clone(),
+                        label_name: "Priority".into(),
+                        value: Some(LabelValue::Int(1)),
+                        actor,
+                    },
+                ],
+            );
+            let audits = crate::service::AuditService::new(store.clone())
+                .list(ws, 100)
+                .unwrap();
             let mut by_rule = std::collections::HashMap::new();
-            for a in audits.iter().filter(|a| a.action == AuditAction::RuleApplied) {
+            for a in audits
+                .iter()
+                .filter(|a| a.action == AuditAction::RuleApplied)
+            {
                 let after: serde_json::Value =
                     serde_json::from_str(a.after.as_deref().unwrap_or("null")).unwrap();
                 by_rule.insert(after["ruleName"].as_str().unwrap_or("").to_string(), after);
             }
             assert_eq!(by_rule.len(), 2, "两条规则各写一条 RuleApplied");
-            for (rule_name, label) in [("记完成时间", "Status"), ("转进行中", "Priority")] {
+            for (rule_name, label) in [("记完成时间", "Status"), ("转进行中", "Priority")]
+            {
                 let after = by_rule
                     .get(rule_name)
                     .unwrap_or_else(|| panic!("规则「{rule_name}」缺 RuleApplied 审计"));
                 let triggers = after["triggers"].as_array().unwrap();
-                assert_eq!(triggers.len(), 1, "规则「{rule_name}」只该记自己命中的那一个事件: {after}");
+                assert_eq!(
+                    triggers.len(),
+                    1,
+                    "规则「{rule_name}」只该记自己命中的那一个事件: {after}"
+                );
                 assert_eq!(triggers[0]["labelName"].as_str(), Some(label));
             }
             std::fs::remove_dir_all(&dir).ok();
@@ -1605,7 +1891,10 @@ mod tests {
                     r#"$label = "Status" AND $new = "Finished""#,
                     true,
                     None,
-                    vec![set_write("Priority", ValueSource::Literal(serde_json::json!(1)))],
+                    vec![set_write(
+                        "Priority",
+                        ValueSource::Literal(serde_json::json!(1)),
+                    )],
                 )
                 .unwrap();
             rules
@@ -1621,25 +1910,39 @@ mod tests {
                 )
                 .unwrap();
 
-            let affected = apply(&store, ws, &[StagedWrite {
-                entry_code: e1.code.clone(),
-                label_name: "Status".into(),
-                value: Some(LabelValue::Enum("Finished".into())),
-                actor,
-            }]);
+            let affected = apply(
+                &store,
+                ws,
+                &[StagedWrite {
+                    entry_code: e1.code.clone(),
+                    label_name: "Status".into(),
+                    value: Some(LabelValue::Enum("Finished".into())),
+                    actor,
+                }],
+            );
 
-            assert!(get(&store, &e2.code, "FinishedAt").is_some(), "圈定命中的条目应被写入");
+            assert!(
+                get(&store, &e2.code, "FinishedAt").is_some(),
+                "圈定命中的条目应被写入"
+            );
             assert_eq!(
                 get(&store, &e1.code, "FinishedAt"),
                 None,
                 "事件源不得被同层刚写下的 Priority 拉进目标集合"
             );
-            assert_eq!(get(&store, &e3.code, "FinishedAt"), None, "不命中的条目不得被写入");
+            assert_eq!(
+                get(&store, &e3.code, "FinishedAt"),
+                None,
+                "不命中的条目不得被写入"
+            );
             assert_eq!(get(&store, &e1.code, "Priority"), Some(LabelValue::Int(1)));
 
             let mut want = vec![e1.code.clone(), e2.code.clone()];
             want.sort();
-            assert_eq!(affected, want, "affected 应覆盖用户写入与规则写入的条目，不含 E3");
+            assert_eq!(
+                affected, want,
+                "affected 应覆盖用户写入与规则写入的条目，不含 E3"
+            );
             std::fs::remove_dir_all(&dir).ok();
         }
 
@@ -1680,16 +1983,23 @@ mod tests {
                     r#"$label = "FinishedAt""#,
                     false,
                     Some("Priority >= 1"),
-                    vec![set_write("Priority", ValueSource::Literal(serde_json::json!(2)))],
+                    vec![set_write(
+                        "Priority",
+                        ValueSource::Literal(serde_json::json!(2)),
+                    )],
                 )
                 .unwrap();
 
-            let affected = apply(&store, ws, &[StagedWrite {
-                entry_code: e1.code.clone(),
-                label_name: "Status".into(),
-                value: Some(LabelValue::Enum("Finished".into())),
-                actor,
-            }]);
+            let affected = apply(
+                &store,
+                ws,
+                &[StagedWrite {
+                    entry_code: e1.code.clone(),
+                    label_name: "Status".into(),
+                    value: Some(LabelValue::Enum("Finished".into())),
+                    actor,
+                }],
+            );
 
             assert_eq!(
                 get(&store, &e2.code, "Priority"),

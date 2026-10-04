@@ -116,7 +116,11 @@ pub enum SideEffect {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum EntryAction { Create, Update, Delete }
+pub enum EntryAction {
+    Create,
+    Update,
+    Delete,
+}
 
 impl AgentSession {
     pub fn new(user_id: Ulid, workspace_id: Ulid) -> Self {

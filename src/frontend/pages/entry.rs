@@ -11,9 +11,7 @@ use crate::frontend::graphql_client::{
     AccountBrief, AuditLog, Entry, Labeling, LabelSchema, Member, Workspace,
 };
 use crate::frontend::i18n::{use_i18n, I18nController};
-use crate::frontend::icons::{
-    ic_back, ic_check, ic_share, ic_tag,
-};
+use crate::frontend::icons::{ic_back, ic_check, ic_share, ic_tag};
 use crate::frontend::label_editor::LabelEditor;
 use crate::frontend::relations_panel::RelationsPanel;
 use crate::frontend::tiny_editor::TinyEditor;
@@ -38,7 +36,18 @@ pub fn EntryFullScreen() -> impl IntoView {
     let i18n: I18nController = use_i18n();
 
     let data: RwSignal<
-        Option<Result<(Workspace, Entry, Vec<LabelSchema>, Vec<AuditLog>, Vec<Member>), String>>,
+        Option<
+            Result<
+                (
+                    Workspace,
+                    Entry,
+                    Vec<LabelSchema>,
+                    Vec<AuditLog>,
+                    Vec<Member>,
+                ),
+                String,
+            >,
+        >,
     > = RwSignal::new(None);
     let schemas = RwSignal::new(Vec::<LabelSchema>::new());
     let labels = RwSignal::new(Vec::<Labeling>::new());
@@ -54,7 +63,9 @@ pub fn EntryFullScreen() -> impl IntoView {
     let dirty = Signal::derive(move || {
         data.get()
             .and_then(|r| r.ok())
-            .is_some_and(|(_, e, _, _, _)| e.title != title.get().trim() || e.detail != detail.get())
+            .is_some_and(|(_, e, _, _, _)| {
+                e.title != title.get().trim() || e.detail != detail.get()
+            })
     });
     let error = RwSignal::new(None::<String>);
     // 标题平时只读，点击才换成输入框；输入框挂载后由 Effect 补焦点。
@@ -191,9 +202,8 @@ pub fn EntryFullScreen() -> impl IntoView {
 
     // 按钮与 Esc 监听两处都要用它；`Callback` 是 `Copy`，可以同时进两个 handler。
     let nav_back = navigate.clone();
-    let go_back: Callback<()> = Callback::new(move |_| {
-        nav_back(&format!("/{}", slug()), Default::default())
-    });
+    let go_back: Callback<()> =
+        Callback::new(move |_| nav_back(&format!("/{}", slug()), Default::default()));
 
     // Esc 返回视图页；有未保存改动时拦住，并把原因写进现成的提示位。
     // 显式按钮不受影响：Esc 容易误触，按钮是明确动作。

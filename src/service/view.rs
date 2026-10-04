@@ -69,7 +69,9 @@ impl ViewService {
         for k in &sort.keys {
             if let SortField::Label(n) = &k.field {
                 if !schemas.iter().any(|s| &s.name == n) {
-                    return Err(AppError::InvalidQuery(format!("排序引用了不存在的标签: {n}")));
+                    return Err(AppError::InvalidQuery(format!(
+                        "排序引用了不存在的标签: {n}"
+                    )));
                 }
             }
         }
@@ -102,15 +104,27 @@ impl ViewService {
                 return Ok(v);
             }
         }
-        let view = self.build(ws, "基础视图", Query::all(), SortSpec::default(), vec![], true, vec![], actor);
+        let view = self.build(
+            ws,
+            "基础视图",
+            Query::all(),
+            SortSpec::default(),
+            vec![],
+            true,
+            vec![],
+            actor,
+        );
         self.store.put(cf::VIEWS, &keys::view_key(view.id), &view)?;
         self.store.put_raw(
             cf::VIEWS_BY_WORKSPACE,
             &keys::view_by_workspace_key(ws, view.id),
             &[],
         )?;
-        self.store
-            .put_raw(cf::DEFAULT_VIEWS, &keys::default_view_key(ws), &view.id.to_bytes())?;
+        self.store.put_raw(
+            cf::DEFAULT_VIEWS,
+            &keys::default_view_key(ws),
+            &view.id.to_bytes(),
+        )?;
         if let Err(e) = self.audit(actor, &view, AuditAction::ViewCreated, None) {
             tracing::warn!("基础视图审计写入失败: {e}");
         }
@@ -128,7 +142,9 @@ impl ViewService {
             }
             let id = Ulid::from_bytes(value.as_slice().try_into().unwrap());
             // 指针悬空（视图已被清掉）留给 ensure_default 补建，这里不碰。
-            let Some(mut view) = self.get(id)? else { continue };
+            let Some(mut view) = self.get(id)? else {
+                continue;
+            };
             if view.name != "默认视图" {
                 continue;
             }
@@ -173,7 +189,9 @@ impl ViewService {
                         workspace_id: l.workspace_id,
                         name: l.name,
                         query: l.query,
-                        sort: SortSpec { keys: vec![l.sort.into()] },
+                        sort: SortSpec {
+                            keys: vec![l.sort.into()],
+                        },
                         columns: l.columns,
                         is_shared: l.is_shared,
                         owner_id: l.owner_id,
@@ -184,10 +202,7 @@ impl ViewService {
                     ops.push(BatchOp::put(cf::VIEWS, key, &view)?);
                 }
                 // 全都解不出来：原样留着，交给读取路径报错。
-                None => tracing::warn!(
-                    "视图无法修复，保留原样: {}",
-                    String::from_utf8_lossy(&key)
-                ),
+                None => tracing::warn!("视图无法修复，保留原样: {}", String::from_utf8_lossy(&key)),
             }
         }
         let repaired = ops.len();
@@ -211,7 +226,16 @@ impl ViewService {
         title_colors: Vec<TitleColorRule>,
     ) -> Result<View, AppError> {
         self.validate(ws, name, &query, &sort, &columns, &title_colors)?;
-        let view = self.build(ws, name, query, sort, columns, is_shared, title_colors, actor);
+        let view = self.build(
+            ws,
+            name,
+            query,
+            sort,
+            columns,
+            is_shared,
+            title_colors,
+            actor,
+        );
         let audit = AuditLog::new(
             AuditAction::ViewCreated,
             actor,
@@ -222,7 +246,11 @@ impl ViewService {
             Some(serde_json::to_string(&view).unwrap_or_default()),
         );
         let mut ops = audit_ops(&audit)?;
-        ops.push(BatchOp::put(cf::VIEWS, keys::view_key(view.id).to_vec(), &view)?);
+        ops.push(BatchOp::put(
+            cf::VIEWS,
+            keys::view_key(view.id).to_vec(),
+            &view,
+        )?);
         ops.push(BatchOp::put_raw(
             cf::VIEWS_BY_WORKSPACE,
             keys::view_by_workspace_key(ws, view.id).to_vec(),
@@ -280,7 +308,9 @@ impl ViewService {
     }
 
     pub fn list(&self, actor: Ulid, ws: Ulid) -> Result<Vec<View>, AppError> {
-        let rows = self.store.scan_prefix(cf::VIEWS_BY_WORKSPACE, &ws.to_bytes())?;
+        let rows = self
+            .store
+            .scan_prefix(cf::VIEWS_BY_WORKSPACE, &ws.to_bytes())?;
         let mut out = Vec::new();
         for (key, _) in rows {
             // 复合键为 (workspace_id, view_id)，各 16 字节。
@@ -323,7 +353,14 @@ impl ViewService {
         title_colors: Vec<TitleColorRule>,
     ) -> Result<View, AppError> {
         let mut view = self.get(id)?.ok_or(AppError::NotFound)?;
-        self.validate(view.workspace_id, name, &query, &sort, &columns, &title_colors)?;
+        self.validate(
+            view.workspace_id,
+            name,
+            &query,
+            &sort,
+            &columns,
+            &title_colors,
+        )?;
         let is_default = self.default_view_id(view.workspace_id)? == Some(id);
         let before = serde_json::to_string(&view).unwrap_or_default();
         if is_default {
@@ -387,8 +424,15 @@ impl ViewService {
         );
         let mut ops = audit_ops(&audit)?;
         match &cfg {
-            Some(c) => ops.push(BatchOp::put(cf::VIEW_TIMELINE, keys::view_key(id).to_vec(), c)?),
-            None => ops.push(BatchOp::delete(cf::VIEW_TIMELINE, keys::view_key(id).to_vec())),
+            Some(c) => ops.push(BatchOp::put(
+                cf::VIEW_TIMELINE,
+                keys::view_key(id).to_vec(),
+                c,
+            )?),
+            None => ops.push(BatchOp::delete(
+                cf::VIEW_TIMELINE,
+                keys::view_key(id).to_vec(),
+            )),
         }
         self.store.write_batch(ops)?;
         Ok(cfg)
@@ -406,9 +450,10 @@ impl ViewService {
         };
         let start = find(&cfg.start)?;
         let end = find(&cfg.end)?;
-        let (Some(sf), Some(ef)) =
-            (time_family(start.value_type.as_str()), time_family(end.value_type.as_str()))
-        else {
+        let (Some(sf), Some(ef)) = (
+            time_family(start.value_type.as_str()),
+            time_family(end.value_type.as_str()),
+        ) else {
             return Err(AppError::InvalidQuery(
                 "时间轴只能选日期 / 时间 / 日期时间型标签".to_string(),
             ));
@@ -419,7 +464,9 @@ impl ViewService {
             ));
         }
         if cfg.start == cfg.end {
-            return Err(AppError::InvalidQuery("起始与结束不能是同一个标签".to_string()));
+            return Err(AppError::InvalidQuery(
+                "起始与结束不能是同一个标签".to_string(),
+            ));
         }
         if let Some(p) = &cfg.person {
             if find(p)?.value_type.as_str() != "account" {
@@ -452,7 +499,10 @@ impl ViewService {
             keys::view_by_workspace_key(view.workspace_id, id).to_vec(),
         ));
         // 配置随视图一起删：留着就是永远读不到的孤儿记录。
-        ops.push(BatchOp::delete(cf::VIEW_TIMELINE, keys::view_key(id).to_vec()));
+        ops.push(BatchOp::delete(
+            cf::VIEW_TIMELINE,
+            keys::view_key(id).to_vec(),
+        ));
         self.store.write_batch(ops)?;
         Ok(())
     }
@@ -485,7 +535,10 @@ struct LegacySortSpec {
 
 impl From<LegacySortSpec> for SortKey {
     fn from(s: LegacySortSpec) -> Self {
-        SortKey { field: s.field, desc: s.desc }
+        SortKey {
+            field: s.field,
+            desc: s.desc,
+        }
     }
 }
 
@@ -516,7 +569,16 @@ mod tests {
     fn create_list_and_delete_with_audit() {
         let (dir, store, svc, ws, actor) = setup();
         let v = svc
-            .create(actor, ws, "全部内容", Query::all(), SortSpec::default(), vec!["Task".into()], false, vec![])
+            .create(
+                actor,
+                ws,
+                "全部内容",
+                Query::all(),
+                SortSpec::default(),
+                vec!["Task".into()],
+                false,
+                vec![],
+            )
             .unwrap();
         assert_eq!(v.name, "全部内容");
         assert!(!v.is_shared);
@@ -529,7 +591,16 @@ mod tests {
 
         // 共享视图对所有人可见
         let shared = svc
-            .create(actor, ws, "看板", Query::all(), SortSpec::default(), vec![], true, vec![])
+            .create(
+                actor,
+                ws,
+                "看板",
+                Query::all(),
+                SortSpec::default(),
+                vec![],
+                true,
+                vec![],
+            )
             .unwrap();
         assert_eq!(svc.list(Ulid::new(), ws).unwrap().len(), 1);
         assert_eq!(svc.list(Ulid::new(), ws).unwrap()[0].id, shared.id);
@@ -538,7 +609,12 @@ mod tests {
         assert!(svc.get(v.id).unwrap().is_none());
 
         let audit = crate::service::AuditService::new(store.clone());
-        let actions: Vec<_> = audit.list(ws, 100).unwrap().into_iter().map(|l| l.action).collect();
+        let actions: Vec<_> = audit
+            .list(ws, 100)
+            .unwrap()
+            .into_iter()
+            .map(|l| l.action)
+            .collect();
         assert!(actions.contains(&crate::domain::AuditAction::ViewCreated));
         assert!(actions.contains(&crate::domain::AuditAction::ViewDeleted));
         std::fs::remove_dir_all(&dir).ok();
@@ -547,7 +623,16 @@ mod tests {
     #[test]
     fn create_rejects_unknown_column_and_bad_query() {
         let (dir, _store, svc, ws, actor) = setup();
-        let bad_col = svc.create(actor, ws, "x", Query::all(), SortSpec::default(), vec!["Nope".into()], false, vec![]);
+        let bad_col = svc.create(
+            actor,
+            ws,
+            "x",
+            Query::all(),
+            SortSpec::default(),
+            vec!["Nope".into()],
+            false,
+            vec![],
+        );
         assert!(matches!(bad_col.unwrap_err(), AppError::InvalidQuery(_)));
 
         let bad_q = Query::Cond(crate::domain::Condition {
@@ -556,7 +641,17 @@ mod tests {
             value: None,
         });
         assert!(matches!(
-            svc.create(actor, ws, "x", bad_q, SortSpec::default(), vec![], false, vec![]).unwrap_err(),
+            svc.create(
+                actor,
+                ws,
+                "x",
+                bad_q,
+                SortSpec::default(),
+                vec![],
+                false,
+                vec![]
+            )
+            .unwrap_err(),
             AppError::InvalidQuery(_)
         ));
         std::fs::remove_dir_all(&dir).ok();
@@ -606,7 +701,10 @@ mod tests {
                 SortSpec::default(),
                 vec![],
                 false,
-                vec![TitleColorRule { query: cond(Op::Ne), color: "#ff0000".into() }],
+                vec![TitleColorRule {
+                    query: cond(Op::Ne),
+                    color: "#ff0000".into(),
+                }],
             )
             .unwrap();
 
@@ -618,7 +716,16 @@ mod tests {
         assert_eq!(svc.get(v.id).unwrap().unwrap().query, v.query);
 
         let u = svc
-            .update(actor, v.id, "改名", cond(Op::Eq), SortSpec::default(), vec![], false, vec![])
+            .update(
+                actor,
+                v.id,
+                "改名",
+                cond(Op::Eq),
+                SortSpec::default(),
+                vec![],
+                false,
+                vec![],
+            )
             .unwrap();
         assert_eq!(u.name, "改名");
         assert_eq!(svc.list(actor, ws).unwrap()[0].query, cond(Op::Eq));
@@ -639,8 +746,17 @@ mod tests {
         assert_eq!(again.id, d.id);
 
         // 新建普通视图后，基础视图仍在且置顶。
-        svc.create(actor, ws, "A-视图", Query::all(), SortSpec::default(), vec![], false, vec![])
-            .unwrap();
+        svc.create(
+            actor,
+            ws,
+            "A-视图",
+            Query::all(),
+            SortSpec::default(),
+            vec![],
+            false,
+            vec![],
+        )
+        .unwrap();
         let list = svc.list(actor, ws).unwrap();
         assert_eq!(list.len(), 2);
         assert_eq!(list[0].id, d.id, "基础视图置顶");
@@ -655,12 +771,34 @@ mod tests {
             value: None,
         });
         let u = svc
-            .update(actor, d.id, "全部", q, SortSpec { keys: vec![SortKey { field: SortField::Title, desc: false }] }, vec!["Task".into()], false, vec![])
+            .update(
+                actor,
+                d.id,
+                "全部",
+                q,
+                SortSpec {
+                    keys: vec![SortKey {
+                        field: SortField::Title,
+                        desc: false,
+                    }],
+                },
+                vec!["Task".into()],
+                false,
+                vec![],
+            )
             .unwrap();
         assert!(u.is_shared);
         assert_eq!(u.name, "基础视图", "基础视图不可改名");
-        assert_eq!(u.query, Query::all(), "基础视图恒为全部条目，过滤只在临时态");
-        assert_eq!(u.sort.keys[0].field, SortField::UpdatedAt, "基础视图不可改排序");
+        assert_eq!(
+            u.query,
+            Query::all(),
+            "基础视图恒为全部条目，过滤只在临时态"
+        );
+        assert_eq!(
+            u.sort.keys[0].field,
+            SortField::UpdatedAt,
+            "基础视图不可改排序"
+        );
         assert_eq!(u.columns, vec!["Task"], "但列仍可配置");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -669,7 +807,16 @@ mod tests {
     fn list_skips_unreadable_view_records() {
         let (dir, store, svc, ws, actor) = setup();
         let good = svc
-            .create(actor, ws, "好视图", Query::all(), SortSpec::default(), vec![], false, vec![])
+            .create(
+                actor,
+                ws,
+                "好视图",
+                Query::all(),
+                SortSpec::default(),
+                vec![],
+                false,
+                vec![],
+            )
             .unwrap();
         // 伪造一条旧编码残留：索引齐全、正文读不出来。
         let bad = Ulid::new();
@@ -677,7 +824,11 @@ mod tests {
             .put_raw(cf::VIEWS, &keys::view_key(bad), b"not a valid view")
             .unwrap();
         store
-            .put_raw(cf::VIEWS_BY_WORKSPACE, &keys::view_by_workspace_key(ws, bad), &[])
+            .put_raw(
+                cf::VIEWS_BY_WORKSPACE,
+                &keys::view_by_workspace_key(ws, bad),
+                &[],
+            )
             .unwrap();
 
         let listed = svc.list(actor, ws).unwrap();
@@ -689,16 +840,41 @@ mod tests {
     #[test]
     fn update_changes_fields_and_audits() {
         let (dir, store, svc, ws, actor) = setup();
-        let v = svc.create(actor, ws, "a", Query::all(), SortSpec::default(), vec![], false, vec![]).unwrap();
+        let v = svc
+            .create(
+                actor,
+                ws,
+                "a",
+                Query::all(),
+                SortSpec::default(),
+                vec![],
+                false,
+                vec![],
+            )
+            .unwrap();
         let u = svc
-            .update(actor, v.id, "b", Query::all(), SortSpec::default(), vec!["Task".into()], true, vec![])
+            .update(
+                actor,
+                v.id,
+                "b",
+                Query::all(),
+                SortSpec::default(),
+                vec!["Task".into()],
+                true,
+                vec![],
+            )
             .unwrap();
         assert_eq!(u.name, "b");
         assert!(u.is_shared);
         assert_eq!(u.columns, vec!["Task"]);
 
         let audit = crate::service::AuditService::new(store.clone());
-        let actions: Vec<_> = audit.list(ws, 100).unwrap().into_iter().map(|l| l.action).collect();
+        let actions: Vec<_> = audit
+            .list(ws, 100)
+            .unwrap()
+            .into_iter()
+            .map(|l| l.action)
+            .collect();
         assert!(actions.contains(&crate::domain::AuditAction::ViewUpdated));
         std::fs::remove_dir_all(&dir).ok();
     }

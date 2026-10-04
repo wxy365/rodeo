@@ -23,6 +23,12 @@ impl Account {
             created_at: Utc::now(),
         }
     }
+
+    /// OAuth-only 账号创建时 password_hash 留空串；此方法把这两种状态显式区分开。
+    /// `AuthService::login` 据此走专用文案，不与「密码错」混。
+    pub fn has_password(&self) -> bool {
+        !self.password_hash.is_empty()
+    }
 }
 
 /// 账号状态。**不放进 `Account`** —— 它以 bincode 持久化，加字段会让存量账号记录

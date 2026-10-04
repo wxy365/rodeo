@@ -48,8 +48,11 @@ impl WorkspaceService {
 
         // Owner 成员关系（正向 + 反向索引）
         let member = WorkspaceMember::new(ws.id, actor, WorkspaceRole::Owner);
-        self.store
-            .put(cf::WORKSPACE_MEMBERS, &keys::member_key(ws.id, actor), &member)?;
+        self.store.put(
+            cf::WORKSPACE_MEMBERS,
+            &keys::member_key(ws.id, actor),
+            &member,
+        )?;
         self.store.put_raw(
             cf::WORKSPACE_MEMBERS_BY_ACCOUNT,
             &keys::member_by_account_key(actor, ws.id),
@@ -87,18 +90,18 @@ impl WorkspaceService {
             if key.len() != 32 {
                 continue;
             }
-            let ws_id = Ulid::from_bytes(
-                key[16..32]
-                    .try_into()
-                    .expect("slice of 16 bytes"),
-            );
-            let Some(member) = self
-                .store
-                .get::<WorkspaceMember>(cf::WORKSPACE_MEMBERS, &keys::member_key(ws_id, account_id))?
+            let ws_id = Ulid::from_bytes(key[16..32].try_into().expect("slice of 16 bytes"));
+            let Some(member) = self.store.get::<WorkspaceMember>(
+                cf::WORKSPACE_MEMBERS,
+                &keys::member_key(ws_id, account_id),
+            )?
             else {
                 continue;
             };
-            let Some(ws) = self.store.get::<Workspace>(cf::WORKSPACES, &ws_id.to_bytes())? else {
+            let Some(ws) = self
+                .store
+                .get::<Workspace>(cf::WORKSPACES, &ws_id.to_bytes())?
+            else {
                 continue;
             };
             let deleted_at = self.deleted_at(ws_id)?;
@@ -109,7 +112,10 @@ impl WorkspaceService {
     }
 
     pub fn get_by_slug(&self, slug: &str) -> Result<Option<Workspace>, AppError> {
-        let Some(raw) = self.store.get_raw(cf::WORKSPACES_SLUG_IDX, slug.as_bytes())? else {
+        let Some(raw) = self
+            .store
+            .get_raw(cf::WORKSPACES_SLUG_IDX, slug.as_bytes())?
+        else {
             return Ok(None);
         };
         let id: [u8; 16] = raw
@@ -174,7 +180,11 @@ impl WorkspaceService {
             Some(after),
         );
         let mut ops = audit_ops(&log)?;
-        ops.push(BatchOp::put(cf::WORKSPACES, ws.id.to_bytes().to_vec(), &ws)?);
+        ops.push(BatchOp::put(
+            cf::WORKSPACES,
+            ws.id.to_bytes().to_vec(),
+            &ws,
+        )?);
         if let Some(s) = new_slug {
             // 旧地址失效 + 新地址生效，必须与其他写入同批，避免中间态。
             ops.push(BatchOp::delete(
@@ -191,7 +201,11 @@ impl WorkspaceService {
         Ok(ws)
     }
 
-    pub fn get_member(&self, ws_id: Ulid, account_id: Ulid) -> Result<Option<WorkspaceMember>, AppError> {
+    pub fn get_member(
+        &self,
+        ws_id: Ulid,
+        account_id: Ulid,
+    ) -> Result<Option<WorkspaceMember>, AppError> {
         self.store
             .get(cf::WORKSPACE_MEMBERS, &keys::member_key(ws_id, account_id))
     }
@@ -203,7 +217,10 @@ impl WorkspaceService {
 
     /// 删除时间（RFC3339）；未删除时为 None。
     pub fn deleted_at(&self, ws_id: Ulid) -> Result<Option<String>, AppError> {
-        let Some(raw) = self.store.get_raw(cf::WORKSPACES_DELETED, &ws_id.to_bytes())? else {
+        let Some(raw) = self
+            .store
+            .get_raw(cf::WORKSPACES_DELETED, &ws_id.to_bytes())?
+        else {
             return Ok(None);
         };
         Ok(Some(String::from_utf8_lossy(&raw).into_owned()))
@@ -261,25 +278,35 @@ impl WorkspaceService {
 
     /// 列出成员及其账号信息，按角色降序、邮箱升序排列。
     pub fn list_members(&self, ws_id: Ulid) -> Result<Vec<(WorkspaceMember, Account)>, AppError> {
-        let rows = self.store.scan_prefix(cf::WORKSPACE_MEMBERS, &ws_id.to_bytes())?;
+        let rows = self
+            .store
+            .scan_prefix(cf::WORKSPACE_MEMBERS, &ws_id.to_bytes())?;
         let mut out = Vec::new();
         for (key, _) in rows {
             if key.len() != 32 {
                 continue;
             }
             let account_id = Ulid::from_bytes(key[16..32].try_into().expect("16 字节账号 id"));
-            let Some(member) = self
-                .store
-                .get::<WorkspaceMember>(cf::WORKSPACE_MEMBERS, &keys::member_key(ws_id, account_id))?
+            let Some(member) = self.store.get::<WorkspaceMember>(
+                cf::WORKSPACE_MEMBERS,
+                &keys::member_key(ws_id, account_id),
+            )?
             else {
                 continue;
             };
-            let Some(account) = self.store.get::<Account>(cf::ACCOUNTS, &account_id.to_bytes())? else {
+            let Some(account) = self
+                .store
+                .get::<Account>(cf::ACCOUNTS, &account_id.to_bytes())?
+            else {
                 continue;
             };
             out.push((member, account));
         }
-        out.sort_by(|a, b| b.0.role.cmp(&a.0.role).then_with(|| a.1.email.cmp(&b.1.email)));
+        out.sort_by(|a, b| {
+            b.0.role
+                .cmp(&a.0.role)
+                .then_with(|| a.1.email.cmp(&b.1.email))
+        });
         Ok(out)
     }
 
@@ -301,7 +328,10 @@ impl WorkspaceService {
 
     fn find_account_by_email(&self, email: &str) -> Result<Option<Account>, AppError> {
         let email = email.trim().to_lowercase();
-        let Some(raw) = self.store.get_raw(cf::ACCOUNTS_EMAIL_IDX, email.as_bytes())? else {
+        let Some(raw) = self
+            .store
+            .get_raw(cf::ACCOUNTS_EMAIL_IDX, email.as_bytes())?
+        else {
             return Ok(None);
         };
         let id: [u8; 16] = raw
@@ -398,19 +428,27 @@ impl WorkspaceService {
             else {
                 continue;
             };
-            let Some(account) = self.store.get::<Account>(cf::ACCOUNTS, &account_id.to_bytes())?
+            let Some(account) = self
+                .store
+                .get::<Account>(cf::ACCOUNTS, &account_id.to_bytes())?
             else {
                 continue;
             };
             out.push((invite, account));
         }
-        out.sort_by(|a, b| b.0.role.cmp(&a.0.role).then_with(|| a.1.email.cmp(&b.1.email)));
+        out.sort_by(|a, b| {
+            b.0.role
+                .cmp(&a.0.role)
+                .then_with(|| a.1.email.cmp(&b.1.email))
+        });
         Ok(out)
     }
 
     /// 列出某账号收到、尚未接受的邀请及其工作空间，按邀请时间升序排列。
     pub fn list_invites_for(&self, account_id: Ulid) -> Result<Vec<(Invite, Workspace)>, AppError> {
-        let rows = self.store.scan_prefix(cf::INVITES_BY_ACCOUNT, &account_id.to_bytes())?;
+        let rows = self
+            .store
+            .scan_prefix(cf::INVITES_BY_ACCOUNT, &account_id.to_bytes())?;
         let mut out = Vec::new();
         for (key, _) in rows {
             if key.len() != 32 {
@@ -423,7 +461,10 @@ impl WorkspaceService {
             else {
                 continue;
             };
-            let Some(ws) = self.store.get::<Workspace>(cf::WORKSPACES, &ws_id.to_bytes())? else {
+            let Some(ws) = self
+                .store
+                .get::<Workspace>(cf::WORKSPACES, &ws_id.to_bytes())?
+            else {
                 continue;
             };
             out.push((invite, ws));
@@ -437,7 +478,9 @@ impl WorkspaceService {
         let invite = self.get_invite(ws_id, actor)?.ok_or(AppError::NotFound)?;
         // 邀请挂着的时候工作空间可能已被删除，此时不能再加入。
         if self.is_deleted(ws_id)? {
-            return Err(AppError::InvalidQuery("工作空间已被删除，无法加入".to_string()));
+            return Err(AppError::InvalidQuery(
+                "工作空间已被删除，无法加入".to_string(),
+            ));
         }
         let email = self.account_email(actor)?;
 
@@ -501,8 +544,15 @@ impl WorkspaceService {
     }
 
     /// 撤销邀请（发起方视角）：删掉待接受记录，记一条 InviteRevoked。
-    pub fn revoke_invite(&self, actor: Ulid, ws_id: Ulid, account_id: Ulid) -> Result<(), AppError> {
-        let invite = self.get_invite(ws_id, account_id)?.ok_or(AppError::NotFound)?;
+    pub fn revoke_invite(
+        &self,
+        actor: Ulid,
+        ws_id: Ulid,
+        account_id: Ulid,
+    ) -> Result<(), AppError> {
+        let invite = self
+            .get_invite(ws_id, account_id)?
+            .ok_or(AppError::NotFound)?;
         let email = self.account_email(account_id)?;
         let log = AuditLog::new(
             AuditAction::InviteRevoked,
@@ -534,7 +584,9 @@ impl WorkspaceService {
         account_id: Ulid,
         role: WorkspaceRole,
     ) -> Result<WorkspaceMember, AppError> {
-        let mut member = self.get_member(ws_id, account_id)?.ok_or(AppError::NotFound)?;
+        let mut member = self
+            .get_member(ws_id, account_id)?
+            .ok_or(AppError::NotFound)?;
         if member.role == role {
             return Ok(member);
         }
@@ -637,7 +689,9 @@ impl WorkspaceService {
         ws_id: Ulid,
         account_id: Ulid,
     ) -> Result<(), AppError> {
-        let member = self.get_member(ws_id, account_id)?.ok_or(AppError::NotFound)?;
+        let member = self
+            .get_member(ws_id, account_id)?
+            .ok_or(AppError::NotFound)?;
         if member.role == WorkspaceRole::Owner && self.owner_count(ws_id)? <= 1 {
             return Err(AppError::InvalidQuery(
                 "至少保留一名 Owner；请先转让所有权".to_string(),
@@ -763,7 +817,9 @@ mod tests {
         let ws_svc = WorkspaceService::new(store.clone());
 
         let owner = auth.register("owner@x.io", "Owner", "Passw0rd!").unwrap();
-        let ws = ws_svc.create(owner.id, "原名", Some("old-slug"), "旧描述").unwrap();
+        let ws = ws_svc
+            .create(owner.id, "原名", Some("old-slug"), "旧描述")
+            .unwrap();
         assert_eq!(ws_svc.get_by_slug("old-slug").unwrap().unwrap().id, ws.id);
 
         let updated = ws_svc
@@ -783,7 +839,12 @@ mod tests {
         assert_eq!(same.description, "新描述");
 
         let audit = crate::service::AuditService::new(store.clone());
-        let actions: Vec<_> = audit.list(ws.id, 100).unwrap().into_iter().map(|l| l.action).collect();
+        let actions: Vec<_> = audit
+            .list(ws.id, 100)
+            .unwrap()
+            .into_iter()
+            .map(|l| l.action)
+            .collect();
         assert!(actions.contains(&AuditAction::WorkspaceUpdated));
 
         std::fs::remove_dir_all(&dir).ok();
@@ -810,7 +871,9 @@ mod tests {
         assert!(ws_svc.update(owner.id, a.id, "   ", "", None).is_err());
 
         // 不传 slug 时保持原地址。
-        let kept = ws_svc.update(owner.id, a.id, "甲改", "有描述了", None).unwrap();
+        let kept = ws_svc
+            .update(owner.id, a.id, "甲改", "有描述了", None)
+            .unwrap();
         assert_eq!(kept.slug, "jia");
         assert_eq!(kept.name, "甲改");
 
@@ -852,7 +915,12 @@ mod tests {
         ws_svc.restore(owner.id, ws.id).unwrap();
 
         let audit = crate::service::AuditService::new(store.clone());
-        let actions: Vec<_> = audit.list(ws.id, 100).unwrap().into_iter().map(|l| l.action).collect();
+        let actions: Vec<_> = audit
+            .list(ws.id, 100)
+            .unwrap()
+            .into_iter()
+            .map(|l| l.action)
+            .collect();
         assert!(actions.contains(&AuditAction::WorkspaceDeleted));
         assert!(actions.contains(&AuditAction::WorkspaceRestored));
 
@@ -882,8 +950,12 @@ mod tests {
         let bob = auth.register("bob@x.io", "Bob", "Passw0rd!").unwrap();
         let carol = auth.register("carol@x.io", "Carol", "Passw0rd!").unwrap();
         let ws = ws_svc.create(owner.id, "团队", None, "").unwrap();
-        ws_svc.invite(owner.id, ws.id, "bob@x.io", WorkspaceRole::Worker).unwrap();
-        ws_svc.invite(owner.id, ws.id, "carol@x.io", WorkspaceRole::Maintainer).unwrap();
+        ws_svc
+            .invite(owner.id, ws.id, "bob@x.io", WorkspaceRole::Worker)
+            .unwrap();
+        ws_svc
+            .invite(owner.id, ws.id, "carol@x.io", WorkspaceRole::Maintainer)
+            .unwrap();
         ws_svc.accept_invite(bob.id, ws.id).unwrap();
         ws_svc.accept_invite(carol.id, ws.id).unwrap();
 
@@ -952,19 +1024,25 @@ mod tests {
         assert_eq!(members[0].0.role, WorkspaceRole::Owner);
 
         // 邀请 → 接受，Bob 成为 Worker。
-        ws_svc.invite(owner.id, ws.id, "bob@x.io", WorkspaceRole::Worker).unwrap();
+        ws_svc
+            .invite(owner.id, ws.id, "bob@x.io", WorkspaceRole::Worker)
+            .unwrap();
         ws_svc.accept_invite(bob.id, ws.id).unwrap();
         assert_eq!(ws_svc.list_members(ws.id).unwrap().len(), 2);
 
         // 升为 Maintainer。
-        ws_svc.update_role(owner.id, ws.id, bob.id, WorkspaceRole::Maintainer).unwrap();
+        ws_svc
+            .update_role(owner.id, ws.id, bob.id, WorkspaceRole::Maintainer)
+            .unwrap();
         assert_eq!(
             ws_svc.get_member(ws.id, bob.id).unwrap().unwrap().role,
             WorkspaceRole::Maintainer
         );
 
         // 最后一名 Owner 不可降级 / 不可移除。
-        assert!(ws_svc.update_role(owner.id, ws.id, owner.id, WorkspaceRole::Worker).is_err());
+        assert!(ws_svc
+            .update_role(owner.id, ws.id, owner.id, WorkspaceRole::Worker)
+            .is_err());
         assert!(ws_svc.remove_member(owner.id, ws.id, owner.id).is_err());
 
         // 移除 Bob 后仅剩 Owner。
@@ -976,7 +1054,12 @@ mod tests {
 
         // 审计记录了成员操作。
         let audit = crate::service::AuditService::new(store.clone());
-        let actions: Vec<_> = audit.list(ws.id, 100).unwrap().into_iter().map(|l| l.action).collect();
+        let actions: Vec<_> = audit
+            .list(ws.id, 100)
+            .unwrap()
+            .into_iter()
+            .map(|l| l.action)
+            .collect();
         assert!(actions.contains(&AuditAction::MemberInvited));
         assert!(actions.contains(&AuditAction::MemberJoined));
         assert!(actions.contains(&AuditAction::RoleChanged));
@@ -996,7 +1079,9 @@ mod tests {
         let bob = auth.register("bob@x.io", "Bob", "Passw0rd!").unwrap();
         let ws = ws_svc.create(owner.id, "团队", None, "").unwrap();
 
-        let inv = ws_svc.invite(owner.id, ws.id, "bob@x.io", WorkspaceRole::Worker).unwrap();
+        let inv = ws_svc
+            .invite(owner.id, ws.id, "bob@x.io", WorkspaceRole::Worker)
+            .unwrap();
         assert_eq!(inv.account_id, bob.id);
         assert_eq!(inv.role, WorkspaceRole::Worker);
         assert_eq!(inv.invited_by, owner.id);
@@ -1010,12 +1095,16 @@ mod tests {
         assert_eq!(inbox[0].1.id, ws.id);
 
         // 同角色重复邀请幂等，不新增记录、不改写创建时间。
-        let again = ws_svc.invite(owner.id, ws.id, "bob@x.io", WorkspaceRole::Worker).unwrap();
+        let again = ws_svc
+            .invite(owner.id, ws.id, "bob@x.io", WorkspaceRole::Worker)
+            .unwrap();
         assert_eq!(again.created_at, inv.created_at);
         assert_eq!(ws_svc.list_invites(ws.id).unwrap().len(), 1);
 
         // 改角色则改写同一条记录。
-        ws_svc.invite(owner.id, ws.id, "bob@x.io", WorkspaceRole::Maintainer).unwrap();
+        ws_svc
+            .invite(owner.id, ws.id, "bob@x.io", WorkspaceRole::Maintainer)
+            .unwrap();
         assert_eq!(
             ws_svc.get_invite(ws.id, bob.id).unwrap().unwrap().role,
             WorkspaceRole::Maintainer
@@ -1023,7 +1112,9 @@ mod tests {
         assert_eq!(ws_svc.list_invites(ws.id).unwrap().len(), 1);
 
         // 未注册邮箱被拒。
-        assert!(ws_svc.invite(owner.id, ws.id, "ghost@x.io", WorkspaceRole::Worker).is_err());
+        assert!(ws_svc
+            .invite(owner.id, ws.id, "ghost@x.io", WorkspaceRole::Worker)
+            .is_err());
 
         // 接受后成为成员，待接受记录消失。
         let member = ws_svc.accept_invite(bob.id, ws.id).unwrap();
@@ -1038,7 +1129,9 @@ mod tests {
         assert_eq!(ws_svc.list_for(bob.id).unwrap().len(), 1);
 
         // 已是成员后不能再被邀请。
-        assert!(ws_svc.invite(owner.id, ws.id, "bob@x.io", WorkspaceRole::Worker).is_err());
+        assert!(ws_svc
+            .invite(owner.id, ws.id, "bob@x.io", WorkspaceRole::Worker)
+            .is_err());
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1056,7 +1149,9 @@ mod tests {
         let ws = ws_svc.create(owner.id, "团队", None, "").unwrap();
 
         // Bob 拒绝。
-        ws_svc.invite(owner.id, ws.id, "bob@x.io", WorkspaceRole::Worker).unwrap();
+        ws_svc
+            .invite(owner.id, ws.id, "bob@x.io", WorkspaceRole::Worker)
+            .unwrap();
         ws_svc.decline_invite(bob.id, ws.id).unwrap();
         assert!(ws_svc.get_invite(ws.id, bob.id).unwrap().is_none());
         assert!(ws_svc.list_invites(ws.id).unwrap().is_empty());
@@ -1064,17 +1159,30 @@ mod tests {
         assert!(ws_svc.get_member(ws.id, bob.id).unwrap().is_none());
 
         // Carol 的邀请被发起方撤销。
-        ws_svc.invite(owner.id, ws.id, "carol@x.io", WorkspaceRole::Maintainer).unwrap();
+        ws_svc
+            .invite(owner.id, ws.id, "carol@x.io", WorkspaceRole::Maintainer)
+            .unwrap();
         ws_svc.revoke_invite(owner.id, ws.id, carol.id).unwrap();
         assert!(ws_svc.get_invite(ws.id, carol.id).unwrap().is_none());
         assert!(ws_svc.list_invites_for(carol.id).unwrap().is_empty());
 
         // 没有待接受邀请时，拒绝 / 撤销都报 NotFound。
-        assert!(matches!(ws_svc.decline_invite(bob.id, ws.id), Err(AppError::NotFound)));
-        assert!(matches!(ws_svc.revoke_invite(owner.id, ws.id, bob.id), Err(AppError::NotFound)));
+        assert!(matches!(
+            ws_svc.decline_invite(bob.id, ws.id),
+            Err(AppError::NotFound)
+        ));
+        assert!(matches!(
+            ws_svc.revoke_invite(owner.id, ws.id, bob.id),
+            Err(AppError::NotFound)
+        ));
 
         let audit = crate::service::AuditService::new(store.clone());
-        let actions: Vec<_> = audit.list(ws.id, 100).unwrap().into_iter().map(|l| l.action).collect();
+        let actions: Vec<_> = audit
+            .list(ws.id, 100)
+            .unwrap()
+            .into_iter()
+            .map(|l| l.action)
+            .collect();
         assert!(actions.contains(&AuditAction::InviteDeclined));
         assert!(actions.contains(&AuditAction::InviteRevoked));
 
@@ -1093,10 +1201,15 @@ mod tests {
         let ws = ws_svc.create(owner.id, "团队", None, "").unwrap();
 
         // 没有邀请 → NotFound。
-        assert!(matches!(ws_svc.accept_invite(bob.id, ws.id), Err(AppError::NotFound)));
+        assert!(matches!(
+            ws_svc.accept_invite(bob.id, ws.id),
+            Err(AppError::NotFound)
+        ));
 
         // 邀请还在，但工作空间被删 → 拒绝，且邀请原样保留。
-        ws_svc.invite(owner.id, ws.id, "bob@x.io", WorkspaceRole::Worker).unwrap();
+        ws_svc
+            .invite(owner.id, ws.id, "bob@x.io", WorkspaceRole::Worker)
+            .unwrap();
         ws_svc.delete(owner.id, ws.id).unwrap();
         assert!(matches!(
             ws_svc.accept_invite(bob.id, ws.id),

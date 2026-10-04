@@ -261,9 +261,10 @@ pub fn encode_label_value_for_index(
 pub fn explode_label_value_for_index(lv: &LabelValue) -> Vec<LabelValue> {
     match lv {
         LabelValue::EnumList(items) => items.iter().map(|s| LabelValue::Enum(s.clone())).collect(),
-        LabelValue::AccountList(items) => {
-            items.iter().map(|s| LabelValue::Account(s.clone())).collect()
-        }
+        LabelValue::AccountList(items) => items
+            .iter()
+            .map(|s| LabelValue::Account(s.clone()))
+            .collect(),
         other => vec![other.clone()],
     }
 }
@@ -421,17 +422,24 @@ struct Edge {
 
 impl InheritanceGraph {
     pub fn build(schemas: &[LabelSchema]) -> Self {
-        let mut by_from: std::collections::HashMap<String, Vec<Edge>> = std::collections::HashMap::new();
+        let mut by_from: std::collections::HashMap<String, Vec<Edge>> =
+            std::collections::HashMap::new();
         for s in schemas {
             for l in &s.links {
                 // 「继承」以本标签为源、「覆盖」以对方为源。
                 let (from, from_value, to, to_value) = match l.kind {
-                    LinkKind::Inherit => {
-                        (&s.name, l.own_value.clone(), &l.other, l.other_value.clone())
-                    }
-                    LinkKind::Override => {
-                        (&l.other, l.other_value.clone(), &s.name, l.own_value.clone())
-                    }
+                    LinkKind::Inherit => (
+                        &s.name,
+                        l.own_value.clone(),
+                        &l.other,
+                        l.other_value.clone(),
+                    ),
+                    LinkKind::Override => (
+                        &l.other,
+                        l.other_value.clone(),
+                        &s.name,
+                        l.own_value.clone(),
+                    ),
                 };
                 by_from.entry(from.clone()).or_default().push(Edge {
                     from_value,

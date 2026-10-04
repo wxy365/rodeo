@@ -60,11 +60,8 @@ pub async fn download_attachment(
     );
     headers.insert(
         header::CONTENT_DISPOSITION,
-        HeaderValue::from_str(&content_disposition(
-            inline.is_some(),
-            &attachment.filename,
-        ))
-        .unwrap_or_else(|_| HeaderValue::from_static("attachment")),
+        HeaderValue::from_str(&content_disposition(inline.is_some(), &attachment.filename))
+            .unwrap_or_else(|_| HeaderValue::from_static("attachment")),
     );
     headers.insert(
         header::X_CONTENT_TYPE_OPTIONS,
@@ -85,10 +82,7 @@ fn content_disposition(inline: bool, filename: &str) -> String {
     if inline {
         return "inline".to_string();
     }
-    format!(
-        "attachment; filename*=UTF-8''{}",
-        percent_encode(filename)
-    )
+    format!("attachment; filename*=UTF-8''{}", percent_encode(filename))
 }
 
 /// 最小百分号编码：只保留 RFC 3986 的 unreserved 集合，其余逐字节转义。

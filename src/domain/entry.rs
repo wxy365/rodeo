@@ -88,7 +88,10 @@ mod tests {
     fn codes_are_unique() {
         let mut set = HashSet::new();
         for _ in 0..10_000 {
-            assert!(set.insert(generate_entry_code()), "duplicate code generated");
+            assert!(
+                set.insert(generate_entry_code()),
+                "duplicate code generated"
+            );
         }
     }
 
@@ -104,6 +107,9 @@ mod tests {
         let mut e = Entry::new(Ulid::new(), "test".to_string(), Ulid::new());
         assert!(!e.is_deleted());
         e.deleted_at = Some(Utc::now());
-        assert!(e.is_deleted(), "is_deleted must be true once deleted_at is set");
+        assert!(
+            e.is_deleted(),
+            "is_deleted must be true once deleted_at is set"
+        );
     }
 }

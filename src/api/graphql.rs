@@ -15,10 +15,11 @@ use ulid::Ulid;
 use crate::domain::agent::{AssistantContent, ToolResultContent, UserContent};
 use crate::domain::{
     Account, AccountStatus, ActionTarget, AgentMessage, AgentMessageRecord, Attachment, AuditLog,
-    AutomationRule, Comment, Entry, Invite, LabelSchema, LabelValueType, LabelWrite, Labeling,
-    LinkKind, Message, NamedPrompt, Query as ViewQuery, Relation, RelationSemantic, SemanticKind,
-    SortField, SortKey, SortSpec, TitleColorRule, ValueColor, ValueSource, View, ViewTimeline,
-    Workspace, WorkspaceAiConfig, WorkspaceMember, WorkspaceRole, WriteOp, ATTACHMENT_URL_PREFIX,
+    AutomationRule, Comment, Entry, IdentityBinding, Invite, LabelSchema, LabelValueType,
+    LabelWrite, Labeling, LinkKind, Message, NamedPrompt, Query as ViewQuery, Relation,
+    RelationSemantic, SemanticKind, SortField, SortKey, SortSpec, TitleColorRule, ValueColor,
+    ValueSource, View, ViewTimeline, Workspace, WorkspaceAiConfig, WorkspaceMember, WorkspaceRole,
+    WriteOp, ATTACHMENT_URL_PREFIX,
 };
 use crate::error::AppError;
 use crate::service::agent::runner::run_turn;
@@ -35,15 +36,20 @@ pub struct GqlAccount {
     email: String,
     name: String,
     is_admin: bool,
+    /// 是否已设置本地密码（OAuth-only 账号为 false）。
+    /// 只投影布尔状态，不暴露 `password_hash` 本体。
+    has_password: bool,
 }
 
 impl From<Account> for GqlAccount {
     fn from(a: Account) -> Self {
+        let has_password = a.has_password();
         Self {
             id: a.id.to_string().into(),
             email: a.email,
             name: a.name,
             is_admin: a.is_admin,
+            has_password,
         }
     }
 }
@@ -111,6 +117,29 @@ fn builtin_admin_email(gql: &GraphqlContext) -> String {
 #[derive(SimpleObject, Clone)]
 pub struct GqlServerConfig {
     allow_registration: bool,
+}
+
+/// 当前账号已绑定的第三方登录方式。`myOAuthBindings` 列表项的投影。
+/// 仅暴露「用户自己能看到的」字段——`account_id` 隐含在登录态里，无需再回显。
+#[derive(SimpleObject, Clone)]
+pub struct GqlOAuthBinding {
+    provider: String,
+    external_id: String,
+    email: Option<String>,
+    display_name: Option<String>,
+    bound_at: DateTime<Utc>,
+}
+
+impl From<IdentityBinding> for GqlOAuthBinding {
+    fn from(b: IdentityBinding) -> Self {
+        Self {
+            provider: b.provider.as_str().to_string(),
+            external_id: b.external_id,
+            email: b.email,
+            display_name: b.display_name,
+            bound_at: b.bound_at,
+        }
+    }
 }
 
 #[derive(SimpleObject, Clone)]
@@ -1221,6 +1250,32 @@ impl Query {
         })
     }
 
+    /// 当前启用的 OAuth provider 名称列表（目前为 `["wechat"]`）。
+    /// 免登录：登录页据此渲染「微信登录」入口。
+    async fn oauth_providers(&self, ctx: &Context<'_>) -> GqlResult<Vec<String>> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        Ok(gql
+            .services
+            .oauth_registry
+            .enabled_names()
+            .iter()
+            .map(|s| s.to_string())
+            .collect())
+    }
+
+    /// 当前账号已绑定的第三方登录方式。`/account` 面板与「解绑」流程都用此列表。
+    /// 鉴权：从 `require_auth()` 拿 `account_id`，**不**接外部 `account_id` 参数，
+    /// 避免越权读取别人的 binding 列表。
+    async fn my_oauth_bindings(&self, ctx: &Context<'_>) -> GqlResult<Vec<GqlOAuthBinding>> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let bindings = gql
+            .services
+            .oauth_bindings
+            .find_all_by_account(auth.account_id)?;
+        Ok(bindings.into_iter().map(Into::into).collect())
+    }
+
     async fn workspaces(&self, ctx: &Context<'_>) -> GqlResult<Vec<GqlWorkspaceWithRole>> {
         let gql = ctx.data::<GraphqlContext>()?;
         let auth = gql.require_auth()?;
@@ -1821,6 +1876,33 @@ impl Mutation {
         Ok(GqlAdminAccount::new(account, updated_status, &builtin))
     }
 
+    /// 解绑当前账号的某个第三方登录方式。前端用 `myOAuthBindings` 拿到 `provider` /
+    /// `external_id` 后回填。`account_id` 参数必须等于登录态里的 `account_id`——校验
+    /// 写在 resolver 里（防借用未鉴权参数绕过），不在服务层重复做。
+    async fn unbind_oauth_binding(
+        &self,
+        ctx: &Context<'_>,
+        account_id: ID,
+        provider: String,
+        external_id: String,
+    ) -> GqlResult<bool> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let target_id = parse_ulid(account_id.as_str())?;
+
+        if target_id != auth.account_id {
+            return Err(AppError::InvalidQuery("无权解绑此账号".to_string()).into());
+        }
+
+        let provider_kind = crate::service::oauth::provider_kind_from_str(&provider)
+            .ok_or_else(|| AppError::InvalidQuery(format!("未知的 provider: {provider}")))?;
+
+        gql.services
+            .oauth_bindings
+            .delete(target_id, provider_kind, &external_id)?;
+        Ok(true)
+    }
+
     /// 改账号的姓名与管理员标记，仅系统管理员。状态与密码各有各的 mutation——那两条
     /// 路径分别附带吊销令牌 / 验旧密码，跟这里纯粹的字段覆盖不是一回事。
     async fn update_account(
@@ -1896,6 +1978,27 @@ impl Mutation {
                 .auth
                 .change_password(auth.account_id, &old_password, &new_password)?;
         gql.services.auth.revoke_tokens(auth.account_id)?;
+        let token = gql.services.auth.sign_token(auth.account_id)?;
+        Ok(GqlAuthResult {
+            token,
+            account: account.into(),
+        })
+    }
+
+    /// OAuth-only 账号后补密码（不需要旧密码验证——OAuth 登录态本身就是信任根）。
+    /// 与 `change_password` 不同：不会调用 `revoke_tokens`，因为 OAuth-only 账号补密码
+    /// 不应把当前 OAuth 会话一并踢下线。
+    async fn set_password(
+        &self,
+        ctx: &Context<'_>,
+        new_password: String,
+    ) -> GqlResult<GqlAuthResult> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let account = gql
+            .services
+            .auth
+            .set_password(auth.account_id, &new_password)?;
         let token = gql.services.auth.sign_token(auth.account_id)?;
         Ok(GqlAuthResult {
             token,
@@ -3153,6 +3256,138 @@ impl Mutation {
             gql.services.agent_turns.finish(id);
         }
         Ok(was_active)
+    }
+    /// 把当前 OAuth 登录绑定到一个**已存在**的 Rodeo 账号。
+    /// 流程：扫码拿到 `bind_token` → 服务端取出 `BindEntry` → 用户输入邮箱/密码
+    /// → 校验账号状态与密码 → 检查双向绑定冲突 → 写 binding → 签发新令牌。
+    async fn bind_oauth_to_existing(
+        &self,
+        ctx: &Context<'_>,
+        bind_token: String,
+        email: String,
+        password: String,
+    ) -> GqlResult<GqlAuthResult> {
+        let gql = ctx.data::<GraphqlContext>()?;
+
+        let bind = gql
+            .services
+            .oauth_state
+            .take_bind(&bind_token)
+            .ok_or_else(|| AppError::InvalidQuery("绑定已过期，请重新扫码".to_string()))?;
+
+        let email_n = crate::service::auth::normalize_email(&email)?;
+        let account = gql
+            .services
+            .auth
+            .find_by_email(&email_n)?
+            .ok_or(AppError::InvalidCredentials)?;
+
+        match gql.services.auth.status(account.id)? {
+            crate::domain::AccountStatus::Active => {}
+            crate::domain::AccountStatus::Frozen => {
+                return Err(
+                    AppError::InvalidQuery("账号已被冻结，请联系系统管理员".to_string()).into(),
+                );
+            }
+            crate::domain::AccountStatus::Deactivated => {
+                return Err(AppError::InvalidCredentials.into());
+            }
+        }
+        // OAuth-only 账号没有 password_hash；`PasswordHash::new("")` 会崩成
+        // `Internal("密码哈希错误")`，把内部错误漏给前端。这里前置一道
+        // `has_password` 守卫，让它走和密码错一样的 `InvalidCredentials`。
+        if !account.has_password() {
+            return Err(AppError::InvalidCredentials.into());
+        }
+
+        if !crate::service::auth::verify_password(&password, &account.password_hash)? {
+            return Err(AppError::InvalidCredentials.into());
+        }
+
+        // 绑定冲突
+        match gql
+            .services
+            .oauth_bindings
+            .find(bind.provider, &bind.external_id)?
+        {
+            Some(b) if b.account_id == account.id => {} // 幂等
+            Some(_) => {
+                return Err(
+                    AppError::InvalidQuery("此微信账号已绑定其它 Rodeo 账号".to_string()).into(),
+                );
+            }
+            None => {
+                if gql
+                    .services
+                    .oauth_bindings
+                    .find_by_account_and_provider(account.id, bind.provider)?
+                    .is_some()
+                {
+                    return Err(AppError::InvalidQuery(
+                        "此 Rodeo 账号已绑定其它微信账号".to_string(),
+                    )
+                    .into());
+                }
+            }
+        }
+
+        gql.services.oauth_bindings.upsert(
+            account.id,
+            bind.provider,
+            &bind.external_id,
+            None,
+            None,
+        )?;
+        let token = gql.services.auth.sign_token(account.id)?;
+        Ok(GqlAuthResult {
+            token,
+            account: account.into(),
+        })
+    }
+
+    /// 把当前 OAuth 登录绑定到一个**新建**的 Rodeo 账号。
+    /// 流程：扫码拿到 `bind_token` → 校验开放注册 → 校验邮箱未占用 → 建账号 →
+    /// 写 binding → 签发新令牌。`password` 为空时建 OAuth-only 账号（无密码）。
+    async fn bind_oauth_to_new(
+        &self,
+        ctx: &Context<'_>,
+        bind_token: String,
+        email: String,
+        name: String,
+        password: Option<String>,
+    ) -> GqlResult<GqlAuthResult> {
+        let gql = ctx.data::<GraphqlContext>()?;
+
+        let bind = gql
+            .services
+            .oauth_state
+            .take_bind(&bind_token)
+            .ok_or_else(|| AppError::InvalidQuery("绑定已过期，请重新扫码".to_string()))?;
+
+        if !gql.services.config.auth.builtin.allow_registration {
+            return Err(AppError::InvalidQuery(
+                "已关闭开放注册，请联系系统管理员创建账号".to_string(),
+            )
+            .into());
+        }
+
+        let email_n = crate::service::auth::normalize_email(&email)?;
+        if gql.services.auth.find_by_email(&email_n)?.is_some() {
+            return Err(AppError::EmailExists.into());
+        }
+
+        let account = gql.services.oauth_bindings.create_account_and_bind_oauth(
+            &email_n,
+            &name,
+            password.as_deref(),
+            bind.provider,
+            &bind.external_id,
+        )?;
+        let token = gql.services.auth.sign_token(account.id)?;
+        Ok(GqlAuthResult {
+            token,
+            account: account.into(),
+        })
     }
 }
 

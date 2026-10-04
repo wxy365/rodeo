@@ -75,7 +75,11 @@ impl AiService {
             Some(serde_json::to_string(&cfg).unwrap_or_default()),
         );
         let mut ops = audit_ops(&audit)?;
-        ops.push(BatchOp::put(cf::WORKSPACE_AI, ws.to_bytes().to_vec(), &cfg)?);
+        ops.push(BatchOp::put(
+            cf::WORKSPACE_AI,
+            ws.to_bytes().to_vec(),
+            &cfg,
+        )?);
         self.store.write_batch(ops)?;
         Ok(cfg)
     }
@@ -235,7 +239,11 @@ pub fn derive_title(markdown: &str, count: usize) -> String {
         let Some(rest) = t.strip_prefix('#') else {
             continue;
         };
-        let title = rest.trim_start_matches('#').trim().trim_end_matches('#').trim();
+        let title = rest
+            .trim_start_matches('#')
+            .trim()
+            .trim_end_matches('#')
+            .trim();
         if !title.is_empty() {
             return title.to_string();
         }

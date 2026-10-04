@@ -319,8 +319,10 @@ pub fn AgentPanel() -> impl IntoView {
         }
         ev.prevent_default();
         dragging.set(true);
-        drag_origin.set((ev.client_x() as f64 - panel_left.get_untracked(),
-                         ev.client_y() as f64 - panel_top.get_untracked()));
+        drag_origin.set((
+            ev.client_x() as f64 - panel_left.get_untracked(),
+            ev.client_y() as f64 - panel_top.get_untracked(),
+        ));
     };
     // 右下角缩放起点：与 start_drag 同款约定，但起点记的是鼠标坐标和面板
     // 当前尺寸，松手时按位移增量算新尺寸。
@@ -328,10 +330,12 @@ pub fn AgentPanel() -> impl IntoView {
         ev.prevent_default();
         ev.stop_propagation();
         resizing.set(true);
-        resize_origin.set((ev.client_x() as f64,
-                           ev.client_y() as f64,
-                           panel_width.get_untracked(),
-                           panel_height.get_untracked()));
+        resize_origin.set((
+            ev.client_x() as f64,
+            ev.client_y() as f64,
+            panel_width.get_untracked(),
+            panel_height.get_untracked(),
+        ));
     };
 
     // 窗口级 mousemove / mouseup：跟手移动 + 释放时落 localStorage。

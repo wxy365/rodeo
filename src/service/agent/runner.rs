@@ -159,6 +159,117 @@ pub async fn run_turn(services: Arc<Services>, auth: AuthContext, session_id: Ul
     {
         Ok(h) => h,
         Err(e) => {
+    let workspace_id = session.workspace_id;
+
+    for _ in 0..max_turns {
+        let history = match services
+            .agent
+            .list_messages(auth.account_id, session_id, max_history)
+        {
+            Ok(h) => h,
+            Err(e) => {
+                let _ = tx.send(AgentEvent::Error {
+                    turn_id,
+                    message: e.to_string(),
+                });
+                break;
+            }
+        };
+        // 占位已填：runner 进 turn 前查一次 Workspace 拿真实 name 给 system prompt；
+        // 查不到（罕见：session 引用的 ws 已删）就退回到用 id 串。Workspaces 表的读
+        // 是同步 DocStore get，不阻塞 current_thread 运行时。
+        let ws_title = services
+            .workspace
+            .get_by_id(workspace_id)
+            .ok()
+            .flatten()
+            .map(|w| w.name)
+            .unwrap_or_else(|| workspace_id.to_string());
+        let ws_id_str = workspace_id.to_string();
+        let mut messages = vec![agent_system_prompt(&ws_title, &ws_id_str)];
+        messages.extend(to_chat_messages(&history));
+
+        let stream = match client.complete_stream(&messages, &tools).await {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = tx.send(AgentEvent::Error {
+                    turn_id,
+                    message: e.to_string(),
+                });
+                break;
+            }
+        };
+        futures_util::pin_mut!(stream);
+
+        let mut content = String::new();
+        let mut pending_args: HashMap<u32, (String, String, String)> = HashMap::new();
+        let mut final_tool_calls: Vec<crate::service::ai::ToolCallRequest> = Vec::new();
+        let mut stream_error: Option<String> = None;
+
+        loop {
+            match stream.next().await {
+                Some(Ok(crate::service::ai::StreamChunk::Delta(s))) => {
+                    content.push_str(&s);
+                    let _ = tx.send(AgentEvent::Delta {
+                        turn_id,
+                        content: s,
+                    });
+                }
+                Some(Ok(crate::service::ai::StreamChunk::ToolCallsPartial(partials))) => {
+                    for (idx, id, name, args) in partials {
+                        let entry = pending_args
+                            .entry(idx)
+                            .or_insert_with(|| (String::new(), String::new(), String::new()));
+                        if !id.is_empty() {
+                            entry.0 = id;
+                        }
+                        if !name.is_empty() {
+                            entry.1 = name;
+                        }
+                        entry.2.push_str(&args);
+                    }
+                }
+                Some(Ok(crate::service::ai::StreamChunk::ToolCalls(tcs))) => {
+                    final_tool_calls = tcs;
+                }
+                Some(Ok(crate::service::ai::StreamChunk::Done)) | None => break,
+                Some(Err(e)) => {
+                    stream_error = Some(e.to_string());
+                    break;
+                }
+            }
+        }
+
+        if let Some(msg) = stream_error {
+            let _ = tx.send(AgentEvent::Error {
+                turn_id,
+                message: msg,
+            });
+            services.agent_turns.finish(turn_id);
+            return;
+        }
+
+        // 落库 assistant 消息。
+        let assistant = AgentMessage {
+            id: Ulid::new(),
+            session_id,
+            role: Role::Assistant,
+            content: content.clone(),
+            tool_calls: final_tool_calls
+                .iter()
+                .map(|tc| ToolCall {
+                    id: tc.id.clone(),
+                    name: tc.function.name.clone(),
+                    args: serde_json::from_str(&tc.function.arguments)
+                        .unwrap_or(serde_json::Value::Null),
+                    result_preview: String::new(),
+                    ok: false,
+                })
+                .collect(),
+            tool_call_id: None,
+            created_at: Utc::now(),
+        };
+        if let Err(e) = services.agent.append_message(assistant.clone()) {
             let _ = tx.send(AgentEvent::Error {
                 turn_id,
                 message: e.to_string(),

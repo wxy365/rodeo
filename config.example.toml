@@ -25,6 +25,34 @@ allow_registration = true
 admin_email = "admin@local"
 admin_password = "Admin12345"
 
+# 第三方登录 OAuth/OIDC。整节缺失 = 全部 provider 未启用。
+# Spec 1 仅实现微信；Google / GitHub 见后续 Spec 2。
+[auth.oauth]
+
+# 微信开放平台「网站应用」扫码登录。
+# AppID / AppSecret 在 https://open.weixin.qq.com 控制台获取。
+# redirect_uri 必须是「授权回调域」下登记过的完整 URL
+# （dev 用 127.0.0.1:3000、prod 用公网域名）。
+# 三个字段全留空 = 微信登录未启用；任意一个留空 = 启动期报错「半配」。
+[auth.oauth.wechat]
+app_id = ""
+app_secret = ""
+redirect_uri = "http://127.0.0.1:3000/api/auth/wechat/callback"
+
+[auth.oauth.google]
+# Google Cloud Console → APIs & Services → Credentials → Create OAuth 2.0 Client ID（应用类型：Web application）。
+# Authorized redirect URI 填 ${redirect_uri}。
+client_id = ""
+client_secret = ""
+redirect_uri = "https://your-rodeo.example.com/api/auth/google/callback"
+
+[auth.oauth.github]
+# GitHub → Settings → Developer settings → OAuth Apps → New OAuth App。
+# Authorization callback URL 填 ${redirect_uri}。
+client_id = ""
+client_secret = ""
+redirect_uri = "https://your-rodeo.example.com/api/auth/github/callback"
+
 [storage]
 # 本地根目录。即使文档与附件都改用外部后端，它仍承载 tantivy 全文索引。
 data_dir = "./data"

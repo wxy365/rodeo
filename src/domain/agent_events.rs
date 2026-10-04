@@ -29,7 +29,16 @@ pub enum AgentEvent {
         kind: ToolErrorKind,
         preview: String,
     },
-    SideEffect { turn_id: Ulid, side_effect: SideEffect },
-    Done { turn_id: Ulid, message_id: Ulid },
-    Error { turn_id: Ulid, message: String },
+    SideEffect {
+        turn_id: Ulid,
+        side_effect: SideEffect,
+    },
+    Done {
+        turn_id: Ulid,
+        message_id: Ulid,
+    },
+    Error {
+        turn_id: Ulid,
+        message: String,
+    },
 }

@@ -61,9 +61,8 @@ impl PgDoc {
                 let mut client = match cfg.connect(NoTls) {
                     Ok(c) => c,
                     Err(e) => {
-                        let _ = ready_tx.send(Err(AppError::Storage(format!(
-                            "连接 PostgreSQL 失败: {e}"
-                        ))));
+                        let _ = ready_tx
+                            .send(Err(AppError::Storage(format!("连接 PostgreSQL 失败: {e}"))));
                         return;
                     }
                 };
@@ -90,7 +89,9 @@ impl PgDoc {
         // 阻塞到握手完成：连接失败 / 建表失败在这里就变成 `open` 的错误，
         // 而不是等第一次查询才发现。这样「配置写错」在启动期就清零。
         match ready_rx.recv() {
-            Ok(Ok(())) => Ok(Self { tx: Mutex::new(job_tx) }),
+            Ok(Ok(())) => Ok(Self {
+                tx: Mutex::new(job_tx),
+            }),
             Ok(Err(e)) => Err(e),
             Err(_) => Err(AppError::Storage("PostgreSQL 工作线程提前退出".to_string())),
         }
@@ -150,7 +151,11 @@ impl PgDoc {
         })
     }
 
-    pub fn scan_prefix(&self, cf: &str, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, AppError> {
+    pub fn scan_prefix(
+        &self,
+        cf: &str,
+        prefix: &[u8],
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, AppError> {
         let cf = cf.to_string();
         let prefix = prefix.to_vec();
         self.call(move |client| {

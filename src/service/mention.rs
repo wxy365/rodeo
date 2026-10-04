@@ -68,7 +68,10 @@ pub fn extract_mention_names(text: &str) -> std::collections::HashSet<String> {
                 true
             } else {
                 // 全角标点 / ASCII 括号类分隔也算「词边界」：中文用户写「，@张三」应识别。
-                matches!(bytes[i - 1] as char, '(' | '[' | ',' | ';' | '：' | '，' | '。')
+                matches!(
+                    bytes[i - 1] as char,
+                    '(' | '[' | ',' | ';' | '：' | '，' | '。'
+                )
             };
             if prev_ok {
                 let mut j = i + 1;
@@ -102,10 +105,8 @@ pub fn resolve_mentions(
 ) -> Vec<Ulid> {
     let mut hits: Vec<&(WorkspaceMember, Account)> = Vec::new();
     for n in names {
-        let mut matches: Vec<&(WorkspaceMember, Account)> = members
-            .iter()
-            .filter(|(_, a)| a.name == *n)
-            .collect();
+        let mut matches: Vec<&(WorkspaceMember, Account)> =
+            members.iter().filter(|(_, a)| a.name == *n).collect();
         if !matches.is_empty() {
             matches.sort_by(|a, b| a.1.email.cmp(&b.1.email));
             hits.push(matches[0]);

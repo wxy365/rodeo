@@ -144,8 +144,8 @@ fn mount_editor<N: wasm_bindgen::JsCast>(
 
     // text-change -> on_change(JSON.stringify(getContents()))
     let editor_for_cb = editor.clone();
-    let closure = Closure::wrap(Box::new(
-        move |_delta: JsValue, _old: JsValue, _source: JsValue| {
+    let closure = Closure::wrap(
+        Box::new(move |_delta: JsValue, _old: JsValue, _source: JsValue| {
             let contents = Reflect::get(&editor_for_cb, &JsValue::from_str("getContents"))
                 .ok()
                 .and_then(|f| f.dyn_into::<Function>().ok())
@@ -156,8 +156,8 @@ fn mount_editor<N: wasm_bindgen::JsCast>(
                 .and_then(|j| j.as_string())
                 .unwrap_or_default();
             on_change.run(json);
-        },
-    ) as Box<dyn FnMut(JsValue, JsValue, JsValue)>);
+        }) as Box<dyn FnMut(JsValue, JsValue, JsValue)>,
+    );
     let closure_js = closure.into_js_value();
 
     if let Some(on) = Reflect::get(&editor, &JsValue::from_str("on"))
@@ -172,7 +172,11 @@ fn mount_editor<N: wasm_bindgen::JsCast>(
 
     // 将 editor 与回调引用挂在节点上，避免被 GC 回收。
     let _ = Reflect::set(&node_js, &JsValue::from_str("__rodeo_editor"), &editor);
-    let _ = Reflect::set(&node_js, &JsValue::from_str("__rodeo_onchange"), &closure_js);
+    let _ = Reflect::set(
+        &node_js,
+        &JsValue::from_str("__rodeo_onchange"),
+        &closure_js,
+    );
 }
 
 /// 把 Delta JSON 渲染成 HTML。非 wasm 目标或桥接未加载时返回空串

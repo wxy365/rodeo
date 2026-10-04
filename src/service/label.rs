@@ -82,7 +82,10 @@ fn resolve_links(
             )));
         }
         let other = store
-            .get::<LabelSchema>(cf::LABEL_SCHEMAS, &keys::label_schema_key(ws_id, other_name))?
+            .get::<LabelSchema>(
+                cf::LABEL_SCHEMAS,
+                &keys::label_schema_key(ws_id, other_name),
+            )?
             .ok_or_else(|| AppError::InvalidQuery(format!("标签不存在: {other_name}")))?;
         let link = LabelLink {
             kind: input.kind,
@@ -136,9 +139,8 @@ fn check_no_cycle(store: &DocStore, ws_id: Ulid, schema: &LabelSchema) -> Result
 /// 校验颜色字符串为 `#rrggbb` 形式（不引入 regex 依赖）。
 pub(crate) fn check_color(c: &str) -> Result<(), AppError> {
     let bytes = c.as_bytes();
-    let valid = bytes.len() == 7
-        && bytes[0] == b'#'
-        && bytes[1..].iter().all(|b| b.is_ascii_hexdigit());
+    let valid =
+        bytes.len() == 7 && bytes[0] == b'#' && bytes[1..].iter().all(|b| b.is_ascii_hexdigit());
     if valid {
         Ok(())
     } else {
@@ -177,8 +179,15 @@ fn validate_attrs(input: &LabelSchemaInput) -> Result<(), AppError> {
     {
         return Err(AppError::LabelNameReserved);
     }
-    if input.multi && !matches!(input.value_type, LabelValueType::Enum | LabelValueType::Account) {
-        return Err(AppError::InvalidQuery("「多选」仅适用于枚举或账号标签".to_string()));
+    if input.multi
+        && !matches!(
+            input.value_type,
+            LabelValueType::Enum | LabelValueType::Account
+        )
+    {
+        return Err(AppError::InvalidQuery(
+            "「多选」仅适用于枚举或账号标签".to_string(),
+        ));
     }
     if matches!(
         input.value_type,
@@ -225,7 +234,10 @@ pub(crate) fn check_account_member(
     for account_id in ids {
         let member = store.get::<crate::domain::WorkspaceMember>(
             cf::WORKSPACE_MEMBERS,
-            &keys::member_key(ws_id, Ulid::from_string(account_id).map_err(|_| AppError::InvalidLabelValue)?),
+            &keys::member_key(
+                ws_id,
+                Ulid::from_string(account_id).map_err(|_| AppError::InvalidLabelValue)?,
+            ),
         )?;
         if member.is_none() {
             return Err(AppError::InvalidQuery(
@@ -350,12 +362,7 @@ impl LabelService {
             input.enum_values,
         )
         .with_colors(input.color, input.value_colors)
-        .with_attrs(
-            input.multi,
-            input.format,
-            input.currency_symbol,
-            input.unit,
-        );
+        .with_attrs(input.multi, input.format, input.currency_symbol, input.unit);
         // 默认值按刚组装好的 schema 校验（枚举范围、时间格式、multi 都在其中）。
         schema.default_value = resolve_default(input.default_value, &schema)?;
         if let Some(dv) = &schema.default_value {
@@ -722,9 +729,7 @@ mod tests {
         let actor = Ulid::new();
 
         // WorkspaceService::create 会为每个 workspace 内置 Task/Bug 两个 schema。
-        let workspace = ws
-            .create(actor, "Rodeo", None, "默认 workspace")
-            .unwrap();
+        let workspace = ws.create(actor, "Rodeo", None, "默认 workspace").unwrap();
         let ws_id = workspace.id;
 
         let builtin = label.list_schemas(ws_id).unwrap();

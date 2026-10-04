@@ -105,7 +105,10 @@ impl RelationService {
         semantic: &RelationSemantic,
     ) -> Option<Relation> {
         let prefix = keys::relation_by_from_prefix(workspace_id, from_code);
-        let rows = self.store.scan_prefix(cf::ENTRY_RELATIONS_BY_FROM, &prefix).ok()?;
+        let rows = self
+            .store
+            .scan_prefix(cf::ENTRY_RELATIONS_BY_FROM, &prefix)
+            .ok()?;
         for (k, _) in rows {
             // 索引键 = (ws, from, id)；id 是后 16 字节
             if k.len() < 32 {
@@ -113,10 +116,10 @@ impl RelationService {
             }
             let id_bytes: [u8; 16] = k[k.len() - 16..].try_into().ok()?;
             let id = Ulid::from_bytes(id_bytes);
-            if let Ok(Some(rel)) = self.store.get::<Relation>(
-                cf::ENTRY_RELATIONS,
-                &keys::relation_key(workspace_id, id),
-            ) {
+            if let Ok(Some(rel)) = self
+                .store
+                .get::<Relation>(cf::ENTRY_RELATIONS, &keys::relation_key(workspace_id, id))
+            {
                 if rel.to_code == to_code && &rel.semantic == semantic {
                     return Some(rel);
                 }
@@ -126,13 +129,11 @@ impl RelationService {
     }
 
     /// 按 id 直查主行，用于 GraphQL 层先校验再改。
-    pub fn get(
-        &self,
-        workspace_id: Ulid,
-        relation_id: Ulid,
-    ) -> Result<Option<Relation>, AppError> {
-        self.store
-            .get::<Relation>(cf::ENTRY_RELATIONS, &keys::relation_key(workspace_id, relation_id))
+    pub fn get(&self, workspace_id: Ulid, relation_id: Ulid) -> Result<Option<Relation>, AppError> {
+        self.store.get::<Relation>(
+            cf::ENTRY_RELATIONS,
+            &keys::relation_key(workspace_id, relation_id),
+        )
     }
 
     /// 改语义。语义可改，其它字段（方向 / 端点）一旦写就锁住——修改方向
@@ -215,7 +216,10 @@ impl RelationService {
     ) -> Result<Vec<Relation>, AppError> {
         let mut out: Vec<Relation> = Vec::new();
         let from_prefix = keys::relation_by_from_prefix(workspace_id, entry_code);
-        for (k, _) in self.store.scan_prefix(cf::ENTRY_RELATIONS_BY_FROM, &from_prefix)? {
+        for (k, _) in self
+            .store
+            .scan_prefix(cf::ENTRY_RELATIONS_BY_FROM, &from_prefix)?
+        {
             if k.len() < 32 {
                 continue;
             }
@@ -223,15 +227,18 @@ impl RelationService {
                 continue;
             };
             let id = Ulid::from_bytes(id_bytes);
-            if let Some(rel) = self.store.get::<Relation>(
-                cf::ENTRY_RELATIONS,
-                &keys::relation_key(workspace_id, id),
-            )? {
+            if let Some(rel) = self
+                .store
+                .get::<Relation>(cf::ENTRY_RELATIONS, &keys::relation_key(workspace_id, id))?
+            {
                 out.push(rel);
             }
         }
         let to_prefix = keys::relation_by_to_prefix(workspace_id, entry_code);
-        for (k, _) in self.store.scan_prefix(cf::ENTRY_RELATIONS_BY_TO, &to_prefix)? {
+        for (k, _) in self
+            .store
+            .scan_prefix(cf::ENTRY_RELATIONS_BY_TO, &to_prefix)?
+        {
             if k.len() < 32 {
                 continue;
             }
@@ -239,10 +246,10 @@ impl RelationService {
                 continue;
             };
             let id = Ulid::from_bytes(id_bytes);
-            if let Some(rel) = self.store.get::<Relation>(
-                cf::ENTRY_RELATIONS,
-                &keys::relation_key(workspace_id, id),
-            )? {
+            if let Some(rel) = self
+                .store
+                .get::<Relation>(cf::ENTRY_RELATIONS, &keys::relation_key(workspace_id, id))?
+            {
                 if !out.iter().any(|r| r.id == rel.id) {
                     out.push(rel);
                 }
@@ -336,11 +343,7 @@ impl RelationService {
             let ws = Ulid::from_bytes(ws_bytes);
             let id = Ulid::from_bytes(id_bytes);
             // 再确认一次反序列化确实失败（多数键只是格式可疑，但 bincode 容忍）
-            if self
-                .store
-                .get::<Relation>(cf::ENTRY_RELATIONS, k)
-                .is_ok()
-            {
+            if self.store.get::<Relation>(cf::ENTRY_RELATIONS, k).is_ok() {
                 continue;
             }
             ops.push(BatchOp::delete(cf::ENTRY_RELATIONS, k.clone()));
