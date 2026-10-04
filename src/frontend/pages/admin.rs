@@ -89,6 +89,10 @@ pub fn Admin() -> impl IntoView {
                             email: updated.email.clone(),
                             name: updated.name.clone(),
                             is_admin: updated.is_admin,
+                            // 走管理员面板的账号一定已经能登录了，密码字段是否设置在这里不重
+                            // 要——更新路径不读它，留 false 也没副作用。若以后支持 OAuth-only
+                            // 管理员，再换成 `updated.has_password`。
+                            has_password: false,
                         }));
                     }
                     account_list.update(|l| {

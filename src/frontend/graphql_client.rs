@@ -145,6 +145,28 @@ pub struct User {
     /// 「这个账号不是管理员」在语义上一致。
     #[serde(default)]
     pub is_admin: bool,
+    /// 是否已设置本地密码。OAuth-only 账号是 false——它在账号页决定要不要展示
+    /// 「设置密码」section。`#[serde(default)]` 让旧查询（`me` / `login` /
+    /// `register` 等）不报字段缺失错。
+    #[serde(default)]
+    pub has_password: bool,
+}
+
+/// 账号已绑定的第三方登录方式（`myOAuthBindings` 列表项）。
+///
+/// `bound_at` 在服务端是 `DateTime<Utc>`，async-graphql 序列化成 RFC3339 字符串
+/// 到达前端，所以这边按 String 收；展示时切片取前 10 位（`YYYY-MM-DD`）即可。
+/// `#[serde(default)]` 让老查询忘了请求 `email` / `displayName` 时也不炸。
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OAuthBinding {
+    pub provider: String,
+    pub external_id: String,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    pub bound_at: String,
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -1847,6 +1869,56 @@ pub async fn bind_oauth_to_new(
     )
     .await?;
     let r = data.get("bindOAuthToNew").ok_or("绑定响应缺失")?;
+    let token = r
+        .get("token")
+        .and_then(|v| v.as_str())
+        .ok_or("token 缺失")?
+        .to_string();
+    let account: User = serde_json::from_value(r.get("account").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())?;
+    Ok((token, account))
+}
+
+/// 当前账号已绑定的第三方登录方式（账号页展示 / 解除用）。
+pub async fn my_oauth_bindings() -> Result<Vec<OAuthBinding>, String> {
+    let data = graphql(
+        "query { myOAuthBindings { provider externalId email displayName boundAt } }",
+        json!({}),
+    )
+    .await?;
+    serde_json::from_value(data.get("myOAuthBindings").cloned().unwrap_or(Value::Null))
+        .map_err(|e| format!("decode myOAuthBindings: {e}"))
+}
+
+/// 解绑一个第三方登录方式。`account_id` 必须等于登录态里的账号 id——resolver 端会
+/// 再校验一次，前端这里传本机 `auth.user.id`。
+pub async fn unbind_oauth_binding(
+    account_id: &str,
+    provider: &str,
+    external_id: &str,
+) -> Result<(), String> {
+    // 不读返回的 `bool`：错误已被 `graphql()` 抽到 Err 分支里了，这里只关心成功。
+    let _ = graphql(
+        "mutation($a: ID!, $p: String!, $e: String!) { \
+         unbindOauthBinding(accountId: $a, provider: $p, externalId: $e) }",
+        json!({ "a": account_id, "p": provider, "e": external_id }),
+    )
+    .await?;
+    Ok(())
+}
+
+/// OAuth-only 账号后补本地密码。服务端会重签一张令牌，但与 `change_password`
+/// 不同——`set_password` 不调 `revoke_tokens`，所以其它设备不会被踢出；新令牌
+/// 仍要立刻落到本地，否则下一个请求就带着旧令牌 401。
+/// 返回换新后的账号（供调用方刷新 `auth.user`，里面已经带上 `hasPassword=true`）。
+pub async fn set_password(new_password: &str) -> Result<(String, User), String> {
+    let data = graphql(
+        "mutation($p: String!) { \
+         setPassword(newPassword: $p) { token account { id email name isAdmin hasPassword } } }",
+        json!({ "p": new_password }),
+    )
+    .await?;
+    let r = data.get("setPassword").ok_or("设置密码响应缺失")?;
     let token = r
         .get("token")
         .and_then(|v| v.as_str())
