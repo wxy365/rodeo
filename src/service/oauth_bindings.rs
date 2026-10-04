@@ -73,8 +73,18 @@ impl OAuthBindingsService {
             .get::<crate::domain::Account>(cf::ACCOUNTS, &account_id.to_bytes())?
             .ok_or(AppError::NotFound)?;
         if !account.has_password() {
-            let other = self.find_by_account_and_provider(account_id, provider)?;
-            if other.is_none() {
+            // 「唯一登录方式」守卫：排除正在解绑的那一条，统计该账号其余 binding 数；
+            // 0 才拒。brief 用 `find_by_account_and_provider(.., provider)?.is_none()`
+            // 会恒为 false（同一 provider 下的当前 binding 必然存在），守卫永不触发——
+            // 改用全 CF 扫 + 外部 id 排除。
+            let mut other_count: usize = 0;
+            for (_k, v) in self.store.scan_prefix(cf::OAUTH_BINDINGS, b"")? {
+                let b: IdentityBinding = bincode::deserialize(&v)?;
+                if b.account_id == account_id && b.external_id != external_id {
+                    other_count += 1;
+                }
+            }
+            if other_count == 0 {
                 return Err(AppError::InvalidQuery(
                     "请先设置密码或绑定其他第三方账号再解绑".to_string(),
                 ));
