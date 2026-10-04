@@ -101,25 +101,26 @@ impl Locale {
     }
 }
 
-#[derive(Deserialize)]
-struct LocaleJson {
-    #[serde(default)]
-    #[allow(dead_code)]
-    _meta: HashMap<String, String>,
-    #[serde(flatten)]
-    sections: HashMap<String, HashMap<String, String>>,
-}
-
 /// Flat lookup map: "appbar.new_entry" -> "新建 Entry".
 type FlatMap = HashMap<String, String>;
 
 fn build_flat(json: &str) -> FlatMap {
-    let parsed: LocaleJson = serde_json::from_str(json)
+    // 走 `serde_json::Value` 自己手剥：`_meta` 与其它顶层 section 平级，
+    // 不能同时用 `#[serde(flatten)]`（rust 派生会在两个 flatten 字段间
+    // 产生冲突，要么一个也起不到作用，要么在某个非 string 值上报
+    // "invalid type: map, expected a string"）。手剥只取 string leaf。
+    let parsed: serde_json::Value = serde_json::from_str(json)
         .unwrap_or_else(|e| panic!("locale JSON malformed: {e}"));
     let mut out = FlatMap::with_capacity(64);
-    for (section, kvs) in parsed.sections {
+    let Some(root) = parsed.as_object() else {
+        panic!("locale JSON malformed: top-level must be an object");
+    };
+    for (section, kvs) in root {
+        if section == "_meta" { continue; }
+        let Some(kvs) = kvs.as_object() else { continue; };
         for (k, v) in kvs {
-            out.insert(format!("{section}.{k}"), v);
+            let Some(s) = v.as_str() else { continue; };
+            out.insert(format!("{section}.{k}"), s.to_string());
         }
     }
     out
@@ -180,6 +181,15 @@ pub fn provide_i18n(initial: Locale) -> I18nController {
     ctrl
 }
 
+/// 静态兜底控制器：`generate_route_list(App)` 在启动期会走一遍 App 子树，
+/// 那时 ShellInner 还没运行（它是按请求包裹的），所以 `use_context` 拿不到
+/// 真正的 controller。给一个全局默认（En）让这次冷启动扫描不 panic。
+/// 真正渲染时 ShellInner 提供的 controller 会在最近的作用域里覆盖它。
+fn fallback_controller() -> I18nController {
+    static CTRL: OnceLock<I18nController> = OnceLock::new();
+    *CTRL.get_or_init(|| I18nController { locale: RwSignal::new(Locale::En) })
+}
+
 pub fn use_i18n() -> I18nController {
-    use_context::<I18nController>().expect("I18nController 未提供")
+    use_context::<I18nController>().unwrap_or_else(fallback_controller)
 }
