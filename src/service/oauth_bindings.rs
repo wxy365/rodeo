@@ -53,6 +53,39 @@ impl OAuthBindingsService {
         Ok(None)
     }
 
+    /// 解绑。spec §9「唯一登录方式」守卫：OAuth-only 账号不能解绑唯一的第三方绑定，
+    /// 必须先设密码或绑别的 provider，否则账号登不回去。
+    pub fn delete(
+        &self,
+        account_id: Ulid,
+        provider: OAuthProvider,
+        external_id: &str,
+    ) -> Result<(), AppError> {
+        let binding = self
+            .find(provider, external_id)?
+            .ok_or(AppError::NotFound)?;
+        if binding.account_id != account_id {
+            return Err(AppError::InvalidQuery("无权解绑此账号".to_string()));
+        }
+
+        let account = self
+            .store
+            .get::<crate::domain::Account>(cf::ACCOUNTS, &account_id.to_bytes())?
+            .ok_or(AppError::NotFound)?;
+        if !account.has_password() {
+            let other = self.find_by_account_and_provider(account_id, provider)?;
+            if other.is_none() {
+                return Err(AppError::InvalidQuery(
+                    "请先设置密码或绑定其他第三方账号再解绑".to_string(),
+                ));
+            }
+        }
+
+        self.store
+            .delete(cf::OAUTH_BINDINGS, &Self::key(provider, external_id))?;
+        Ok(())
+    }
+
     /// 写或更新绑定（已有同 `(provider, external_id)` 时只刷 `last_used_at`）。
     pub fn upsert(
         &self,
