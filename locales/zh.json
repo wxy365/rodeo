@@ -154,5 +154,25 @@
     "empty": "暂无数据",
     "error": "出错了",
     "back": "返回"
+  },
+  "entry": {
+    "back_to_view": "返回视图",
+    "save": "保存",
+    "delete": "删除",
+    "unsaved": "未保存",
+    "saved": "已保存",
+    "share_soon": "分享链接（即将上线）",
+    "edit_title": "点击编辑标题",
+    "created_by": "创建人",
+    "created_at": "创建时间",
+    "updated_by": "更新人",
+    "updated_at": "更新时间",
+    "archived_at": "归档时间",
+    "labels_hint": "标签（变更即保存）",
+    "workspace_missing": "工作空间不存在",
+    "entry_missing": "条目不存在",
+    "concurrent_edit": "内容已被他人修改",
+    "delete_failed": "删除失败",
+    "unsaved_changes": "有未保存的改动，先保存再返回"
   }
 }

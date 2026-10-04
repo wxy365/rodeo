@@ -10,6 +10,7 @@ use crate::frontend::graphql_client::{
     audit_logs, delete_entry, entry, label_schemas, members, update_entry, workspace_by_slug,
     AccountBrief, AuditLog, Entry, Labeling, LabelSchema, Member, Workspace,
 };
+use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::icons::{
     ic_back, ic_check, ic_share, ic_tag,
 };
@@ -19,6 +20,8 @@ use crate::frontend::tiny_editor::TinyEditor;
 use crate::frontend::use_auth;
 
 // 全屏页侧栏的页签。标签编辑不在这里——它常驻在页签上方。
+// TabBar 的接口是 `&'static [(&str, &str)]`，目前 entry 还没必要为这点小改动给
+// TabBar 加 i18n 依赖；其它页面（workspace_main 的 DETAIL_TABS）也都没接 i18n。
 const SIDE_TABS: &[(&str, &str)] = &[
     ("relations", "关联"),
     ("attachments", "附件"),
@@ -32,6 +35,7 @@ pub fn EntryFullScreen() -> impl IntoView {
     let code = move || params.get_untracked().get("code").unwrap_or_default();
     let navigate = use_navigate();
     let auth = use_auth();
+    let i18n: I18nController = use_i18n();
 
     let data: RwSignal<
         Option<Result<(Workspace, Entry, Vec<LabelSchema>, Vec<AuditLog>, Vec<Member>), String>>,
@@ -76,8 +80,8 @@ pub fn EntryFullScreen() -> impl IntoView {
         if cfg!(target_arch = "wasm32") {
             spawn_local(async move {
                 let result = async {
-                    let ws = workspace_by_slug(&s).await?.ok_or("工作空间不存在".to_string())?;
-                    let e = entry(&c).await?.ok_or("条目不存在".to_string())?;
+                    let ws = workspace_by_slug(&s).await?.ok_or(i18n.t("entry.workspace_missing"))?;
+                    let e = entry(&c).await?.ok_or(i18n.t("entry.entry_missing"))?;
                     let schema_list = label_schemas(&ws.id).await?;
                     let logs = audit_logs(&ws.id).await?;
                     // 成员表只为 Account 型标签的选择器服务，取不到就退化成空列表。
@@ -159,7 +163,10 @@ pub fn EntryFullScreen() -> impl IntoView {
                 }
                 Err(e) => {
                     error.set(Some(e.clone()));
-                    if e.contains("内容已被他人修改") {
+                    // 「已被他人修改」是 GraphQL 服务端硬编码的错误信息子串（始终是中文），
+                    // 客户端靠它判定是否要重拉。展示给用户的文案另由
+                    // `entry.concurrent_edit` 提供。
+                    if e.contains("已被他人修改") {
                         load(true);
                     }
                 }
@@ -176,7 +183,7 @@ pub fn EntryFullScreen() -> impl IntoView {
         spawn_local(async move {
             match delete_entry(&c).await {
                 Ok(true) => nav(&format!("/{s}"), Default::default()),
-                Ok(false) => error.set(Some("删除失败".to_string())),
+                Ok(false) => error.set(Some(i18n.t("entry.delete_failed"))),
                 Err(e) => error.set(Some(e)),
             }
         });
@@ -196,7 +203,7 @@ pub fn EntryFullScreen() -> impl IntoView {
                 return;
             }
             if dirty.get_untracked() {
-                error.set(Some("有未保存的改动，先保存再返回".to_string()));
+                error.set(Some(i18n.t("entry.unsaved_changes")));
                 return;
             }
             // 标题编辑态一并退出，避免监听触发后输入框还浮在页面上。
@@ -209,7 +216,7 @@ pub fn EntryFullScreen() -> impl IntoView {
     view! {
         <div class="page">
             <div class="panel entry-top">
-                <button class="btn" on:click=move |_| go_back.run(())>{ic_back()}"返回视图"</button>
+                <button class="btn" on:click=move |_| go_back.run(())>{ic_back()}{move || i18n.t("entry.back_to_view")}</button>
                 <CodeCopy code=Signal::derive(code) />
                 {move || if editing_title.get() {
                     view! {
@@ -234,19 +241,19 @@ pub fn EntryFullScreen() -> impl IntoView {
                 } else {
                     view! {
                         <h1 class="entry-title"
-                            title="点击编辑标题"
+                            title=move || i18n.t("entry.edit_title")
                             on:click=move |_| editing_title.set(true)
                         >{move || title.get()}</h1>
                     }.into_any()
                 }}
-                <button class="btn pri" disabled=move || !dirty.get() on:click=move |_| do_save.run(())>"保存"</button>
+                <button class="btn pri" disabled=move || !dirty.get() on:click=move |_| do_save.run(())>{move || i18n.t("entry.save")}</button>
                 {move || if dirty.get() {
-                    view! { <span class="chip dim">"未保存"</span> }.into_any()
+                    view! { <span class="chip dim">{move || i18n.t("entry.unsaved")}</span> }.into_any()
                 } else {
-                    view! { <span class="chip c-done">{ic_check()}"已保存"</span> }.into_any()
+                    view! { <span class="chip c-done">{ic_check()}{move || i18n.t("entry.saved")}</span> }.into_any()
                 }}
-                <button class="btn" disabled>{ic_share()}"分享链接（即将上线）"</button>
-                <button class="btn danger" on:click=del>"删除"</button>
+                <button class="btn" disabled>{ic_share()}{move || i18n.t("entry.share_soon")}</button>
+                <button class="btn danger" on:click=del>{move || i18n.t("entry.delete")}</button>
             </div>
 
             {move || error.get().map(|e| view! { <div class="hint" style="margin-bottom:12px">{"⚠ "}{e}</div> })}
@@ -271,7 +278,7 @@ pub fn EntryFullScreen() -> impl IntoView {
                             }
                             _ => view! {
                                 <div class="ebody" style="min-height:340px;padding:16px">
-                                    <span class="mut">"加载中…"</span>
+                                    <span class="mut">{move || i18n.t("common.loading")}</span>
                                 </div>
                             }.into_any(),
                         }}
@@ -291,19 +298,19 @@ pub fn EntryFullScreen() -> impl IntoView {
                         let by = |a: &Option<AccountBrief>| a.as_ref().map(|x| x.name.clone()).unwrap_or_else(|| "—".to_string());
                         view! {
                             <div class="dmeta">
-                                <div><span class="mut">"创建人"</span>{by(&e.created_by_account)}</div>
-                                <div><span class="mut">"创建时间"</span>{fmt_datetime(&e.created_at)}</div>
-                                <div><span class="mut">"更新人"</span>{by(&e.updated_by_account)}</div>
-                                <div><span class="mut">"更新时间"</span>{fmt_datetime(&e.updated_at)}</div>
+                                <div><span class="mut">{move || i18n.t("entry.created_by")}</span>{by(&e.created_by_account)}</div>
+                                <div><span class="mut">{move || i18n.t("entry.created_at")}</span>{fmt_datetime(&e.created_at)}</div>
+                                <div><span class="mut">{move || i18n.t("entry.updated_by")}</span>{by(&e.updated_by_account)}</div>
+                                <div><span class="mut">{move || i18n.t("entry.updated_at")}</span>{fmt_datetime(&e.updated_at)}</div>
                                 {e.archived_at.clone().map(|at| view! {
-                                    <div><span class="mut">"归档时间"</span>{fmt_datetime(&at)}</div>
+                                    <div><span class="mut">{move || i18n.t("entry.archived_at")}</span>{fmt_datetime(&at)}</div>
                                 })}
                             </div>
                         }
                     })}
 
                     <div>
-                        <div class="grp-h">{ic_tag()}"标签（变更即保存）"</div>
+                        <div class="grp-h">{ic_tag()}{move || i18n.t("entry.labels_hint")}</div>
                         <LabelEditor code=Signal::derive(code) schemas labels members=ws_members on_changed />
                     </div>
 

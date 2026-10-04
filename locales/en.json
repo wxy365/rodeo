@@ -154,5 +154,25 @@
     "empty": "No data",
     "error": "Error",
     "back": "Back"
+  },
+  "entry": {
+    "back_to_view": "Back to view",
+    "save": "Save",
+    "delete": "Delete",
+    "unsaved": "Unsaved",
+    "saved": "Saved",
+    "share_soon": "Share link (coming soon)",
+    "edit_title": "Click to edit title",
+    "created_by": "Created by",
+    "created_at": "Created at",
+    "updated_by": "Updated by",
+    "updated_at": "Updated at",
+    "archived_at": "Archived at",
+    "labels_hint": "Labels (auto-saved on change)",
+    "workspace_missing": "Workspace not found",
+    "entry_missing": "Entry not found",
+    "concurrent_edit": "Content was modified by someone else",
+    "delete_failed": "Delete failed",
+    "unsaved_changes": "You have unsaved changes — save before going back"
   }
 }
