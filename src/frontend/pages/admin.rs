@@ -6,6 +6,7 @@ use crate::frontend::components::{copy_to_clipboard, logged_out, short_time};
 use crate::frontend::graphql_client::{
     accounts, create_account, set_account_status, update_account, AdminAccount, CreatedAccount,
 };
+use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::icons::{ic_add, ic_back, ic_copy};
 use crate::frontend::{use_auth, User};
 
@@ -27,6 +28,7 @@ fn origin() -> String {
 #[component]
 pub fn Admin() -> impl IntoView {
     let auth = use_auth();
+    let i18n: I18nController = use_i18n();
     let email = RwSignal::new(String::new());
     let name = RwSignal::new(String::new());
     let make_admin = RwSignal::new(false);
@@ -69,7 +71,7 @@ pub fn Admin() -> impl IntoView {
         }
         let name = edit_name.get_untracked().trim().to_string();
         if name.is_empty() {
-            edit_error.set(Some("姓名不能为空".to_string()));
+            edit_error.set(Some(i18n.t("admin.name_required")));
             return;
         }
         let id = target.id.clone();
@@ -130,7 +132,10 @@ pub fn Admin() -> impl IntoView {
 
     // 冻结 / 解冻 / 注销。成功后就地改那一行，不整表重拉——重拉会把行顺序和滚动位置
     // 一起动掉，而这里只该变一个状态。
-    let change_status = move |(id, status): (String, String)| {
+    // 写成 `Callback` 是为了让外层的多个 `on:click=move |_| change_status(...)` 各自
+    // 拿到一份 clone；普通的 `move |...| { ... }` 闭包不是 Clone，多个内层闭包会争抢
+    // 同一个实例，外层闭包被迫退化成 FnOnce。
+    let change_status: Callback<(String, String)> = Callback::new(move |(id, status): (String, String)| {
         row_busy.set(Some(id.clone()));
         confirm_id.set(None);
         spawn_local(async move {
@@ -149,7 +154,7 @@ pub fn Admin() -> impl IntoView {
             }
             row_busy.set(None);
         });
-    };
+    });
 
     // 未登录、或本地令牌已被服务端判死，都回登录页。与 entry.rs 用同一条路径：
     // `logged_out()` 在 SSR 阶段恒为 true，所以只在 wasm 上跳转，否则服务端渲染会直接跳走。
@@ -159,8 +164,8 @@ pub fn Admin() -> impl IntoView {
     // 「工作空间列表」。query 在 SSR 阶段可读，无需 wasm 分支。
     let query = use_query_map();
     let back_label = move || match query.get().get("from").as_deref() {
-        Some("ws") => "工作空间",
-        _ => "工作空间列表",
+        Some("ws") => i18n.t("account.back_workspace"),
+        _ => i18n.t("account.back_workspaces_list"),
     };
     let back_href = move || match (query.get().get("from").as_deref(), query.get().get("slug")) {
         (Some("ws"), Some(slug)) if !slug.is_empty() => format!("/{slug}"),
@@ -186,7 +191,7 @@ pub fn Admin() -> impl IntoView {
         let e = email.get().trim().to_string();
         let n = name.get().trim().to_string();
         if e.is_empty() || n.is_empty() {
-            error.set(Some("邮箱与姓名都要填".to_string()));
+            error.set(Some(i18n.t("admin.email_name_required")));
             return;
         }
         // 防连点：初始密码是不可找回的，重复提交会白白作废一个密码。
@@ -216,35 +221,35 @@ pub fn Admin() -> impl IntoView {
         <div class="page">
             <div class="crumb" style="display:flex;align-items:center;gap:8px">
                 <button class="btn sm" on:click=back>{ic_back()}{back_label}</button>
-                <span>"/admin · 仅系统管理员"</span>
+                <span>{move || i18n.t("admin.crumb")}</span>
             </div>
             <div class="stats">
                 <div class="panel stat">
                     <div class="v">
                         {move || account_list.get().map(|l| l.len().to_string()).unwrap_or_else(|| "—".to_string())}
                     </div>
-                    <div class="l">"账号总数"</div>
+                    <div class="l">{move || i18n.t("admin.stat_accounts")}</div>
                 </div>
-                <div class="panel stat"><div class="v">"—"</div><div class="l">"工作空间"</div></div>
-                <div class="panel stat"><div class="v">"—"</div><div class="l">"附件存储占用"</div></div>
+                <div class="panel stat"><div class="v">"—"</div><div class="l">{move || i18n.t("admin.stat_workspaces")}</div></div>
+                <div class="panel stat"><div class="v">"—"</div><div class="l">{move || i18n.t("admin.stat_attachments")}</div></div>
             </div>
 
             {move || match auth.user.get() {
                 // 令牌失效：说清楚为什么，否则这个面板会一直停在「加载中…」。
                 None if auth.session_lost.get() => view! {
-                    <div class="panel set-body"><div class="mut">"登录已失效，请重新登录。"</div></div>
+                    <div class="panel set-body"><div class="mut">{move || i18n.t("admin.session_lost")}</div></div>
                 }.into_any(),
                 // `user` 为 None 表示 me() 还没回来：此时既不能说「有权限」也不能说
                 // 「无权限」，否则管理员会先看到一瞬「仅系统管理员可访问」。
                 None => view! {
-                    <div class="panel set-body"><div class="mut">"加载中…"</div></div>
+                    <div class="panel set-body"><div class="mut">{move || i18n.t("admin.loading")}</div></div>
                 }.into_any(),
                 Some(u) if !u.is_admin => view! {
                     <div class="panel set-body">
-                        <h2>"仅系统管理员可访问"</h2>
+                        <h2>{move || i18n.t("admin.admin_only")}</h2>
                         <div class="mut">
-                            "当前账号（"{u.email}"）不是系统管理员。"
-                            "管理员账号由部署配置的 auth.builtin.admin_email 指定。"
+                            {move || i18n.tf("admin.not_admin", &[("email", &u.email)])}
+                            {move || i18n.t("admin.admin_email_help")}
                         </div>
                     </div>
                 }.into_any(),
@@ -255,23 +260,23 @@ pub fn Admin() -> impl IntoView {
                 let me_id_for_edit = me.id.clone();
                 view! {
                     <div class="panel set-body">
-                        <h2>"账号管理"</h2>
+                        <h2>{move || i18n.t("admin.accounts_management")}</h2>
                         <div class="invite">
-                            <input class="inp" placeholder="邮箱" prop:value=email
+                            <input class="inp" placeholder={move || i18n.t("admin.create_email")} prop:value=email
                                 on:input=move |ev| email.set(event_target_value(&ev)) />
-                            <input class="inp" placeholder="姓名" prop:value=name
+                            <input class="inp" placeholder={move || i18n.t("admin.create_name")} prop:value=name
                                 on:input=move |ev| name.set(event_target_value(&ev)) />
                             <label class="mut" style="display:flex;align-items:center;gap:6px;white-space:nowrap">
                                 <input type="checkbox" prop:checked=make_admin
                                     on:change=move |ev| make_admin.set(event_target_checked(&ev)) />
-                                "设为管理员"
+                                {move || i18n.t("admin.set_admin")}
                             </label>
                             <button class="btn pri" disabled=move || !can_submit() on:click=submit>
-                                {ic_add()}"创建账号"
+                                {ic_add()}{move || i18n.t("admin.create_account")}
                             </button>
                         </div>
                         <div class="mut" style="margin-top:8px">
-                            "初始密码由服务端随机生成，创建后只显示这一次——请立刻复制并转交本人。"
+                            {move || i18n.t("admin.initial_password_hint")}
                         </div>
                         {move || error.get().map(|e| view! {
                             <div class="hint" style="margin-top:8px">{"⚠ "}{e}</div>
@@ -282,44 +287,47 @@ pub fn Admin() -> impl IntoView {
                         let email_txt = c.account.email.clone();
                         let name_txt = c.account.name.clone();
                         let pw = c.initial_password.clone();
+                        let origin_str = origin();
                         // 分发用的整段文案：它是要被原样转交给本人的，所以带上登录地址、
                         // 账号、初始密码和「登录后改密」的指引，而不是只丢一行数据。
+                        // 这里直接 format! 一次：模板若包成闭包会把 `email_txt` / `pw` 一并
+                        // move 走，导致下面的 `{email_txt}` / `{pw}` 再读时 use-after-move。
                         let share = format!(
-                            "你的 Rodeo 账号已创建\n\
-                             登录地址：{}/login\n\
-                             邮箱：{email_txt}\n\
-                             初始密码：{pw}\n\
-                             首次登录后请尽快修改初始密码：登录后点右上角头像 →「个人信息」，在「修改密码」里填入当前密码与新密码。\n\
-                             这串密码只显示这一次，请妥善保管。",
-                            origin(),
+                            "{intro}\n{login}\n{email_line}\n{pw_line}\n{change}\n{warn}",
+                            intro = i18n.t("admin.share_intro"),
+                            login = i18n.tf("admin.share_login_url", &[("url", &origin_str)]),
+                            email_line = i18n.tf("admin.share_email", &[("email", &email_txt)]),
+                            pw_line = i18n.tf("admin.share_password", &[("pw", &pw)]),
+                            change = i18n.t("admin.share_change_pw"),
+                            warn = i18n.t("admin.share_warning"),
                         );
                         view! {
                             <div class="panel set-body">
-                                <h2>"账号已创建，请立即分发"</h2>
+                                <h2>{move || i18n.t("admin.created_title")}</h2>
                                 <div class="dmeta">
-                                    <div><span class="mut">"邮箱"</span>{email_txt}</div>
-                                    <div><span class="mut">"姓名"</span>{name_txt}</div>
-                                    <div><span class="mut">"初始密码"</span><code>{pw}</code></div>
+                                    <div><span class="mut">{move || i18n.t("admin.created_email")}</span>{email_txt.clone()}</div>
+                                    <div><span class="mut">{move || i18n.t("admin.created_name")}</span>{name_txt}</div>
+                                    <div><span class="mut">{move || i18n.t("admin.initial_password")}</span><code>{pw.clone()}</code></div>
                                 </div>
                                 <div style="display:flex;gap:8px;align-items:center;margin-top:10px">
                                     <button class="btn pri" on:click=move |_| {
                                         copy_to_clipboard(&share);
                                         copied.set(true);
-                                    }>{ic_copy()}"复制分享文案"</button>
+                                    }>{ic_copy()}{move || i18n.t("admin.copy_share")}</button>
                                     {move || copied.get().then(|| view! {
-                                        <span class="chip c-done">"已复制"</span>
+                                        <span class="chip c-done">{move || i18n.t("admin.copied")}</span>
                                     })}
                                 </div>
                                 <div class="hint" style="margin-top:8px">
                                     {"⚠ "}
-                                    "这串密码不会再显示：服务端只保存 Argon2 哈希。现在就把它交给本人。"
+                                    {move || i18n.t("admin.password_warning")}
                                 </div>
                             </div>
                         }
                     })}
 
                     <div class="panel set-body">
-                        <h2>"账号"</h2>
+                        <h2>{move || i18n.t("admin.accounts")}</h2>
                         {move || list_error.get().map(|e| view! {
                             <div class="hint" style="margin-bottom:8px">{"⚠ "}{e}</div>
                         })}
@@ -329,19 +337,19 @@ pub fn Admin() -> impl IntoView {
                         // `me_id` 只被借用，这层闭包才是 `Fn` 而不是 `FnOnce`。
                         let me_id = me_id.clone();
                         match account_list.get() {
-                            None => view! { <div class="mut">"加载中…"</div> }.into_any(),
+                            None => view! { <div class="mut">{move || i18n.t("admin.loading")}</div> }.into_any(),
                             Some(list) if list.is_empty() => {
-                                view! { <div class="mut">"还没有账号。"</div> }.into_any()
+                                view! { <div class="mut">{move || i18n.t("admin.no_accounts")}</div> }.into_any()
                             }
                             Some(_) => view! {
                                 <table class="tbl">
                                     <thead>
                                         <tr>
-                                            <th>"邮箱"</th>
-                                            <th>"姓名"</th>
-                                            <th>"角色"</th>
-                                            <th>"状态"</th>
-                                            <th>"创建时间"</th>
+                                            <th>{move || i18n.t("admin.col_email")}</th>
+                                            <th>{move || i18n.t("admin.col_name")}</th>
+                                            <th>{move || i18n.t("admin.col_role")}</th>
+                                            <th>{move || i18n.t("admin.col_status")}</th>
+                                            <th>{move || i18n.t("admin.col_created_at")}</th>
                                             <th style="width:240px"></th>
                                         </tr>
                                     </thead>
@@ -352,26 +360,30 @@ pub fn Admin() -> impl IntoView {
                                             children=move |a: AdminAccount| {
                                                 // 两道禁用的理由：不能操作自己（一点就把自己锁在外面），
                                                 // 也不能动配置里指定的内置管理员（见服务端那两道守卫）。
-                                                let locked = a.id == me_id || a.is_builtin;
-                                                let lock_tip = if a.id == me_id {
-                                                    "不能对自己的账号执行该操作"
-                                                } else {
-                                                    "内置管理员账号不能冻结或注销"
-                                                };
+                                                // 提前算成 `bool` 而不是闭包里的 `a.id == me_id` 比较，
+                                                // 避免内层 `title=move || ...` 把 `a` / `me_id` 一并 move
+                                                // 走，让外层闭包退化成 FnOnce。
+                                                let is_self = a.id == me_id;
+                                                let is_builtin = a.is_builtin;
+                                                let locked = is_self || is_builtin;
                                                 let status_cls = match a.status.as_str() {
                                                     "frozen" => "chip c-doing",
                                                     "deactivated" => "chip c-wont",
                                                     _ => "chip c-done",
                                                 };
-                                                let status_txt = match a.status.as_str() {
-                                                    "frozen" => "已冻结",
-                                                    "deactivated" => "已注销",
-                                                    _ => "正常",
+                                                // `status_txt` 闭包若直接 `move || a.status.as_str()` 会把
+                                                // `a.status` 整个 move 走，导致下面 `frozen` / `deactivated`
+                                                // 那两行还想读 `a.status` 时报「use after move」。先 clone
+                                                // 一份出来让闭包只 move 这份 clone，`a` 仍可借用。
+                                                let status_str = a.status.clone();
+                                                let status_txt = move || match status_str.as_str() {
+                                                    "frozen" => i18n.t("admin.status_frozen"),
+                                                    "deactivated" => i18n.t("admin.status_deactivated"),
+                                                    _ => i18n.t("admin.status_active"),
                                                 };
                                                 let frozen = a.status == "frozen";
                                                 let deactivated = a.status == "deactivated";
                                                 let next = if frozen { "active" } else { "frozen" };
-                                                let next_txt = if frozen { "解冻" } else { "冻结" };
                                                 let id = a.id.clone();
                                                 // 编辑弹窗要回填姓名与角色，所以它也得有一份。与 `id` 同理：
                                                 // 外面只被借用，进内层 `on:click` 时每次现克隆一份。
@@ -380,8 +392,8 @@ pub fn Admin() -> impl IntoView {
                                                     <tr>
                                                         <td>{a.email.clone()}</td>
                                                         <td>{a.name.clone()}</td>
-                                                        <td>{if a.is_admin { "管理员" } else { "成员" }}</td>
-                                                        <td><span class=status_cls>{status_txt}</span></td>
+                                                        <td>{if a.is_admin { i18n.t("admin.role_admin") } else { i18n.t("admin.role_member") }}</td>
+                                                        <td><span class=status_cls>{move || status_txt()}</span></td>
                                                         <td>{short_time(&a.created_at)}</td>
                                                         <td>
                                                             // 这一段必须待在 `move ||` 里：`confirm_id` / `row_busy`
@@ -392,6 +404,9 @@ pub fn Admin() -> impl IntoView {
                                                                 // 外面的 `id` 只是被借用，交给内层 `on:click` 的每次克隆一份，
                                                                 // 否则 move 出去一次就把这层闭包变成 `FnOnce`。
                                                                 let id = id.clone();
+                                                                // `change_status` 是 Callback，可以 clone；这样多个内层
+                                                                // `on:click` 各自拿一份，外层闭包仍是 FnMut。
+                                                                let change_status = change_status.clone();
                                                                 if deactivated {
                                                                     // 注销是终态，没有可做的操作。
                                                                     view! { <span class="mut">"—"</span> }.into_any()
@@ -399,14 +414,14 @@ pub fn Admin() -> impl IntoView {
                                                                     let id_ok = id.clone();
                                                                     view! {
                                                                         <span class="rowact">
-                                                                            <span class="mut">"确认注销？"</span>
+                                                                            <span class="mut">{move || i18n.t("admin.confirm_deactivate")}</span>
                                                                             <button class="btn sm"
                                                                                 disabled=move || row_busy.get().is_some()
-                                                                                on:click=move |_| change_status((id_ok.clone(), "deactivated".to_string()))>
-                                                                                "确认"
+                                                                                on:click=move |_| change_status.run((id_ok.clone(), "deactivated".to_string()))>
+                                                                                {move || i18n.t("common.confirm")}
                                                                             </button>
                                                                             <button class="btn sm" on:click=move |_| confirm_id.set(None)>
-                                                                                "取消"
+                                                                                {move || i18n.t("common.cancel")}
                                                                             </button>
                                                                         </span>
                                                                     }.into_any()
@@ -425,19 +440,19 @@ pub fn Admin() -> impl IntoView {
                                                                                     edit_error.set(None);
                                                                                     edit_target.set(Some(edit_row.clone()));
                                                                                 }>
-                                                                                "编辑"
+                                                                                {move || i18n.t("common.edit")}
                                                                             </button>
                                                                             <button class="btn sm"
                                                                                 disabled=move || locked || row_busy.get().is_some()
-                                                                                title=lock_tip
-                                                                                on:click=move |_| change_status((id_freeze.clone(), next.to_string()))>
-                                                                                {next_txt}
+                                                                                title=move || if is_self { i18n.t("admin.lock_self") } else { i18n.t("admin.lock_builtin") }
+                                                                                on:click=move |_| change_status.run((id_freeze.clone(), next.to_string()))>
+                                                                                {move || if frozen { i18n.t("admin.unfreeze") } else { i18n.t("admin.freeze") }}
                                                                             </button>
                                                                             <button class="btn sm"
                                                                                 disabled=move || locked || row_busy.get().is_some()
-                                                                                title=lock_tip
+                                                                                title=move || if is_self { i18n.t("admin.lock_self") } else { i18n.t("admin.lock_builtin") }
                                                                                 on:click=move |_| confirm_id.set(Some(id_deactivate.clone()))>
-                                                                                "注销"
+                                                                                {move || i18n.t("admin.deactivate")}
                                                                             </button>
                                                                         </span>
                                                                     }.into_any()
@@ -454,7 +469,7 @@ pub fn Admin() -> impl IntoView {
                         }
                         }}
                         <div class="mut" style="margin-top:8px">
-                            "冻结会立刻踢该账号下线，且需重新登录才能恢复；注销不可逆，但会释放邮箱地址供重新注册。"
+                            {move || i18n.t("admin.freeze_deactivate_desc")}
                         </div>
                     </div>
 
@@ -463,39 +478,39 @@ pub fn Admin() -> impl IntoView {
                         // 一一对应（见 `update_account`）——错在这一栏点了必然失败，不如摆明原因。
                         let role_locked = t.id == me_id_for_edit || t.is_builtin;
                         let role_tip = if t.id == me_id_for_edit {
-                            "不能撤销自己的管理员权限"
+                            i18n.t("admin.cant_remove_self_admin")
                         } else {
-                            "内置管理员账号的管理员权限不可撤销"
+                            i18n.t("admin.cant_remove_builtin_admin")
                         };
                         view! {
                             <div class="dmodal" on:click=move |_| edit_target.set(None)>
                                 <div class="panel dmbox" on:click=|ev| ev.stop_propagation()>
-                                    <h3>"编辑账号"</h3>
+                                    <h3>{move || i18n.t("admin.edit_account")}</h3>
                                     <div class="dfield">
-                                        <span class="dlabel">"邮箱"</span>
+                                        <span class="dlabel">{move || i18n.t("admin.col_email")}</span>
                                         <div class="mut">{t.email.clone()}</div>
                                     </div>
                                     <label class="dfield">
-                                        <span class="dlabel">"姓名"</span>
+                                        <span class="dlabel">{move || i18n.t("admin.col_name")}</span>
                                         <input class="inp" prop:value=edit_name
                                             on:input=move |ev| edit_name.set(event_target_value(&ev)) />
                                     </label>
                                     <div class="dfield">
-                                        <span class="dlabel">"角色"</span>
+                                        <span class="dlabel">{move || i18n.t("admin.col_role")}</span>
                                         <label class="mut" style="display:flex;align-items:center;gap:6px">
                                             <input type="checkbox" prop:checked=edit_admin
                                                 disabled=role_locked title=role_tip
                                                 on:change=move |ev| edit_admin.set(event_target_checked(&ev)) />
-                                            "系统管理员"
+                                            {move || i18n.t("admin.system_admin")}
                                         </label>
                                     </div>
                                     {move || edit_error.get().map(|e| view! {
                                         <p class="error" style="margin:0">{"⚠ "}{e}</p>
                                     })}
                                     <div style="display:flex;gap:8px;justify-content:flex-end">
-                                        <button class="btn" on:click=move |_| edit_target.set(None)>"取消"</button>
+                                        <button class="btn" on:click=move |_| edit_target.set(None)>{move || i18n.t("common.cancel")}</button>
                                         <button class="btn pri" disabled=move || edit_busy.get()
-                                            on:click=save_edit>"保存"</button>
+                                            on:click=save_edit>{move || i18n.t("common.save")}</button>
                                     </div>
                                 </div>
                             </div>
@@ -506,24 +521,24 @@ pub fn Admin() -> impl IntoView {
             }}
 
             <div class="panel set-body">
-                <h2>"系统配置"</h2>
+                <h2>{move || i18n.t("admin.system_config")}</h2>
                 <div class="cfg">
-                    <div><b>"开放注册"</b><div class="mut">"关闭后仅系统管理员可创建账号"</div></div>
+                    <div><b>{move || i18n.t("admin.open_registration")}</b><div class="mut">{move || i18n.t("admin.open_registration_help")}</div></div>
                     <button class="switch" disabled></button>
                 </div>
                 <div class="cfg">
-                    <div><b>"附件大小限制"</b><div class="mut">"Entry 附件单文件上限，默认 50MB"</div></div>
+                    <div><b>{move || i18n.t("admin.attachment_limit")}</b><div class="mut">{move || i18n.t("admin.attachment_limit_help")}</div></div>
                     <input class="inp" value="50 MB" disabled />
                 </div>
                 <div class="cfg">
-                    <div><b>"会话过期时间"</b><div class="mut">"JWT 过期后需重新认证"</div></div>
+                    <div><b>{move || i18n.t("admin.session_expiry")}</b><div class="mut">{move || i18n.t("admin.session_expiry_help")}</div></div>
                     <input class="inp" value="7 天" disabled />
                 </div>
                 <div class="cfg">
-                    <div><b>"Workspace 回收站保留期"</b><div class="mut">"软删除后可恢复窗口"</div></div>
+                    <div><b>{move || i18n.t("admin.trash_retention")}</b><div class="mut">{move || i18n.t("admin.trash_retention_help")}</div></div>
                     <input class="inp" value="30 天" disabled />
                 </div>
-                <div class="mut">"审计日志保留 180 天 · 全局操作流水见「审计日志」标签页"</div>
+                <div class="mut">{move || i18n.t("admin.audit_log_note")}</div>
             </div>
         </div>
     }
