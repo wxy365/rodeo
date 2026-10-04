@@ -14,10 +14,11 @@ use ulid::Ulid;
 
 use crate::domain::{
     Account, AccountStatus, ActionTarget, AgentMessage, Attachment, AuditLog, AutomationRule,
-    Comment, Entry, Invite, LabelSchema, LabelValueType, LabelWrite, Labeling, LinkKind, Message,
-    NamedPrompt, Query as ViewQuery, Relation, RelationSemantic, Role, SemanticKind, SortField,
-    SortKey, SortSpec, TitleColorRule, ValueColor, ValueSource, View, ViewTimeline, Workspace,
-    WorkspaceAiConfig, WorkspaceMember, WorkspaceRole, WriteOp, ATTACHMENT_URL_PREFIX,
+    Comment, Entry, IdentityBinding, Invite, LabelSchema, LabelValueType, LabelWrite, Labeling,
+    LinkKind, Message, NamedPrompt, Query as ViewQuery, Relation, RelationSemantic, Role,
+    SemanticKind, SortField, SortKey, SortSpec, TitleColorRule, ValueColor, ValueSource, View,
+    ViewTimeline, Workspace, WorkspaceAiConfig, WorkspaceMember, WorkspaceRole, WriteOp,
+    ATTACHMENT_URL_PREFIX,
 };
 use crate::error::AppError;
 use crate::service::agent::runner::run_turn;
@@ -110,6 +111,29 @@ fn builtin_admin_email(gql: &GraphqlContext) -> String {
 #[derive(SimpleObject, Clone)]
 pub struct GqlServerConfig {
     allow_registration: bool,
+}
+
+/// 当前账号已绑定的第三方登录方式。`myOAuthBindings` 列表项的投影。
+/// 仅暴露「用户自己能看到的」字段——`account_id` 隐含在登录态里，无需再回显。
+#[derive(SimpleObject, Clone)]
+pub struct GqlOAuthBinding {
+    provider: String,
+    external_id: String,
+    email: Option<String>,
+    display_name: Option<String>,
+    bound_at: DateTime<Utc>,
+}
+
+impl From<IdentityBinding> for GqlOAuthBinding {
+    fn from(b: IdentityBinding) -> Self {
+        Self {
+            provider: b.provider.as_str().to_string(),
+            external_id: b.external_id,
+            email: b.email,
+            display_name: b.display_name,
+            bound_at: b.bound_at,
+        }
+    }
 }
 
 #[derive(SimpleObject, Clone)]
@@ -1131,6 +1155,19 @@ impl Query {
             .collect())
     }
 
+    /// 当前账号已绑定的第三方登录方式。`/account` 面板与「解绑」流程都用此列表。
+    /// 鉴权：从 `require_auth()` 拿 `account_id`，**不**接外部 `account_id` 参数，
+    /// 避免越权读取别人的 binding 列表。
+    async fn my_oauth_bindings(&self, ctx: &Context<'_>) -> GqlResult<Vec<GqlOAuthBinding>> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let bindings = gql
+            .services
+            .oauth_bindings
+            .find_all_by_account(auth.account_id)?;
+        Ok(bindings.into_iter().map(Into::into).collect())
+    }
+
     async fn workspaces(&self, ctx: &Context<'_>) -> GqlResult<Vec<GqlWorkspaceWithRole>> {
         let gql = ctx.data::<GraphqlContext>()?;
         let auth = gql.require_auth()?;
@@ -1688,6 +1725,33 @@ impl Mutation {
         let account = gql.services.auth.set_status(target_id, status)?;
         let updated_status = gql.services.auth.status(target_id)?;
         Ok(GqlAdminAccount::new(account, updated_status, &builtin))
+    }
+
+    /// 解绑当前账号的某个第三方登录方式。前端用 `myOAuthBindings` 拿到 `provider` /
+    /// `external_id` 后回填。`account_id` 参数必须等于登录态里的 `account_id`——校验
+    /// 写在 resolver 里（防借用未鉴权参数绕过），不在服务层重复做。
+    async fn unbind_oauth_binding(
+        &self,
+        ctx: &Context<'_>,
+        account_id: ID,
+        provider: String,
+        external_id: String,
+    ) -> GqlResult<bool> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let target_id = parse_ulid(account_id.as_str())?;
+
+        if target_id != auth.account_id {
+            return Err(AppError::InvalidQuery("无权解绑此账号".to_string()).into());
+        }
+
+        let provider_kind = crate::service::oauth::provider_kind_from_str(&provider)
+            .ok_or_else(|| AppError::InvalidQuery(format!("未知的 provider: {provider}")))?;
+
+        gql.services
+            .oauth_bindings
+            .delete(target_id, provider_kind, &external_id)?;
+        Ok(true)
     }
 
     /// 改账号的姓名与管理员标记，仅系统管理员。状态与密码各有各的 mutation——那两条
