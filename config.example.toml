@@ -39,6 +39,20 @@ app_id = ""
 app_secret = ""
 redirect_uri = "http://127.0.0.1:3000/api/auth/wechat/callback"
 
+[auth.oauth.google]
+# Google Cloud Console → APIs & Services → Credentials → Create OAuth 2.0 Client ID（应用类型：Web application）。
+# Authorized redirect URI 填 ${redirect_uri}。
+client_id = ""
+client_secret = ""
+redirect_uri = "https://your-rodeo.example.com/api/auth/google/callback"
+
+[auth.oauth.github]
+# GitHub → Settings → Developer settings → OAuth Apps → New OAuth App。
+# Authorization callback URL 填 ${redirect_uri}。
+client_id = ""
+client_secret = ""
+redirect_uri = "https://your-rodeo.example.com/api/auth/github/callback"
+
 [storage]
 # 本地根目录。即使文档与附件都改用外部后端，它仍承载 tantivy 全文索引。
 data_dir = "./data"

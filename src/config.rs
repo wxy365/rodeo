@@ -61,8 +61,10 @@ pub struct BuiltinAuthConfig {
 pub struct OAuthConfig {
     #[serde(default)]
     pub wechat: Option<WeChatOAuthConfig>,
-    // Spec 2: pub google: Option<GoogleOAuthConfig>,
-    // Spec 2: pub github: Option<GithubOAuthConfig>,
+    #[serde(default)]
+    pub google: Option<GoogleOAuthConfig>,
+    #[serde(default)]
+    pub github: Option<GithubOAuthConfig>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -72,6 +74,20 @@ pub struct WeChatOAuthConfig {
     #[serde(default)]
     pub app_secret: String,
     #[serde(default)]
+    pub redirect_uri: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GoogleOAuthConfig {
+    pub client_id: String,
+    pub client_secret: String,
+    pub redirect_uri: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct GithubOAuthConfig {
+    pub client_id: String,
+    pub client_secret: String,
     pub redirect_uri: String,
 }
 
