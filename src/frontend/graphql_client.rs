@@ -403,7 +403,7 @@ pub fn label_attrs(
 // ---------- 类型化查询/变更 ----------
 
 pub async fn me() -> Result<Option<User>, String> {
-    let data = graphql("query { me { id email name isAdmin } }", json!({})).await?;
+    let data = graphql("query { me { id email name isAdmin hasPassword } }", json!({})).await?;
     Ok(data
         .get("me")
         .cloned()
@@ -487,7 +487,7 @@ pub async fn update_account(
 
 pub async fn login(email: &str, password: &str) -> Result<(String, User), String> {
     let data = graphql(
-        "mutation($e: String!, $p: String!) { login(email: $e, password: $p) { token account { id email name isAdmin } } }",
+        "mutation($e: String!, $p: String!) { login(email: $e, password: $p) { token account { id email name isAdmin hasPassword } } }",
         json!({ "e": email, "p": password }),
     )
     .await?;
@@ -504,7 +504,7 @@ pub async fn login(email: &str, password: &str) -> Result<(String, User), String
 
 pub async fn register(email: &str, name: &str, password: &str) -> Result<(String, User), String> {
     let data = graphql(
-        "mutation($e: String!, $n: String!, $p: String!) { register(email: $e, name: $n, password: $p) { token account { id email name isAdmin } } }",
+        "mutation($e: String!, $n: String!, $p: String!) { register(email: $e, name: $n, password: $p) { token account { id email name isAdmin hasPassword } } }",
         json!({ "e": email, "n": name, "p": password }),
     )
     .await?;
@@ -524,7 +524,7 @@ pub async fn register(email: &str, name: &str, password: &str) -> Result<(String
 /// 返回换新后的账号信息（供调用方刷新 `auth.user`）。
 pub async fn change_password(old_password: &str, new_password: &str) -> Result<User, String> {
     let data = graphql(
-        "mutation($o: String!, $n: String!) { changePassword(oldPassword: $o, newPassword: $n) { token account { id email name isAdmin } } }",
+        "mutation($o: String!, $n: String!) { changePassword(oldPassword: $o, newPassword: $n) { token account { id email name isAdmin hasPassword } } }",
         json!({ "o": old_password, "n": new_password }),
     )
     .await?;
@@ -1840,7 +1840,7 @@ pub async fn bind_oauth_to_existing(
     let data = graphql(
         "mutation($t: String!, $e: String!, $p: String!) { \
          bindOAuthToExisting(bindToken: $t, email: $e, password: $p) \
-         { token account { id email name isAdmin } } }",
+         { token account { id email name isAdmin hasPassword } } }",
         json!({ "t": bind_token, "e": email, "p": password }),
     )
     .await?;
@@ -1864,7 +1864,7 @@ pub async fn bind_oauth_to_new(
     let data = graphql(
         "mutation($t: String!, $e: String!, $n: String!, $p: String) { \
          bindOAuthToNew(bindToken: $t, email: $e, name: $n, password: $p) \
-         { token account { id email name isAdmin } } }",
+         { token account { id email name isAdmin hasPassword } } }",
         json!({ "t": bind_token, "e": email, "n": name, "p": password }),
     )
     .await?;
