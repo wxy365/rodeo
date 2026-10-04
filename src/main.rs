@@ -12,8 +12,8 @@ async fn main() {
     use tower_http::limit::RequestBodyLimitLayer;
 
     use rodeo::api::{
-        agent_stream_handler, build_schema, download_attachment, graphql_handler, wechat_callback,
-        wechat_start, AppState,
+        agent_stream_handler, build_schema, download_attachment, github_callback, github_start,
+        graphql_handler, google_callback, google_start, wechat_callback, wechat_start, AppState,
     };
     use rodeo::app::*;
     use rodeo::config::Config;
@@ -78,6 +78,10 @@ async fn main() {
         )
         .route("/api/auth/wechat/start", get(wechat_start))
         .route("/api/auth/wechat/callback", get(wechat_callback))
+        .route("/api/auth/google/start", get(google_start))
+        .route("/api/auth/google/callback", get(google_callback))
+        .route("/api/auth/github/start", get(github_start))
+        .route("/api/auth/github/callback", get(github_callback))
         .route("/api/health", get(|| async { "ok" }))
         .route("/api/attachments/{id}", get(download_attachment))
         .route(

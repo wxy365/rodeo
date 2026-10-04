@@ -236,3 +236,107 @@ pub async fn wechat_callback(
         .unwrap_or_else(|| DEFAULT_RETURN_TO.to_string());
     oauth_callback_common(state, OAuthProvider::WeChat.as_str(), code, state_token, return_to).await
 }
+
+/// Spec 2: Google / GitHub 的 start 公共壳。`provider_name` 是 `"google"` / `"github"`
+/// 字面量，与 `OAuthRegistry` 的 key 对齐。`redirect_uri` 直接从 config 读：
+/// 不给 trait 加方法（plan Step 2.5 决定 b）—— 这条路径只在 start 用到，
+/// 抽到 trait 反而让其他 provider 多一个空实现。
+async fn start_for_provider(
+    state: Arc<AppState>,
+    provider_name: &'static str,
+    params: HashMap<String, String>,
+) -> Result<Redirect, AppError> {
+    let raw_return_to = params
+        .get("return_to")
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_RETURN_TO.to_string());
+    let return_to = if crate::service::oauth::url_guard::is_safe_return_to(&raw_return_to) {
+        raw_return_to
+    } else {
+        DEFAULT_RETURN_TO.to_string()
+    };
+
+    let redirect_uri = match provider_name {
+        "google" => state
+            .services
+            .config
+            .auth
+            .oauth
+            .google
+            .as_ref()
+            .map(|c| c.redirect_uri.clone())
+            .unwrap_or_default(),
+        "github" => state
+            .services
+            .config
+            .auth
+            .oauth
+            .github
+            .as_ref()
+            .map(|c| c.redirect_uri.clone())
+            .unwrap_or_default(),
+        _ => String::new(),
+    };
+
+    let provider = state
+        .services
+        .oauth_registry
+        .get(provider_name)
+        .ok_or_else(|| {
+            AppError::OAuthNotConfigured(provider_name.to_string())
+        })?;
+
+    let csrf_token = crate::service::oauth_state::OAuthStateStore::new_token();
+    state.services.oauth_state.put_csrf(
+        csrf_token.clone(),
+        CsrfEntry {
+            provider: provider_name.to_string(),
+            redirect_uri: redirect_uri.clone(),
+            return_to: return_to.clone(),
+            created_at: chrono::Utc::now(),
+        },
+    );
+
+    let auth_url = provider.authorization_url(&csrf_token, &redirect_uri);
+    Ok(Redirect::to(&auth_url))
+}
+
+pub async fn google_start(
+    Extension(state): Extension<Arc<AppState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Redirect, AppError> {
+    start_for_provider(state, "google", params).await
+}
+
+pub async fn github_start(
+    Extension(state): Extension<Arc<AppState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Redirect, AppError> {
+    start_for_provider(state, "github", params).await
+}
+
+pub async fn google_callback(
+    Extension(state): Extension<Arc<AppState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Redirect, AppError> {
+    let code = params.get("code").cloned().unwrap_or_default();
+    let state_token = params.get("state").cloned().unwrap_or_default();
+    let return_to = params
+        .get("return_to")
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_RETURN_TO.to_string());
+    oauth_callback_common(state, "google", code, state_token, return_to).await
+}
+
+pub async fn github_callback(
+    Extension(state): Extension<Arc<AppState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Redirect, AppError> {
+    let code = params.get("code").cloned().unwrap_or_default();
+    let state_token = params.get("state").cloned().unwrap_or_default();
+    let return_to = params
+        .get("return_to")
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_RETURN_TO.to_string());
+    oauth_callback_common(state, "github", code, state_token, return_to).await
+}
