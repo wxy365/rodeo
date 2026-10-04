@@ -181,9 +181,10 @@ async fn oauth_callback_common(
     }
 
     // 3. 没 binding、没 email 命中 → 走 bind 面板：写 BindEntry 后
-    // 跳到 `/oauth/callback?bind=...&provider=...&return_to=...`。
-    // 前端 OAuthCallback 路由检测到 `?bind=` 时切到 WeChatBindPanel
-    // （见 `frontend/pages/login.rs::url_param("bind")`）。
+    // 跳到 `/login?bind=...&provider=...&return_to=...`。
+    // Spec 1 的 `WeChatBindPanel` 只在 `/login` 路由上挂载（见
+    // `frontend/pages/login.rs::url_param("bind")`）。`/oauth/callback`
+    // 是 JWT fragment 接收路由，**不**挂 bind panel —— R4 ruling。
     let bind_token = crate::service::oauth_state::OAuthStateStore::new_token();
     state.services.oauth_state.put_bind(
         bind_token.clone(),
@@ -196,7 +197,7 @@ async fn oauth_callback_common(
         },
     );
     Ok(Redirect::to(&format!(
-        "/oauth/callback?bind={bind_token}&provider={provider_name}&return_to={}",
+        "/login?bind={bind_token}&provider={provider_name}&return_to={}",
         urlencoding::encode(&return_to),
     )))
 }
