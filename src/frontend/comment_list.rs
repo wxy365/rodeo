@@ -6,6 +6,7 @@ use crate::frontend::components::{logged_out, role_at_least, short_time, Avatar}
 use crate::frontend::graphql_client::{
     comments, create_comment, delete_comment, me, my_role, update_comment, Comment,
 };
+use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::icons::ic_comment;
 use crate::frontend::tiny_editor::{delta_to_html, TinyEditor};
 
@@ -38,6 +39,7 @@ pub fn CommentList(
     /// 评论增删改后通知外层：表格的「更新时间」列与评论徽标要跟着刷新。
     on_changed: Callback<()>,
 ) -> impl IntoView {
+    let i18n: I18nController = use_i18n();
     let items = RwSignal::new(None::<Result<Vec<CommentView>, String>>);
     let role = RwSignal::new(String::new());
     let my_id = RwSignal::new(String::new());
@@ -182,7 +184,8 @@ pub fn CommentList(
             <div class="grp-h">
                 {ic_comment()}
                 {move || format!(
-                    "评论（{}）",
+                    "{}（{}）",
+                    i18n.t("comment.section_title"),
                     items.get().and_then(|r| r.ok()).map(|v| v.len()).unwrap_or(0),
                 )}
             </div>
@@ -194,11 +197,11 @@ pub fn CommentList(
                 let can_moderate = role_at_least(&role.get(), "maintainer");
                 let editing_now = editing.get();
                 match items.get() {
-                    None => view! { <div class="mut">"加载中…"</div> }.into_any(),
+                    None => view! { <div class="mut">{move || i18n.t("common.loading")}</div> }.into_any(),
                     Some(Err(e)) => view! { <div class="mut">{e}</div> }.into_any(),
                     Some(Ok(list)) => {
                         if list.is_empty() {
-                            view! { <div class="mut">"暂无评论"</div> }.into_any()
+                            view! { <div class="mut">{move || i18n.t("comment.empty")}</div> }.into_any()
                         } else {
                             let mine = my_id.get();
                             view! {
@@ -218,7 +221,7 @@ pub fn CommentList(
                                             .created_by_account
                                             .as_ref()
                                             .map(|a| a.name.clone())
-                                            .unwrap_or_else(|| "已注销账号".to_string());
+                                            .unwrap_or_else(|| i18n.t("comment.deactivated_author"));
                                         let body_html = cv.html.clone();
                                         // 两份克隆：「编辑」按钮的闭包和编辑器组件各要一份，
                                         // 一份会被闭包 move 走，另一份留给 `initial=`。
@@ -233,7 +236,7 @@ pub fn CommentList(
                                                         <span class="c-name">{author}</span>
                                                         <span class="t">{short_time(&c.created_at)}</span>
                                                         {edited.then(|| view! {
-                                                            <span class="mut">"已编辑"</span>
+                                                            <span class="mut">{move || i18n.t("comment.edited")}</span>
                                                         })}
                                                         <span style="margin-left:auto" class="c-acts">
                                                             {can_edit.then(|| view! {
@@ -244,13 +247,13 @@ pub fn CommentList(
                                                                         editing.set(Some(id_for_edit.clone()));
                                                                         edit_body.set(body_for_btn.clone());
                                                                     }
-                                                                >"编辑"</button>
+                                                                >{move || i18n.t("common.edit")}</button>
                                                             })}
                                                             {can_delete.then(|| view! {
                                                                 <button
                                                                     class="btn sm danger"
                                                                     on:click=move |_| confirm_del.set(Some(id_for_del.clone()))
-                                                                >"删除"</button>
+                                                                >{move || i18n.t("common.delete")}</button>
                                                             })}
                                                         </span>
                                                     </div>
@@ -262,8 +265,8 @@ pub fn CommentList(
                                                                     <button class="btn pri sm" on:click={
                                                                         let sid = id_for_save.clone();
                                                                         move |_| save_edit(sid.clone())
-                                                                    }>"保存"</button>
-                                                                    <button class="btn sm" on:click=move |_| editing.set(None)>"取消"</button>
+                                                                    }>{move || i18n.t("common.save")}</button>
+                                                                    <button class="btn sm" on:click=move |_| editing.set(None)>{move || i18n.t("common.cancel")}</button>
                                                                 </div>
                                                             </div>
                                                         }.into_any()
@@ -274,12 +277,12 @@ pub fn CommentList(
                                                     }}
                                                     {(confirm_del.get().as_deref() == Some(id_for_confirm.as_str())).then(|| view! {
                                                         <div class="c-confirm">
-                                                            <span class="mut">"删除后不可恢复，确定？"</span>
+                                                            <span class="mut">{move || i18n.t("comment.delete_confirm")}</span>
                                                             <button class="btn danger sm" on:click={
                                                                 let sid = id_for_confirm.clone();
                                                                 move |_| do_delete(sid.clone())
-                                                            }>"确认删除"</button>
-                                                            <button class="btn sm" on:click=move |_| confirm_del.set(None)>"取消"</button>
+                                                            }>{move || i18n.t("comment.delete_confirm_yes")}</button>
+                                                            <button class="btn sm" on:click=move |_| confirm_del.set(None)>{move || i18n.t("common.cancel")}</button>
                                                         </div>
                                                     })}
                                                 </div>
@@ -301,7 +304,7 @@ pub fn CommentList(
                 // glue.js 的工具栏清理作用域依赖这条不变式。
                 if editing.get().is_some() {
                     return view! {
-                        <div class="mut">"正在编辑评论，保存或取消后可继续发表"</div>
+                        <div class="mut">{move || i18n.t("comment.editing_hint")}</div>
                     }.into_any();
                 }
                 view! {
@@ -314,7 +317,7 @@ pub fn CommentList(
                             view! { <div class="mut">"…"</div> }.into_any()
                         }}
                         <div class="c-edit-acts">
-                            <button class="btn pri sm" on:click=submit>"发表评论"</button>
+                            <button class="btn pri sm" on:click=submit>{move || i18n.t("comment.submit")}</button>
                         </div>
                     </div>
                 }.into_any()

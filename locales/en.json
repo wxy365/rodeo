@@ -174,5 +174,15 @@
     "concurrent_edit": "Content was modified by someone else",
     "delete_failed": "Delete failed",
     "unsaved_changes": "You have unsaved changes — save before going back"
+  },
+  "comment": {
+    "section_title": "Comments",
+    "empty": "No comments yet",
+    "deactivated_author": "Deactivated account",
+    "edited": "edited",
+    "delete_confirm": "Delete cannot be undone — are you sure?",
+    "delete_confirm_yes": "Confirm delete",
+    "editing_hint": "You're editing a comment — save or cancel before posting another",
+    "submit": "Post comment"
   }
 }
