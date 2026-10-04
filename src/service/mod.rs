@@ -112,6 +112,24 @@ impl Services {
         if let Some(w) = wechat {
             oauth_providers.push(Arc::new(w));
         }
+        if let Some(cfg) = &config.auth.oauth.google {
+            if !cfg.client_id.trim().is_empty() {
+                if let Some(p) =
+                    crate::service::oauth::google::GoogleProvider::from_config(cfg)?
+                {
+                    oauth_providers.push(Arc::new(p));
+                }
+            }
+        }
+        if let Some(cfg) = &config.auth.oauth.github {
+            if !cfg.client_id.trim().is_empty() {
+                if let Some(p) =
+                    crate::service::oauth::github::GithubProvider::from_config(cfg)?
+                {
+                    oauth_providers.push(Arc::new(p));
+                }
+            }
+        }
         // 必须在 `let services = Self { store, ... }` 之前构造，否则 store 已 move，
         // 这里再调 `OAuthBindingsService::new(store.clone())` 会触发 E0382。
         let oauth_bindings =
