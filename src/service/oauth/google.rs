@@ -49,6 +49,8 @@ struct TokenResponse {
 #[derive(Debug, Deserialize)]
 struct Userinfo {
     sub: String,
+    email: Option<String>,
+    name: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -136,6 +138,8 @@ impl OAuthProviderTrait for GoogleProvider {
             access_token: token.access_token,
             refresh_token: token.refresh_token,
             expires_at,
+            email: info.email,
+            display_name: info.name,
         })
     }
 }

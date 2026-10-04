@@ -154,6 +154,10 @@ impl OAuthProvider for WeChatProvider {
             access_token,
             refresh_token,
             expires_at: Some(expires_at),
+            // 微信 userinfo 不含邮箱与展示名，保留 None；Google / GitHub 在
+            // exchange_code 里填充。
+            email: None,
+            display_name: None,
         })
     }
 }

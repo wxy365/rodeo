@@ -14,12 +14,19 @@ use crate::error::AppError;
 /// Provider 用 code 换回来的短期凭据。
 /// 我们自己**不**调 refresh_token —— 每次扫码重新走完整 OAuth2 流程，
 /// 与 builtin 的 72h session TTL 各管各的。
+///
+/// `email` / `display_name` 仅 Google / GitHub 会实际填充，微信保持 None。
+/// callback 层用 email 做邮箱静默登录（spec §8），display_name 写到
+/// IdentityBinding.display_name。`ExternalToken` 不进 bincode 持久化
+///（只活在 callback 这一程），加字段不破坏存量数据。
 #[derive(Debug, Clone)]
 pub struct ExternalToken {
     pub external_id: String,
     pub access_token: String,
     pub refresh_token: Option<String>,
     pub expires_at: Option<DateTime<Utc>>,
+    pub email: Option<String>,
+    pub display_name: Option<String>,
 }
 
 #[async_trait]
