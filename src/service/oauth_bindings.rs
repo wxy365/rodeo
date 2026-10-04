@@ -53,6 +53,22 @@ impl OAuthBindingsService {
         Ok(None)
     }
 
+    /// 列出该账号所有 OAuth 绑定（跨所有 provider）。O(N) —— 扫全 CF + 过滤。
+    /// 用法：`/account` 面板渲染已绑第三方列表、`myOAuthBindings` GraphQL resolver。
+    pub fn find_all_by_account(
+        &self,
+        account_id: Ulid,
+    ) -> Result<Vec<IdentityBinding>, AppError> {
+        let mut out = Vec::new();
+        for (_k, v) in self.store.scan_prefix(cf::OAUTH_BINDINGS, b"")? {
+            let b: IdentityBinding = bincode::deserialize(&v)?;
+            if b.account_id == account_id {
+                out.push(b);
+            }
+        }
+        Ok(out)
+    }
+
     /// 解绑。spec §9「唯一登录方式」守卫：OAuth-only 账号不能解绑唯一的第三方绑定，
     /// 必须先设密码或绑别的 provider，否则账号登不回去。
     pub fn delete(
