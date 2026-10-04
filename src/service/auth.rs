@@ -154,6 +154,25 @@ impl AuthService {
         Ok(account)
     }
 
+    /// 后补密码：仅 OAuth-only 账号（`!has_password()`）允许。
+    ///
+    /// 与 `change_password` 的区别：这里不需要旧密码（用户根本没设过），
+    /// 且**不**调 `revoke_tokens`——这是 OAuth-only 账号给自身加备用登录方式，
+    /// 吊销会把用户在唯一登录方式踢下线。
+    pub fn set_password(&self, account_id: Ulid, new_password: &str) -> Result<Account, AppError> {
+        let mut account = self.find_by_id(account_id)?.ok_or(AppError::NotFound)?;
+        if account.has_password() {
+            return Err(AppError::InvalidQuery(
+                "此账号已有密码，请使用 changePassword 修改".to_string(),
+            ));
+        }
+        validate_password(new_password)?;
+        account.password_hash = hash_password(new_password)?;
+        self.store
+            .put(cf::ACCOUNTS, &account.id.to_bytes(), &account)?;
+        Ok(account)
+    }
+
     /// 覆盖姓名与管理员标记。管理员改**别人**的账号走这里。
     ///
     /// 状态与密码不在此处，它们各有自己的守卫和副作用：状态走 [`Self::set_status`]
