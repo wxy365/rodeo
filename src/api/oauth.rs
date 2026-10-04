@@ -1,28 +1,28 @@
-//! 微信 OAuth HTTP 端点。
+//! OAuth HTTP 端点。
 //!
 //! - `/api/auth/wechat/start`：生成 csrf state + return_to，跳到微信。
-//! - `/api/auth/wechat/callback`：微信跳回，验 csrf、换 openid、决定登录或进绑定。
+//! - `/api/auth/wechat/callback`：微信跳回；签名是 Spec 1 留下来的，**逻辑**
+//!   走公共路径 `oauth_callback_common`（Spec 2 起 Google / GitHub 共用同一函数）。
+//! - Google / GitHub 的 start / callback 路由在 Spec 2 后续任务单独加，
+//!   都直接调 `oauth_callback_common`。
 
 use axum::extract::{Extension, Query};
 use axum::response::Redirect;
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::sync::Arc;
+use ulid::Ulid;
 
 use crate::api::AppState;
-use crate::domain::OAuthProvider;
+use crate::domain::{AccountStatus, OAuthProvider};
 use crate::error::AppError;
+use crate::service::oauth::provider_kind_from_str;
 use crate::service::oauth_state::{BindEntry, CsrfEntry};
 
 #[derive(Debug, Deserialize)]
 pub struct StartQuery {
     #[serde(default)]
     pub return_to: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct CallbackQuery {
-    pub code: String,
-    pub state: String,
 }
 
 const DEFAULT_RETURN_TO: &str = "/workspaces";
@@ -72,82 +72,166 @@ pub async fn wechat_start(
     Ok(Redirect::to(&url))
 }
 
-pub async fn wechat_callback(
-    Extension(state): Extension<Arc<AppState>>,
-    Query(q): Query<CallbackQuery>,
+/// Spec 2 公共回调路径。三步算法见 `2026-10-04-oauth-google-github` plan：
+/// 1. csrf 校验 + provider 比对（防跨 provider 重放，spec §14）。
+/// 2. 已绑：刷新 last_used_at + 签 JWT + 跳 OAuthCallback。
+/// 3. email 命中已有账号：状态门 + upsert 新 binding + 签 JWT。
+///    （仅 Google / GitHub 触发 —— WeChat external.email 为 None 不进。）
+/// 4. 没 binding + 没 email 命中：写 BindEntry + 跳 `/oauth/callback?bind=...`。
+async fn oauth_callback_common(
+    state: Arc<AppState>,
+    provider_name: &str,
+    code: String,
+    state_token: String,
+    return_to: String,
 ) -> Result<Redirect, AppError> {
-    // 1. 取 csrf（缺席/过期 → 统一文案，不区分 CSRF 与过期）
-    let entry = state
+    // return_to 兜底：与 Spec 1 `wechat_callback` 行为一致 —— 不安全的字符串
+    // 全部退到 "/workspaces"，避免 open-redirect。
+    let return_to = if crate::service::oauth::url_guard::is_safe_return_to(&return_to) {
+        return_to
+    } else {
+        DEFAULT_RETURN_TO.to_string()
+    };
+
+    // csrf 必须与本次请求的 provider 对应，否则可能是跨 provider 重放
+    // （拿微信 csrf 去打 Google callback）。
+    let csrf = state
         .services
         .oauth_state
-        .take_csrf(&q.state)
+        .take_csrf(&state_token)
         .ok_or_else(|| AppError::OAuthCallback("登录已过期，请重试".to_string()))?;
+    if csrf.provider != provider_name {
+        return Err(AppError::OAuthCallback("登录状态不匹配".to_string()));
+    }
+
+    let provider_kind = provider_kind_from_str(provider_name)
+        .ok_or_else(|| AppError::OAuthCallback(format!("未知的 provider: {provider_name}")))?;
 
     let provider = state
         .services
         .oauth_registry
-        .get(OAuthProvider::WeChat.as_str())
-        .ok_or_else(|| AppError::OAuthNotConfigured(OAuthProvider::WeChat.as_str().to_string()))?;
+        .get(provider_name)
+        .ok_or_else(|| AppError::OAuthNotConfigured(provider_name.to_string()))?;
 
-    // 2. 用 code 换 access_token + openid
-    let token = provider.exchange_code(&q.code).await?;
+    // exchange_code 单一参数 —— redirect_uri 已在 provider 构造时由 from_config
+    // 写进自身。
+    let external = provider.exchange_code(&code).await?;
 
-    // 3. 查绑定
-    if let Some(binding) = state
+    // 1. 已绑过 → 刷 binding 后签 token（spec §7 步 1）
+    if let Some(b) = state
         .services
         .oauth_bindings
-        .find(OAuthProvider::WeChat, &token.external_id)?
+        .find(provider_kind, &external.external_id)?
     {
-        // 已绑 → 状态检查 + 签 JWT + 跳 OAuthCallback
+        // 状态门：先判 status，**再** upsert。Frozen / Deactivated
+        // 立即拒，不污染 binding 状态。
         let account = state
             .services
             .auth
-            .find_by_id(binding.account_id)?
+            .find_by_id(b.account_id)?
             .ok_or(AppError::NotFound)?;
         match state.services.auth.status(account.id)? {
-            crate::domain::AccountStatus::Active => {}
-            crate::domain::AccountStatus::Frozen => {
-                return Err(AppError::InvalidQuery(
+            AccountStatus::Active => {}
+            AccountStatus::Frozen => {
+                return Err(AppError::OAuthWechat(
+                    provider_kind.as_str().to_string(),
                     "账号已被冻结，请联系系统管理员".to_string(),
                 ));
             }
-            crate::domain::AccountStatus::Deactivated => {
-                return Err(AppError::InvalidCredentials);
+            AccountStatus::Deactivated => {
+                return Err(AppError::OAuthCallback("此账号已注销".to_string()));
             }
         }
         state.services.oauth_bindings.upsert(
             account.id,
-            OAuthProvider::WeChat,
-            &token.external_id,
-            binding.email.clone(),
-            binding.display_name.clone(),
+            provider_kind,
+            &external.external_id,
+            external.email.clone(),
+            external.display_name.clone(),
         )?;
-        let jwt = state.services.auth.sign_token(account.id)?;
-        let redirect = format!(
-            "/oauth/callback#token={}&return_to={}",
-            urlencoding::encode(&jwt),
-            urlencoding::encode(&entry.return_to),
-        );
-        return Ok(Redirect::to(&redirect));
+        return redirect_with_token(state.clone(), account.id, &return_to).await;
     }
 
-    // 未绑 → 建 bind session，跳登录页带 bind_token
+    // 2. 邮箱命中 → 静默登录（spec §8）。WeChat external.email = None 不进。
+    if let Some(email) = &external.email {
+        if let Some(account) = state.services.auth.find_by_email(email)? {
+            // 状态门：先判 status，**再** upsert + 签 token。
+            // Frozen / Deactivated 与 Spec 1 login 路径文案保持一致。
+            match state.services.auth.status(account.id)? {
+                AccountStatus::Active => {}
+                AccountStatus::Frozen => {
+                    return Err(AppError::OAuthWechat(
+                        provider_kind.as_str().to_string(),
+                        "账号已被冻结，请联系系统管理员".to_string(),
+                    ));
+                }
+                AccountStatus::Deactivated => {
+                    return Err(AppError::OAuthCallback("此账号已注销".to_string()));
+                }
+            }
+            state.services.oauth_bindings.upsert(
+                account.id,
+                provider_kind,
+                &external.external_id,
+                external.email.clone(),
+                external.display_name.clone(),
+            )?;
+            return redirect_with_token(state.clone(), account.id, &return_to).await;
+        }
+    }
+
+    // 3. 没 binding、没 email 命中 → 走 bind 面板：写 BindEntry 后
+    // 跳到 `/oauth/callback?bind=...&provider=...&return_to=...`。
+    // 前端 OAuthCallback 路由检测到 `?bind=` 时切到 WeChatBindPanel
+    // （见 `frontend/pages/login.rs::url_param("bind")`）。
     let bind_token = crate::service::oauth_state::OAuthStateStore::new_token();
     state.services.oauth_state.put_bind(
         bind_token.clone(),
         BindEntry {
-            provider: OAuthProvider::WeChat,
-            external_id: token.external_id.clone(),
-            access_token: token.access_token,
-            return_to: entry.return_to.clone(),
+            provider: provider_kind,
+            external_id: external.external_id,
+            access_token: external.access_token,
+            return_to: return_to.clone(),
             created_at: chrono::Utc::now(),
         },
     );
-    let redirect = format!(
-        "/login?bind={}&provider={}&return_to={}",
-        urlencoding::encode(&bind_token),
-        OAuthProvider::WeChat.as_str(),
-        urlencoding::encode(&entry.return_to),
-    );
-    Ok(Redirect::to(&redirect))
+    Ok(Redirect::to(&format!(
+        "/oauth/callback?bind={bind_token}&provider={provider_name}&return_to={}",
+        urlencoding::encode(&return_to),
+    )))
+}
+
+/// 公共路径「签 token + 跳 OAuthCallback」。
+///
+/// 状态门已在调用方（`oauth_callback_common`）完成，这里只负责签 JWT 与拼重定向。
+/// 复用同一份「JWT + URL」格式：浏览器跳到 `/oauth/callback#token=...`，fragment
+/// 不会被发到服务端，前端 `OAuthCallback` 组件解析 `#token=` 后存进 `rodeo_jwt`。
+async fn redirect_with_token(
+    state: Arc<AppState>,
+    account_id: Ulid,
+    return_to: &str,
+) -> Result<Redirect, AppError> {
+    let jwt = state.services.auth.sign_token(account_id)?;
+    Ok(Redirect::to(&format!(
+        "/oauth/callback#token={}&return_to={}",
+        urlencoding::encode(&jwt),
+        urlencoding::encode(return_to),
+    )))
+}
+
+pub async fn wechat_callback(
+    Extension(state): Extension<Arc<AppState>>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Redirect, AppError> {
+    // Spec 2 起 callback 路径走公共 `oauth_callback_common`，所以这里从
+    // HashMap 里读三个字段（code / state / 可选 return_to）然后转交。
+    // `return_to` 缺省时优先用 csrf 里 start 阶段记下的那份；都没有就
+    // 退到 DEFAULT_RETURN_TO（与 url_guard 安全门之后的行为一致）。
+    let code = params.get("code").cloned().unwrap_or_default();
+    let state_token = params.get("state").cloned().unwrap_or_default();
+    let return_to = params
+        .get("return_to")
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_RETURN_TO.to_string());
+    oauth_callback_common(state, OAuthProvider::WeChat.as_str(), code, state_token, return_to).await
 }

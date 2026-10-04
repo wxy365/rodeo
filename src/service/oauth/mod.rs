@@ -9,7 +9,28 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
+use crate::domain::OAuthProvider as DomainOAuthProvider;
 use crate::error::AppError;
+
+/// `provider_name` 字符串 → 领域 `OAuthProvider` enum。仅在 callback 入口处
+/// 把供方名字转成内部 enum 用；故意不在 `OAuthProvider` trait 上 —— trait 已
+/// 经是 registry 装配用的接口，再塞一个字符串解析会让 OAuthRegistry 的 trait
+/// 抽象被 callback 层反向依赖污染。
+///
+/// 失败返回 `None`：调用方（`oauth_callback_common`）把这种情况翻成
+/// `AppError::OAuthCallback("未知的 provider: …")`，因为 RFC 6749 不会回
+/// 不认识的 provider_name，能走到这里基本是 URL 被篡改或客户端拼错。
+///
+/// 别名 `DomainOAuthProvider`：本文件 `OAuthProvider` 是 trait，与领域 enum
+/// 同名会冲突。
+pub fn provider_kind_from_str(s: &str) -> Option<DomainOAuthProvider> {
+    match s {
+        "wechat" => Some(DomainOAuthProvider::WeChat),
+        "google" => Some(DomainOAuthProvider::Google),
+        "github" => Some(DomainOAuthProvider::GitHub),
+        _ => None,
+    }
+}
 
 /// Provider 用 code 换回来的短期凭据。
 /// 我们自己**不**调 refresh_token —— 每次扫码重新走完整 OAuth2 流程，
