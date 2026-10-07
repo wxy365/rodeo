@@ -98,6 +98,7 @@ src/
 - **标签**（`domain/label.rs`）：`LabelSchema` 定义 + `LabelValue` 受 schema 约束；UI 在 `frontend/label_editor.rs`。enum/boolean/integer/float/string/null 五种 `LabelValueType`。
 - **规则引擎**（`domain/rule.rs` + `service/rule.rs`）：打标签触发 `RuleEngine` 跑规则、产生二次 LabelWrite；UI 在 `frontend/automation_tab.rs`。
 - **`/api/attachments/{id}` 永远不带 auth**（见 `api/attachments.rs` 顶部注释），因为浏览器 `<img src>` 带不了 Authorization 头。安全靠 ULID 不可猜 + content-type 白名单（只放行图片）+ 不回声上传方上报的 mime。
+- **`SearchBackend` trait（`src/service/search/mod.rs`）**：全文检索的两个后端（Tantivy / Meilisearch）实现同一组**同步**方法。`Services.search` 字段是 `Arc<dyn SearchBackend>`，由 `[search] backend` 在启动期决定。MeilisearchBackend 内部持有一个独立的多线程 `tokio::runtime::Runtime`（worker=2，名字 `rodeo-meili`），所有 HTTP 调用走 `block_on`——与 rodeo 自己的 `current_thread` runtime 隔离，不阻塞 axum 请求线程。改 trait 时同步动两个 impl；新加后端（如 Typesense）按 `SearchBackend` 写第三个文件即可。CJK 命中通过 rodeo 侧的 `NgramTokenizer(1,2)` 预分词统一处理，不依赖 Meilisearch 内置分词器。
 
 ### 实时与多端同步
 
@@ -109,6 +110,7 @@ src/
 - `LEPTOS_SITE_ADDR` 环境变量**整体覆盖** `[server]` 的 host/port，并在启动日志里打印来源。`cargo leptos watch` 自动注入它（dev 永远 127.0.0.1:3000）；手工运行 `./rodeo config.toml` 时才会真的用 `config.toml` 的 `[server]`。
 - `[server.tls]` 整段不存在→明文 HTTP；存在→ALPN 协商 http/2。证书不进仓库（`/certs` 忽略）。
 - `[storage.doc]` 后端 `rocksdb | postgres`；`[storage.blob]` 后端 `local | rustfs`。两者都改时，附件的对象键 `{workspace_id}/{entry_code}/{id}_{文件名}` 不变，所以换个桶就是把目录搬过去，没有迁移脚本。
+- `[search]`：全文检索后端。`backend = "tantivy"`（默认，本地嵌入式，路径 `{storage.data_dir}/search`）或 `"meilisearch"`（外部服务，多实例可共享同一索引）。meili 模式下 `[search.meilisearch]` 提供 `url` / `api_key` / `index_name` / `pre_segment`；`pre_segment = true` 时 rodeo 自己用 `NgramTokenizer(1,2)` 预分词后写入，CJK 命中行为与 Tantivy 完全一致（`false` 只适合纯空格分词语言）。meili 端点不可达 / master key 错 / index 名冲突都在启动期 panic（仿 `BlobStore::check_blob_store`），不留到第一次搜索。
 - `[ai]`：`api_key` 或 `model` 留空就视作 AI 未启用——生成总结时会返回「服务端未配置 AI 模型」。所有 HTTPS 调用一律走 rustls，私有 CA 没法关校验。
 
 ## 注意事项
