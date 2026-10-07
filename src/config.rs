@@ -15,6 +15,8 @@ pub struct Config {
     pub ai: AiConfig,
     #[serde(default)]
     pub agent: AgentConfig,
+    #[serde(default)]
+    pub search: SearchConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -93,8 +95,9 @@ pub struct GithubOAuthConfig {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct StorageConfig {
-    /// 本地根目录。即使文档与附件都改用外部后端，它仍承载 tantivy 全文索引
-    /// （`{data_dir}/search`），所以四种组合下都必需。
+    /// 本地根目录。承载 tantivy 全文索引（`{data_dir}/search`）与本地附件目录
+    ///（`{data_dir}/attachments`）。切到 `search = "meilisearch"` 后端时仍可保留——
+    /// 它不再被索引占用，但附件的 local 后端还会用它。
     #[serde(default = "default_data_dir")]
     pub data_dir: String,
     #[serde(default)]
@@ -117,6 +120,15 @@ pub enum DocBackend {
 pub enum BlobBackend {
     Local,
     Rustfs,
+}
+
+/// 全文检索后端。`tantivy` 是单机嵌入式默认；`meilisearch` 是外部服务，
+/// 适合多实例部署共享同一索引。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchBackend {
+    Tantivy,
+    Meilisearch,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -148,6 +160,41 @@ pub struct BlobConfig {
     /// 允许 `http://` 明文端点。内网自建 RustFS 通常没有证书，公网端点应保持 false。
     #[serde(default)]
     pub allow_http: bool,
+}
+
+/// Tantivy 后端的可调参数。`[search] backend = "tantivy"` 时生效。
+#[derive(Debug, Clone, Deserialize)]
+pub struct TantivySearchConfig {
+    /// 索引目录。留空走默认 `{storage.data_dir}/search`。
+    #[serde(default)]
+    pub dir: Option<String>,
+}
+
+/// Meilisearch 后端的连接参数。`[search] backend = "meilisearch"` 时生效。
+#[derive(Debug, Clone, Deserialize)]
+pub struct MeilisearchSearchConfig {
+    #[serde(default = "default_meili_url")]
+    pub url: String,
+    /// master key；明文部署（如内网）可留空。
+    #[serde(default)]
+    pub api_key: String,
+    #[serde(default = "default_meili_index")]
+    pub index_name: String,
+    /// true：rodeo 侧用 `NgramTokenizer::new(1, 2)` 预分词后空格连接再写入；
+    /// CJK 命中行为与 Tantivy 完全一致。false：直接写原文，依赖 Meilisearch 内置分词
+    ///（仅适合纯空格分词语言）。默认 true。
+    #[serde(default = "default_true")]
+    pub pre_segment: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SearchConfig {
+    #[serde(default = "default_search_backend")]
+    pub backend: SearchBackend,
+    #[serde(default)]
+    pub tantivy: TantivySearchConfig,
+    #[serde(default)]
+    pub meilisearch: MeilisearchSearchConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -262,6 +309,33 @@ impl Default for AiConfig {
     }
 }
 
+impl Default for TantivySearchConfig {
+    fn default() -> Self {
+        Self { dir: None }
+    }
+}
+
+impl Default for MeilisearchSearchConfig {
+    fn default() -> Self {
+        Self {
+            url: default_meili_url(),
+            api_key: String::new(),
+            index_name: default_meili_index(),
+            pre_segment: true,
+        }
+    }
+}
+
+impl Default for SearchConfig {
+    fn default() -> Self {
+        Self {
+            backend: default_search_backend(),
+            tantivy: TantivySearchConfig::default(),
+            meilisearch: MeilisearchSearchConfig::default(),
+        }
+    }
+}
+
 impl AiConfig {
     /// 密钥与模型缺一都发不出可用请求，故两者任一为空即视为「未启用」。
     /// 前端据此收到明确的 `AI_NOT_CONFIGURED`，而不是一个费解的 HTTP 错误。
@@ -278,6 +352,7 @@ impl Default for Config {
             storage: StorageConfig::default(),
             ai: AiConfig::default(),
             agent: AgentConfig::default(),
+            search: SearchConfig::default(),
         }
     }
 }
@@ -348,4 +423,13 @@ fn default_ai_base_url() -> String {
 }
 fn default_ai_timeout() -> u64 {
     60
+}
+fn default_search_backend() -> SearchBackend {
+    SearchBackend::Tantivy
+}
+fn default_meili_url() -> String {
+    "http://127.0.0.1:7700".to_string()
+}
+fn default_meili_index() -> String {
+    "entries".to_string()
 }

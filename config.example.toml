@@ -54,7 +54,9 @@ client_secret = ""
 redirect_uri = "https://your-rodeo.example.com/api/auth/github/callback"
 
 [storage]
-# 本地根目录。即使文档与附件都改用外部后端，它仍承载 tantivy 全文索引。
+# 本地根目录。承载 tantivy 全文索引（{data_dir}/search）与本地附件目录
+# （{data_dir}/attachments）。切到 search.meilisearch 后端时仍建议保留——
+# 它不再被索引占用，但附件的 local 后端还会用它。
 data_dir = "./data"
 
 # 文档与索引元数据：rocksdb（默认，嵌入式）| postgres
@@ -100,3 +102,23 @@ turn_timeout_seconds = 60
 context_truncate_tokens = 16384
 # 保留的历史轮数（user-assistant 一对 = 1 turn）
 max_history_turns = 40
+
+# 全文检索后端：tantivy（默认，本地嵌入式）| meilisearch（外部服务，多实例可共享）
+[search]
+backend = "tantivy"
+
+# Tantivy 选项（仅 backend = "tantivy" 时生效）
+[search.tantivy]
+# 留空走默认 "{storage.data_dir}/search"
+dir = ""
+
+# Meilisearch 选项（仅 backend = "meilisearch" 时生效）
+[search.meilisearch]
+url = "http://127.0.0.1:7700"
+# master key；公网部署必须设；内网留空也可。
+api_key = ""
+index_name = "entries"
+# true = rodeo 自己用 NgramTokenizer(1,2) 预分词后空格连接写入，CJK 命中行为
+# 与 Tantivy 完全一致；false = 直接写原文，依赖 Meilisearch 内置分词
+# （仅适合纯空格分词语言）。
+pre_segment = true

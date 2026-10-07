@@ -60,6 +60,13 @@ http = { version = "1", optional = true }
 tower = { version = "0.5", features = ["util"], optional = true }
 tower-http = { version = "0.6", features = ["fs", "limit"], optional = true }
 tantivy = { version = "0.26", optional = true, default-features = false, features = ["mmap", "lz4-compression"] }
+# 全文检索可选后端。仅启用 meilisearch 时才编译进二进制。
+# 不写版本兼容区间的「软」声明——锁住，避免 meilisearch-sdk 的次版本破坏 API。
+# default-features = false：默认会启 jwt_aws_lc_rs，把 aws-lc-rs 拉进二进制；
+# 那会让 rustls 同时有 ring（仓库钉死）与 aws-lc-rs 两个 crypto provider，
+# 而 axum-server 的 ServerConfig::builder() 在双 provider 下直接 panic。
+# 只开 reqwest + tls（tls 隐含 reqwest/rustls-tls），跳过 jwt_* 特性。
+meilisearch-sdk = { version = "0.33", default-features = false, features = ["reqwest", "tls"], optional = true }
 # 服务端调用大模型（仅 ssr）。default-features = false 是为了不引入 openssl，
 # 与仓库其余依赖一样走 rustls。
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
@@ -97,7 +104,7 @@ gloo-storage = "0.3"
 gloo-timers = { version = "0.3", features = ["futures"] }
 js-sys = "0.3"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["Clipboard", "Navigator", "Window", "FormData", "File", "Blob", "Element", "HtmlElement", "CssStyleDeclaration", "DomRect", "TextDecoder", "ReadableStream", "ReadableStreamDefaultReader"] }
+web-sys = { version = "0.3", features = ["Clipboard", "Navigator", "Window", "Document", "HtmlDocument", "DomStringMap", "FormData", "File", "Blob", "Element", "HtmlElement", "CssStyleDeclaration", "DomRect", "TextDecoder", "ReadableStream", "ReadableStreamDefaultReader"] }
 
 [features]
 default = ["ssr"]
@@ -132,6 +139,7 @@ ssr = [
     "dep:tower",
     "dep:tower-http",
     "dep:tantivy",
+    "dep:meilisearch-sdk",
     "dep:reqwest",
     "dep:async-trait",
     "dep:urlencoding",
