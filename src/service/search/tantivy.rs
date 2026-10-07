@@ -1,4 +1,9 @@
-//! Tantivy-backed full-text search index with a CJK ngram tokenizer.
+//! Tantivy 后端：本地嵌入式全文检索，CJK 走 ngram 分词。
+//!
+//! 与 `MeilisearchBackend` 共同实现 `SearchBackend` trait；`Services` 通过
+//! `Arc<dyn SearchBackend>` 持有其中之一，由 `[search] backend` 决定。
+//!
+//! 字段命名沿用旧版（`SearchIndex` 在拆分前是单文件结构体），不重命名以减小 diff。
 
 use std::path::Path;
 use std::sync::Mutex;
@@ -16,6 +21,9 @@ use crate::domain::{Entry, Labeling};
 use crate::error::AppError;
 use crate::storage::{cf, DocStore};
 
+use super::helpers::{comments_text, srch_err};
+use super::SearchBackend;
+
 pub const TEXT_CANDIDATE_LIMIT: usize = 1000;
 const TOKENIZER: &str = "cjk";
 /// 承载 Entry Code 的可检索副本；`f_code` 是未分词的 STRING 字段，只能精确匹配，
@@ -25,50 +33,7 @@ const CODE_TEXT_FIELD: &str = "entry_code_text";
 /// 是为了不让标题/详情/评论混在一起影响相关度。
 const COMMENTS_FIELD: &str = "comments";
 
-fn srch_err<E: std::fmt::Display>(e: E) -> AppError {
-    AppError::Storage(format!("检索索引错误: {e}"))
-}
-
-/// 从 Delta JSON 提取纯文本；非 Delta（历史纯文本）原样返回。
-pub fn strip_rich_text(detail: &str) -> String {
-    let d = detail.trim();
-    if d.is_empty() {
-        return String::new();
-    }
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(d) {
-        let ops = v
-            .get("ops")
-            .and_then(|o| o.as_array())
-            .cloned()
-            .or_else(|| v.as_array().cloned());
-        if let Some(ops) = ops {
-            let mut out = String::new();
-            for op in ops {
-                if let Some(s) = op.get("insert").and_then(|i| i.as_str()) {
-                    out.push_str(s);
-                }
-            }
-            return out;
-        }
-    }
-    d.to_string()
-}
-
-/// 把一条条目的全部评论正文抽成纯文本，供检索索引拼接。
-pub fn comments_text(store: &DocStore, entry_code: &str) -> Result<String, AppError> {
-    let mut out = String::new();
-    for (_, v) in store.scan_prefix(cf::COMMENTS, entry_code.as_bytes())? {
-        let c: crate::domain::Comment = bincode::deserialize(&v)?;
-        let t = strip_rich_text(&c.body);
-        if !t.trim().is_empty() {
-            out.push_str(&t);
-            out.push('\n');
-        }
-    }
-    Ok(out)
-}
-
-pub struct SearchIndex {
+pub struct TantivyBackend {
     index: Index,
     writer: Mutex<IndexWriter>,
     reader: IndexReader,
@@ -81,7 +46,7 @@ pub struct SearchIndex {
     f_comments: Field,
 }
 
-impl SearchIndex {
+impl TantivyBackend {
     pub fn open(dir: &str) -> Result<Self, AppError> {
         std::fs::create_dir_all(dir).map_err(|e| AppError::Storage(e.to_string()))?;
         let mut b = Schema::builder();
@@ -167,7 +132,7 @@ impl SearchIndex {
                 self.f_code => entry.code.clone(),
                 self.f_ws => entry.workspace_id.to_string(),
                 self.f_title => entry.title.clone(),
-                self.f_content => strip_rich_text(&entry.detail),
+                self.f_content => super::helpers::strip_rich_text(&entry.detail),
                 self.f_labels => label_text,
                 self.f_code_text => entry.code.clone(),
                 self.f_comments => comments.to_string(),
@@ -284,6 +249,36 @@ impl SearchIndex {
     }
 }
 
+/// `SearchBackend` trait 实现：通过 trait method 直接转发到同名 inherent method，
+/// 共享 `Mutex<IndexWriter>` 等字段。`name()` 是 Tantivy 标识。
+impl SearchBackend for TantivyBackend {
+    fn index_entry(
+        &self,
+        entry: &Entry,
+        labels: &[Labeling],
+        comments: &str,
+    ) -> Result<(), AppError> {
+        TantivyBackend::index_entry(self, entry, labels, comments)
+    }
+    fn remove_entry(&self, code: &str) -> Result<(), AppError> {
+        TantivyBackend::remove_entry(self, code)
+    }
+    fn search(
+        &self,
+        ws: Ulid,
+        keyword: &str,
+        limit: usize,
+    ) -> Result<Vec<String>, AppError> {
+        TantivyBackend::search(self, ws, keyword, limit)
+    }
+    fn backfill(&self, store: &DocStore) -> Result<usize, AppError> {
+        TantivyBackend::backfill(self, store)
+    }
+    fn name(&self) -> &'static str {
+        "tantivy"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,17 +293,9 @@ mod tests {
     }
 
     #[test]
-    fn strip_rich_text_extracts_delta_ops() {
-        let delta = r#"{"ops":[{"insert":"复现步骤：\n"},{"insert":"1. 打标签"}]}"#;
-        assert_eq!(strip_rich_text(delta), "复现步骤：\n1. 打标签");
-        assert_eq!(strip_rich_text("纯文本"), "纯文本");
-        assert_eq!(strip_rich_text(""), "");
-    }
-
-    #[test]
     fn indexes_and_searches_chinese_substring() {
         let dir = temp_dir("cjk");
-        let idx = SearchIndex::open(&dir).unwrap();
+        let idx = TantivyBackend::open(&dir).unwrap();
         let ws = Ulid::new();
         let mut e = Entry::new(ws, "找回密码失败".to_string(), Ulid::new());
         e.detail = r#"{"ops":[{"insert":"用户反馈邮箱收不到验证码"}]}"#.to_string();
@@ -330,7 +317,7 @@ mod tests {
     #[test]
     fn entry_code_is_searchable() {
         let dir = temp_dir("code");
-        let idx = SearchIndex::open(&dir).unwrap();
+        let idx = TantivyBackend::open(&dir).unwrap();
         let ws = Ulid::new();
         let mut e = Entry::new(ws, "无关标题".to_string(), Ulid::new());
         e.code = "RD-kM3vB7dR".to_string();
@@ -367,7 +354,7 @@ mod tests {
         }
 
         // 打开时检测到缺字段 → 重建为空索引，旧文档不再可见。
-        let idx = SearchIndex::open(&dir).unwrap();
+        let idx = TantivyBackend::open(&dir).unwrap();
         assert_eq!(idx.num_docs(), 0, "旧索引应被重建");
         let ws = Ulid::new();
         let e = Entry::new(ws, "重建后".to_string(), Ulid::new());
@@ -383,7 +370,7 @@ mod tests {
     #[test]
     fn search_is_scoped_to_workspace_and_drops_deleted() {
         let dir = temp_dir("scope");
-        let idx = SearchIndex::open(&dir).unwrap();
+        let idx = TantivyBackend::open(&dir).unwrap();
         let ws_a = Ulid::new();
         let ws_b = Ulid::new();
         let ea = Entry::new(ws_a, "共享词".to_string(), Ulid::new());
@@ -402,7 +389,7 @@ mod tests {
     #[test]
     fn label_values_are_searchable() {
         let dir = temp_dir("labels");
-        let idx = SearchIndex::open(&dir).unwrap();
+        let idx = TantivyBackend::open(&dir).unwrap();
         let ws = Ulid::new();
         let e = Entry::new(ws, "t".to_string(), Ulid::new());
         let l = Labeling::new(
@@ -422,7 +409,7 @@ mod tests {
         let dir = temp_dir("backfill");
         let store = DocStore::open(&dir).unwrap();
         let idx_dir = format!("{dir}/search");
-        let idx = SearchIndex::open(&idx_dir).unwrap();
+        let idx = TantivyBackend::open(&idx_dir).unwrap();
         let ws = Ulid::new();
         let mut e = Entry::new(ws, "回填目标".to_string(), Ulid::new());
         e.detail = String::new();
