@@ -15,14 +15,14 @@ use crate::domain::{
 use crate::error::AppError;
 use crate::service::audit::audit_ops;
 use crate::service::rule::{RuleEngine, StagedWrite};
-use crate::service::search::{SearchIndex, TEXT_CANDIDATE_LIMIT};
+use crate::service::search::{SearchBackend, TEXT_CANDIDATE_LIMIT};
 use crate::storage::{cf, keys, BatchOp, DocStore};
 
 /// 字段全是 `Arc`，克隆只是复制几个指针，供 `CommentService` 持有同一份实例。
 #[derive(Clone)]
 pub struct EntryService {
     store: Arc<DocStore>,
-    search: Option<Arc<SearchIndex>>,
+    search: Option<Arc<dyn SearchBackend>>,
     rules: RuleEngine,
     messages: crate::service::message::MessageService,
     /// 条目侧调用 `purge_for_entry_ops` 把关联清理拼进自己的 write_batch，
@@ -78,7 +78,7 @@ impl EntryService {
 
     pub fn with_search(
         store: Arc<DocStore>,
-        search: Arc<SearchIndex>,
+        search: Arc<dyn SearchBackend>,
         messages: crate::service::message::MessageService,
         relations: crate::service::relation::RelationService,
     ) -> Self {
@@ -92,9 +92,9 @@ impl EntryService {
         }
     }
 
-    /// 让 GraphQL resolver / Agent 工具能拿到底层的 SearchIndex，
+    /// 让 GraphQL resolver / Agent 工具能拿到底层的 SearchBackend，
     /// 全文检索不可用（配置未启用 / 未注入）时返回 None。
-    pub fn search_available(&self) -> Option<&Arc<SearchIndex>> {
+    pub fn search_available(&self) -> Option<&Arc<dyn SearchBackend>> {
         self.search.as_ref()
     }
 
@@ -1384,11 +1384,13 @@ mod tests {
     use crate::domain::query::{Condition, Field, Op, Query};
     use crate::domain::view::{SortField, SortKey, SortSpec};
 
-    fn temp_search() -> (String, std::sync::Arc<crate::service::search::SearchIndex>) {
+    fn temp_search() -> (String, std::sync::Arc<dyn SearchBackend>) {
         let mut p = std::env::temp_dir();
         p.push(format!("rodeo-entry-search-{}", Ulid::new()));
         let dir = p.to_string_lossy().into_owned();
-        let idx = std::sync::Arc::new(crate::service::search::SearchIndex::open(&dir).unwrap());
+        let idx: std::sync::Arc<dyn SearchBackend> = std::sync::Arc::new(
+            crate::service::search::TantivyBackend::open(&dir).unwrap(),
+        );
         (dir, idx)
     }
 

@@ -36,7 +36,7 @@ pub use label::LabelService;
 pub use message::MessageService;
 pub use relation::RelationService;
 pub use rule::{RuleEngine, RuleService};
-pub use search::SearchIndex;
+pub use search::{MeilisearchBackend, SearchBackend, TantivyBackend};
 pub use view::ViewService;
 pub use workspace::WorkspaceService;
 
@@ -52,7 +52,7 @@ pub struct Services {
     pub attachment: AttachmentService,
     pub label: LabelService,
     pub audit: AuditService,
-    pub search: Arc<SearchIndex>,
+    pub search: Arc<dyn SearchBackend>,
     pub view: ViewService,
     pub ai: AiService,
     pub rig_client: Option<RigClient>,
@@ -68,7 +68,31 @@ pub struct Services {
 
 impl Services {
     pub fn new(store: Arc<DocStore>, config: Arc<Config>) -> Result<Self, AppError> {
-        let search = Arc::new(SearchIndex::open(&format!("{}/search", config.data_dir()))?);
+        // 全文检索后端按 `[search] backend` 派发：Tantivy 本地嵌入式、
+        // Meilisearch 外部服务。Meilisearch 走自己的多线程 tokio runtime
+        // 与 rodeo current_thread 完全隔离；健康检查在启动期同步探活，
+        // 端点/key/index 名错就直接带着原因失败，不留到第一次搜索。
+        let search: Arc<dyn SearchBackend> = match config.search.backend {
+            crate::config::SearchBackend::Tantivy => {
+                let dir = config
+                    .search
+                    .tantivy
+                    .dir
+                    .clone()
+                    .unwrap_or_else(|| config.data_dir());
+                Arc::new(TantivyBackend::open(&format!("{dir}/search"))?)
+            }
+            crate::config::SearchBackend::Meilisearch => {
+                let meili = MeilisearchBackend::new(&config.search.meilisearch)?;
+                meili.health_check()?;
+                tracing::info!(
+                    "meilisearch 健康检查通过 (url={}, index={})",
+                    config.search.meilisearch.url,
+                    config.search.meilisearch.index_name
+                );
+                Arc::new(meili)
+            }
+        };
         // 未配置就保持 None，启动阶段不做任何网络操作。
         let rig_client = RigClient::from_config(&config.ai)?;
         let workspace = WorkspaceService::new(store.clone());

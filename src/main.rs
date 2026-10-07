@@ -48,6 +48,8 @@ async fn main() {
     let services = Arc::new(Services::new(store.clone(), config.clone()).expect("初始化服务失败"));
     services.auth.bootstrap_admin().expect("初始化管理员失败");
 
+    tracing::info!("全文检索后端: {}", services.search.name());
+
     // 附件后端探活：rustfs 的端点/桶/密钥配错，应当在启动期就带着原因失败，
     // 而不是等用户第一次上传时给一条含糊的错误。
     if let Err(e) = services.attachment.check_blob_store().await {
