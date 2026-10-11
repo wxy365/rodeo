@@ -91,9 +91,15 @@ impl Tool for DeleteEntryTool {
                 self.workspace_id, ws
             )));
         }
+        let actor_name = self
+            .services
+            .auth
+            .account_name(self.auth.account_id)
+            .map_err(|e| DeleteEntryError::Server(e.to_string()))?
+            .unwrap_or_default();
         self.services
             .entry
-            .soft_delete(self.auth.account_id, &args.code)
+            .soft_delete(self.auth.account_id, &actor_name, &args.code)
             .map_err(|e| DeleteEntryError::Server(e.to_string()))?;
         Ok(DeleteEntryOutput {
             code: args.code,

@@ -15,11 +15,11 @@ use ulid::Ulid;
 use crate::domain::agent::{AssistantContent, ToolResultContent, UserContent};
 use crate::domain::{
     Account, AccountStatus, ActionTarget, AgentMessage, AgentMessageRecord, Attachment, AuditLog,
-    AutomationRule, Comment, Entry, IdentityBinding, Invite, LabelSchema, LabelValueType,
-    LabelWrite, Labeling, LinkKind, Message, NamedPrompt, Query as ViewQuery, Relation,
-    RelationSemantic, SemanticKind, SortField, SortKey, SortSpec, TitleColorRule, ValueColor,
-    ValueSource, View, ViewTimeline, Workspace, WorkspaceAiConfig, WorkspaceMember, WorkspaceRole,
-    WriteOp, ATTACHMENT_URL_PREFIX,
+    AutomationRule, Comment, Entry, EntryShare, IdentityBinding, Invite, LabelSchema,
+    LabelValueType, LabelWrite, Labeling, LinkKind, Message, NamedPrompt,
+    Query as ViewQuery, Relation, RelationSemantic, SemanticKind, SortField, SortKey, SortSpec,
+    TitleColorRule, ValueColor, ValueSource, View, ViewTimeline, Workspace, WorkspaceAiConfig,
+    WorkspaceMember, WorkspaceRole, WriteOp, ATTACHMENT_URL_PREFIX,
 };
 use crate::error::AppError;
 use crate::service::agent::runner::run_turn;
@@ -111,12 +111,6 @@ fn builtin_admin_email(gql: &GraphqlContext) -> String {
         .admin_email
         .trim()
         .to_lowercase()
-}
-
-/// 免登录可见的服务端开关，供登录页决定是否展示注册入口。
-#[derive(SimpleObject, Clone)]
-pub struct GqlServerConfig {
-    allow_registration: bool,
 }
 
 /// 当前账号已绑定的第三方登录方式。`myOAuthBindings` 列表项的投影。
@@ -410,6 +404,109 @@ fn gql_entry(gql: &GraphqlContext, entry: Entry, labels: Vec<Labeling>) -> GqlRe
     ))
 }
 
+/// 公开分享页面的 Entry 投影：只暴露 `code` / `title` / `detail` / 时间 /
+/// 作者姓名 / 标签——不暴露 workspaceId / createdBy id / 评论列表 /
+/// 附件元数据列表 / 归档状态。`workspaceId` 在匿名读者眼里没有意义；
+/// 评论与附件列表会泄内部讨论；归档状态不该让匿名者知道。
+#[derive(SimpleObject, Clone)]
+pub struct GqlSharedEntry {
+    code: String,
+    title: String,
+    detail: String,
+    created_at: String,
+    updated_at: String,
+    /// 仅暴露 `name`：id / email 不出。账号被注销 / 硬删时为 `None`。
+    created_by_account: Option<GqlAccountPublic>,
+    /// 标签是 Entry 的事实的一部分——保留完整 schema 约束与值。
+    labels: Vec<GqlLabeling>,
+}
+
+/// 公开账号投影——只暴露 `name`。给 `GqlSharedEntry.created_by_account` 用；
+/// 任何 GraphQL 路径都不该从这里泄露 email / id。
+#[derive(SimpleObject, Clone)]
+pub struct GqlAccountPublic {
+    name: String,
+}
+
+/// 公开分享评论投影：只暴露作者名，不暴露 id / email。
+/// `edited` 由 created_at != updated_at 现算，不引入额外字段。
+#[derive(SimpleObject, Clone)]
+pub struct GqlSharedComment {
+    id: ID,
+    body: String,
+    author_name: String,
+    created_at: String,
+    updated_at: String,
+    edited: bool,
+}
+
+/// 公开分享附件投影：保留 id / filename / content_type / size / url / created_at。
+/// 不暴露上传者 `created_by_account`——id 自身就是 `/api/attachments/{id}` 能力
+/// URL 的「密码」，额外信息会让「这条附件是谁上传的」成为一个枚举探测。
+#[derive(SimpleObject, Clone)]
+pub struct GqlSharedAttachment {
+    id: ID,
+    filename: String,
+    content_type: String,
+    size: i32,
+    url: String,
+    created_at: String,
+}
+
+/// 公开分享成员投影：只暴露 id / name。`email` / `role` / `status` 不出。
+/// 匿名分享页用得到成员名的地方只有评论旁的头像，而「该成员收到的通知」
+/// 或「该成员的角色」一类信息完全不该给匿名读者。
+#[derive(SimpleObject, Clone)]
+pub struct GqlMemberPublic {
+    id: ID,
+    name: String,
+}
+
+/// 公开分享页的全量读视图：与 `GqlSharedEntry` 等价外，多带评论区、附件列表、
+/// 工作空间名 / slug、标签定义、成员名。是 `/share/{token}` 公开拉取的 payload。
+/// 不返回 `relations` / `audit` / `members.email`——这些与匿名读者无关，
+/// 暴露面越窄越好。
+#[derive(SimpleObject, Clone)]
+pub struct GqlEntryFullPublic {
+    entry: GqlSharedEntry,
+    /// 工作空间名称：标签编辑面板与「属于哪个空间」展示用。
+    workspace_name: String,
+    /// 工作空间 slug：作为「返回工作空间」链接（公开读者通常没登录，
+    /// 这样仍能给到工作空间主面板 URL，而不需要 workspace_id）。
+    workspace_slug: String,
+    comments: Vec<GqlSharedComment>,
+    attachments: Vec<GqlSharedAttachment>,
+    label_schemas: Vec<GqlLabelSchema>,
+    members: Vec<GqlMemberPublic>,
+}
+
+/// Owner 在 Entry 详情列出的分享行。**不带 `url`**：前端用 `id` + 当前
+/// `window.location.origin` 自拼 `"/share/" + share.id`，避免在 GraphQL 里
+/// 抓 HTTP 上下文（解析层拿不到 `Headers`）。这一拼装是设计上的小妥协，
+/// 详细理由见 plan/决策 B/G 的注释。
+#[derive(SimpleObject, Clone)]
+pub struct GqlEntryShare {
+    id: ID,
+    entry_code: String,
+    workspace_id: ID,
+    created_at: String,
+    created_by: ID,
+    revoked: bool,
+}
+
+impl From<EntryShare> for GqlEntryShare {
+    fn from(s: EntryShare) -> Self {
+        Self {
+            id: s.id.to_string().into(),
+            entry_code: s.entry_code,
+            workspace_id: s.workspace_id.to_string().into(),
+            created_at: s.created_at.to_rfc3339(),
+            created_by: s.created_by.to_string().into(),
+            revoked: s.revoked,
+        }
+    }
+}
+
 #[derive(SimpleObject, Clone)]
 pub struct GqlComment {
     id: ID,
@@ -550,6 +647,9 @@ pub struct GqlMessage {
     id: ID,
     workspace_id: ID,
     workspace_name: String,
+    /// 工作空间 slug（URL 段），给消息面板「点击跳转 Entry 全屏」用。
+    /// 工作空间不存在（极端情况：硬删除）时回空串，前端不跳转、退化为只标已读。
+    workspace_slug: String,
     entry_code: String,
     source_type: String,
     source_id: Option<ID>,
@@ -560,20 +660,21 @@ pub struct GqlMessage {
     created_at: String,
 }
 
-/// 组装 GqlMessage，回填工作空间名——查不到（已软删）时退回 id 字符串。
+/// 组装 GqlMessage，回填工作空间名 + slug——查不到（已软删）时退回 id 字符串 / 空串。
 fn gql_message(gql: &GraphqlContext, m: Message) -> GqlResult<GqlMessage> {
-    let workspace_name = gql
+    let (workspace_name, workspace_slug) = gql
         .services
         .workspace
         .get_by_id(m.workspace_id)
         .ok()
         .flatten()
-        .map(|w| w.name)
-        .unwrap_or_else(|| m.workspace_id.to_string());
+        .map(|w| (w.name, w.slug))
+        .unwrap_or_else(|| (m.workspace_id.to_string(), String::new()));
     Ok(GqlMessage {
         id: m.id.to_string().into(),
         workspace_id: m.workspace_id.to_string().into(),
         workspace_name,
+        workspace_slug,
         entry_code: m.entry_code,
         source_type: m.source_type,
         source_id: m.source_id.map(|s| s.to_string().into()),
@@ -1242,14 +1343,6 @@ impl Query {
             .collect())
     }
 
-    /// 免登录：登录页据此渲染注册入口。
-    async fn server_config(&self, ctx: &Context<'_>) -> GqlResult<GqlServerConfig> {
-        let gql = ctx.data::<GraphqlContext>()?;
-        Ok(GqlServerConfig {
-            allow_registration: gql.services.config.auth.builtin.allow_registration,
-        })
-    }
-
     /// 当前启用的 OAuth provider 名称列表（目前为 `["wechat"]`）。
     /// 免登录：登录页据此渲染「微信登录」入口。
     async fn oauth_providers(&self, ctx: &Context<'_>) -> GqlResult<Vec<String>> {
@@ -1260,6 +1353,134 @@ impl Query {
             .enabled_names()
             .iter()
             .map(|s| s.to_string())
+            .collect())
+    }
+
+    /// 公开解析分享 token：返回 `Some(GqlSharedEntry)` 命中、`None` 是 token
+    /// 无效 / 已撤销 / Entry 删了。与 `oauth_providers` 同款——不调
+    /// `require_auth`，匿名可访问；share 失败形态**统一**为 `None`，免得
+    /// 成为存在性探测口（与登录路径 `auth.rs` 的多命中歧义同源安全策略一致）。
+    async fn entry_by_share_token(
+        &self,
+        ctx: &Context<'_>,
+        token: String,
+    ) -> GqlResult<Option<GqlSharedEntry>> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let (entry, _share) = match gql.services.share.resolve(&token) {
+            Ok(pair) => pair,
+            Err(_) => return Ok(None),
+        };
+        let labels = gql.services.entry.labelings(&entry.code)?;
+        let created_by_account = gql
+            .services
+            .auth
+            .account_name(entry.created_by)?
+            .map(|name| GqlAccountPublic { name });
+        Ok(Some(GqlSharedEntry {
+            code: entry.code,
+            title: entry.title,
+            detail: entry.detail,
+            created_at: entry.created_at.to_rfc3339(),
+            updated_at: entry.updated_at.to_rfc3339(),
+            created_by_account,
+            labels: labels.into_iter().map(Into::into).collect(),
+        }))
+    }
+
+    /// 公开拉取分享页所需的全部数据：entry + workspace 名 / slug +
+    /// 评论（仅作者名 + 时间，不含 id / email）+ 附件元数据（不含上传者）+
+    /// 标签定义 + 成员名（仅 name）。一次 GraphQL 拿到所有数据，避免
+    /// 多个 HTTP round-trip。
+    /// 不返回 `relations` / `audit` / `members.email`——前者会泄露匿名
+    /// 读者无权限看的关联结构，后者会借成员头像把邮箱摸走。
+    /// 鉴权同 `entry_by_share_token`：免鉴权；token 失效统一 `None`。
+    async fn entry_full_by_share_token(
+        &self,
+        ctx: &Context<'_>,
+        token: String,
+    ) -> GqlResult<Option<GqlEntryFullPublic>> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let data = match gql.services.share.resolve_full(&token) {
+            Ok(d) => d,
+            Err(_) => return Ok(None),
+        };
+        let labels = gql.services.entry.labelings(&data.entry.code)?;
+        let created_by_account = gql
+            .services
+            .auth
+            .account_name(data.entry.created_by)?
+            .map(|name| GqlAccountPublic { name });
+        let comments: Vec<GqlSharedComment> = data
+            .comments
+            .into_iter()
+            .map(|c| GqlSharedComment {
+                id: c.id.to_string().into(),
+                body: c.body,
+                author_name: c.author_name,
+                created_at: c.created_at.to_rfc3339(),
+                updated_at: c.updated_at.to_rfc3339(),
+                edited: c.edited,
+            })
+            .collect();
+        let attachments: Vec<GqlSharedAttachment> = data
+            .attachments
+            .into_iter()
+            .map(|a| GqlSharedAttachment {
+                id: a.id.to_string().into(),
+                filename: a.filename,
+                content_type: a.content_type,
+                // GraphQL Int 是 32 位；上限 50MB 远在范围内。
+                size: a.size as i32,
+                url: format!("{ATTACHMENT_URL_PREFIX}{}", a.id),
+                created_at: a.created_at.to_rfc3339(),
+            })
+            .collect();
+        let label_schemas: Vec<GqlLabelSchema> =
+            data.label_schemas.into_iter().map(Into::into).collect();
+        let members: Vec<GqlMemberPublic> = data
+            .members
+            .into_iter()
+            .map(|m| GqlMemberPublic {
+                id: m.id.to_string().into(),
+                name: m.name,
+            })
+            .collect();
+        Ok(Some(GqlEntryFullPublic {
+            entry: GqlSharedEntry {
+                code: data.entry.code,
+                title: data.entry.title,
+                detail: data.entry.detail,
+                created_at: data.entry.created_at.to_rfc3339(),
+                updated_at: data.entry.updated_at.to_rfc3339(),
+                created_by_account,
+                labels: labels.into_iter().map(Into::into).collect(),
+            },
+            workspace_name: data.workspace.name,
+            workspace_slug: data.workspace.slug,
+            comments,
+            attachments,
+            label_schemas,
+            members,
+        }))
+    }
+
+    /// 列出某条目的全部 share（含已撤销的；前端按需展示「已撤销」标记）。
+    /// 鉴权：`require_member`——任何成员都可看（创建/撤销的执行门槛也是这样）。
+    async fn entry_shares(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: ID,
+        entry_code: String,
+    ) -> GqlResult<Vec<GqlEntryShare>> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let ws_id = parse_ulid(workspace_id.as_str())?;
+        gql.require_member(ws_id)?;
+        Ok(gql
+            .services
+            .share
+            .list(ws_id, &entry_code)?
+            .into_iter()
+            .map(Into::into)
             .collect())
     }
 
@@ -1791,23 +2012,10 @@ pub struct Mutation;
 
 #[Object]
 impl Mutation {
-    async fn register(
-        &self,
-        ctx: &Context<'_>,
-        email: String,
-        name: String,
-        password: String,
-    ) -> GqlResult<GqlAuthResult> {
-        let gql = ctx.data::<GraphqlContext>()?;
-        let account = gql.services.auth.register(&email, &name, &password)?;
-        let token = gql.services.auth.sign_token(account.id)?;
-        Ok(GqlAuthResult {
-            token,
-            account: account.into(),
-        })
-    }
-
     /// 系统管理员建号，返回初始密码用于分发。
+    /// `email` 形参实为登录标识符（identifier）；私有化部署下管理员可指定
+    /// 普通账号名（如 `zhangwei`），也可以继续用邮箱形态——唯一性由
+    /// `cf::ACCOUNTS_EMAIL_IDX` 索引保证。
     /// `password` 留空则由服务端生成一个必然满足强度规则的随机密码。
     async fn create_account(
         &self,
@@ -1956,6 +2164,9 @@ impl Mutation {
         password: String,
     ) -> GqlResult<GqlAuthResult> {
         let gql = ctx.data::<GraphqlContext>()?;
+        // `email` 形参实为登录标识符，可为普通账号名或邮箱。
+        // 服务端 `find_by_login_id` 在不含 `@` 时还会做 `X@*` 前缀匹配，
+        // 让存的是 `alice@company.com`、输 `alice` 也能命中。
         let (account, token) = gql.services.auth.login(&email, &password)?;
         Ok(GqlAuthResult {
             token,
@@ -2179,6 +2390,40 @@ impl Mutation {
         gql_entry(gql, entry, vec![])
     }
 
+    /// 创建 Entry 分享链接。任何工作空间成员都可创建（与 view.is_shared 同款）。
+    /// 服务层做 Entry 存在 / 归属 / 软删检查；权限门槛（成员）在 GraphQL 层守。
+    async fn create_entry_share(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: ID,
+        entry_code: String,
+    ) -> GqlResult<GqlEntryShare> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let ws_id = parse_ulid(workspace_id.as_str())?;
+        gql.require_member(ws_id)?;
+        let share = gql.services.share.create(&entry_code, ws_id, auth.account_id)?;
+        Ok(share.into())
+    }
+
+    /// 软撤销 Entry 分享链接（幂等：已撤销的二次撤销直接成功）。
+    /// 权限：成员即可——但 share 必须属于该 workspace（服务层
+    /// `revoke` 校验；非成员的外 ws share id 直接 Forbidden）。
+    async fn revoke_entry_share(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: ID,
+        share_id: ID,
+    ) -> GqlResult<bool> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let ws_id = parse_ulid(workspace_id.as_str())?;
+        let sid = parse_ulid(share_id.as_str())?;
+        gql.require_member(ws_id)?;
+        gql.services.share.revoke(sid, ws_id, auth.account_id)?;
+        Ok(true)
+    }
+
     /// 给单个条目写单个标签值。value 须符合该标签 schema 的 `value_type`；
     /// Null 标签传 `null`，列表类型传 JSON 数组。返回写入的 Labeling。
     async fn set_labeling(
@@ -2300,7 +2545,8 @@ impl Mutation {
         let auth = gql.require_auth()?;
         let entry = gql.services.entry.get(&code)?.ok_or(AppError::NotFound)?;
         gql.require_role(entry.workspace_id, WorkspaceRole::Worker)?;
-        gql.services.entry.soft_delete(auth.account_id, &code)?;
+        let name = gql.services.auth.account_name(auth.account_id)?.unwrap_or_default();
+        gql.services.entry.soft_delete(auth.account_id, &name, &code)?;
         Ok(true)
     }
 
@@ -2660,6 +2906,66 @@ impl Mutation {
             .label
             .update_schema(auth.account_id, ws_id, input)?;
         Ok(schema.into())
+    }
+
+    /// 删除一条标签定义（Maintainer+）。同步部分只做标签主行 + 一条
+    /// `LabelSchemaDeleted` 审计——保证客户端立刻能用同名重建。
+    /// 真正费时的部分（entry 标签摘除、视图列清理、受影响 entry 搜索索引重建）
+    /// 丢到 `spawn_blocking` 后台跑，删除请求立即返回。
+    /// 后台 cascade 中途崩掉会有「标签已删但 entry / 视图还引用」的悬空状态，
+    /// 兜底靠下一次的任何标签删除或启动期 repair。
+    /// 返回是否真的删了（标签不存在返回 false）。
+    async fn delete_label_schema(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: ID,
+        name: String,
+    ) -> GqlResult<bool> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let ws_id = parse_ulid(workspace_id.as_str())?;
+        gql.require_role(ws_id, WorkspaceRole::Maintainer)?;
+        // 同步：标签主行 + 一条 LabelSchemaDeleted 审计。
+        let _schema = gql.services.label.delete_schema_meta(
+            auth.account_id,
+            ws_id,
+            &name,
+        )?;
+        // 异步：bulk 摘除 entry 上的标签引用、视图列清理、受影响 entry 重建索引。
+        // GraphqlContext.services 已经是 Arc<Services>，clone 一份进闭包即可。
+        let services = gql.services.clone();
+        let actor = auth.account_id;
+        let label_name = name;
+        let affected_workspace = ws_id;
+        tokio::task::spawn_blocking(move || {
+            let affected = match services.label.cascade_delete(affected_workspace, &label_name)
+            {
+                Ok(codes) => codes,
+                Err(e) => {
+                    tracing::warn!(
+                        "label cascade: 摘除 entry 标签失败（{label_name}, ws={affected_workspace}）: {e}"
+                    );
+                    Vec::new()
+                }
+            };
+            match services
+                .view
+                .remove_label_from_columns(actor, affected_workspace, &label_name)
+            {
+                Ok(n) if n > 0 => tracing::info!(
+                    "label cascade: 已从 {n} 个视图列移除 {label_name}（ws={affected_workspace}）"
+                ),
+                Ok(_) => {}
+                Err(e) => tracing::warn!(
+                    "label cascade: 视图列清理失败（{label_name}, ws={affected_workspace}）: {e}"
+                ),
+            }
+            for code in &affected {
+                // reindex_by_code 内部已 warn，吞错即可。
+                let _ = services.entry.reindex_by_code(code);
+            }
+        });
+        Ok(true)
     }
 
     /// 删除单个条目上的单个标签。返回删除是否真的命中（不存在返回 false）。
@@ -3276,10 +3582,12 @@ impl Mutation {
             .ok_or_else(|| AppError::InvalidQuery("绑定已过期，请重新扫码".to_string()))?;
 
         let email_n = crate::service::auth::normalize_email(&email)?;
+        // 与登录走同一条 `find_by_login_id`：用户用 OAuth 绑既有账号时，
+        // 输账号前缀（`alice`）也能命中存的是 `alice@公司.com` 的账号。
         let account = gql
             .services
             .auth
-            .find_by_email(&email_n)?
+            .find_by_login_id(&email_n)?
             .ok_or(AppError::InvalidCredentials)?;
 
         match gql.services.auth.status(account.id)? {
@@ -3337,51 +3645,6 @@ impl Mutation {
             &bind.external_id,
             None,
             None,
-        )?;
-        let token = gql.services.auth.sign_token(account.id)?;
-        Ok(GqlAuthResult {
-            token,
-            account: account.into(),
-        })
-    }
-
-    /// 把当前 OAuth 登录绑定到一个**新建**的 Rodeo 账号。
-    /// 流程：扫码拿到 `bind_token` → 校验开放注册 → 校验邮箱未占用 → 建账号 →
-    /// 写 binding → 签发新令牌。`password` 为空时建 OAuth-only 账号（无密码）。
-    async fn bind_oauth_to_new(
-        &self,
-        ctx: &Context<'_>,
-        bind_token: String,
-        email: String,
-        name: String,
-        password: Option<String>,
-    ) -> GqlResult<GqlAuthResult> {
-        let gql = ctx.data::<GraphqlContext>()?;
-
-        let bind = gql
-            .services
-            .oauth_state
-            .take_bind(&bind_token)
-            .ok_or_else(|| AppError::InvalidQuery("绑定已过期，请重新扫码".to_string()))?;
-
-        if !gql.services.config.auth.builtin.allow_registration {
-            return Err(AppError::InvalidQuery(
-                "已关闭开放注册，请联系系统管理员创建账号".to_string(),
-            )
-            .into());
-        }
-
-        let email_n = crate::service::auth::normalize_email(&email)?;
-        if gql.services.auth.find_by_email(&email_n)?.is_some() {
-            return Err(AppError::EmailExists.into());
-        }
-
-        let account = gql.services.oauth_bindings.create_account_and_bind_oauth(
-            &email_n,
-            &name,
-            password.as_deref(),
-            bind.provider,
-            &bind.external_id,
         )?;
         let token = gql.services.auth.sign_token(account.id)?;
         Ok(GqlAuthResult {

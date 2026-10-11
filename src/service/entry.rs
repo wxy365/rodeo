@@ -272,7 +272,14 @@ impl EntryService {
     }
 
     /// 软删除：仅置 deleted_at，不物理移除。重复删除幂等（第二次直接 Ok）。
-    pub fn soft_delete(&self, actor: Ulid, code: &str) -> Result<(), AppError> {
+    ///
+    /// `actor_name` 必传：删除消息里要冗余展示发起人姓名（`Message.actor_name`）。
+    pub fn soft_delete(
+        &self,
+        actor: Ulid,
+        actor_name: &str,
+        code: &str,
+    ) -> Result<(), AppError> {
         let mut entry = self.get(code)?.ok_or(AppError::NotFound)?;
         if entry.is_deleted() {
             return Ok(());
@@ -300,6 +307,19 @@ impl EntryService {
         ops.extend(rel_purge);
         self.store.write_batch(ops)?;
         self.reindex(&entry);
+        // 通知创建人：删除发起人 != 创建人。
+        if entry.created_by != actor {
+            self.messages.send(
+                actor,
+                actor_name,
+                entry.workspace_id,
+                code,
+                "entry_deleted",
+                None,
+                &entry.title,
+                entry.created_by,
+            )?;
+        }
         Ok(())
     }
 
@@ -729,8 +749,17 @@ impl EntryService {
         sort: &SortSpec,
         page: PageInput,
     ) -> Result<QueryResult, AppError> {
+        // 标签定义必须先于 hint 提取加载：Account 类型据此跳过索引，
+        // 否则 `Assignee has "<email>"` 这种 want 走 ULID 校验会失败，
+        // 候选全集空、整批条目被错杀在 hint 层。
+        let all_schemas: Vec<LabelSchema> = self
+            .store
+            .scan_prefix(cf::LABEL_SCHEMAS, &ws.to_bytes())?
+            .into_iter()
+            .filter_map(|(_, v)| bincode::deserialize::<LabelSchema>(&v).ok())
+            .collect();
         // 取出顶层 AND 里全部可被二级索引加速的标签条件。
-        let hints = extract_index_hints(query);
+        let hints = extract_index_hints(query, &all_schemas);
         let all_rows: Vec<Entry> = self.list(ws)?;
         // 先按 hints 计算候选 entry_code 集合；多个 hint 取交集。
         // 集合与全量等大时跳过过滤（退化回原路径），集合为空时 `query` 自然没命中。
@@ -783,13 +812,8 @@ impl EntryService {
             } else {
                 std::collections::HashMap::new()
             };
-        // 标签定义整体读回：一份拿去查值与时间格式，一份拿去建继承图。
-        let all_schemas: Vec<LabelSchema> = self
-            .store
-            .scan_prefix(cf::LABEL_SCHEMAS, &ws.to_bytes())?
-            .into_iter()
-            .filter_map(|(_, v)| bincode::deserialize::<LabelSchema>(&v).ok())
-            .collect();
+        // 标签定义已在 query 顶部取回（先于 hint 提取）：本处只把它们映射成
+        // `label_of` 用的 (值类型, 时间格式) 表，外加一份给继承图。
         // 标签名 → (值类型, 时间格式)，供时间型标签的 >/< 比较取布局。
         let schemas: std::collections::HashMap<
             String,
@@ -1379,18 +1403,17 @@ fn display_key(v: &LabelValue) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::service::search::TantivyBackend;
     use crate::service::WorkspaceService;
 
     use crate::domain::query::{Condition, Field, Op, Query};
     use crate::domain::view::{SortField, SortKey, SortSpec};
 
-    fn temp_search() -> (String, std::sync::Arc<dyn SearchBackend>) {
+    fn temp_search() -> (String, std::sync::Arc<TantivyBackend>) {
         let mut p = std::env::temp_dir();
         p.push(format!("rodeo-entry-search-{}", Ulid::new()));
         let dir = p.to_string_lossy().into_owned();
-        let idx: std::sync::Arc<dyn SearchBackend> = std::sync::Arc::new(
-            crate::service::search::TantivyBackend::open(&dir).unwrap(),
-        );
+        let idx = std::sync::Arc::new(TantivyBackend::open(&dir).unwrap());
         (dir, idx)
     }
 
@@ -1401,6 +1424,7 @@ mod tests {
         let msg_svc = crate::service::message::MessageService::new(
             store.clone(),
             WorkspaceService::new(store.clone()),
+            None,
         );
         let rel_svc = crate::service::relation::RelationService::new(store.clone());
         let svc = EntryService::with_search(store.clone(), search, msg_svc, rel_svc);
@@ -1434,6 +1458,7 @@ mod tests {
         let msg_svc = crate::service::message::MessageService::new(
             store.clone(),
             WorkspaceService::new(store.clone()),
+            None,
         );
         let rel_svc = crate::service::relation::RelationService::new(store.clone());
         let svc = EntryService::with_search(store.clone(), search, msg_svc, rel_svc);
@@ -1479,6 +1504,7 @@ mod tests {
         let msg_svc = crate::service::message::MessageService::new(
             store.clone(),
             WorkspaceService::new(store.clone()),
+            None,
         );
         let rel_svc = crate::service::relation::RelationService::new(store.clone());
         let svc = EntryService::with_search(store.clone(), search, msg_svc, rel_svc);
@@ -1523,6 +1549,7 @@ mod tests {
         let msg_svc = crate::service::message::MessageService::new(
             store.clone(),
             WorkspaceService::new(store.clone()),
+            None,
         );
         let rel_svc = crate::service::relation::RelationService::new(store.clone());
         let svc = EntryService::with_search(store.clone(), search, msg_svc, rel_svc);
@@ -1568,7 +1595,7 @@ mod tests {
         let ws_svc = WorkspaceService::new(store.clone());
         let actor = Ulid::new();
         let ws = ws_svc.create(actor, "测试", None, "").unwrap();
-        let msg_svc = crate::service::message::MessageService::new(store.clone(), ws_svc);
+        let msg_svc = crate::service::message::MessageService::new(store.clone(), ws_svc, None);
         let rel_svc = crate::service::relation::RelationService::new(store.clone());
         let entry_svc = EntryService::new(store.clone(), msg_svc, rel_svc);
         (dir, store, entry_svc, ws.id, actor)
@@ -1598,7 +1625,7 @@ mod tests {
         let (dir, _store, svc, ws_id, actor) = setup();
         let e = svc.create(actor, ws_id, "待删除").unwrap();
         assert_eq!(svc.list(ws_id).unwrap().len(), 1);
-        svc.soft_delete(actor, &e.code).unwrap();
+        svc.soft_delete(actor, "tester", &e.code).unwrap();
         assert!(svc.list(ws_id).unwrap().is_empty());
         let got = svc.get(&e.code).unwrap().unwrap();
         assert!(got.is_deleted());
@@ -1681,7 +1708,7 @@ mod tests {
         let (dir, store, svc, ws_id, actor) = setup();
         let a = svc.create(actor, ws_id, "先归档再删除").unwrap();
         svc.archive(actor, &a.code).unwrap();
-        svc.soft_delete(actor, &a.code).unwrap();
+        svc.soft_delete(actor, "tester", &a.code).unwrap();
         assert!(
             svc.list_archived(ws_id).unwrap().is_empty(),
             "已删除的不该出现在归档列表"
@@ -1689,7 +1716,7 @@ mod tests {
 
         // 已删除的条目不能再归档。
         let b = svc.create(actor, ws_id, "先删除").unwrap();
-        svc.soft_delete(actor, &b.code).unwrap();
+        svc.soft_delete(actor, "tester", &b.code).unwrap();
         assert!(matches!(
             svc.archive(actor, &b.code),
             Err(AppError::NotFound)
@@ -1705,6 +1732,7 @@ mod tests {
         let msg_svc = crate::service::message::MessageService::new(
             store.clone(),
             WorkspaceService::new(store.clone()),
+            None,
         );
         let rel_svc = crate::service::relation::RelationService::new(store.clone());
         let svc = EntryService::with_search(store.clone(), search.clone(), msg_svc, rel_svc);
@@ -1731,6 +1759,7 @@ mod tests {
         let msg_svc = crate::service::message::MessageService::new(
             store.clone(),
             WorkspaceService::new(store.clone()),
+            None,
         );
         let rel_svc = crate::service::relation::RelationService::new(store.clone());
         let svc = EntryService::new(store.clone(), msg_svc, rel_svc);
@@ -1831,7 +1860,7 @@ mod tests {
     fn update_deleted_entry_is_not_found() {
         let (dir, store, svc, ws_id, actor) = setup();
         let e = svc.create(actor, ws_id, "将被删除").unwrap();
-        svc.soft_delete(actor, &e.code).unwrap();
+        svc.soft_delete(actor, "tester", &e.code).unwrap();
         let expected = e.updated_at.to_rfc3339();
         let err = svc
             .update(actor, "tester", &e.code, &expected, "x", "")
@@ -1845,7 +1874,7 @@ mod tests {
     fn soft_delete_records_entry_deleted_audit_and_is_idempotent() {
         let (dir, store, svc, ws_id, actor) = setup();
         let e = svc.create(actor, ws_id, "待删").unwrap();
-        svc.soft_delete(actor, &e.code).unwrap();
+        svc.soft_delete(actor, "tester", &e.code).unwrap();
 
         let audit = crate::service::audit::AuditService::new(store.clone());
         let list = audit.list(ws_id, 100).unwrap();
@@ -1861,7 +1890,7 @@ mod tests {
         );
 
         // 重复删除幂等：不新增审计、不报错
-        svc.soft_delete(actor, &e.code).unwrap();
+        svc.soft_delete(actor, "tester", &e.code).unwrap();
         let list2 = audit.list(ws_id, 100).unwrap();
         let deleted = list2
             .iter()
