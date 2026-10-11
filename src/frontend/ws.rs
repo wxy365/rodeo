@@ -8,14 +8,18 @@
 //! 所以 token 走 `?token=<jwt>` query param——与服务端 `/api/ws` handler
 //! 约定一致。
 
-use std::rc::Rc;
-use std::cell::RefCell;
-
 use leptos::prelude::*;
 use serde::Deserialize;
+#[cfg(target_arch = "wasm32")]
+use std::cell::RefCell;
+#[cfg(target_arch = "wasm32")]
+use std::rc::Rc;
 use ulid::Ulid;
+#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::closure::Closure;
+#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::JsCast;
+#[cfg(target_arch = "wasm32")]
 use web_sys::{CloseEvent, ErrorEvent, MessageEvent, WebSocket};
 
 /// 连接状态。`status` 是 `RwSignal`——组件可以订阅。
@@ -46,7 +50,7 @@ pub enum WsClientMessage {
 }
 
 /// 在 App 根启动 ws 连接循环。`localStorage.rodeo_jwt` 取 token；断线指数退避。
-/// 仅 wasm 调用（`web_sys` 在 ssr 不存在）；SSR 端是 no-op stub。
+/// 仅 wasm 实际建连；SSR / native 端函数体为空（被 `#[cfg]` 屏蔽）。
 pub fn spawn_ws_connected_root() {
     #[cfg(target_arch = "wasm32")]
     {
@@ -109,7 +113,11 @@ async fn connect_once(
 
     let ws = WebSocket::new(&url).map_err(|e| format!("ws new: {:?}", e))?;
 
-    // 用单播 channel 把 close / error 事件转成 await 信号。
+    // 用单播 channel 把 close / error 事件转成 await 信号，并用一个共享 cell
+    // 携带 close code：1000 Normal Closure → Ok(())（优雅结束，重置 backoff）；
+    // 其它 code（1001 GoingAway / 1006 Abnormal Closure 等）→ Err 让外层
+    // backoff 启动。
+    let outcome: Rc<RefCell<Option<Result<(), &'static str>>>> = Rc::new(RefCell::new(None));
     let (tx, mut rx) = futures_util::channel::mpsc::channel::<()>(2);
 
     let last_message_for_msg = last_message;
@@ -131,15 +139,26 @@ async fn connect_once(
     ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
     onmessage.forget();
 
+    let outcome_for_close = outcome.clone();
     let tx_for_close = tx.clone();
-    let onclose: Closure<dyn FnMut(CloseEvent)> = Closure::new(move |_ev: CloseEvent| {
+    let onclose: Closure<dyn FnMut(CloseEvent)> = Closure::new(move |ev: CloseEvent| {
+        let code = ev.code();
+        *outcome_for_close.borrow_mut() = Some(if code == 1000 {
+            Ok(())
+        } else {
+            Err("ws closed abnormally")
+        });
         let _ = tx_for_close.try_send(());
     });
     ws.set_onclose(Some(onclose.as_ref().unchecked_ref()));
     onclose.forget();
 
+    let outcome_for_error = outcome;
     let tx_for_error = tx;
     let onerror: Closure<dyn FnMut(ErrorEvent)> = Closure::new(move |_ev: ErrorEvent| {
+        if outcome_for_error.borrow().is_none() {
+            *outcome_for_error.borrow_mut() = Some(Err("ws error event"));
+        }
         let _ = tx_for_error.try_send(());
     });
     ws.set_onerror(Some(onerror.as_ref().unchecked_ref()));
@@ -148,13 +167,5 @@ async fn connect_once(
     // 等待 close / error → 重连
     rx.next().await;
     let _ = ws.close();
-    Err("ws closed".to_string())
+    outcome.borrow().clone().unwrap_or(Err("ws closed"))
 }
-
-// SSR 端 stub —— 让 lib 在 ssr 编译时不报未使用警告。
-#[cfg(not(target_arch = "wasm32"))]
-pub fn spawn_ws_connected_root() {}
-
-// 让 Rc/RefCell 的导入在 wasm build 中不被报 unused（保持两种 cfg 下都不告警）。
-#[allow(dead_code)]
-fn _unused_refcell() -> Option<(Rc<RefCell<()>>,)> { None }
