@@ -21,7 +21,6 @@ session_ttl_hours = 72
 
 [auth.builtin]
 enabled = true
-allow_registration = true
 admin_email = "admin@local"
 admin_password = "Admin12345"
 
@@ -122,3 +121,16 @@ index_name = "entries"
 # 与 Tantivy 完全一致；false = 直接写原文，依赖 Meilisearch 内置分词
 # （仅适合纯空格分词语言）。
 pre_segment = true
+
+# 服务端日志：stdout + 文件双写，文件按天滚动。整段缺失走默认。
+# systemd / docker 部署建议：
+#   1. 设 RUST_BACKTRACE=full（容器 env 或 unit Environment=），panic 时拿到栈；
+#   2. dir 用绝对路径，或在 unit 里设 WorkingDirectory=；不然 CWD 不确定，
+#      日志可能落到匪夷所思的地方。
+[logging]
+# 日志目录，相对 CWD。目录不存在会自动创建。
+# dir = "logs"
+# 文件名前缀。实际文件名 {prefix}.YYYY-MM-DD.log（一天一个文件）。
+# prefix = "rodeo"
+# 启动时删除超过 N 天的同前缀日志文件。0 = 不自动清理（由外部 logrotate 处理）。
+# keep_days = 7

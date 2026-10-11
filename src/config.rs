@@ -17,6 +17,8 @@ pub struct Config {
     pub agent: AgentConfig,
     #[serde(default)]
     pub search: SearchConfig,
+    #[serde(default)]
+    pub logging: LoggingConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -51,8 +53,6 @@ pub struct AuthConfig {
 pub struct BuiltinAuthConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
-    #[serde(default = "default_true")]
-    pub allow_registration: bool,
     #[serde(default = "default_admin_email")]
     pub admin_email: String,
     #[serde(default = "default_admin_password")]
@@ -162,6 +162,44 @@ pub struct BlobConfig {
     pub allow_http: bool,
 }
 
+/// 服务端日志配置。同 stdout + 文件双写，文件按天滚动。
+/// `[logging]` 整段缺失走默认（dir="logs", prefix="rodeo", keep_days=7）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct LoggingConfig {
+    /// 日志目录，相对当前工作目录解析。目录不存在会自动创建。
+    /// 部署在 systemd 等 CWD 不明确的环境时，建议改成绝对路径
+    ///（例如 `/var/log/rodeo`）或在 unit 里设 `WorkingDirectory=`。
+    #[serde(default = "default_log_dir")]
+    pub dir: String,
+    /// 日志文件名前缀，文件名最终为 `{prefix}.YYYY-MM-DD.log`。
+    #[serde(default = "default_log_prefix")]
+    pub prefix: String,
+    /// 历史日志保留天数。启动时删除早于此天数的 `{prefix}.*.log` 文件；
+    /// 0 表示不自动清理，由外部 logrotate / cron 处理。
+    #[serde(default = "default_log_keep_days")]
+    pub keep_days: u32,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            dir: default_log_dir(),
+            prefix: default_log_prefix(),
+            keep_days: default_log_keep_days(),
+        }
+    }
+}
+
+fn default_log_dir() -> String {
+    "logs".to_string()
+}
+fn default_log_prefix() -> String {
+    "rodeo".to_string()
+}
+fn default_log_keep_days() -> u32 {
+    7
+}
+
 /// Tantivy 后端的可调参数。`[search] backend = "tantivy"` 时生效。
 #[derive(Debug, Clone, Deserialize)]
 pub struct TantivySearchConfig {
@@ -258,7 +296,6 @@ impl Default for BuiltinAuthConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            allow_registration: true,
             admin_email: default_admin_email(),
             admin_password: default_admin_password(),
         }
@@ -353,6 +390,7 @@ impl Default for Config {
             ai: AiConfig::default(),
             agent: AgentConfig::default(),
             search: SearchConfig::default(),
+            logging: LoggingConfig::default(),
         }
     }
 }
@@ -399,6 +437,9 @@ fn default_session_ttl() -> u32 {
 fn default_true() -> bool {
     true
 }
+// 自助注册入口已删除（私有化部署要求所有账号由系统管理员创建），配置
+// `[auth.builtin] allow_registration` 字段随之移除——历史 config.toml 里若
+// 残留此行，TOML 允许未知字段不报错。
 fn default_admin_email() -> String {
     "admin@local".to_string()
 }
