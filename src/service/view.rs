@@ -6,15 +6,21 @@ use ulid::Ulid;
 
 use crate::domain::{
     AuditAction, AuditLog, LabelSchema, Query, SortField, SortKey, SortSpec, TitleColorRule, View,
-    ViewTimeline,
+    ViewTimeline, WorkspaceRole,
 };
 use crate::error::AppError;
 use crate::service::audit::audit_ops;
 use crate::service::label::check_color;
+use crate::service::message::MessageService;
+use crate::service::workspace::WorkspaceService;
 use crate::storage::{cf, keys, BatchOp, DocStore};
 
 pub struct ViewService {
     store: Arc<DocStore>,
+    /// 删除视图时通知 workspace 管理员（Owner + Maintainer）。
+    messages: MessageService,
+    /// `list_members` 用于解析管理员 ID。
+    workspaces: WorkspaceService,
 }
 
 /// 时间型标签的「族」：轴上的刻度与跨度都按族算。两个标签必须同族——
@@ -36,8 +42,16 @@ fn time_family(value_type: &str) -> Option<TimeFamily> {
 }
 
 impl ViewService {
-    pub fn new(store: Arc<DocStore>) -> Self {
-        Self { store }
+    pub fn new(
+        store: Arc<DocStore>,
+        workspaces: WorkspaceService,
+        messages: MessageService,
+    ) -> Self {
+        Self {
+            store,
+            workspaces,
+            messages,
+        }
     }
 
     fn schemas(&self, ws: Ulid) -> Result<Vec<LabelSchema>, AppError> {
@@ -394,6 +408,66 @@ impl ViewService {
         Ok(view)
     }
 
+    /// 摘除一个工作区里所有视图「表格列」对 `label_name` 的引用：当标签被删时
+    /// `LabelService` 的级联清理会调到这里，确保视图里不再引用不存在的标签。
+    ///
+    /// 只动 `view.columns`；`query` / `sort` / `title_colors` 里若还引用了该标签
+    /// 会让视图过滤 / 排序静默失效，超出「表格列」的本任务边界，不在本方法范围。
+    ///
+    /// 返回实际修改的视图数（0 表示没视图引用，不写）。
+    /// 一次 `write_batch` 原子落盘（修改 + 各自一条 `ViewUpdated` 审计）。
+    pub fn remove_label_from_columns(
+        &self,
+        actor: Ulid,
+        ws_id: Ulid,
+        label_name: &str,
+    ) -> Result<usize, AppError> {
+        let ws_bytes = ws_id.to_bytes();
+        let mut ops = Vec::new();
+        let mut affected = 0usize;
+        for (k, _) in self.store.scan_prefix(cf::VIEWS_BY_WORKSPACE, &ws_bytes)? {
+            // VIEWS_BY_WORKSPACE = (ws_id ‖ view_id) = 32 字节
+            if k.len() < 32 {
+                continue;
+            }
+            let mut id_bytes = [0u8; 16];
+            id_bytes.copy_from_slice(&k[16..32]);
+            let view_id = Ulid::from_bytes(id_bytes);
+            let Some(bytes) = self.store.get_raw(cf::VIEWS, &keys::view_key(view_id))?
+            else {
+                continue;
+            };
+            let mut view: View = bincode::deserialize(&bytes)?;
+            if !view.columns.iter().any(|c| c == label_name) {
+                continue;
+            }
+            let before = serde_json::to_string(&view).unwrap_or_default();
+            view.columns.retain(|c| c != label_name);
+            view.updated_at = Utc::now();
+            affected += 1;
+            let after = serde_json::to_string(&view).unwrap_or_default();
+            let audit = AuditLog::new(
+                AuditAction::ViewUpdated,
+                actor,
+                "view",
+                &view_id.to_string(),
+                Some(ws_id),
+                Some(before),
+                Some(after),
+            );
+            ops.extend(audit_ops(&audit)?);
+            ops.push(BatchOp::put(
+                cf::VIEWS,
+                keys::view_key(view_id).to_vec(),
+                &view,
+            )?);
+        }
+        if !ops.is_empty() {
+            self.store.write_batch(ops)?;
+        }
+        Ok(affected)
+    }
+
     /// 读视图的时间轴配置；没配过（或已被清除）返回 `None`。
     pub fn timeline_of(&self, id: Ulid) -> Result<Option<ViewTimeline>, AppError> {
         self.store.get(cf::VIEW_TIMELINE, &keys::view_key(id))
@@ -504,6 +578,32 @@ impl ViewService {
             keys::view_key(id).to_vec(),
         ));
         self.store.write_batch(ops)?;
+        // 通知 workspace 的 Owner + Maintainer（spec §7.2 触发点 4）。发起人排除。
+        // 单条 message 失败不阻塞整批——个别收件人被踢出 workspace 时 send 会返
+        // InvalidQuery，按 `let _` 吞掉，继续通知其他管理员。
+        let preview = format!("视图 \"{}\" 已被删除", view.name);
+        let members = self.workspaces.list_members(view.workspace_id)?;
+        for (member, _account) in members {
+            if member.account_id == actor {
+                continue;
+            }
+            if !matches!(
+                member.role,
+                WorkspaceRole::Owner | WorkspaceRole::Maintainer
+            ) {
+                continue;
+            }
+            let _ = self.messages.send(
+                actor,
+                "",  // actor_name 在 service 层拿不到——保留空串，UI 显示时回退
+                view.workspace_id,
+                "",
+                "view_deleted",
+                Some(id),
+                &preview,
+                member.account_id,
+            );
+        }
         Ok(())
     }
 }
@@ -561,7 +661,15 @@ mod tests {
         let ws_svc = WorkspaceService::new(store.clone());
         let actor = Ulid::new();
         let ws = ws_svc.create(actor, "测试", None, "").unwrap();
-        let svc = ViewService::new(store.clone());
+        // 测试用空 hub——ViewService.delete 在 actor != workspace owner 的路径上不会真发，
+        // 而 Owner 的视图删除场景触发时 hub 是 Some 但 push_to 在测试里走空 sender，
+        // 不影响断言。
+        let msg_svc = crate::service::message::MessageService::new(
+            store.clone(),
+            ws_svc.clone(),
+            None,
+        );
+        let svc = ViewService::new(store.clone(), ws_svc, msg_svc);
         (dir, store, svc, ws.id, actor)
     }
 
