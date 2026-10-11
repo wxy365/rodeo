@@ -3,6 +3,8 @@ use std::sync::Arc;
 
 use ulid::Ulid;
 
+use crate::api::ws::WsHub;
+use crate::api::ws::WsMessage;
 use crate::domain::{AuditAction, AuditLog, Message};
 use crate::error::AppError;
 use crate::service::audit::audit_ops;
@@ -16,15 +18,30 @@ pub struct MessageService {
     /// 字段标 `pub(crate)`：`EntryService::dispatch_entry_mentions` 会跨模块读它
     /// （`self.messages.workspaces.list_members(...)`）。
     pub(crate) workspaces: WorkspaceService,
+    /// 实时推送通道。`None` 表示 WS 未启用——v1 总是 `Some`，但留 None 路径
+    /// 便于关闭时不必拉一个新分支。
+    pub(crate) ws_hub: Option<Arc<WsHub>>,
 }
 
 impl MessageService {
-    pub fn new(store: Arc<DocStore>, workspaces: WorkspaceService) -> Self {
-        Self { store, workspaces }
+    pub fn new(
+        store: Arc<DocStore>,
+        workspaces: WorkspaceService,
+        ws_hub: Option<Arc<WsHub>>,
+    ) -> Self {
+        Self {
+            store,
+            workspaces,
+            ws_hub,
+        }
     }
 
     /// 写一条消息。`actor_name` 由调用方传入——避免 MessageService 反向依赖 AuthService
     /// 引发 service 间的循环。内部用单条 `write_batch`：消息本体 + 审计。
+    ///
+    /// 写库成功 + 鉴权通过后 best-effort 推一条 `NewMessage { message_id }` 给收件人
+    /// 的活跃 WS 连接（spec §7.1 收敛点）。推送失败不返回错误——客户端会走
+    /// 30s polling 兜底拉一次。
     pub fn send(
         &self,
         actor: Ulid,
@@ -76,6 +93,17 @@ impl MessageService {
             &msg,
         )?);
         self.store.write_batch(ops)?;
+        // WS 推送：best-effort，不阻塞写库结果。
+        if let Some(hub) = &self.ws_hub {
+            let msg_id = msg.id;
+            let hub = hub.clone();
+            // spawn 到当前线程 runtime，避免在 tokio context 外 await（service 方法是同步）。
+            // spawn 失败极少见（runtime 已关），静默忽略。
+            tokio::spawn(async move {
+                hub.push_to(recipient_id, WsMessage::NewMessage { message_id: msg_id })
+                    .await;
+            });
+        }
         Ok(msg)
     }
 

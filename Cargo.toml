@@ -56,9 +56,12 @@ thiserror = { version = "1", optional = true }
 toml = { version = "0.8", optional = true }
 tracing = { version = "0.1", optional = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+# 服务端文件日志 + 每日滚动。仅 ssr。直接走同步 IO（不开 non_blocking 缓冲），
+# 换取 panic 时日志仍能落盘。
+tracing-appender = { version = "0.2", optional = true }
 http = { version = "1", optional = true }
 tower = { version = "0.5", features = ["util"], optional = true }
-tower-http = { version = "0.6", features = ["fs", "limit"], optional = true }
+tower-http = { version = "0.6", features = ["fs", "limit", "compression-gzip"], optional = true }
 tantivy = { version = "0.26", optional = true, default-features = false, features = ["mmap", "lz4-compression"] }
 # 全文检索可选后端。仅启用 meilisearch 时才编译进二进制。
 # 不写版本兼容区间的「软」声明——锁住，避免 meilisearch-sdk 的次版本破坏 API。
@@ -81,9 +84,10 @@ async-stream = { version = "0.3", optional = true }
 # `Stream` trait + `StreamExt::next`。async-stream 与 reqwest 的 bytes_stream() 都
 # 实现前者但都不直接 re-export；后者要写 `stream.next().await` 就必须在作用域内。
 # 已经是间接依赖（async-stream / axum-core / async-graphql 都依赖它），体积零增量。
-# default-features = false：关掉它的 allocator / channel / io 特性，只留
-# stream 适配器，避免把 tokio 的 io-util / sync 再次拉进来。
-futures-util = { version = "0.3", optional = true, default-features = false, features = ["std"] }
+# default-features = false：关掉它的 allocator / io 特性，只留 stream 适配器，
+# 避免把 tokio 的 io-util / sync 再次拉进来。`channel` 给 wasm 端 WS 客户端用——
+# 把 close / error 事件转成 await 信号。
+futures-util = { version = "0.3", optional = true, default-features = false, features = ["std", "channel"] }
 # Agent turn 注册表使用的同步互斥（避免 async 锁在同步临界区的可取消性问题）。
 parking_lot = { version = "0.12", optional = true }
 # Agent runner 用 `CancellationToken` 让 SSE 断连时干净地中止 turn。
@@ -135,6 +139,7 @@ ssr = [
     "dep:toml",
     "dep:tracing",
     "dep:tracing-subscriber",
+    "dep:tracing-appender",
     "dep:http",
     "dep:tower",
     "dep:tower-http",

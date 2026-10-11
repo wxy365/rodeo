@@ -9,12 +9,14 @@ async fn main() {
     use axum::{Extension, Router};
     use leptos::prelude::*;
     use leptos_axum::{generate_route_list, LeptosRoutes};
+    use tower_http::compression::CompressionLayer;
     use tower_http::limit::RequestBodyLimitLayer;
     use tower_http::services::ServeFile;
 
     use rodeo::api::{
         agent_stream_handler, build_schema, download_attachment, github_callback, github_start,
-        graphql_handler, google_callback, google_start, wechat_callback, wechat_start, AppState,
+        graphql_handler, google_callback, google_start, wechat_callback, wechat_start, ws_handler,
+        AppState,
     };
     use rodeo::app::*;
     use rodeo::config::Config;
@@ -33,17 +35,22 @@ async fn main() {
     // `from_crate_features`，panic 路径被切断。aws-lc-rs 仍编译进二进制但永不被使用。
     install_ring_crypto_provider();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "rodeo=info,tower_http=info".into()),
-        )
-        .init();
-
+    // config 必须先于 tracing init：开文件 appender 需要 logging.dir。
     let config_path = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "config.toml".to_string());
     let config = Arc::new(Config::load(&config_path).expect("加载配置失败"));
+
+    let log_dir = std::path::Path::new(&config.logging.dir);
+    std::fs::create_dir_all(log_dir).expect("创建日志目录失败");
+
+    // 双写：stdout 保留 dev / 容器 / journald 输出；文件按日滚动用于事后排查。
+    init_tracing(&config.logging);
+    // panic hook 在 init 之后才能用 tracing。
+    install_panic_hook();
+    // 启动期清理早于 keep_days 的日志；0 表示不清理。
+    cleanup_old_logs(log_dir, &config.logging.prefix, config.logging.keep_days);
+
     let store = Arc::new(DocStore::from_config(&config.storage).expect("打开存储失败"));
     let services = Arc::new(Services::new(store.clone(), config.clone()).expect("初始化服务失败"));
     services.auth.bootstrap_admin().expect("初始化管理员失败");
@@ -100,6 +107,9 @@ async fn main() {
         .route("/api/health", get(|| async { "ok" }))
         .route("/api/attachments/{id}", get(download_attachment))
         .route("/api/agent/turns/{turn_id}/stream", get(agent_stream_handler))
+        // WebSocket 实时推送通道。token 走 query param（axum WebSocketUpgrade 不能
+        // 收自定义 header）。鉴权失败在 upgrade 之前返回 401，handler 内部完成。
+        .route("/api/ws", get(ws_handler))
         // favicon 必须放在 leptos_routes 之前：`/favicon.svg` 是单段路径，
         // 会被 Leptos 的 ParamSegment("slug") workspace 路由抢走渲染成工作空间
         // 页面，SPA fallback 的 ServeDir 因此永远收不到它。
@@ -112,10 +122,19 @@ async fn main() {
             move || shell(leptos_options.clone())
         })
         .fallback(leptos_axum::file_and_error_handler(shell))
+        // 全局 gzip：CompressionLayer 默认 predicate 自动跳过已是 image/* /
+        // video/* / font/* / application-*-compressed 等「自带压缩」的内容，
+        // 并尊重请求 Accept-Encoding。GraphQL JSON / SSR HTML 都受益，
+        // 静态资源原样吐回。放在 Extension 之前——后者只是注入 AppState，
+        // 顺序无关。
+        .layer(CompressionLayer::new())
         .layer(Extension(app_state))
         .with_state(leptos_options);
 
-    match config.tls() {
+    // 把两种监听模式包成同型 future 喂给 select。任一异常退出都将被记录。
+    let server: std::pin::Pin<
+        Box<dyn std::future::Future<Output = std::io::Result<()>>>,
+    > = match config.tls() {
         Some(tls) => {
             let rustls_config =
                 axum_server::tls_rustls::RustlsConfig::from_pem_file(&tls.cert_path, &tls.key_path)
@@ -127,17 +146,32 @@ async fn main() {
                         )
                     });
             tracing::info!("listening on https://{addr}（来源 {addr_src}）");
-            axum_server::bind_rustls(addr, rustls_config)
-                .serve(app.into_make_service())
-                .await
-                .unwrap();
+            Box::pin(async move {
+                axum_server::bind_rustls(addr, rustls_config)
+                    .serve(app.into_make_service())
+                    .await
+            })
         }
         None => {
             tracing::info!("listening on http://{addr}（来源 {addr_src}）");
             let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-            axum::serve(listener, app.into_make_service())
-                .await
-                .unwrap();
+            Box::pin(async move {
+                axum::serve(listener, app.into_make_service()).await
+            })
+        }
+    };
+
+    // 任一分支先完成即退出：服务端异常 → 记 error 退出；收到退出信号 → 记 warn 退出。
+    tokio::select! {
+        res = server => {
+            if let Err(e) = res {
+                tracing::error!("axum serve 异常退出: {e}");
+            } else {
+                tracing::info!("axum serve 正常退出");
+            }
+        }
+        sig = shutdown_signal() => {
+            tracing::warn!("收到 {sig}，开始退出");
         }
     }
 }
@@ -152,4 +186,108 @@ pub fn main() {}
 fn install_ring_crypto_provider() {
     use rustls::crypto::CryptoProvider;
     let _ = CryptoProvider::install_default(rustls::crypto::ring::default_provider());
+}
+
+/// stdout + 文件双写。`tracing_appender::rolling::daily` 内部走同步 IO（不开
+/// `non_blocking` 缓冲），panic / 突然断电场景下日志直接落盘。
+#[cfg(feature = "ssr")]
+fn init_tracing(logging: &rodeo::config::LoggingConfig) {
+    use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "rodeo=info,tower_http=info".into());
+
+    let stdout_layer = fmt::layer().with_writer(std::io::stdout);
+    let file_appender = tracing_appender::rolling::daily(&logging.dir, &logging.prefix);
+    let file_layer = fmt::layer().with_writer(file_appender).with_ansi(false);
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(stdout_layer)
+        .with(file_layer)
+        .init();
+}
+
+/// 把 panic 信息也写进文件，方便事后排查。默认 hook 在 `RUST_BACKTRACE=1` 时
+/// 打出 backtrace；systemd unit / docker 部署建议带上。
+#[cfg(feature = "ssr")]
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let loc = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let msg = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "non-string panic payload".to_string());
+        // 用 tracing 写——文件 layer 的 writer 是同步 IO，panic unwind 之前
+        // 这条日志已落盘。
+        tracing::error!("PANIC at {loc}: {msg}");
+        default_hook(info);
+    }));
+}
+
+/// 启动期清理早于 `keep_days` 的 `{prefix}.YYYY-MM-DD.log`。`keep_days = 0` 跳过。
+/// 只匹配同前缀同后缀的文件，不会误删同目录下无关文件。
+#[cfg(feature = "ssr")]
+fn cleanup_old_logs(dir: &std::path::Path, prefix: &str, keep_days: u32) {
+    if keep_days == 0 {
+        return;
+    }
+    let Some(cutoff) = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(u64::from(keep_days) * 86_400))
+    else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !name.starts_with(&format!("{prefix}.")) || !name.ends_with(".log") {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        if modified < cutoff {
+            match std::fs::remove_file(&path) {
+                Ok(_) => tracing::info!("已清理过期日志 {:?}", path),
+                Err(e) => tracing::warn!("清理过期日志 {:?} 失败: {e}", path),
+            }
+        }
+    }
+}
+
+/// 监听 SIGTERM / SIGINT / SIGHUP，第一个到达的即返回。Linux 上 systemkd stop、
+/// Ctrl+C、`nginx -s reload` 风格的 HUP 都能触发干净退出。
+#[cfg(feature = "ssr")]
+async fn shutdown_signal() -> &'static str {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut term = signal(SignalKind::terminate()).expect("注册 SIGTERM 监听失败");
+        let mut int = signal(SignalKind::interrupt()).expect("注册 SIGINT 监听失败");
+        let mut hup = signal(SignalKind::hangup()).expect("注册 SIGHUP 监听失败");
+        tokio::select! {
+            _ = term.recv() => "SIGTERM",
+            _ = int.recv()  => "SIGINT",
+            _ = hup.recv()  => "SIGHUP",
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+        "Ctrl-C"
+    }
 }

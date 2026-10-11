@@ -14,6 +14,7 @@ pub mod oauth_state;
 pub mod relation;
 pub mod rule;
 pub mod search;
+pub mod share;
 pub mod view;
 pub mod workspace;
 
@@ -37,6 +38,7 @@ pub use message::MessageService;
 pub use relation::RelationService;
 pub use rule::{RuleEngine, RuleService};
 pub use search::{MeilisearchBackend, SearchBackend, TantivyBackend};
+pub use share::ShareService;
 pub use view::ViewService;
 pub use workspace::WorkspaceService;
 
@@ -58,12 +60,16 @@ pub struct Services {
     pub rig_client: Option<RigClient>,
     pub rule: RuleService,
     pub relation: RelationService,
+    pub share: ShareService,
     pub agent: AgentService,
     pub schema: Arc<AppSchema>,
     pub agent_turns: Arc<SessionTurns>,
     pub oauth_registry: Arc<crate::service::oauth::OAuthRegistry>,
     pub oauth_state: Arc<crate::service::oauth_state::OAuthStateStore>,
     pub oauth_bindings: crate::service::oauth_bindings::OAuthBindingsService,
+    /// 实时推送中枢。`/api/ws` 路由在 handshake 时 subscribe；`MessageService::send`
+    /// 写库成功后 best-effort 推送 `NewMessage`。
+    pub ws_hub: Arc<crate::api::ws::WsHub>,
 }
 
 impl Services {
@@ -96,7 +102,11 @@ impl Services {
         // 未配置就保持 None，启动阶段不做任何网络操作。
         let rig_client = RigClient::from_config(&config.ai)?;
         let workspace = WorkspaceService::new(store.clone());
-        let message = MessageService::new(store.clone(), workspace.clone());
+        // 实时推送通道（spec §2 per-user hub）。`Arc<WsHub>` 同时挂在 Services 上
+        // 给 axum 路由握手时 subscribe 用；message 服务内部也持一份，写库成功后
+        // best-effort 推 `NewMessage { message_id }`（spec §7.1 收敛点）。
+        let ws_hub: Arc<crate::api::ws::WsHub> = crate::api::ws::WsHub::new();
+        let message = MessageService::new(store.clone(), workspace.clone(), Some(ws_hub.clone()));
         // RelationService 在 EntryService 之前：条目软删除要把关联清理拼进自己的
         // write_batch，必须先有 instance 才能传引用。
         let relation = RelationService::new(store.clone());
@@ -151,6 +161,8 @@ impl Services {
         // 这里再调 `OAuthBindingsService::new(store.clone())` 会触发 E0382。
         let oauth_bindings =
             crate::service::oauth_bindings::OAuthBindingsService::new(store.clone());
+        // Entry 分享：仅依赖 `DocStore`，在最后的 Services 拼装前构造。
+        let share = ShareService::new(store.clone());
         let services = Self {
             auth: AuthService::new(store.clone(), config.clone()),
             workspace,
@@ -160,12 +172,13 @@ impl Services {
             attachment,
             label: LabelService::new(store.clone()),
             audit: AuditService::new(store.clone()),
-            view: ViewService::new(store.clone()),
+            view: ViewService::new(store.clone(), workspace.clone(), message.clone()),
             ai: AiService::new(store.clone()),
             rig_client,
             rule: RuleService::new(store.clone()),
             relation,
             agent: AgentService::new(store.clone()),
+            share,
             search,
             store,
             config,
@@ -174,6 +187,7 @@ impl Services {
             oauth_registry: Arc::new(crate::service::oauth::OAuthRegistry::new(oauth_providers)),
             oauth_state: crate::service::oauth_state::OAuthStateStore::new(),
             oauth_bindings,
+            ws_hub,
         };
         // 先修标签定义：搜索与打标回填都按当前结构读数据，让它们看到一致的 schema。
         services.label.repair_legacy_schemas()?;

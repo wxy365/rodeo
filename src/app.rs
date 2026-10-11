@@ -8,13 +8,15 @@ use leptos_router::{ParamSegment, StaticSegment};
 use crate::frontend::agent_panel::{provide_agent_panel_open, AgentPanel};
 use crate::frontend::agent_side_effects::provide_agent_side_effects;
 use crate::frontend::components::AppBar;
-use crate::frontend::graphql_client::{clear_token, get_token, me};
+use crate::frontend::graphql_client::{clear_token, get_token, me, set_token};
 use crate::frontend::i18n::{provide_i18n, Locale};
 use crate::frontend::pages::{
-    Account, Admin, EntryFullScreen, Home, Login, WorkspaceList, WorkspaceMain, WorkspaceSettings,
+    Account, Admin, EntryFullScreen, Home, Login, SharedEntry, WorkspaceList, WorkspaceMain,
+    WorkspaceSettings,
 };
 use crate::frontend::provide_auth;
 use crate::frontend::use_auth;
+use crate::frontend::ws::spawn_ws_connected_root;
 
 /// `web_sys::window().location().hash()` 的 wasm/ssr 兼容壳。SSR 没有
 /// DOM，`web_sys` 也不在 ssr 依赖里——直接调用链接都过不去。SSR 侧返回
@@ -68,9 +70,32 @@ pub fn OAuthCallback() -> impl IntoView {
         let navigate = navigate.clone();
         if let Some(t) = token {
             set_token(&t);
-            // 拉一下 me() 拿到 isAdmin / 完整 user，再 navigate
+            // 拉一下 me() 拿到 isAdmin / 完整 user，再 navigate。
+            // me() 同样走 App 启动 Effect 的 retry 思路：失败一次不写 `auth.user`，
+            // 直接 navigate 会把人送进一个 AppBar 整棵子树不挂载的页面——尤其
+            // return_to=工作空间时拿不到「新建 Entry」入口。
             spawn_local(async move {
-                if let Ok(Some(user)) = me().await {
+                let mut user_opt: Option<crate::frontend::User> = None;
+                for attempt in 0..2 {
+                    match me().await {
+                        Ok(Some(u)) => {
+                            user_opt = Some(u);
+                            break;
+                        }
+                        Ok(None) => break, // token 已被服务端判死，不再写 user
+                        Err(_) if attempt == 0 => {
+                            #[cfg(target_arch = "wasm32")]
+                            {
+                                gloo_timers::future::TimeoutFuture::new(500).await;
+                            }
+                            if get_token().is_none() {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                if let Some(user) = user_opt {
                     auth.user.set(Some(user));
                     auth.session_lost.set(false);
                 }
@@ -138,8 +163,8 @@ fn ShellInner(options: LeptosOptions) -> impl IntoView {
 }
 
 /// SSR 路径下 leptos_axum 已经把 axum 的 `Parts` 作为 context 注入；hydrate
-/// 路径下没有 Parts——退回 En（head 内联脚本会让 `document.cookie` 与
-/// `localStorage` 写回用户最近一次的选择，下一轮 SSR 自然收敛）。
+/// 路径下没有 Parts——读 `<html lang>`（head 内联脚本已经把 `localStorage.rodeo_lang`
+/// 同步过来），与 SSR 决议一致；再退回 En。
 fn resolve_initial_locale() -> Locale {
     #[cfg(feature = "ssr")]
     {
@@ -148,7 +173,24 @@ fn resolve_initial_locale() -> Locale {
             return resolve_from_parts(&parts);
         }
     }
+    #[cfg(target_arch = "wasm32")]
+    {
+        if let Some(s) = read_html_lang() {
+            if let Some(loc) = Locale::from_browser(&s) { return loc; }
+        }
+    }
     Locale::En
+}
+
+/// 读 `<html lang>`。head 内联脚本里 `localStorage.rodeo_lang` 优先：用户最近一次
+/// 在 AppBar 显式选过的 locale 会被同步成 `<html lang>`，hydrate 直接拿同一个值。
+/// 失败 / 缺失一律返回 None，让调用方走默认 En。
+#[cfg(target_arch = "wasm32")]
+fn read_html_lang() -> Option<String> {
+    web_sys::window()
+        .and_then(|w| w.document())
+        .and_then(|d| d.document_element())
+        .and_then(|el| el.get_attribute("lang"))
 }
 
 /// 把 `Parts`（请求头 + URL）走一遍：
@@ -206,9 +248,25 @@ pub fn App() -> impl IntoView {
     let _agent_panel_open = provide_agent_panel_open();
     // Agent 副作用 store：服务端 SSE 写入（Task 7/8）后由面板订阅刷新。
     let _agent_side_effects = provide_agent_side_effects();
-    // i18n：locale 由 `ShellInner` 在解析 `Parts` 后提供；这里不再重复 provide。
-    // LanguageButton 在用户切换时只更新既有 controller 的信号 + 写 localStorage + 写 cookie，
-    // 三件事同步完成，下次 SSR 自动从 cookie 回来同一个 locale。
+    // 主题上下文：ThemeButton / Theme 相关的所有 use_theme() 调用都从这里拿。
+    // 之前没人 provide（只在 theme.rs 里写了一个 never-called 的 provide_theme），
+    // 之所以没炸是因为 `<Show when=auth.user.get().is_some()>` 间接挡住了 AppBar
+    // 里的 ThemeButton 挂载。现在 AppBar 改成永远挂载，这里必须补上。
+    let _theme = crate::frontend::theme::provide_theme();
+    // i18n：App 是 hydrate 入口，`ShellInner` 仅 SSR 走。`provide_i18n` 必须
+    // 在这里挂——否则 hydrate 时 `use_i18n` 拿到的是 `fallback_controller`
+    // 的 EN 默认值，body 永远停在 SSR 的语言。SSR 路径下 ShellInner 还会再
+    // provide 一次（同类型覆盖同类型），最终 locale 与之前一致——不会改变
+    // SSR 输出。
+    let _i18n = provide_i18n(resolve_initial_locale());
+    // LanguageButton 切换时由 `I18nController::set` 把信号 + localStorage + cookie +
+    // `<html lang/dir>` 四件事同步完成——下次 SSR 从 cookie 回来，下次 hydrate 从
+    // `<html lang>` 回来，hydrate 不再退回硬编码的英文。
+
+    // 实时推送通道：在 App 入口 provide `WsContext`（仅 wasm 端实际建连）。
+    // 30s polling 仍保留为兜底，AppBar 监听 `WsContext` 收到 `NewMessage` 时
+    // 立即 refetch unread_message_count。
+    spawn_ws_connected_root();
 
     // 应用挂载时若已登录（有 token）则拉取当前账号，供头像/昵称展示。
     //
@@ -216,19 +274,44 @@ pub fn App() -> impl IntoView {
     // 正是本地有令牌，所以拿到 null 只可能是后者——那张令牌已经死了，必须就地清掉并标记会话
     // 失效。否则 `/account`、`/admin` 会永远停在「加载中…」：它们只看得到 `user` 是 None，
     // 分不清「还在问」和「没有会话」。
+    //
+    // `Err` 不能直接吞：`<Show when=auth.user.get().is_some()>` 守护着 AppBar 整棵子树，
+    // `auth.user` 停在 `None` 时用户在 WorkspaceMain 里就拿不到「新建 Entry」入口。
+    // 失败通常是瞬时网络抖动，等 500ms 再试一次；两次都失败就放弃，把这条线索留给
+    // 后续受保护页 Effect 重跑或用户主动操作时再触发。
     Effect::new_sync(move |_| {
         if !cfg!(target_arch = "wasm32") || get_token().is_none() || auth.user.get().is_some() {
             return;
         }
         spawn_local(async move {
-            match me().await {
-                Ok(Some(u)) => auth.user.set(Some(u)),
-                Ok(None) => {
-                    clear_token();
-                    auth.session_lost.set(true);
+            for attempt in 0..2 {
+                match me().await {
+                    Ok(Some(u)) => {
+                        auth.user.set(Some(u));
+                        return;
+                    }
+                    Ok(None) => {
+                        clear_token();
+                        auth.session_lost.set(true);
+                        return;
+                    }
+                    Err(_) if attempt == 0 => {
+                        // `gloo_timers` 是 wasm-only，SSR 侧这个分支根本走不到
+                        // （外层 `cfg!` 早就 return 了），但 Rust 的类型检查仍然
+                        // 要解析这段闭包——用 `#[cfg]` 守住，native build 就不
+                        // 引用 `gloo_timers` 也就不会编错。
+                        #[cfg(target_arch = "wasm32")]
+                        {
+                            gloo_timers::future::TimeoutFuture::new(500).await;
+                        }
+                        // 等待期间 OAuthCallback 或别处已经填上了 user / token 被清掉了，
+                        // 都直接收手，别覆盖别人的结论。
+                        if auth.user.get().is_some() || get_token().is_none() {
+                            return;
+                        }
+                    }
+                    Err(_) => return,
                 }
-                // 网络或服务端故障：身份其实未知，继续显示「加载中…」好过谎报「登录已失效」。
-                Err(_) => {}
             }
         });
     });
@@ -240,10 +323,20 @@ pub fn App() -> impl IntoView {
         // 顶栏抽到独立组件里：父组件把 `<Show>` 当兄弟元素用时，需要它的内部闭包是
         // `Fn`-compatible。把 navigate 调用挪到 AppBar 自己的 setup 阶段能避开这个
         // 边界——直接照搬 AvatarMenu 已经验证过的写法。
-        <Show when=move || auth.user.get().is_some()>
-            <AppBar />
-        </Show>
+        //
+        // **不再用 `<Show when=auth.user.get().is_some()>` 守卫 AppBar**：「新建 Entry」
+        // 按钮由 `WorkspaceNewMenuSlot` 驱动（WorkspaceMain 挂载时写入槽），跟 auth.user
+        // 没有直接耦合。一旦让 auth.user 决定 AppBar 出不出来，中间任何一环出错——
+        // `me()` 在 hydrate 后返回 Err / Ok(None)、account 被 reset-data 清掉、token 的
+        // `ver` 对不上当前版本——用户都会卡在「/login 进得去，/workspaces 出不来，进任何
+        // /<slug> 都没有 AppBar」的状态。AppBar 改成始终挂载，AvatarMenu 内部根据
+        // auth.user 决定显示用户头像还是登录入口；WorkspaceMain 的 slot 决定「新建」按钮。
+        //
+        // **必须放在 `<Router>` 内部**：AppBar 里 `use_navigate()`（点品牌回工作空间列表）
+        // 需要 Router context。Slot 由 App 层 provide，挪进 Router 不影响读写；挂载顺序
+        // 也不变（AppBar 是 Router 第一个子节点，WorkspaceMain 在 Routes 里随后挂载）。
         <Router>
+            <AppBar />
             <main>
                 <Routes fallback=|| view! { <p>"页面不存在"</p> }>
                     <Route path=StaticSegment("") view=Home/>
@@ -254,6 +347,11 @@ pub fn App() -> impl IntoView {
                     <Route path=StaticSegment("account") view=Account/>
                     <Route path=(ParamSegment("slug"), StaticSegment("settings")) view=WorkspaceSettings/>
                     <Route path=(ParamSegment("slug"), StaticSegment("entry"), ParamSegment("code")) view=EntryFullScreen/>
+                    // 公开的匿名只读分享页：与 workspace shell 同样挂 AppBar，但仍
+                    // 通过 Routes 走标准渲染——`SharedEntry` 自己的 view 不显示任何
+                    // 仅登录态可见的控件。`ParamSegment("token")` 必须是句末段，
+                    // 否则会被 `:slug` 优先匹配。
+                    <Route path=(StaticSegment("share"), ParamSegment("token")) view=SharedEntry/>
                     <Route path=ParamSegment("slug") view=WorkspaceMain/>
                 </Routes>
             </main>

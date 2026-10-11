@@ -22,6 +22,15 @@ pub fn member_label(m: &Member) -> String {
     }
 }
 
+/// 邮箱的 local-part：去掉 `@` 及其后所有字符。多个 `@` 也只在第一个切，
+/// 缺 `@` 时原样返回。
+///
+/// 账号类型标签的设值面板用：同一组织成员邮箱域相同时，省掉 `@公司` 让候选
+/// 行更紧凑，也避免「左边姓名、右边 @公司」这种冗余。搜索匹配照常用完整邮箱。
+fn email_local(email: &str) -> &str {
+    email.split('@').next().unwrap_or(email)
+}
+
 /// 当前路径是不是某个工作空间内的页面（`/{slug}`、`/{slug}/settings`、
 /// `/{slug}/entry/{code}`）；是的话返回 slug，否则返回 `None`。
 ///
@@ -60,6 +69,7 @@ pub fn AccountPicker(
     multi: bool,
     on_change: Callback<Vec<String>>,
 ) -> impl IntoView {
+    let i18n: I18nController = use_i18n();
     let query = RwSignal::new(String::new());
     // 输入框聚焦状态：聚焦 + 输入非空时都展开候选项；空输入时仅聚焦才展开。
     let focused = RwSignal::new(false);
@@ -104,7 +114,7 @@ pub fn AccountPicker(
     };
     view! {
         <div style="position:relative;display:flex;flex-direction:column;gap:6px">
-            <input class="inp" style="width:200px" placeholder="选择或搜索账号…"
+            <input class="inp" style="width:200px" placeholder=i18n.t("label.picker_placeholder")
                 prop:value=query
                 on:input=move |ev| query.set(event_target_value(&ev))
                 on:focus=move |_| focused.set(true)
@@ -127,7 +137,7 @@ pub fn AccountPicker(
                     .cloned()
                     .collect();
                 if hits.is_empty() {
-                    return view! { <div class="lblhint"><div class="mut">"没有匹配的成员"</div></div> }
+                    return view! { <div class="lblhint"><div class="mut">{i18n.t("label.no_match_member")}</div></div> }
                         .into_any();
                 }
                 view! {
@@ -144,7 +154,7 @@ pub fn AccountPicker(
                                         pick.run(id.clone());
                                     }>
                                         <span>{member_label(&m)}</span>
-                                        <span class="mut">{m.email.clone()}</span>
+                                        <span class="mut">{email_local(&m.email).to_string()}</span>
                                     </div>
                                 }
                             })
@@ -156,7 +166,7 @@ pub fn AccountPicker(
             // 已选 chip：单选只展示一个；多选每个都能 × 掉。
             <div style="display:flex;flex-wrap:wrap;gap:4px;font-size:12px">
                 {if selected_owned.is_empty() {
-                    view! { <span class="mut">"未设置"</span> }.into_any()
+                    view! { <span class="mut">{i18n.t("common.unset")}</span> }.into_any()
                 } else {
                     selected_owned.iter().map(|id| {
                         let text = label_of(id);
@@ -165,7 +175,7 @@ pub fn AccountPicker(
                             <span class="chip">
                                 {text.clone()}
                                 {multi.then(|| view! {
-                                    <button class="ibtn" title="移除"
+                                    <button class="ibtn" title=i18n.t("common.remove")
                                         on:click=move |_| remove.run(rm_id.clone())>{ic_close()}</button>
                                 })}
                             </span>
@@ -188,6 +198,7 @@ pub fn FormatSelect(
     format: RwSignal<String>,
     #[prop(optional)] disabled: bool,
 ) -> impl IntoView {
+    let i18n: I18nController = use_i18n();
     let presets = crate::golayout::presets(&value_type);
     let custom = RwSignal::new({
         let cur = format.get_untracked();
@@ -195,7 +206,8 @@ pub fn FormatSelect(
     });
     let vt_ph = value_type.clone();
     // 「（默认）」选项把该类型的默认模式写在标签里：窄表格里比另起一行提示更省地方。
-    let default_opt = format!("（默认 {}）", crate::golayout::default_pattern(&value_type));
+    let default_pat = crate::golayout::default_pattern(&value_type);
+    let default_opt = i18n.tf("label.default_format", &[("fmt", &default_pat)]);
     view! {
         <div style="display:flex;gap:6px;align-items:center">
             {move || {
@@ -210,7 +222,7 @@ pub fn FormatSelect(
                         <button class="btn sm" type="button" disabled=disabled on:click=move |_| {
                             custom.set(false);
                             format.set(String::new());
-                        }>"常用格式"</button>
+                        }>{i18n.t("label.common_formats")}</button>
                     }
                         .into_any()
                 } else {
@@ -234,7 +246,7 @@ pub fn FormatSelect(
                                     view! { <option value=*p selected=sel>{*p}</option> }
                                 })
                                 .collect::<Vec<_>>()}
-                            <option value=CUSTOM_FORMAT>"自定义…"</option>
+                            <option value=CUSTOM_FORMAT>{i18n.t("common.custom")}</option>
                         </select>
                     }
                         .into_any()
@@ -267,6 +279,7 @@ pub fn DefaultValueInput(
     value: RwSignal<Value>,
     #[prop(optional)] disabled: bool,
 ) -> impl IntoView {
+    let i18n: I18nController = use_i18n();
     let vt = value_type.clone();
     let control = match vt.as_str() {
         "null" => view! { <span class="mut">"—"</span> }.into_any(),
@@ -286,9 +299,9 @@ pub fn DefaultValueInput(
                                 _ => Value::Null,
                             });
                     }>
-                    <option value="">"（未设置）"</option>
-                    <option value="true">"是"</option>
-                    <option value="false">"否"</option>
+                    <option value="">{i18n.t("common.unset")}</option>
+                    <option value="true">{i18n.t("common.yes")}</option>
+                    <option value="false">{i18n.t("common.no")}</option>
                 </select>
             }
             .into_any()
@@ -296,7 +309,7 @@ pub fn DefaultValueInput(
         "enum" if multi => {
             let cur = move || value_to_string(&value.get());
             view! {
-                <input class="inp" style="width:180px" placeholder="逗号分隔，留空为不设置"
+                <input class="inp" style="width:180px" placeholder=i18n.t("label.comma_separated_hint")
                     disabled=disabled prop:value=cur
                     on:input=move |ev| {
                         let items: Vec<Value> = event_target_value(&ev)
@@ -323,7 +336,7 @@ pub fn DefaultValueInput(
                         value
                             .set(if v.is_empty() { Value::Null } else { Value::String(v) });
                     }>
-                    <option value="">"（未设置）"</option>
+                    <option value="">{i18n.t("common.unset")}</option>
                     {opts
                         .into_iter()
                         .map(|o| view! { <option value=o.clone()>{display_enum_value(&o)}</option> })
@@ -405,7 +418,7 @@ pub fn DefaultValueInput(
         }
         // string / email：纯文本，落库前服务端还会再校验一次。
         _ => view! {
-            <input class="inp" style="width:180px" placeholder="留空为不设置" disabled=disabled
+            <input class="inp" style="width:180px" placeholder=i18n.t("label.optional_hint") disabled=disabled
                 prop:value=move || value_to_string(&value.get())
                 on:input=move |ev| {
                     let v = event_target_value(&ev);
@@ -416,7 +429,7 @@ pub fn DefaultValueInput(
     };
     view! {
         <div style="display:flex;gap:6px;align-items:center">
-            <span class="mut" style="white-space:nowrap">"默认值"</span>
+            <span class="mut" style="white-space:nowrap">{i18n.t("label.default_value")}</span>
             {control}
         </div>
     }
@@ -454,6 +467,25 @@ pub fn AvatarMenu() -> impl IntoView {
                 u.set(n);
             }
         });
+    }
+
+    // WS 推送到达时立即 refetch unread_message_count，绕过 30s polling 周期。
+    // `WsContext` 由 `app.rs::App` 入口的 `spawn_ws_connected_root` provide。
+    #[cfg(target_arch = "wasm32")]
+    {
+        let ws = use_context::<crate::frontend::ws::WsContext>();
+        if let Some(ws) = ws {
+            Effect::new(move |_| {
+                if ws.last_message.get().is_some() {
+                    let u = unread;
+                    spawn_local(async move {
+                        if let Ok(n) = crate::frontend::graphql_client::unread_message_count().await {
+                            u.set(n);
+                        }
+                    });
+                }
+            });
+        }
     }
 
     // 30 秒轮询。`setInterval` 直接调 `web_sys`，避免额外依赖。
@@ -799,12 +831,12 @@ pub fn role_chip_class(role: &str) -> &'static str {
 }
 
 /// 角色显示名。
-pub fn role_label(role: &str) -> String {
+pub fn role_label(role: &str, i18n: &I18nController) -> String {
     match role.to_ascii_lowercase().as_str() {
-        "owner" => "Owner".to_string(),
-        "maintainer" => "Maintainer".to_string(),
-        "worker" => "Worker".to_string(),
-        "reader" => "Reader".to_string(),
+        "owner" => i18n.t("settings.members.role_owner"),
+        "maintainer" => i18n.t("settings.members.role_maintainer"),
+        "worker" => i18n.t("settings.members.role_worker"),
+        "reader" => i18n.t("settings.members.role_reader"),
         other => other.to_string(),
     }
 }
@@ -968,50 +1000,32 @@ pub fn human_size(bytes: i64) -> String {
     }
 }
 
-/// 审计 action → 中文标签。
-pub fn action_label(action: &str) -> &'static str {
-    match action {
-        "EntryCreated" => "创建",
-        "EntryUpdated" => "更新详情",
-        "EntryDeleted" => "删除",
-        "LabelingSet" => "设置标签",
-        "LabelingRemoved" => "移除标签",
-        "LabelSchemaCreated" => "创建标签定义",
-        "LabelSchemaUpdated" => "更新标签定义",
-        "LabelSchemaDeleted" => "删除标签定义",
-        "ViewCreated" => "创建视图",
-        "ViewUpdated" => "更新视图",
-        "ViewDeleted" => "删除视图",
-        "EntryArchived" => "归档",
-        "EntryUnarchived" => "取消归档",
-        "MemberInvited" => "邀请成员",
-        "MemberJoined" => "接受邀请",
-        "InviteDeclined" => "拒绝邀请",
-        "InviteRevoked" => "撤销邀请",
-        "RoleChanged" => "变更成员角色",
-        "MemberRemoved" => "移除成员",
-        "WorkspaceUpdated" => "更新工作空间",
-        "WorkspaceDeleted" => "删除工作空间",
-        "WorkspaceRestored" => "恢复工作空间",
-        "WorkspaceCreated" => "创建工作空间",
-        "RuleCreated" => "创建规则",
-        "RuleUpdated" => "更新规则",
-        "RuleDeleted" => "删除规则",
-        "RuleApplied" => "规则触发",
-        "CommentCreated" => "发表评论",
-        "CommentUpdated" => "编辑评论",
-        "CommentDeleted" => "删除评论",
-        "AttachmentUploaded" => "上传附件",
-        "AttachmentDeleted" => "删除附件",
-        _ => "变更",
-    }
+/// 审计 action → 本地化标签。
+pub fn action_label(action: &str, i18n: &I18nController) -> String {
+    let key = match action {
+        "EntryCreated" | "EntryUpdated" | "EntryDeleted"
+        | "LabelingSet" | "LabelingRemoved"
+        | "LabelSchemaCreated" | "LabelSchemaUpdated" | "LabelSchemaDeleted"
+        | "ViewCreated" | "ViewUpdated" | "ViewDeleted"
+        | "EntryArchived" | "EntryUnarchived"
+        | "MemberInvited" | "MemberJoined" | "InviteDeclined" | "InviteRevoked"
+        | "RoleChanged" | "MemberRemoved"
+        | "WorkspaceUpdated" | "WorkspaceDeleted" | "WorkspaceRestored" | "WorkspaceCreated"
+        | "RuleCreated" | "RuleUpdated" | "RuleDeleted" | "RuleApplied"
+        | "CommentCreated" | "CommentUpdated" | "CommentDeleted"
+        | "AttachmentUploaded" | "AttachmentDeleted" => {
+            return i18n.t(&format!("audit.action.{action}"));
+        }
+        _ => "audit.action.Other",
+    };
+    i18n.t(key)
 }
 
 /// 审计 before/after 快照 → 一句话「具体改了什么」。
 ///
 /// 两个快照都是 JSON 对象字符串（`serde_json::to_string` 出来的资源快照）。创建 / 删除
 /// 各只有一边，写成「创建「标题」」；两边都在时逐字段对比，只报实际变化的字段。
-pub fn audit_change(before: Option<&str>, after: Option<&str>) -> String {
+pub fn audit_change(before: Option<&str>, after: Option<&str>, i18n: &I18nController) -> String {
     let parse = |s: Option<&str>| -> Option<Value> {
         let s = s?;
         serde_json::from_str::<Value>(s).ok()
@@ -1021,15 +1035,16 @@ pub fn audit_change(before: Option<&str>, after: Option<&str>) -> String {
     let bobj = b.as_ref().and_then(Value::as_object);
     let aobj = a.as_ref().and_then(Value::as_object);
     match (bobj, aobj) {
-        (None, None) => "—".to_string(),
-        (None, Some(ao)) => format!("创建「{}」", subject(ao)),
-        (Some(bo), None) => format!("删除「{}」", subject(bo)),
-        (Some(bo), Some(ao)) => diff(bo, ao),
+        (None, None) => i18n.t("audit.no_diff"),
+        (None, Some(ao)) => i18n.tf("audit.created", &[("name", &subject(ao, i18n))]),
+        (Some(bo), None) => i18n.tf("audit.deleted", &[("name", &subject(bo, i18n))]),
+        (Some(bo), Some(ao)) => diff(bo, ao, i18n),
     }
 }
 
 /// 资源快照 → 一个能指代它的短标签。
-fn subject(o: &serde_json::Map<String, Value>) -> String {
+fn subject(o: &serde_json::Map<String, Value>, i18n: &I18nController) -> String {
+    let no_diff = i18n.t("audit.no_diff");
     for k in [
         "title",
         "name",
@@ -1040,15 +1055,15 @@ fn subject(o: &serde_json::Map<String, Value>) -> String {
     ] {
         if let Some(v) = o.get(k) {
             let s = show(v);
-            if s != "—" {
+            if s != no_diff {
                 return s;
             }
         }
     }
-    "（无标题）".to_string()
+    i18n.t("audit.no_title")
 }
 
-fn diff(b: &serde_json::Map<String, Value>, a: &serde_json::Map<String, Value>) -> String {
+fn diff(b: &serde_json::Map<String, Value>, a: &serde_json::Map<String, Value>, i18n: &I18nController) -> String {
     let null = Value::Null;
     // 先按 after 的字段顺序，再补上只存在于 before 的字段（被移除的字段）。
     let mut keys: Vec<&String> = a.keys().collect();
@@ -1064,40 +1079,26 @@ fn diff(b: &serde_json::Map<String, Value>, a: &serde_json::Map<String, Value>) 
         if bv == av {
             continue;
         }
-        parts.push(format!("{}: {} → {}", field_label(k), show(bv), show(av)));
+        parts.push(i18n.tf("audit.diff_field", &[
+            ("field", &field_label(k, i18n)),
+            ("before", &show(bv)),
+            ("after", &show(av)),
+        ]));
     }
     if parts.is_empty() {
-        "无字段变化".to_string()
+        i18n.t("audit.no_changes")
     } else {
-        parts.join("；")
+        parts.join(&i18n.t("audit.diff_sep"))
     }
 }
 
-/// 快照字段名 → 中文；未在映射表里的字段直接沿用原名。
-fn field_label(k: &str) -> String {
-    match k {
-        "title" => "标题",
-        "detail" => "详情",
-        "name" => "名称",
-        "slug" => "地址",
-        "description" => "描述",
-        "deleted_at" => "删除时间",
-        "value" => "值",
-        "label_name" => "标签",
-        "value_type" => "值类型",
-        "enum_values" => "可选值",
-        "color" => "颜色",
-        "value_colors" => "值颜色",
-        "query" => "条件",
-        "columns" => "列",
-        "sort" => "排序",
-        "is_shared" => "共享",
-        "title_colors" => "标题颜色规则",
-        "role" => "角色",
-        "account_id" => "成员",
-        other => other,
-    }
-    .to_string()
+/// 快照字段名 → 本地化标签；未在映射表里的字段直接沿用原名。
+fn field_label(k: &str, i18n: &I18nController) -> String {
+    let key = format!("audit.field.{k}");
+    let translated = i18n.t(&key);
+    // i18n.t() 在缺失时回落到 en，再回落到字面 key 本身。
+    // 如果「key 原样返回」说明该字段没有翻译，用 name 原值更清晰。
+    if translated == key { k.to_string() } else { translated }
 }
 
 /// 展示一个 JSON 值：字符串去掉引号，其余保持紧凑 JSON；过长则截断。
@@ -1121,23 +1122,18 @@ fn clip(s: &str) -> String {
 }
 
 /// 值类型显示名。
-pub fn value_type_label(vt: &str) -> String {
+pub fn value_type_label(vt: &str, i18n: &I18nController) -> String {
+    // 内置类型（null / boolean / integer / float / string / enum）走英文原文：
+    // 它们就是数据契约的一部分，不翻译；UI 只对带语义的中文类型做本地化。
     match vt {
-        "null" => "Null",
-        "boolean" => "Boolean",
-        "integer" => "Integer",
-        "float" => "Float",
-        "string" => "String",
-        "enum" => "Enum",
-        "date" => "日期",
-        "time" => "时间",
-        "datetime" => "日期时间",
-        "currency" => "金额",
-        "email" => "邮箱",
-        "account" => "账号",
-        other => other,
+        "null" => "Null".to_string(),
+        "boolean" => "Boolean".to_string(),
+        "integer" => "Integer".to_string(),
+        "float" => "Float".to_string(),
+        "string" => "String".to_string(),
+        "enum" => "Enum".to_string(),
+        _ => i18n.t(&format!("label.value_type.{vt}")),
     }
-    .to_string()
 }
 
 /// 标签 chip 标点的位置。`Left` 标点放在名称前，`Right` 标点放在名称后。
@@ -1154,9 +1150,9 @@ pub fn chip_glyph(vt: &str, _value: &Value, currency_symbol: Option<&str>) -> Op
     match vt {
         "boolean" => Some(("✓".to_string(), GlyphPos::Left)),
         "currency" => Some((currency_symbol.unwrap_or("¥").to_string(), GlyphPos::Left)),
-        "date" | "datetime" => Some(("📅".to_string(), GlyphPos::Right)),
-        "time" => Some(("⏰".to_string(), GlyphPos::Right)),
-        "account" => Some(("👤".to_string(), GlyphPos::Right)),
+        // 日期 / 时间 / 账号标签原放在 chip 值后的标点（📅 / ⏰ / 👤）已移除——
+        // 列宽一紧 emoji 容易顶到下一格，按钮 / 输入框 / 表格单元里也常溢出，
+        // 视觉上更依赖颜色 + 文本本身来分辨类型。
         _ => None,
     }
 }
@@ -1180,11 +1176,12 @@ pub fn copy_to_clipboard(_text: &str) {}
 /// 一并带上 `.code` 是为了在表格之外的场景也拿到等宽小字。
 #[component]
 pub fn CodeCopy(#[prop(into)] code: Signal<String>) -> impl IntoView {
+    let i18n: I18nController = use_i18n();
     let copied = RwSignal::new(false);
     view! {
         <span class="codecell code">
             <span>{move || code.get()}</span>
-            <button class="ibtn codecopy" title="复制编码" on:click=move |_| {
+            <button class="ibtn codecopy" title=i18n.t("audit.copy_code") on:click=move |_| {
                 copy_to_clipboard(&code.get_untracked());
                 copied.set(true);
                 set_timeout(
@@ -1206,7 +1203,7 @@ pub fn CodeCopy(#[prop(into)] code: Signal<String>) -> impl IntoView {
 /// 只渲染与切换，显示什么内容由调用方按 `active` 自己分发。
 #[component]
 pub fn TabBar(
-    tabs: &'static [(&'static str, &'static str)],
+    tabs: Vec<(String, String)>,
     active: RwSignal<String>,
 ) -> impl IntoView {
     view! {
@@ -1214,13 +1211,13 @@ pub fn TabBar(
             {tabs
                 .iter()
                 .map(|(key, label)| {
-                    let for_class = *key;
-                    let for_click = *key;
+                    let for_class = key.clone();
+                    let for_click = key.clone();
                     view! {
                         <button
                             class=move || if active.get() == for_class { "on" } else { "" }
-                            on:click=move |_| active.set(for_click.to_string())
-                        >{*label}</button>
+                            on:click=move |_| active.set(for_click.clone())
+                        >{label.clone()}</button>
                     }
                 })
                 .collect::<Vec<_>>()}
@@ -1232,6 +1229,7 @@ pub fn TabBar(
 /// 详情的「历史」页签与全屏页共用——两处原本各写一遍，且都只做同一件事。
 #[component]
 pub fn AuditTimeline(logs: RwSignal<Vec<AuditLog>>, code: Signal<String>) -> impl IntoView {
+    let i18n: I18nController = use_i18n();
     view! {
         {move || {
             let c = code.get();
@@ -1241,7 +1239,7 @@ pub fn AuditTimeline(logs: RwSignal<Vec<AuditLog>>, code: Signal<String>) -> imp
                 .filter(|l| l.resource_id == c)
                 .collect();
             if mine.is_empty() {
-                view! { <div class="mut">"暂无记录"</div> }.into_any()
+                view! { <div class="mut">{i18n.t("common.empty")}</div> }.into_any()
             } else {
                 view! {
                     {mine
@@ -1250,9 +1248,9 @@ pub fn AuditTimeline(logs: RwSignal<Vec<AuditLog>>, code: Signal<String>) -> imp
                             view! {
                                 <div class="tl">
                                     <span class="t">{short_time(&l.at)}</span>
-                                    <span>{action_label(&l.action)}</span>
+                                    <span>{action_label(&l.action, &i18n)}</span>
                                     <span class="mut" style="font-size:12px">
-                                        {audit_change(l.before.as_deref(), l.after.as_deref())}
+                                        {audit_change(l.before.as_deref(), l.after.as_deref(), &i18n)}
                                     </span>
                                 </div>
                             }
@@ -1303,6 +1301,7 @@ pub fn ColorPick(
     #[prop(optional)] disabled: bool,
     #[prop(optional, into)] title: Option<String>,
 ) -> impl IntoView {
+    let i18n: I18nController = use_i18n();
     // 初值空表、挂载后再从 localStorage 恢复：SSR 与 hydrate 两趟的 DOM 才一致。
     let recent = RwSignal::new(Vec::<String>::new());
     Effect::new_sync(move |_| {
@@ -1379,7 +1378,7 @@ pub fn ColorPick(
                 class:left=move || placement.get() == "left"
                 class:below=move || placement.get() == "below"
             >
-                <div class="cpick-group" title="标准色">
+                <div class="cpick-group" title=i18n.t("common.preset_colors")>
                     {PRESET_COLORS.iter().map(|c| dot(c.to_string())).collect::<Vec<_>>()}
                 </div>
                 {move || {
@@ -1387,7 +1386,7 @@ pub fn ColorPick(
                     (!list.is_empty())
                         .then(|| {
                             view! {
-                                <div class="cpick-group cpick-sep" title="最近使用">
+                                <div class="cpick-group cpick-sep" title=i18n.t("common.recent_colors")>
                                     {list.into_iter().map(|c| dot(c.to_string())).collect::<Vec<_>>()}
                                 </div>
                             }
@@ -1401,31 +1400,49 @@ pub fn ColorPick(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frontend::i18n::Locale;
+
+    fn zh() -> I18nController {
+        I18nController { locale: RwSignal::new(Locale::Zh) }
+    }
 
     #[test]
     fn audit_change_reports_only_changed_fields() {
         let b = r#"{"title":"旧","detail":"同","value":"Open"}"#;
         let a = r#"{"title":"新","detail":"同","value":"Open"}"#;
-        assert_eq!(audit_change(Some(b), Some(a)), "标题: 旧 → 新");
+        assert_eq!(audit_change(Some(b), Some(a), &zh()), "标题: 旧 → 新");
     }
 
     #[test]
     fn audit_change_summarizes_create_and_delete() {
+        let i18n = zh();
         assert_eq!(
-            audit_change(None, Some(r#"{"title":"条目0"}"#)),
-            "创建「条目0」"
+            audit_change(None, Some(r#"{"title":"条目0"}"#), &i18n),
+            i18n.tf("audit.created", &[("name", "条目0")])
         );
         assert_eq!(
-            audit_change(Some(r#"{"name":"看板"}"#), None),
-            "删除「看板」"
+            audit_change(Some(r#"{"name":"看板"}"#), None, &i18n),
+            i18n.tf("audit.deleted", &[("name", "看板")])
         );
-        assert_eq!(audit_change(None, None), "—");
+        assert_eq!(audit_change(None, None, &i18n), "—");
     }
 
     #[test]
     fn audit_change_marks_added_and_removed_fields() {
+        let i18n = zh();
         let b = r#"{"a":1}"#;
         let a = r#"{"b":2}"#;
-        assert_eq!(audit_change(Some(b), Some(a)), "b: — → 2；a: 1 → —");
+        let field_b = i18n.tf("audit.diff_field", &[("field", "b"), ("before", "—"), ("after", "2")]);
+        let field_a = i18n.tf("audit.diff_field", &[("field", "a"), ("before", "1"), ("after", "—")]);
+        let sep = i18n.t("audit.diff_sep");
+        assert_eq!(audit_change(Some(b), Some(a), &i18n), format!("{field_b}{sep}{field_a}"));
+    }
+
+    #[test]
+    fn action_label_localizes_known_variants() {
+        let i18n = zh();
+        assert_eq!(action_label("EntryCreated", &i18n), "创建");
+        assert_eq!(action_label("EntryArchived", &i18n), "归档");
+        assert_eq!(action_label("NopeUnknown", &i18n), "变更");
     }
 }

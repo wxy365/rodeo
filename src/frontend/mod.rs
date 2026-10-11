@@ -17,10 +17,13 @@ pub mod message_list;
 pub mod pages;
 pub mod query_eval;
 pub mod relations_panel;
+pub mod share_clipboard;
 pub mod theme;
 pub mod timeline;
 pub mod tiny_editor;
+pub mod ws;
 pub mod view_filter;
+pub mod wheel;
 
 use leptos::prelude::*;
 
