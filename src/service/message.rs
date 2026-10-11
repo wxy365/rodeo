@@ -94,15 +94,24 @@ impl MessageService {
         )?);
         self.store.write_batch(ops)?;
         // WS 推送：best-effort，不阻塞写库结果。
+        // 服务方法本身同步（写 RocksDB 不能跨 .await），而 `hub.push_to` 是异步
+        // 操作——必须 spawn 到当前 tokio runtime。`Handle::try_current` 用于
+        // 上下文检测；没有 runtime（CLI 工具 / 单元测试）时记 warn 便于排查，
+        // 而不是让 `tokio::spawn` 直接 panic。
         if let Some(hub) = &self.ws_hub {
             let msg_id = msg.id;
             let hub = hub.clone();
-            // spawn 到当前线程 runtime，避免在 tokio context 外 await（service 方法是同步）。
-            // spawn 失败极少见（runtime 已关），静默忽略。
-            tokio::spawn(async move {
-                hub.push_to(recipient_id, WsMessage::NewMessage { message_id: msg_id })
-                    .await;
-            });
+            match tokio::runtime::Handle::try_current() {
+                Ok(handle) => {
+                    handle.spawn(async move {
+                        hub.push_to(recipient_id, WsMessage::NewMessage { message_id: msg_id })
+                            .await;
+                    });
+                }
+                Err(_) => {
+                    tracing::warn!(recipient = %recipient_id, msg_id = %msg_id, "WS 推送失败：当前无 tokio runtime（service 被脱离 axum 上下文调用？）");
+                }
+            }
         }
         Ok(msg)
     }
