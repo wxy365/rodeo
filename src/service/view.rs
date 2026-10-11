@@ -580,7 +580,8 @@ impl ViewService {
         self.store.write_batch(ops)?;
         // 通知 workspace 的 Owner + Maintainer（spec §7.2 触发点 4）。发起人排除。
         // 单条 message 失败不阻塞整批——个别收件人被踢出 workspace 时 send 会返
-        // InvalidQuery，按 `let _` 吞掉，继续通知其他管理员。
+        // InvalidQuery，跳过该收件人继续；其它错误（如 RocksDB IO）记 warn 让
+        // 运维事后能查到，不吞掉以免沉默掉真错误。
         let preview = format!("视图 \"{}\" 已被删除", view.name);
         let members = self.workspaces.list_members(view.workspace_id)?;
         for (member, _account) in members {
@@ -593,7 +594,7 @@ impl ViewService {
             ) {
                 continue;
             }
-            let _ = self.messages.send(
+            if let Err(e) = self.messages.send(
                 actor,
                 "",  // actor_name 在 service 层拿不到——保留空串，UI 显示时回退
                 view.workspace_id,
@@ -602,7 +603,18 @@ impl ViewService {
                 Some(id),
                 &preview,
                 member.account_id,
-            );
+            ) {
+                if let crate::error::AppError::InvalidQuery(_) = &e {
+                    // 收件人已被踢出 workspace 或角色被改——按"不该被通知"吞掉。
+                    continue;
+                }
+                tracing::warn!(
+                    view_id = %id,
+                    recipient = %member.account_id,
+                    err = %e,
+                    "视图删除通知失败"
+                );
+            }
         }
         Ok(())
     }
