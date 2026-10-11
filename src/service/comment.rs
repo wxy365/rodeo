@@ -110,6 +110,21 @@ impl CommentService {
                 Some(comment.id),
             )?;
             self.dispatch_mentions(actor, actor_name, e, comment.id, body, &previous)?;
+            // 新评论通知创建人（创建人 != 评论人）——创建人没在 @ 名单里也应收。
+            // 创建人已经在 dispatched 那条提醒过则不计重。
+            if e.created_by != actor && !previous.contains(&e.created_by) {
+                let preview = crate::service::mention::preview(body, 80);
+                self.messages.send(
+                    actor,
+                    actor_name,
+                    e.workspace_id,
+                    &e.code,
+                    "comment",
+                    Some(comment.id),
+                    &preview,
+                    e.created_by,
+                )?;
+            }
         }
         Ok(comment)
     }
