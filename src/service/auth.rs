@@ -39,22 +39,13 @@ impl AuthService {
         Self { store, config }
     }
 
-    /// 自助注册。受 `allow_registration` 限制——这个开关管的是「陌生人能否自己注册」，
-    /// 与「管理员能否建号」是两件事，后者见 [`Self::create_by_admin`]。
-    pub fn register(&self, email: &str, name: &str, password: &str) -> Result<Account, AppError> {
-        if !self.config.auth.builtin.allow_registration {
-            return Err(AppError::InvalidQuery(
-                "已关闭开放注册，请联系系统管理员创建账号".to_string(),
-            ));
-        }
-        self.create(email, name, password, false)
-    }
-
-    /// 管理员建号：**不受** `allow_registration` 限制。调用方负责鉴权
+    /// 管理员建号：私有化部署下这是创建账号的唯一入口。调用方负责鉴权
     /// （GraphQL 侧走 `require_admin`；`bootstrap_admin` 是启动期的引导路径）。
     ///
-    /// 旧签名让这两种调用者共用一个 `is_admin` 参数，结果关闭自助注册后管理员连
-    /// 普通账号都建不出来。开关与建号权限从此各管各的。
+    /// 历史：原本还有一个 `register` 走自助注册路径，私有化部署不允许陌生人
+    /// 自助建号——管理员与自助共用一个 `is_admin` 参数 + 一个 `allow_registration`
+    /// 守门，开关的语义随着产品演进而变得模糊，干脆整条路径删掉，让「账号由管理员建」
+    /// 成为代码层面的硬约束而非配置层面的软约束。
     pub fn create_by_admin(
         &self,
         email: &str,
@@ -98,7 +89,7 @@ impl AuthService {
     pub fn login(&self, email: &str, password: &str) -> Result<(Account, String), AppError> {
         let email = normalize_email(email)?;
         let account = self
-            .find_by_email(&email)?
+            .find_by_login_id(&email)?
             .ok_or(AppError::InvalidCredentials)?;
         // 无密码账号（OAuth-only）走专用文案 —— 用户已主动输邮箱，不存在邮箱存在性探测。
         if !account.has_password() {
@@ -212,8 +203,58 @@ impl AuthService {
         self.store.get(cf::ACCOUNTS, &id_bytes)
     }
 
+    /// 登录用的「模糊查找」：精确匹配优先；输入不含 `@` 时再退一步做 `X@*`
+    /// 前缀匹配，让「存的是 `alice@公司.com`、输 `alice` 也能命中」成立。
+    /// 多命中按「无命中」处理，与登录既有的「凭证错 = 不可区分账号存在性」安全策略
+    /// 一致（auth.rs:122 的 `Deactivated` 注释明示「不要变成探测口」）。
+    /// 含 `@` 的输入跳过前缀步——邮箱本身已经完整，不该再模糊。
+    /// 登录与 OAuth 关联既有账号两条路径都走这里。
+    pub(crate) fn find_by_login_id(
+        &self,
+        normalized: &str,
+    ) -> Result<Option<Account>, AppError> {
+        if let Some(account) = self.find_by_email(normalized)? {
+            return Ok(Some(account));
+        }
+        if normalized.contains('@') {
+            return Ok(None);
+        }
+        let prefix = format!("{}@", normalized);
+        let mut matches = Vec::new();
+        for (key, value) in self
+            .store
+            .scan_prefix(cf::ACCOUNTS_EMAIL_IDX, prefix.as_bytes())?
+        {
+            // 精确匹配已处理过；这里只看比 normalized 更长的「真前缀命中」。
+            if key == normalized.as_bytes() {
+                continue;
+            }
+            let id_bytes: [u8; 16] = value
+                .try_into()
+                .map_err(|_| AppError::Internal("账号索引损坏".to_string()))?;
+            if let Some(account) = self.store.get(cf::ACCOUNTS, &id_bytes)? {
+                matches.push(account);
+            }
+        }
+        Ok(if matches.len() == 1 {
+            Some(matches.remove(0))
+        } else {
+            None
+        })
+    }
+
     pub fn find_by_id(&self, id: Ulid) -> Result<Option<Account>, AppError> {
         self.store.get(cf::ACCOUNTS, &id.to_bytes())
+    }
+
+    /// 仅取账号名：分享公开页只暴露作者 `name`（不暴露 `id` / `email`），resolver
+    /// 通过 `find_by_id` 拿整条 Account 会把多余字段也带进内存。直接走 `get` 更直接，
+    /// 缺账号（同 query 服务端正常处理：账号被注销 / 硬删）回退到 None、UI 走「未知作者」。
+    pub fn account_name(&self, id: Ulid) -> Result<Option<String>, AppError> {
+        Ok(self
+            .store
+            .get::<Account>(cf::ACCOUNTS, &id.to_bytes())?
+            .map(|a| a.name))
     }
 
     /// 当前状态；CF 中无记录视为 [`AccountStatus::Active`]。
@@ -343,9 +384,11 @@ impl AuthService {
 
 pub(crate) fn normalize_email(email: &str) -> Result<String, AppError> {
     let email = email.trim().to_lowercase();
-    if !email.contains('@') || email.len() < 3 {
-        return Err(AppError::Internal("邮箱格式无效".to_string()));
+    if email.is_empty() || email.len() > 255 {
+        return Err(AppError::Internal("登录标识不能为空或过长".to_string()));
     }
+    // 私有化部署允许账号标识就是普通名字（"alice"），不一定含 @。
+    // 含 @ 时仍可正常解析。长度上限 255 防止异常输入灌进索引。
     Ok(email)
 }
 
@@ -422,39 +465,12 @@ mod tests {
     }
 
     #[test]
-    fn registration_respects_allow_registration_flag() {
-        let dir = temp_dir("closed");
-        let store = Arc::new(DocStore::open(&dir).unwrap());
-        let mut cfg = Config::default();
-        cfg.auth.builtin.allow_registration = false;
-        let auth = AuthService::new(store.clone(), Arc::new(cfg));
-
-        assert!(auth.register("user@x.io", "User", "Passw0rd!").is_err());
-        // 管理员建号不受开关限制，否则关闭注册后连管理员都建不出来。
-        assert!(auth
-            .create_by_admin("admin@x.io", "Admin", "Passw0rd!", true)
-            .is_ok());
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn registration_open_by_default() {
-        let dir = temp_dir("open");
-        let store = Arc::new(DocStore::open(&dir).unwrap());
-        let auth = AuthService::new(store.clone(), Arc::new(Config::default()));
-
-        assert!(auth.register("user@x.io", "User", "Passw0rd!").is_ok());
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
     fn logout_revokes_issued_tokens_and_new_login_works() {
         let dir = temp_dir("logout");
         let store = Arc::new(DocStore::open(&dir).unwrap());
         let auth = AuthService::new(store, Arc::new(Config::default()));
-        auth.register("u@x.io", "U", "Passw0rd!").unwrap();
+        // 自助注册路径已删，测试账号走管理员建号。
+        auth.create_by_admin("u@x.io", "U", "Passw0rd!", false).unwrap();
         let id = auth.find_by_email("u@x.io").unwrap().unwrap().id;
 
         let (_, token) = auth.login("u@x.io", "Passw0rd!").unwrap();
@@ -486,5 +502,34 @@ mod tests {
         let hash = hash_password("Abcd1234").unwrap();
         assert!(verify_password("Abcd1234", &hash).unwrap());
         assert!(!verify_password("WrongPass1", &hash).unwrap());
+    }
+
+    #[test]
+    fn login_accepts_plain_identifier_and_email_prefix() {
+        let dir = temp_dir("prefix");
+        let store = Arc::new(DocStore::open(&dir).unwrap());
+        let auth = AuthService::new(store, Arc::new(Config::default()));
+
+        // 普通账号名（无 @）。
+        auth.create_by_admin("alice", "Alice", "Passw0rd!", false)
+            .unwrap();
+        assert!(auth.login("alice", "Passw0rd!").is_ok());
+
+        // 邮箱形态：账号前缀登录。
+        auth.create_by_admin("bob@company.com", "Bob", "Passw0rd!", false)
+            .unwrap();
+        assert!(auth.login("bob@company.com", "Passw0rd!").is_ok());
+        assert!(auth.login("bob", "Passw0rd!").is_ok());
+
+        // 前缀多命中歧义 → 凭证错（与无命中一致，避免账号存在性探测）。
+        auth.create_by_admin("charlie@a.com", "C", "Passw0rd!", false)
+            .unwrap();
+        auth.create_by_admin("charlie@b.com", "C", "Passw0rd!", false)
+            .unwrap();
+        assert!(auth.login("charlie", "Passw0rd!").is_err());
+        // 完整邮箱输入不走模糊：精确匹配其一就登进去。
+        assert!(auth.login("charlie@a.com", "Passw0rd!").is_ok());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

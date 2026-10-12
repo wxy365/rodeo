@@ -6,10 +6,11 @@ use leptos::task::spawn_local;
 use wasm_bindgen::JsCast;
 
 use leptos_router::components::A;
-use leptos_router::hooks::{use_navigate, use_params_map};
+use leptos_router::hooks::{use_navigate, use_params_map, use_query_map};
 
 use crate::frontend::attachment_list::AttachmentList;
 use crate::frontend::comment_list::CommentList;
+use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::components::{
     chip_glyph, display_enum_value, fmt_datetime, from_native, is_native_time_layout,
     label_chip_class, logged_out, member_label, short_time, to_native, value_to_string,
@@ -18,14 +19,15 @@ use crate::frontend::components::{
 use crate::frontend::graphql_client::{
     archive_entry, archived_entries, audit_logs, create_entry, create_view, delete_entry,
     delete_view, entry, format_view_query, get_sidebar_collapsed, label_schemas, members,
-    parse_view_query, query_all_entries, query_entries, set_labeling, set_labelings,
-    set_sidebar_collapsed, set_view_timeline, summarize_entries, unarchive_entry, update_entry,
-    update_view, views, workspace_ai_config, workspace_by_slug, AccountBrief, AuditLog, Entry,
-    LabelSchema, Labeling, Member, NamedPrompt, View, ViewSort, ViewTimeline, Workspace,
+    parse_view_query, query_all_entries, query_entries, set_labeling,
+    set_labelings, set_sidebar_collapsed, set_view_timeline, summarize_entries, unarchive_entry,
+    update_entry, update_view, views, workspace_ai_config, workspace_by_slug, AccountBrief,
+    AuditLog, Entry, LabelSchema, Labeling, Member, NamedPrompt, View, ViewSort, ViewTimeline,
+    Workspace,
 };
 use crate::frontend::icons::{
-    ic_back, ic_close, ic_comment, ic_copy, ic_folder, ic_full, ic_help, ic_search, ic_setting,
-    ic_share, ic_tag, ic_undo,
+    ic_back, ic_close, ic_comment, ic_copy, ic_folder, ic_full, ic_help, ic_save, ic_search,
+    ic_setting, ic_share, ic_tag, ic_undo,
 };
 use crate::frontend::label_editor::LabelEditor;
 use crate::frontend::query_eval;
@@ -38,17 +40,31 @@ use serde_json::Value;
 
 use crate::frontend::agent_panel::provide_agent_context;
 
-/// 内置元数据关键字 → 中文展示名。恒定并入 `/` 候选，与视图里有哪些标签无关
-/// （`src/domain/query.rs` 的 `RESERVED_FIELDS` 是同一份名单）。
-const BUILTIN_FIELDS: [(&str, &str); 7] = [
-    ("Code", "编码"),
-    ("Title", "标题"),
-    ("Detail", "详情"),
-    ("CreatedBy", "创建人"),
-    ("CreatedAt", "创建时间"),
-    ("UpdatedBy", "更新人"),
-    ("UpdatedAt", "更新时间"),
-];
+/// 内置元数据关键字 → 本地化展示名。恒定并入 `/` 候选，与视图里有哪些标签无关
+/// （`src/domain/query.rs` 的 `RESERVED_FIELDS` 是同一份名单）。展示名通过 i18n 在
+/// 使用处即时解析，避免 `const` 里写死中文。
+fn builtin_fields(i18n: &I18nController) -> [(String, String); 7] {
+    [
+        ("Code".to_string(), i18n.t("entry.col_code")),
+        ("Title".to_string(), i18n.t("entry.col_title")),
+        ("Detail".to_string(), i18n.t("entry.col_detail")),
+        ("CreatedBy".to_string(), i18n.t("entry.col_created_by")),
+        ("CreatedAt".to_string(), i18n.t("entry.col_created_at")),
+        ("UpdatedBy".to_string(), i18n.t("entry.col_updated_by")),
+        ("UpdatedAt".to_string(), i18n.t("entry.col_updated_at")),
+    ]
+}
+
+/// 「创建人」列在 `View.columns` 里的 sentinel。`@@` 前缀既能在视觉上与标签名清晰
+/// 区分，也不会与合法的 label name 冲突（label name 由 `domain/label.rs` 校验）。
+/// `EntryTable` 看到这个名字就改去渲染创建人单元格，而不是去 schemas 里找同名标签。
+const COLUMN_CREATED_BY: &str = "@@createdBy";
+
+/// 「创建人」列是否在视图里展示。仅看 sentinel 是否在 `columns` 列表里即可——
+/// 与标签名查找完全独立，所以挪到 `EntryTable` 渲染前后两端的逻辑不会失同步。
+fn show_created_by(columns: &[String]) -> bool {
+    columns.iter().any(|c| c == COLUMN_CREATED_BY)
+}
 
 /// 视图「标题颜色规则」编辑行状态。`RwSignal` 便于逐字段就地更新；
 /// 全字段 Copy，便于在 `For` 的多个事件闭包间复用。
@@ -253,6 +269,7 @@ pub fn WorkspaceMain() -> impl IntoView {
     let slug = move || params.get_untracked().get("slug").unwrap_or_default();
     let navigate = use_navigate();
     let auth = use_auth();
+    let i18n: I18nController = use_i18n();
     let refresh = RwSignal::new(0u32);
     let data: RwSignal<Option<Result<(Workspace, Vec<Entry>, Vec<LabelSchema>), String>>> =
         RwSignal::new(None);
@@ -425,11 +442,9 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 // 用户需要知道这件事——不然视图没变,以为 agent 罢工。
                                 // 顶部挂 5s 自消失的提示,console.warn 留给排查。
                                 leptos::web_sys::console::warn_1(
-                                    &format!("AI 视图查询表达式无效: {e}").into(),
+                                    &i18n.tf("entry.errors.invalid_view_query", &[("err", &e.to_string())]).into(),
                                 );
-                                warning_for_ai.set(Some(format!(
-                                    "AI 返回的视图表达式无效,未应用: {e}"
-                                )));
+                                warning_for_ai.set(Some(i18n.tf("entry.errors.ai_view_query_rejected", &[("err", &e.to_string())])));
                             }
                         }
                     });
@@ -457,6 +472,14 @@ pub fn WorkspaceMain() -> impl IntoView {
     let active_view = RwSignal::new(None::<View>);
     // 侧栏高亮只需 id；与 active_view 一并更新，保持二者同步。
     let active_id = RwSignal::new(None::<String>);
+    // URL 上的 `?view=<id>`：作为 active_id 的初始种子，让「从全屏页返回」
+    // 和「浏览器刷新」都能恢复到上次选中的视图，而不是落到基础视图。
+    // 一次性读，不订阅 location.search 变化——URL 同步由 open_entry / go_back
+    // 主动写入，避免路由切换与 set_active 互相触发。
+    let initial_view_id: Option<String> = use_query_map()
+        .get()
+        .get("view")
+        .filter(|s| !s.is_empty());
     // 提供 AgentPanel 取用的上下文：当前视图 id + 表格勾选 codes。
     // 复用 batch_selected（与批量按钮同读同一份信号，行为一致）。
     let _ = provide_agent_context(active_id, batch_selected);
@@ -511,17 +534,38 @@ pub fn WorkspaceMain() -> impl IntoView {
             timeline_mode.set(false);
         });
     };
-    let load_views = move |ws_id: String| {
+    let load_views = move |ws_id: String, initial: Option<String>| {
         spawn_local(async move {
             if let Ok(list) = views(&ws_id).await {
-                // 仅当当前选中视图不在新列表里（切换工作空间、或列表为空）才重设，
-                // 否则会把用户在侧栏上的选择覆盖回第一个视图。
-                let current = active_id.get_untracked();
-                let still_valid = current
+                // URL `?view=<id>` 作为种子：当前 active_id 在列表里找不到时，
+                // 若 URL 指定的 id 仍存在，就用它；找不到才退回默认视图。
+                // 覆盖三种场景：1) 从全屏页返回 / 刷新，active_id 是 None；
+                // 2) 切换工作空间，旧 id 不在新列表里；
+                // 3) 视图被删，URL 还挂着过期 id。
+                let mut candidate = active_id.get_untracked();
+                if !candidate
+                    .as_ref()
+                    .is_some_and(|id| list.iter().any(|v| &v.id == id))
+                {
+                    if let Some(ref id) = initial {
+                        if list.iter().any(|v| &v.id == id) {
+                            candidate = Some(id.clone());
+                        }
+                    }
+                }
+                let still_valid = candidate
                     .as_ref()
                     .is_some_and(|id| list.iter().any(|v| &v.id == id));
                 if !still_valid {
                     set_active(list.first().cloned());
+                } else if candidate.as_deref() != active_id.get_untracked().as_deref() {
+                    // 候选变了（典型：从 URL 恢复成 X），用对应视图对象唤醒 active_view
+                    // 等下游信号——直接改 active_id 不会触发 query_ast / expr_text 重置。
+                    if let Some(id) = candidate.as_ref() {
+                        if let Some(v) = list.iter().find(|v| &v.id == id).cloned() {
+                            set_active(Some(v));
+                        }
+                    }
                 }
                 view_list.set(list);
             }
@@ -549,24 +593,38 @@ pub fn WorkspaceMain() -> impl IntoView {
     });
 
     // 视图导航栏右键菜单：点菜单以外的位置即关闭。
-    // `Element::closest` 在 web-sys 里返回 `Result<Option<Element>, JsValue>`，
-    // 我们只关心有没有命中 `.vmenu` 祖先节点，失败时按"不在菜单里"处理。
+    //
+    // 必须存 handle 并在 on_cleanup 里 remove：闭包捕获了 `vmenu`（组件本体的
+    // 信号），若 WorkspaceMain 因路由切换 / hydrate 重建 Owner，信号会被 dispose，
+    // 但挂到 window 上的监听器不会自动撤——下一次 mousedown 一旦命中别处点了别
+    // 的按钮（比如语言菜单的 English），`vmenu.get_untracked()` 抛
+    // "reactive value … already been disposed"，wasm 走 unreachable，把后续 click
+    // 事件吞掉，表现为"点了没反应"。同文件 L937/L1033 的 keydown 监听器正是
+    // 这么处理的，照搬。
+    //
+    // 用 `composed_path()` 走完整冒泡路径而不是 `target().dyn_into::<Element>()
+   // .closest(".vmenu")`：Chrome 在 `<button>text</button>` 上的 mousedown 偶发把
+    // target 设成 Text 节点（Text 不是 Element，dyn_into 失败），旧实现会误判成
+    // "在菜单外"，提前 vmenu.set(None) 把按钮移出 DOM——后续 click 事件的
+    // mouseup hit-test 命中别处，整条 click 链断在按钮上，配置视图 / 删除视图
+    // 就一点没反应。composed_path 包含 target 及其所有祖先（无论是不是 Element），
+    // 任意一环带 `vmenu` 类就算"在菜单里"。
     #[cfg(target_arch = "wasm32")]
     {
         let close_vmenu = move |ev: leptos::ev::MouseEvent| {
             if vmenu.get_untracked().is_none() {
                 return;
             }
-            let in_menu = ev
-                .target()
-                .and_then(|t| t.dyn_into::<leptos::web_sys::Element>().ok())
-                .and_then(|el| el.closest(".vmenu").ok().flatten().map(|_| ()))
-                .is_some();
+            let in_menu = ev.composed_path().iter().any(|node| {
+                node.dyn_ref::<leptos::web_sys::Element>()
+                    .is_some_and(|el| el.class_list().contains("vmenu"))
+            });
             if !in_menu {
                 vmenu.set(None);
             }
         };
-        let _ = window_event_listener(leptos::ev::mousedown, close_vmenu);
+        let handle = window_event_listener(leptos::ev::mousedown, close_vmenu);
+        on_cleanup(move || handle.remove());
     }
 
     // 把表达式输入框的内容解析成查询 AST 并应用（回车触发）。空输入即清空过滤。
@@ -578,7 +636,7 @@ pub fn WorkspaceMain() -> impl IntoView {
             .and_then(|r| r.ok())
             .map(|(w, _, _)| w.id.clone())
         else {
-            error.set(Some("工作空间尚未加载完成".to_string()));
+            error.set(Some(i18n.t("entry.errors.workspace_not_loaded")));
             return;
         };
         spawn_local(async move {
@@ -604,7 +662,7 @@ pub fn WorkspaceMain() -> impl IntoView {
         time_pick.set(None);
     };
 
-    // 已落库的查询条件与当前编辑态有差异，或者两个输入框里还残留未应用的文本，都视为有未保存改动。
+    // 「重置」按钮的判脏：AST 与基线不一致，或两个输入框里还残留未应用的文本。
     // 只看 AST 不够：用户在输入框里敲完未回车时 `query_ast` 还没变，但「重置」按钮该亮，
     // 否则用户想一键还原就只能挨个清输入框。
     // 对普通视图（即已保存表达式的视图）：基线非空时只看输入框是否非空会把
@@ -614,6 +672,11 @@ pub fn WorkspaceMain() -> impl IntoView {
             && (query_ast.get() != saved_baseline.get()
                 || expr_text.get_untracked() != saved_baseline_expr.get()
                 || !ad_hoc_text.get_untracked().trim().is_empty())
+    };
+    // 「保存视图」按钮的判脏：只比 AST——保存的语义是「把当前 AST 落到视图上」，
+    // ad-hoc 全文搜索与未回车的表达式文本都不会被保存进视图，不该点亮这个按钮。
+    let view_savable = move || {
+        active_view.get().is_some() && query_ast.get() != saved_baseline.get()
     };
 
     // 排序自动落库，不再依赖「保存视图」按钮。两条约束：
@@ -660,7 +723,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                         });
                     }
                     // 落库失败不回滚本地排序（列表已经按新排序显示），但要说出来。
-                    Err(e) => error.set(Some(format!("排序未能保存：{e}"))),
+                    Err(e) => error.set(Some(i18n.tf("entry.errors.sort_save_failed", &[("err", &e.to_string())]))),
                 }
                 // 接力最新待发项：取与清之间没有 await（wasm 单线程），读写是原子的。
                 next = persist_pending.get_untracked();
@@ -711,7 +774,7 @@ pub fn WorkspaceMain() -> impl IntoView {
     // 复用入口：来自视图导航栏的「配置视图」右键菜单，以及（未来移除后的）其他地方。
     let open_config_for = Callback::new(move |id: String| {
         let Some(v) = view_list.get_untracked().into_iter().find(|v| v.id == id) else {
-            error.set(Some("视图已被删除".to_string()));
+            error.set(Some(i18n.t("entry.errors.view_deleted")));
             return;
         };
         config_name_input.set(v.name.clone());
@@ -818,6 +881,11 @@ pub fn WorkspaceMain() -> impl IntoView {
         let all = tl_active.get();
         let my_seq = req_seq.get_untracked() + 1;
         req_seq.set(my_seq);
+        // URL 上的 `?view=<id>` 快照：本次 Effect 跑出的 load_views 用它作为
+        // active_id 种子。`initial_view_id` 是函数级 let，捕获在 Effect 闭包里；
+        // 这里再克隆一份交给内部 spawn 的 future，免得 future 直接拿走 Effect
+        // 环境里的 Option<String>（不是 Copy，搬一次就没了）。
+        let initial_for_load = initial_view_id.clone();
         // 地址里的工作空间可能已不存在（库被重置、链接失效），此时要把用户送回列表。
         let nav_missing = navigate.clone();
         spawn_local(async move {
@@ -860,12 +928,38 @@ pub fn WorkspaceMain() -> impl IntoView {
                     ws_members.set(member_list);
                     total_signal.set(total);
                     view_label_names.set(names);
-                    load_views(w.id.clone());
+                    load_views(w.id.clone(), initial_for_load.clone());
                     data.set(Some(Ok((w, items, list))));
                 }
                 Err(e) => data.set(Some(Err(e))),
             }
         });
+    });
+
+    // 双击行 / AI 生成 Entry 后进入条目全屏页，与详情面板的「全屏」按钮走同一条路由。
+    // 当前激活的视图（非默认）以 `?view=<id>` 形式写入 URL：详情页返回时能
+    // 精确回到同一视图，而不是落到默认视图。默认视图不必写，纯 URL 已能表达。
+    // 手动新建 Entry 不再走这里：只把新行在表格里选中，避免一刀切跳走用户的上下文。
+    // 必须先于 `apply_ai`（约 1206 行）与表格行的 `on_open=open_entry` 定义。
+    let nav_entry = use_navigate();
+    let open_entry = Callback::new(move |code: String| {
+        if code.is_empty() {
+            return;
+        }
+        let url = match active_id.get_untracked() {
+            Some(id) if !id.is_empty() => {
+                let is_default = active_view
+                    .get_untracked()
+                    .is_some_and(|v| v.is_default);
+                if is_default {
+                    format!("/{}/entry/{}", slug(), code)
+                } else {
+                    format!("/{}/entry/{}?view={}", slug(), code, id)
+                }
+            }
+            _ => format!("/{}/entry/{}", slug(), code),
+        };
+        nav_entry(&url, Default::default());
     });
 
     let create_submit = move |ev: SubmitEvent| {
@@ -892,7 +986,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                     // 单个标签失败不丢弃已创建的条目，但要如实报出来。
                     for (name, value) in &planned {
                         if let Err(e) = set_labeling(&created.code, name, value).await {
-                            error.set(Some(format!("条目已创建，但标签「{name}」写入失败：{e}")));
+                            error.set(Some(i18n.tf("entry.errors.label_write_failed", &[("name", &name), ("err", &e.to_string())])));
                             break;
                         }
                     }
@@ -900,18 +994,14 @@ pub fn WorkspaceMain() -> impl IntoView {
                     new_labels.set(Vec::new());
                     show_new.set(false);
                     refresh.update(|n| *n += 1);
+                    // 新建后在表格里选中该行：分页位置不可预测时，由「选中 N 项」徽标
+                    // 显式表达选中状态，不强行进入全屏页打断用户的上下文。AI 生成
+                    // 路径仍走 open_entry.run（见 apply_ai）。
+                    selected.set(created.code);
                 }
             }
         });
     };
-
-    // 双击行 / AI 新建后进入条目全屏页，与详情面板的「全屏」按钮走同一条路由。
-    let nav_entry = use_navigate();
-    let open_entry = Callback::new(move |code: String| {
-        if !code.is_empty() {
-            nav_entry(&format!("/{}/entry/{}", slug(), code), Default::default());
-        }
-    });
 
     // 「新建 Entry」表单打开（show_new 由 false 变 true）那一刻把焦点交给标题输入框。
     // Effect 只在表单渲染完成后才有可用的 NodeRef——以 false → true 的边沿为信号，
@@ -1056,7 +1146,7 @@ pub fn WorkspaceMain() -> impl IntoView {
             })
             .collect();
         if pairs.is_empty() {
-            batch_error.set(Some("请至少填写一个标签值".to_string()));
+            batch_error.set(Some(i18n.t("entry.errors.label_required")));
             return;
         }
         batch_busy.set(true);
@@ -1202,7 +1292,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                 match archive_entry(c).await {
                     Ok(true) => done += 1,
                     Ok(false) => {
-                        failure = Some("归档失败".to_string());
+                        failure = Some(i18n.t("entry.errors.archive_failed"));
                         break;
                     }
                     Err(e) => {
@@ -1216,7 +1306,7 @@ pub fn WorkspaceMain() -> impl IntoView {
             batch_selected.set(Vec::new());
             refresh.update(|n| *n += 1);
             if let Some(e) = failure {
-                error.set(Some(format!("已归档 {done} 个，其余失败：{e}")));
+                error.set(Some(i18n.tf("entry.errors.archive_partial", &[("done", &done.to_string()), ("err", &e.to_string())])));
             }
         });
     };
@@ -1301,11 +1391,11 @@ pub fn WorkspaceMain() -> impl IntoView {
             </Show>
             <div class="crumb" style="display:flex;align-items:center;gap:8px">
                 <A href="/workspaces">
-                    <button class="btn sm">{ic_back()}"工作空间列表"</button>
+                    <button class="btn sm">{ic_back()}{i18n.t("entry.back_workspaces_btn")}</button>
                 </A>
                 <span>{move || match active_view.get() {
-                    Some(v) => format!("/{} · 视图「{}」", slug(), v.name),
-                    None => format!("/{} · 基础视图「全部内容」", slug()),
+                    Some(v) => format!("/{} · {}", slug(), i18n.tf("entry.view_label", &[("name", &v.name)])),
+                    None => format!("/{} · {}", slug(), i18n.t("sidebar.base_view_all_entries")),
                 }}</span>
             </div>
             <div class=move || if sidebar_collapsed.get() { "ws-layout collapsed" } else { "ws-layout" }>
@@ -1324,7 +1414,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                         <div class="querybar">
                             <div class="q-expr">
                             <div class="q-expr-tools">
-                                <button class="exprhelp" title="标签表达式语法说明"
+                                <button class="exprhelp" title=i18n.t("entry.expr_help")
                                     on:click=move |_| expr_help.set(true)>{ic_help()}</button>
                                 // 重置按钮：把表达式与 ad-hoc 全文词还原到「视图已落库的基线」。
                                 // 基础视图的基线恒为空；普通视图的基线是上次保存的 query_expr。
@@ -1332,7 +1422,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 // 确保敲完未回车也能一键还原；与基线一致时按钮置灰。
                                 {move || if active_view.get().is_some() {
                                     view! {
-                                        <button class="exprreset" title="重置为默认"
+                                        <button class="exprreset" title=i18n.t("entry.expr_reset")
                                             disabled=move || !view_dirty()
                                             on:click=move |_| {
                                                 query_ast.set(saved_baseline.get_untracked());
@@ -1348,7 +1438,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 }}
                             </div>
                             <input class="inp" style="flex:1;min-width:0"
-                                placeholder=r#"标签表达式：Task AND !Bug（回车应用；输入 / 选标签）"#
+                                placeholder=i18n.t("entry.expr_placeholder")
                                 prop:value=expr_text
                                 on:input=move |ev| {
                                     let v = event_target_value(&ev);
@@ -1402,9 +1492,9 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 let schemas_now = schemas.get();
                                 // 先摆 7 个内置元数据名（用户不用先给视图打上这些标签才能引用），
                                 // 再摆本视图已有标签；同名（大小写无关，老 schema 可能留着小写 code）只留内置。
-                                let mut items: Vec<(String, String)> = BUILTIN_FIELDS
-                                    .iter()
-                                    .map(|(k, t)| (k.to_string(), t.to_string()))
+                                let mut items: Vec<(String, String)> = builtin_fields(&i18n)
+                                    .into_iter()
+                                    .map(|(k, t)| (k, t))
                                     .collect();
                                 for name in view_label_names.get() {
                                     if items.iter().any(|(n, _)| n.eq_ignore_ascii_case(&name)) {
@@ -1458,6 +1548,11 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 };
                                 view! {
                                     <div class="timepick">
+                                        // 原生 datetime-local 控件在挂载时锁住 <html lang>；
+                                        // Leptos 0.8 不支持给原始 HTML 元素挂 key 触发
+                                        // 重建（HtmlElement::key 不存在），切语言后需要
+                                        // 一次页面刷新让日历界面与新 lang 对齐。语言文本
+                                        // （标签 / 提示）的切换仍由 move || i18n.t() 兜住。
                                         <input type=input_type on:change=move |ev| {
                                             let raw = event_target_value(&ev);
                                             let Some(formatted) = from_native(vt, &raw) else { return; };
@@ -1472,9 +1567,9 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 }
                             })}
                             </div>
-                            <label class="q-search" title="全文搜索本视图">
+                            <label class="q-search" title=i18n.t("entry.search_view")>
                                 {ic_search()}
-                                <input placeholder="全文搜索本视图" prop:value=ad_hoc_text
+                                <input placeholder=i18n.t("entry.search_view") prop:value=ad_hoc_text
                                     on:input=move |ev| ad_hoc_text.set(event_target_value(&ev))
                                     on:keydown=move |ev| {
                                         if ev.key() == "Enter" {
@@ -1494,7 +1589,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 ().into_any()
                             } else {
                                 view! {
-                                    <button class="ibtn" style="margin-left:auto" title="另存为新视图"
+                                    <button class="ibtn" style="margin-left:auto" title=i18n.t("entry.saveas_view")
                                         on:click=move |_| {
                                             let Some(v) = active_view.get() else { return };
                                             let ast = query_ast.get_untracked();
@@ -1515,7 +1610,8 @@ pub fn WorkspaceMain() -> impl IntoView {
                             }
                         } else {
                             view! {
-                                <button class="btn" style="margin-left:auto" disabled=move || !view_dirty()
+                                <button class="ibtn" style="margin-left:auto" disabled=move || !view_savable()
+                                    title=i18n.t("entry.save_view")
                                     on:click=move |_| {
                                         let Some(v) = active_view.get() else { return };
                                         let ast = query_ast.get();
@@ -1550,7 +1646,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                                 Err(e) => error.set(Some(e)),
                                             }
                                         });
-                                    }>"保存视图"</button>
+                                    }>{ic_save()}</button>
                             }.into_any()
                         }}
                     </div>
@@ -1558,13 +1654,13 @@ pub fn WorkspaceMain() -> impl IntoView {
                     {move || if show_new.get() {
                         view! {
                             <form class="filters" on:submit=create_submit>
-                                <input class="inp" style="flex:1" placeholder="新条目标题" node_ref=new_title_ref
+                                <input class="inp" style="flex:1" placeholder=i18n.t("entry.new_entry_title_ph") node_ref=new_title_ref
                                     prop:value=new_title on:input=move |ev| new_title.set(event_target_value(&ev)) />
-                                <button class="btn pri" type="submit">"创建"</button>
+                                <button class="btn pri" type="submit">{i18n.t("common.create")}</button>
                                 <button class="btn" type="button" on:click=move |_| {
                                     new_labels.set(Vec::new());
                                     show_new.set(false);
-                                }>"取消"</button>
+                                }>{i18n.t("common.cancel")}</button>
                                 <LabelDraft rows=new_labels members=ws_members />
                             </form>
                         }.into_any()
@@ -1586,14 +1682,14 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 let n = batch_selected.get().len();
                                 (n > 0).then(|| view! {
                                     <div class="batchbar">
-                                        <span class="mut">{format!("已选 {n} 项")}</span>
-                                        <button class="btn pri sm" on:click=open_batch>"批量设置标签"</button>
+                                        <span class="mut">{i18n.tf("entry.selected_n", &[("n", &n.to_string())])}</span>
+                                        <button class="btn pri sm" on:click=open_batch>{i18n.t("entry.batch_set_labels")}</button>
                                         <button class="btn sm" disabled=move || batch_busy.get() || ai_busy.get()
-                                            on:click=open_ai>"AI 总结"</button>
+                                            on:click=open_ai>{i18n.t("entry.ai_summary")}</button>
                                         <button class="btn sm" disabled=move || batch_busy.get()
-                                            on:click=archive_selected>"归档"</button>
+                                            on:click=archive_selected>{i18n.t("entry.archive")}</button>
                                         <button class="btn sm" on:click=move |_| batch_selected.set(Vec::new())>
-                                            "清除选择"
+                                            {i18n.t("entry.clear_selection")}
                                         </button>
                                     </div>
                                 })
@@ -1672,6 +1768,11 @@ pub fn WorkspaceMain() -> impl IntoView {
                                             });
                                             persist_sort(v);
                                         })
+                                        on_label_changed=Callback::new(move |_: ()| {
+                                            // 表格内联编辑写值后：让条目列表重新拉一次，立即拿到落库后的真实值。
+                                            // 也让 EntryPanel（依赖同一份刷新节拍）同步刷新其 labels 缓存。
+                                            refresh.update(|n| *n += 1);
+                                        })
                                     />
                                 }
                                 .into_any()
@@ -1693,7 +1794,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                         let pages = ((total_signal.get() + page_size - 1) / page_size).max(1);
                                         page_signal.update(|p| *p = (*p + 1).min(pages));
                                     }>"›"</button>
-                                    <span class="mut">{move || format!("共 {} 条", total_signal.get())}</span>
+                                    <span class="mut">{move || i18n.tf("entry.total_n", &[("n", &total_signal.get().to_string())])}</span>
                                 </div>
                             })}
                         </div>
@@ -1705,16 +1806,14 @@ pub fn WorkspaceMain() -> impl IntoView {
             {move || show_batch.get().then(|| view! {
                 <div class="dmodal" on:click=move |_| show_batch.set(false)>
                     <div class="panel dmbox" style="max-width:560px" on:click=|ev| ev.stop_propagation()>
-                        <h3>"批量设置标签"</h3>
-                        <p class="mut">{move || format!(
-                            "写入选中的 {} 个条目；留空的标签不会改动。", batch_selected.get().len()
-                        )}</p>
+                        <h3>{i18n.t("entry.batch_set_labels")}</h3>
+                        <p class="mut">{move || i18n.tf("entry.batch_hint", &[("n", &batch_selected.get().len().to_string())])}</p>
                         <LabelDraft rows=batch_labels members=ws_members />
                         {move || batch_error.get().map(|e| view! { <p class="error">{e}</p> })}
                         <div style="display:flex;gap:8px;justify-content:flex-end">
-                            <button class="btn" on:click=move |_| show_batch.set(false)>"取消"</button>
+                            <button class="btn" on:click=move |_| show_batch.set(false)>{i18n.t("common.cancel")}</button>
                             <button class="btn pri" disabled=move || batch_busy.get() on:click=apply_batch>
-                                "应用"
+                                {i18n.t("entry.batch_apply")}
                             </button>
                         </div>
                     </div>
@@ -1724,13 +1823,10 @@ pub fn WorkspaceMain() -> impl IntoView {
             {move || show_ai.get().then(|| view! {
                 <div class="dmodal" on:click=move |_| show_ai.set(false)>
                     <div class="panel dmbox" style="max-width:520px" on:click=|ev| ev.stop_propagation()>
-                        <h3>"AI 总结"</h3>
-                        <p class="mut">{move || format!(
-                            "把选中的 {} 个条目交给模型，生成一条新条目并全屏打开。",
-                            batch_selected.get().len()
-                        )}</p>
+                        <h3>{i18n.t("entry.ai_summary")}</h3>
+                        <p class="mut">{move || i18n.tf("entry.ai_summary_hint", &[("n", &batch_selected.get().len().to_string())])}</p>
                         {move || if ai_loading.get() {
-                            view! { <p class="mut">"正在读取场景与语气…"</p> }.into_any()
+                            view! { <p class="mut">{i18n.t("settings.ai.loading")}</p> }.into_any()
                         } else {
                             let scenarios = ai_scenarios.get();
                             let tones = ai_tones.get();
@@ -1738,13 +1834,13 @@ pub fn WorkspaceMain() -> impl IntoView {
                             view! {
                                 <div class="stack">
                                     {none_configured.then(|| view! {
-                                        <p class="mut">"尚未配置场景与语气；不指定也可以直接生成，配置入口在工作空间设置页。"</p>
+                                        <p class="mut">{i18n.t("ai.none_configured")}</p>
                                     })}
                                     <label class="fld">
-                                        <span>"场景"</span>
+                                        <span>{i18n.t("entry.scenario")}</span>
                                         <select class="inp" prop:value=move || ai_scenario.get()
                                             on:change=move |ev| ai_scenario.set(event_target_value(&ev))>
-                                            <option value="">"（不指定）"</option>
+                                            <option value="">{i18n.t("common.not_specified")}</option>
                                             {scenarios.into_iter().map(|p| {
                                                 let v = p.name.clone();
                                                 view! { <option value=v>{p.name}</option> }
@@ -1752,10 +1848,10 @@ pub fn WorkspaceMain() -> impl IntoView {
                                         </select>
                                     </label>
                                     <label class="fld">
-                                        <span>"语气"</span>
+                                        <span>{i18n.t("entry.tone")}</span>
                                         <select class="inp" prop:value=move || ai_tone.get()
                                             on:change=move |ev| ai_tone.set(event_target_value(&ev))>
-                                            <option value="">"（不指定）"</option>
+                                            <option value="">{i18n.t("common.not_specified")}</option>
                                             {tones.into_iter().map(|p| {
                                                 let v = p.name.clone();
                                                 view! { <option value=v>{p.name}</option> }
@@ -1767,10 +1863,10 @@ pub fn WorkspaceMain() -> impl IntoView {
                         }}
                         {move || ai_error.get().map(|e| view! { <p class="error">{e}</p> })}
                         <div style="display:flex;gap:8px;justify-content:flex-end">
-                            <button class="btn" on:click=move |_| show_ai.set(false)>"取消"</button>
+                            <button class="btn" on:click=move |_| show_ai.set(false)>{i18n.t("common.cancel")}</button>
                             <button class="btn pri" disabled=move || ai_busy.get() || ai_loading.get()
                                 on:click=apply_ai>
-                                {move || if ai_busy.get() { "生成中…" } else { "生成" }}
+                                {move || if ai_busy.get() { i18n.t("entry.ai_busy") } else { i18n.t("entry.ai_generate") }}
                             </button>
                         </div>
                     </div>
@@ -1780,14 +1876,14 @@ pub fn WorkspaceMain() -> impl IntoView {
             {move || archived_open.get().then(|| view! {
                 <div class="dmodal" on:click=move |_| archived_open.set(false)>
                     <div class="panel dmbox" style="width:720px;max-width:92vw" on:click=|ev| ev.stop_propagation()>
-                        <h3>"已归档条目"</h3>
-                        <p class="mut">"归档的条目不出现在视图与全文检索里，数据与标签都保留；可随时取消归档。"</p>
+                        <h3>{i18n.t("entry.archived_title")}</h3>
+                        <p class="mut">{i18n.t("entry.archived_hint")}</p>
                         {move || archived_error.get().map(|e| view! { <p class="error">{e}</p> })}
                         <div class="archlist">
                             {move || if archived_busy.get() {
-                                view! { <p class="mut">"加载中…"</p> }.into_any()
+                                view! { <p class="mut">{i18n.t("common.loading")}</p> }.into_any()
                             } else if archived_list.get().is_empty() {
-                                view! { <p class="mut">"暂无已归档条目。"</p> }.into_any()
+                                view! { <p class="mut">{i18n.t("entry.archived_empty")}</p> }.into_any()
                             } else {
                                 archived_list.get().into_iter().map(|e| {
                                     let c = e.code.clone();
@@ -1799,7 +1895,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                                 {e.archived_at.as_deref().map(short_time).unwrap_or_default()}
                                             </span>
                                             <button class="btn sm" on:click=move |_| restore_archived(c.clone())>
-                                                "取消归档"
+                                                {i18n.t("entry.unarchive")}
                                             </button>
                                         </div>
                                     }
@@ -1807,7 +1903,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                             }}
                         </div>
                         <div style="display:flex;justify-content:flex-end">
-                            <button class="btn" on:click=move |_| archived_open.set(false)>"关闭"</button>
+                            <button class="btn" on:click=move |_| archived_open.set(false)>{i18n.t("common.close")}</button>
                         </div>
                     </div>
                 </div>
@@ -1817,46 +1913,34 @@ pub fn WorkspaceMain() -> impl IntoView {
                 view! {
                     <div class="dmodal" on:click=move |_| expr_help.set(false)>
                         <div class="panel dmbox" style="max-width:560px" on:click=|ev| ev.stop_propagation()>
-                            <h3>"标签表达式语法"</h3>
+                            <h3>{i18n.t("entry.expr_help_title")}</h3>
                             <div class="exprdoc">
-                                <p>"用标签是否存在、或标签的值来筛选条目。多个条件用 "
-                                    <code>"AND"</code>" / "<code>"OR"</code>" 连接，"
-                                    <code>"NOT"</code>" 取反，括号可改变优先级。"</p>
+                                <p>{i18n.t("entry.expr_help_intro")}</p>
                                 <table class="tbl">
-                                    <thead><tr><th style="width:42%">"写法"</th><th>"含义"</th></tr></thead>
+                                    <thead><tr><th style="width:42%">{i18n.t("entry.expr_help_col_syntax")}</th><th>{i18n.t("entry.expr_help_col_meaning")}</th></tr></thead>
                                     <tbody>
-                                        <tr><td><code>"Task"</code></td><td>"打了「任务」标签"</td></tr>
-                                        <tr><td><code>"!Task"</code></td><td>"没有打「任务」标签"</td></tr>
-                                        <tr><td><code>"Bug AND !Task"</code></td><td>"打了 Bug 标签，没打 Task 标签"</td></tr>
-                                        <tr><td><code>"Status = \"Open\""</code></td><td>"Status 等于 Open"</td></tr>
-                                        <tr><td><code>"Status != \"Done\""</code></td><td>"Status 不等于 Done"</td></tr>
-                                        <tr><td><code>"Status IN (\"Open\", \"Done\")"</code></td><td>"Status 是其中之一"</td></tr>
-                                        <tr><td><code>"Priority >= 2"</code></td><td>"数值标签大于等于 2"</td></tr>
-                                        <tr><td><code>"Summary ~ \"登录\""</code></td><td>"文本标签包含「登录」"</td></tr>
-                                        <tr><td><code>"L5"</code></td><td>"直接打了 L5 标签"</td></tr>
-                                        <tr><td><code>"L4+"</code></td><td>"打了 L4，或通过继承 / 覆盖关系拥有 L4"</td></tr>
-                                        <tr><td><code>"!L4+"</code></td><td>"既没直接打 L4，也没有继承来 L4"</td></tr>
-                                        <tr><td><code>"L4+ = \"V1\""</code></td><td>"已拥有的 L4 值等于 V1（含继承来的）"</td></tr>
+                                        <tr><td><code>"Task"</code></td><td>{i18n.t("entry.expr_help_row_task")}</td></tr>
+                                        <tr><td><code>"!Task"</code></td><td>{i18n.t("entry.expr_help_row_not_task")}</td></tr>
+                                        <tr><td><code>"Bug AND !Task"</code></td><td>{i18n.t("entry.expr_help_row_and")}</td></tr>
+                                        <tr><td><code>"Status = \"Open\""</code></td><td>{i18n.t("entry.expr_help_row_eq")}</td></tr>
+                                        <tr><td><code>"Status != \"Done\""</code></td><td>{i18n.t("entry.expr_help_row_neq")}</td></tr>
+                                        <tr><td><code>"Status IN (\"Open\", \"Done\")"</code></td><td>{i18n.t("entry.expr_help_row_in")}</td></tr>
+                                        <tr><td><code>"Priority >= 2"</code></td><td>{i18n.t("entry.expr_help_row_ge")}</td></tr>
+                                        <tr><td><code>"Summary ~ \"登录\""</code></td><td>{i18n.t("entry.expr_help_row_contains")}</td></tr>
+                                        <tr><td><code>"L5"</code></td><td>{i18n.t("entry.expr_help_row_direct")}</td></tr>
+                                        <tr><td><code>"L4+"</code></td><td>{i18n.t("entry.expr_help_row_lplus_eq")}</td></tr>
+                                        <tr><td><code>"!L4+"</code></td><td>{i18n.t("entry.expr_help_row_lplus_ne")}</td></tr>
+                                        <tr><td><code>"L4+ = \"V1\""</code></td><td>{i18n.t("entry.expr_help_row_lplus_eq")}</td></tr>
                                     </tbody>
                                 </table>
-                                <p class="mut">"标签后面加 "<code>"+"</code>" 表示把继承 / 覆盖关系一并算进来："
-                                    "在「设置 · 标签定义」里给某个标签声明关系后，它能把别的标签带进来"
-                                    "（继承），或者被别的标签带出去（覆盖）。不加 "<code>"+"</code>" 时"
-                                    "只匹配直接打在该条目上的标签。"</p>
-                                <p class="mut">"只有 key 被继承（值没跟着传）的标签，能用于 "
-                                    <code>"L4+"</code>" / "<code>"!L4+"</code>" 这类存在性判断，"
-                                    "不参与等值或大小比较。"</p>
-                                <p class="mut">"内置元数据："<code>"Code"</code>" / "<code>"Title"</code>" / "
-                                    <code>"Detail"</code>" / "<code>"CreatedBy"</code>" / "
-                                    <code>"CreatedAt"</code>" / "<code>"UpdatedBy"</code>" / "
-                                    <code>"UpdatedAt"</code>"（这些名字不可用作自定义标签名）。"</p>
-                                <p class="mut">"提示：在输入框里输入 "<code>"/"</code>" 可从内置元数据与本视图已有标签中选择；"
-                                    "回车应用表达式，Escape 关闭提示。时间型标签（含 "<code>"CreatedAt"</code>" / "
-                                    <code>"UpdatedAt"</code>"）后接比较运算符和一个空格（键与运算符之间可有空格），"
-                                    "会浮出日期 / 时间选择器。"</p>
+                                <p class="mut">{i18n.t("entry.expr_help_inherit_intro")}
+                                    {i18n.t("entry.expr_help_inherit_body")}</p>
+                                <p class="mut">{i18n.t("entry.expr_help_keyonly_intro")}</p>
+                                <p class="mut">{i18n.t("entry.expr_help_meta_intro")}</p>
+                                <p class="mut">{i18n.t("entry.expr_help_tip")}</p>
                             </div>
                             <div style="display:flex;justify-content:flex-end">
-                                <button class="btn pri" on:click=move |_| expr_help.set(false)>"知道了"</button>
+                                <button class="btn pri" on:click=move |_| expr_help.set(false)>{i18n.t("common.got_it")}</button>
                             </div>
                         </div>
                     </div>
@@ -1868,8 +1952,8 @@ pub fn WorkspaceMain() -> impl IntoView {
                 view! {
                     <div class="dmodal">
                         <div class="panel dmbox">
-                            <h3>{move || if view_dialog_saveas.get() { "另存为新视图" } else { "新建视图" }}</h3>
-                            <input class="inp" placeholder="视图名称（用 / 分层，如 团队/迭代）" prop:value=view_name_input
+                            <h3>{move || if view_dialog_saveas.get() { i18n.t("entry.saveas_view_title") } else { i18n.t("entry.new_view_title") }}</h3>
+                            <input class="inp" placeholder=i18n.t("entry.view_name_ph") prop:value=view_name_input
                                 on:input=move |ev| view_name_input.set(event_target_value(&ev)) />
                             // 输入「/」时弹出已有的非叶子节点提示——避免新视图游离到不存在的层级下。
                             {move || {
@@ -1895,7 +1979,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 } else {
                                     view! {
                                         <div class="lblhint" style="margin-top:4px">
-                                            <div class="mut" style="font-size:11px;padding:2px 4px">"已有非叶子节点："</div>
+                                            <div class="mut" style="font-size:11px;padding:2px 4px">{i18n.t("entry.view_has_non_leaf")}</div>
                                             {groups.iter().map(|g| {
                                                 let g_for_label = g.clone();
                                                 let g_for_click = g.clone();
@@ -1926,28 +2010,28 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 view! {
                                     <p class="mut" style="margin:0;font-size:12px">
                                         {if e.trim().is_empty() {
-                                            "条件：全部内容".to_string()
+                                            i18n.t("entry.condition_all").to_string()
                                         } else {
-                                            format!("条件：{e}")
+                                            i18n.tf("entry.condition_e", &[("expr", &e)])
                                         }}
                                     </p>
                                 }
                             })}
                             <div class="dfield">
-                                <span class="dlabel">"展示为列的标签"</span>
+                                <span class="dlabel">{i18n.t("entry.display_columns")}</span>
                                 <ColumnPicker schemas=schemas selected=view_columns_input />
                             </div>
                             <label style="display:flex;gap:6px;align-items:center">
                                 <input type="checkbox" prop:checked=view_shared_input
                                     on:change=move |ev| view_shared_input.set(event_target_checked(&ev)) />
-                                "共享给工作空间"
+                                {i18n.t("entry.share_with_workspace")}
                             </label>
                             {move || dialog_error.get().map(|e| view! { <p class="error" style="margin:0">{e}</p> })}
                             <div style="display:flex;gap:8px;justify-content:flex-end">
-                                <button class="btn" on:click=move |_| show_view_dialog.set(false)>"取消"</button>
+                                <button class="btn" on:click=move |_| show_view_dialog.set(false)>{i18n.t("common.cancel")}</button>
                                 <button class="btn pri" on:click=move |_| {
                                     let Some(ws_id) = ws_id.clone() else {
-                                        dialog_error.set(Some("工作空间尚未加载完成".to_string()));
+                                        dialog_error.set(Some(i18n.t("entry.errors.workspace_not_loaded")));
                                         return;
                                     };
                                     let name = view_name_input.get();
@@ -1966,7 +2050,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                             Err(e) => dialog_error.set(Some(e)),
                                         }
                                     });
-                                }>{move || if view_dialog_saveas.get() { "另存为" } else { "创建" }}</button>
+                                }>{move || if view_dialog_saveas.get() { i18n.t("entry.saveas_view") } else { i18n.t("common.create") }}</button>
                             </div>
                         </div>
                     </div>
@@ -1977,46 +2061,46 @@ pub fn WorkspaceMain() -> impl IntoView {
                 view! {
                     <div class="dmodal">
                         <div class="panel dmbox">
-                            <h3>"视图配置"</h3>
+                            <h3>{i18n.t("entry.config_view")}</h3>
                             {move || (!active_view.get().is_some_and(|v| v.is_default)).then(|| view! {
                                 // 基础视图的名字是固定概念，不提供改名；服务端也会挡下。
-                                <input class="inp" placeholder="视图名称" prop:value=config_name_input
+                                <input class="inp" placeholder=i18n.t("entry.view_name_ph") prop:value=config_name_input
                                     on:input=move |ev| config_name_input.set(event_target_value(&ev)) />
                             })}
                             <div class="dfield">
-                                <span class="dlabel">"展示为列的标签"</span>
+                                <span class="dlabel">{i18n.t("entry.display_columns")}</span>
                                 <ColumnPicker schemas=schemas selected=config_columns_input />
                             </div>
                             <div class="dfield">
-                                <span class="dlabel">"时间轴视图"</span>
+                                <span class="dlabel">{i18n.t("entry.timeline_view")}</span>
                                 <select class="inp" prop:value=config_tl_start
                                     on:change=move |ev| config_tl_start.set(event_target_value(&ev))>
-                                    <option value="">"起始时间：不启用"</option>
+                                    <option value="">{i18n.t("entry.timeline_start_not_set")}</option>
                                     {move || label_options(schemas.get(), true)}
                                 </select>
                                 <select class="inp" prop:value=config_tl_end
                                     on:change=move |ev| config_tl_end.set(event_target_value(&ev))>
-                                    <option value="">"结束时间：不启用"</option>
+                                    <option value="">{i18n.t("entry.timeline_end_not_set")}</option>
                                     {move || label_options(schemas.get(), true)}
                                 </select>
                                 <select class="inp" prop:value=config_tl_person
                                     on:change=move |ev| config_tl_person.set(event_target_value(&ev))>
-                                    <option value="">"相关人：不展示"</option>
+                                    <option value="">{i18n.t("entry.timeline_person_not_set")}</option>
                                     {move || label_options(schemas.get(), false)}
                                 </select>
                                 <p class="mut" style="font-size:11px;margin:2px 0 0">
-                                    "起止必须是同一类时间标签（都含日期，或都是纯时刻）；留空即不启用时间轴。"
+                                    {i18n.t("entry.timeline_kind_mismatch")}
                                 </p>
                             </div>
                             <label style="display:flex;gap:6px;align-items:center">
                                 <input type="checkbox" prop:checked=config_shared_input
                                     on:change=move |ev| config_shared_input.set(event_target_checked(&ev)) />
-                                "共享给工作空间"
+                                {i18n.t("entry.share_with_workspace")}
                             </label>
                             <div class="tc-rules">
                                 <div class="tc-head">
-                                    <span>"标题颜色规则"</span>
-                                    <button class="btn sm" type="button" on:click=add_rule>"＋ 规则"</button>
+                                    <span>{i18n.t("entry.title_color_rules")}</span>
+                                    <button class="btn sm" type="button" on:click=add_rule>{i18n.t("entry.add_rule")}</button>
                                 </div>
                                 <For
                                     each=move || config_rules.get()
@@ -2042,7 +2126,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                             <div class="tc-row">
                                                 <div class="exprwrap" style="flex:1;min-width:0">
                                                     <input class="inp tc-expr" type="text"
-                                                        placeholder=r#"条件表达式，如：Task = "Open" AND Score >= 60"#
+                                                        placeholder=i18n.t("entry.condition_placeholder")
                                                         prop:value=move || exc.get()
                                                         on:input=move |ev| {
                                                             let v = event_target_value(&ev);
@@ -2058,9 +2142,8 @@ pub fn WorkspaceMain() -> impl IntoView {
                                                         };
                                                         let frag = frag.to_lowercase();
                                                         let schemas_now = schemas.get();
-                                                        let mut items: Vec<(String, String)> = BUILTIN_FIELDS
-                                                            .iter()
-                                                            .map(|(k, t)| (k.to_string(), t.to_string()))
+                                                        let mut items: Vec<(String, String)> = builtin_fields(&i18n)
+                                                            .into_iter()
                                                             .collect();
                                                         for s in &schemas_now {
                                                             if !items.iter().any(|(n, _)| n.eq_ignore_ascii_case(&s.name)) {
@@ -2091,26 +2174,26 @@ pub fn WorkspaceMain() -> impl IntoView {
                                                         }.into_any()
                                                     }}
                                                 </div>
-                                                <ColorPick small=true title="标题颜色".to_string()
+                                                <ColorPick small=true title=i18n.t("entry.title_color").to_string()
                                                     value=Signal::derive(move || col.get())
                                                     ws_id=ws_id
                                                     on_pick=Callback::new(move |c: String| col.set(c)) />
-                                                <button class="vc-op vc-del" type="button" title="删除"
+                                                <button class="vc-op vc-del" type="button" title=i18n.t("common.delete")
                                                     on:click=move |_| config_rules.update(|rows| rows.retain(|x| x.id != rid))>"×"</button>
                                             </div>
                                         }
                                     }
                                 />
                                 <p class="mut" style="font-size:11px;margin:2px 0 0">
-                                    "按顺序匹配，首个命中即上色；条件支持 AND / OR / NOT 组合标签。留空的行保存时忽略。"
+                                    {i18n.t("entry.title_color_match_hint")}
                                 </p>
                             </div>
                             {move || dialog_error.get().map(|e| view! { <p class="error" style="margin:0">{e}</p> })}
                             <div style="display:flex;gap:8px;justify-content:flex-end">
-                                <button class="btn" on:click=move |_| show_config_dialog.set(false)>"取消"</button>
+                                <button class="btn" on:click=move |_| show_config_dialog.set(false)>{i18n.t("common.cancel")}</button>
                                 <button class="btn pri" disabled=move || rules_loading.get() on:click=move |_| {
                                     let Some(v) = active_view.get() else {
-                                        dialog_error.set(Some("请先选择或新建一个视图".to_string()));
+                                        dialog_error.set(Some(i18n.t("entry.select_view_first")));
                                         return;
                                     };
                                     dialog_error.set(None);
@@ -2138,13 +2221,13 @@ pub fn WorkspaceMain() -> impl IntoView {
                                             let ast = if !expr.trim().is_empty() && expr != cached_expr {
                                                 // 条件被编辑过：让服务端解析成 AST；失败则整体不保存。
                                                 let Some(ws_id) = ws_id.as_deref() else {
-                                                    dialog_error.set(Some("缺少工作空间，无法解析条件".to_string()));
+                                                    dialog_error.set(Some(i18n.t("entry.no_workspace_for_query")));
                                                     return;
                                                 };
                                                 match parse_view_query(ws_id, &expr).await {
                                                     Ok(a) => a,
                                                     Err(e) => {
-                                                        dialog_error.set(Some(format!("标题颜色规则条件无效：{e}")));
+                                                        dialog_error.set(Some(i18n.tf("entry.invalid_title_color_rule", &[("err", &e.to_string())])));
                                                         return;
                                                     }
                                                 }
@@ -2169,7 +2252,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                                 match set_view_timeline(&saved.id, &tl_start, &tl_end, &tl_person).await {
                                                     Ok(tl) => saved.timeline = tl,
                                                     Err(e) => {
-                                                        dialog_error.set(Some(format!("时间轴配置未保存：{e}")));
+                                                        dialog_error.set(Some(i18n.tf("entry.timeline_save_failed", &[("err", &e.to_string())])));
                                                         return;
                                                     }
                                                 }
@@ -2184,7 +2267,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                             Err(e) => dialog_error.set(Some(e)),
                                         }
                                     });
-                                }>"保存"</button>
+                                }>{i18n.t("common.save")}</button>
                             </div>
                         </div>
                     </div>
@@ -2205,7 +2288,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                             vmenu.set(None);
                             // 复用现有 show_config_dialog 打开逻辑。
                             open_config_for.run(vid_cfg.clone());
-                        }>"配置视图"</button>
+                        }>{i18n.t("entry.config_view")}</button>
                         // 删除只对非基础视图开放——基础视图固定存在、不可删。
                         {move || if is_default {
                             ().into_any()
@@ -2216,7 +2299,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                     on:click=move |_| {
                                         vmenu.set(None);
                                         delete_view_cb.run(vid_del_btn.clone());
-                                    }>"删除视图"</button>
+                                    }>{i18n.t("entry.delete_view")}</button>
                             }.into_any()
                         }}
                     </div>
@@ -2240,6 +2323,7 @@ fn WorkspaceSidebar(
     /// 坐标写入 `vmenu` 让浮层定位。
     on_context: Callback<(String, i32, i32)>,
 ) -> impl IntoView {
+    let i18n: I18nController = use_i18n();
     let list = move || views.get();
     // 基础视图单独置顶展示，不混进「我的 / 共享」两组。
     let default_view = move || list().into_iter().find(|v| v.is_default);
@@ -2359,7 +2443,7 @@ fn WorkspaceSidebar(
         <aside class=move || if collapsed.get() { "panel wside collapsed" } else { "panel wside" }>
             <div class="sb-head">
                 <b class="lbl">{move || name.get()}</b>
-                <button class="ibtn sb-toggle" title="收起/展开侧栏" on:click=move |_| {
+                <button class="ibtn sb-toggle" title=i18n.t("entry.collapse_sidebar") on:click=move |_| {
                     let v = !collapsed.get_untracked();
                     collapsed.set(v);
                     set_sidebar_collapsed(v);
@@ -2367,7 +2451,6 @@ fn WorkspaceSidebar(
             </div>
             {move || default_view().map(|v| {
                 let id = v.id.clone();
-                let name = v.name.clone();
                 let count = v.entry_count;
                 let is_active = {
                     let id = id.clone();
@@ -2375,34 +2458,51 @@ fn WorkspaceSidebar(
                 };
                 let click_id = id.clone();
                 let ctx_id = id.clone();
+                // 基础视图的名字在服务端是固定字符串（见 service/view.rs：「基础视图
+                // 不可改名」），但要在前端按当前 locale 渲染——这里走 i18n。
+                let label = move || i18n.t("sidebar.base_view");
+                let tooltip = move || i18n.t("sidebar.base_view_tooltip");
                 view! {
                     <div class=move || {
                              let mut c = String::from("it base");
                              if is_active() { c.push_str(" on"); }
                              c
                          }
-                         title=name
+                         title=tooltip
                          on:click=move |_| on_select.run(click_id.clone())
                          on:contextmenu=move |ev: leptos::ev::MouseEvent| {
                              ev.prevent_default();
                              on_context.run((ctx_id.clone(), ev.client_x(), ev.client_y()));
                          }>
                         {ic_tag()}
-                        <span class="lbl" style="flex:1">{name.clone()}</span>
+                        <span class="lbl" style="flex:1">{label}</span>
                         <span class="n">{count}</span>
                     </div>
                 }.into_any()
             })}
-            <div class="grp">"我的视图"</div>
+            <div class="grp">{move || i18n.t("entry.my_views")}</div>
             {move || build_tree(mine()).into_iter().map(|n| row(n, false)).collect::<Vec<_>>()}
-            <div class="grp">"共享视图"</div>
+            <div class="grp">{move || i18n.t("entry.shared_views")}</div>
             {move || build_tree(shared()).into_iter().map(|n| row(n, true)).collect::<Vec<_>>()}
             <div style="border-top:1px solid var(--line);margin-top:8px;padding-top:8px">
-                <div class="it" title="已归档条目" on:click=move |_| on_archived.run(())>
-                    {ic_folder()}<span class="lbl">"已归档"</span>
+                <div class="it" title=move || i18n.t("entry.archived_title") on:click=move |_| on_archived.run(())>
+                    {ic_folder()}<span class="lbl">{move || i18n.t("entry.archived")}</span>
                 </div>
-                <A href=format!("/{slug}/settings")>
-                    <div class="it" title="工作空间设置">{ic_setting()}<span class="lbl">"工作空间设置"</span></div>
+                // 设置链接带上当前视图 id：从设置页返回时能精准落到原视图，
+                // 而不是默认视图。基础视图不必写，纯 URL 已能表达。
+                <A href=move || {
+                    let url = format!("/{slug}/settings");
+                    let aid = active.get();
+                    if aid.as_deref().map_or(false, |id| {
+                        !id.is_empty()
+                            && list().iter().any(|v| v.id == *id && !v.is_default)
+                    }) {
+                        format!("{url}?view={}", aid.unwrap())
+                    } else {
+                        url
+                    }
+                }>
+                    <div class="it" title=move || i18n.t("entry.workspace_settings")>{ic_setting()}<span class="lbl">{move || i18n.t("entry.workspace_settings")}</span></div>
                 </A>
             </div>
         </aside>
@@ -2429,8 +2529,47 @@ fn EntryTable(
     members: RwSignal<Vec<Member>>,
     /// 表头点击。`additive` 来自 `Shift` 键。
     on_sort: Callback<SortRequest>,
+    /// 表格内联标签编辑成功后通知：让外层重新拉一次条目表，让新值立刻反映在表格。
+    on_label_changed: Callback<()>,
 ) -> impl IntoView {
+    let i18n: I18nController = use_i18n();
     let cols = move || columns.get();
+    // 当前正在内联编辑的单元格 `(entry_code, label_name)`。None = 全部回到展示态。
+    // 同时只允许一个单元格进编辑态——多个编辑态互相打架（焦点 / 落库顺序），没好处。
+    // 表头点击触发的排序、或翻页，会让响应式 effect 自动把"还在编辑但已经不在视图里"的
+    // 旧 (code, name) 视为已退回——见 cell 闭包内的 `Some((c, n))` 比对。
+    let editing_cell: RwSignal<Option<(String, String)>> = RwSignal::new(None);
+    // 表格内联编辑的「点别处退出」监听：左键落在编辑态单元格外就退出。
+    // 与「右键进入编辑态」共用同一条 editing_cell，但分别监听 mousedown（左）
+    // 与 contextmenu（右）。仅挂在 wasm 目标下——SSR 编译时闭包不生成。
+    // 用 composed_path 走完整冒泡路径，避免 Chrome 在 `<button>text</button>`
+    // 上偶发把 target 设成 Text 节点（旧实现靠 closest 会误判）。composed_path
+    // 命中 `.lblcell.editing` 就算「在编辑态里」，连同输入框 / 下拉 / 按钮一起
+    // 都不退出；命中其他区域就清掉 editing_cell，toggle_edit 那条右键入口不受
+    // 影响——它的 handler 走的是 contextmenu，按钮 (button=0) 不在这一支上。
+    #[cfg(target_arch = "wasm32")]
+    {
+        let exit_handle = window_event_listener(leptos::ev::mousedown, move |ev| {
+            if editing_cell.get_untracked().is_none() {
+                return;
+            }
+            if ev.button() != 0 {
+                // 只对左键反应：中 / 右键进入下一阶段（contextmenu），交给 toggle_edit 自己处理。
+                return;
+            }
+            let in_edit = ev.composed_path().iter().any(|node| {
+                node.dyn_ref::<leptos::web_sys::Element>()
+                    .is_some_and(|el| {
+                        el.class_list().contains("lblcell")
+                            && el.class_list().contains("editing")
+                    })
+            });
+            if !in_edit {
+                editing_cell.set(None);
+            }
+        });
+        on_cleanup(move || exit_handle.remove());
+    }
     // 可排序表头：内置三列恒可排；标签列只在其属于本视图 `columns` 时可排——
     // 列不展示的标签排序，用户看不见结果。
     let sortable_th = move |field: String, label: String| {
@@ -2486,13 +2625,25 @@ fn EntryTable(
     });
 
     view! {
-        <div class="tbl-scroll">
+        <div class="tbl-scroll"
+            on:wheel=move |ev| {
+                // Shift + 滚轮 → 横向滚动：命中时 prevent_default 并把 delta_y
+                // 转到 scrollLeft；没按 Shift 不干预，浏览器按默认竖直走，行为与
+                // 无 modifier 一致，竖向滚动条不受影响。cast 进 HtmlElement 的 JsCast
+                // impl 仅 wasm 目标存在，整个 helper 也按 wasm32 cfg 切。
+                if ev.shift_key() && ev.delta_y() != 0.0 {
+                    ev.prevent_default();
+                    #[cfg(target_arch = "wasm32")]
+                    crate::frontend::wheel::shift_wheel_horizontal(&ev);
+                }
+            }
+        >
         <table class="tbl">
             <thead>
                 <tr>
                     <th class="pick">
                         <input type="checkbox"
-                            title="全选当前列表"
+                            title=i18n.t("entry.select_all")
                             prop:checked=move || {
                                 let codes = visible_codes();
                                 !codes.is_empty()
@@ -2515,28 +2666,32 @@ fn EntryTable(
                             }
                         />
                     </th>
-                    {sortable_th("title".to_string(), "标题".to_string())}
+                    {sortable_th("title".to_string(), i18n.t("entry.col_title"))}
                     {move || cols().iter().map(|name| {
-                        let title = schemas.get().into_iter()
-                            .find(|s| &s.name == name)
-                            .map(|s| s.title)
-                            .unwrap_or_else(|| name.clone());
-                        sortable_th(name.clone(), title)
+                        if name.as_str() == COLUMN_CREATED_BY {
+                            // 创建人作为内置列：表头一直可排序，单元格只在视图显式勾选时出现。
+                            sortable_th("createdBy".to_string(), i18n.t("entry.col_created_by"))
+                        } else {
+                            let title = schemas.get().into_iter()
+                                .find(|s| &s.name == name)
+                                .map(|s| s.title)
+                                .unwrap_or_else(|| name.clone());
+                            sortable_th(name.clone(), title)
+                        }
                     }).collect::<Vec<_>>()}
-                    {sortable_th("createdBy".to_string(), "创建人".to_string())}
-                    {sortable_th("updatedAt".to_string(), "更新时间".to_string())}
+                    {sortable_th("updatedAt".to_string(), i18n.t("entry.col_updated_at"))}
                 </tr>
             </thead>
             <tbody>
                 {move || match data.get() {
                     None => view! {
-                        <tr><td colspan="20" class="empty">"加载中…"</td></tr>
+                        <tr><td colspan="20" class="empty">{i18n.t("common.loading")}</td></tr>
                     }.into_any(),
                     Some(Err(e)) => view! {
                         <tr><td colspan="20" class="empty error">{e.clone()}</td></tr>
                     }.into_any(),
                     Some(Ok((_ws, items, _))) if items.is_empty() => view! {
-                        <tr><td colspan="20" class="empty">"暂无条目，点击「新建 Entry」创建"</td></tr>
+                        <tr><td colspan="20" class="empty">{i18n.t("entry.empty_hint")}</td></tr>
                     }.into_any(),
                     Some(Ok((_ws, items, _))) => {
                         let sc = schemas.get();
@@ -2555,46 +2710,42 @@ fn EntryTable(
                             let labels = e.labels.clone();
                             // 继承 / 覆盖推导：只影响展示（虚线 + 来源说明），不改数据。
                             let derived = query_eval::derive_inherited(&sc, &e.labels);
-                            let names = cols();
                             // 标题着色：整行 Entry 克隆进响应式闭包，规则变化即刻重算。
                             let entry_for_color = e.clone();
                             // 时间型标签的比较需要 schema（布局），随规则闭包一起克隆。
                             let schemas_for_color = sc.clone();
                             let title_text = e.title.clone();
+                            let names = cols();
+                            // 创建人列按视图配置开关：仅当 sentinel 在 `columns` 里时才计算与渲染，
+                            // 默认视图不带它——spec 要求「默认不展示创建人」。
+                            let show_creator = names.iter().any(|n| n.as_str() == COLUMN_CREATED_BY);
                             // 创建人展示：优先服务端回填的账号，其次在工作空间成员表里找名字，
                             // 账号已删除或已退出工作空间时退回 id，好过显示成空。
-                            let creator = e
-                                .created_by_account
-                                .as_ref()
-                                .map(|a| a.name.clone())
-                                .or_else(|| {
-                                    members
-                                        .iter()
-                                        .find(|m| m.account_id == e.created_by)
-                                        .map(member_label)
-                                })
-                                .unwrap_or_else(|| "—".to_string());
+                            let creator = if show_creator {
+                                e.created_by_account
+                                    .as_ref()
+                                    .map(|a| a.name.clone())
+                                    .or_else(|| {
+                                        members
+                                            .iter()
+                                            .find(|m| m.account_id == e.created_by)
+                                            .map(member_label)
+                                    })
+                                    .unwrap_or_else(|| "—".to_string())
+                            } else {
+                                String::new()
+                            };
                             view! {
                                 <tr
                                     class=move || if selected.get() == code_for_class { "sel".to_string() } else { String::new() }
-                                    on:click=move |ev| {
-                                        // 双击的第二次 click（detail==2）交给 dblclick 处理，
-                                        // 避免单击开合逻辑与双击互斥冲突。
-                                        if ev.detail() > 1 { return; }
-                                        if selected.get_untracked() == code_for_click {
-                                            selected.set(String::new());
-                                        } else {
-                                            selected.set(code_for_click.clone());
-                                        }
-                                    }
-                                    on:dblclick=move |_| {
-                                        on_open.run(code_for_dbl.clone());
-                                    }
                                 >
                                     <td class="pick">
-                                        <label class="pick-cell" title={format!("当前页第 {row_no} 行")}>
+                                        <label class="pick-cell" title=i18n.tf("entry.page_row_n", &[("n", &row_no.to_string())])>
                                             <input type="checkbox"
-                                                prop:checked=move || batch_selected.get().contains(&code_for_check)
+                                                prop:checked={
+                                            let c = code_for_check.clone();
+                                            move || batch_selected.get().contains(&c)
+                                        }
                                                 // 勾选不应触发「打开详情」（单击）或「全屏页」（双击）。
                                                 on:click=|ev| ev.stop_propagation()
                                                 on:dblclick=|ev| ev.stop_propagation()
@@ -2612,23 +2763,42 @@ fn EntryTable(
                                             <span class="row-no">{row_no.to_string()}</span>
                                         </label>
                                     </td>
-                                    <td style=move || match query_eval::title_color(
+                                    <td class="title-cell"
+                                    style=move || match query_eval::title_color(
                                         &title_colors.get(), &entry_for_color, &entry_for_color.labels,
                                         &schemas_for_color,
                                     ) {
                                         Some(c) => format!("color:{c}"),
                                         None => String::new(),
-                                    }>{title_text.clone()}{counts
+                                    }
+                                    on:click=move |ev: leptos::ev::MouseEvent| {
+                                        // 双击的第二次 click（detail==2）交给 dblclick 处理，
+                                        // 避免单击开合与双击互斥冲突。
+                                        if ev.detail() > 1 { return; }
+                                        if selected.get_untracked() == code_for_click {
+                                            selected.set(String::new());
+                                        } else {
+                                            selected.set(code_for_click.clone());
+                                        }
+                                    }
+                                    on:dblclick=move |_| {
+                                        on_open.run(code_for_dbl.clone());
+                                    }
+                                >{title_text.clone()}{counts
                                         .get()
                                         .get(&code_for_badge)
                                         .copied()
                                         .filter(|n| *n > 0)
                                         .map(|n| view! {
-                                            <span class="c-badge" title="评论条数">
+                                            <span class="c-badge" title=i18n.t("entry.comment_count")>
                                                 {ic_comment()}{n}
                                             </span>
                                         })}</td>
                                     {names.iter().map(|name| {
+                                        if name.as_str() == COLUMN_CREATED_BY {
+                                            // 内置列：创建人单元格固定一行一格，与下面 `<td>` 的 tbody 表格一致。
+                                            return view! { <td class="mut">{creator.clone()}</td> }.into_any();
+                                        }
                                         // 优先直接打标；没有再看继承 / 覆盖推导来的（`source` 非空即为推导所得）。
                                         let direct = labels.iter()
                                             .find(|l| &l.label_name == name)
@@ -2638,8 +2808,67 @@ fn EntryTable(
                                                 .find(|(n, _, _)| n == name)
                                                 .map(|(_, v, src)| (v.clone(), Some(src.clone())))
                                         });
+                                        let schema_for_edit = sc.iter().find(|sch| &sch.name == name).cloned();
+                                        // 编辑态：本格子的 (entry_code, label_name) 是当前唯一的编辑目标就切到编辑器。
+                                        // 内联编辑与「只有标题能选中行」的规则相容——chip 点击只走 on:click→editing_cell，
+                                        // 不触发任何与 selected 相关的逻辑，避免误开侧栏详情。
+                                        let editing_now = editing_cell.get().as_ref()
+                                            == Some(&(code_for_check.clone(), name.clone()));
+                                        // chip 进入编辑态的统一切换：右键切到本格；同一格再右键视为「退出」。
+                                        // `prevent_default` 屏蔽浏览器自带的右键菜单——这一下不是来要菜单的。
+                                        let name_for_click = name.clone();
+                                        let code_for_click_chip = code_for_check.clone();
+                                        let toggle_edit = move |ev: leptos::ev::MouseEvent| {
+                                            ev.prevent_default();
+                                            ev.stop_propagation();
+                                            let editing = editing_cell.get_untracked();
+                                            let me = (code_for_click_chip.clone(), name_for_click.clone());
+                                            if editing.as_ref() == Some(&me) {
+                                                editing_cell.set(None);
+                                            } else {
+                                                editing_cell.set(Some(me));
+                                            }
+                                        };
+                                        if editing_now {
+                                            // 编辑器接管单元格：tag 定义被删掉时编辑器也无法工作，给一个空态文本。
+                                            let cur_for_edit = lv.as_ref().map(|(v, _)| v.clone());
+                                            let name_for_edit = name.clone();
+                                            let code_for_edit = code_for_check.clone();
+                                            let ms_for_edit = members.clone();
+                                            let close_edit: Callback<()> = Callback::new(move |_: ()| {
+                                                editing_cell.set(None);
+                                                on_label_changed.run(());
+                                            });
+                                            return match schema_for_edit {
+                                                Some(s) => view! {
+                                                    <td class="lblcell editing">
+                                                        <LabelCellEditor
+                                                            code=code_for_edit
+                                                            name=name_for_edit
+                                                            schema=s
+                                                            current=cur_for_edit
+                                                            members=ms_for_edit
+                                                            on_done=close_edit />
+                                                    </td>
+                                                }.into_any(),
+                                                None => view! {
+                                                    <td class="lblcell editing">
+                                                        <div class="mut">"label removed"</div>
+                                                    </td>
+                                                }.into_any(),
+                                            };
+                                        }
                                         match lv {
-                                            None => view! { <td class="mut">"—"</td> }.into_any(),
+                                            None => {
+                                                // 未打标：在表格里呈现「—」，右键进入编辑态——补打标签的最常见入口。
+                                                let toggle = toggle_edit.clone();
+                                                view! {
+                                                    <td class="mut clickable"
+                                                        on:contextmenu=move |ev: leptos::ev::MouseEvent| toggle(ev)>
+                                                        "—"
+                                                    </td>
+                                                }.into_any()
+                                            }
                                             Some((v, source)) => {
                                                 // 多值（数组）逐元素走内置枚举的友好展示，再拼接；
                                                 // 否则 display_enum_value 只作用在整串上，内层 token 漏掉。
@@ -2726,7 +2955,7 @@ fn EntryTable(
                                                 // 推导得来的标签在表格里要能一眼看出来：虚线描边 + 悬停说明来源。
                                                 let hint = source
                                                     .as_ref()
-                                                    .map(|src| format!("由「{src}」继承而来，未直接打在本条上"));
+                                                    .map(|src| i18n.tf("label.derived_title", &[("src", &src)]));
                                                 let inh = source.is_some();
                                                 match color {
                                                     Some(c) => {
@@ -2734,8 +2963,11 @@ fn EntryTable(
                                                             "border-color:{c};background:color-mix(in srgb, {c} 15%, transparent);color:{c}"
                                                         );
                                                         let cls = if inh { "chip inh" } else { "chip" };
+                                                        let cursor_cls = format!("{cls} clickable");
+                                                        let toggle = toggle_edit.clone();
                                                         view! {
-                                                            <td><span class=cls style=style title=hint>
+                                                            <td><span class=cursor_cls style=style title=hint
+                                                                on:contextmenu=move |ev: leptos::ev::MouseEvent| toggle(ev)>
                                                                 {glyph_left.then(|| view! { <span class="chip-glyph">{glyph_char.clone().unwrap_or_default()}</span> })}
                                                                 {body.clone()}
                                                                 {glyph_right.then(|| view! { <span class="chip-glyph">{glyph_char.clone().unwrap_or_default()}</span> })}
@@ -2745,8 +2977,11 @@ fn EntryTable(
                                                     None if is_enum => {
                                                         let cls = label_chip_class(name, &s);
                                                         let cls = if inh { format!("chip {cls} inh") } else { format!("chip {cls}") };
+                                                        let cursor_cls = format!("{cls} clickable");
+                                                        let toggle = toggle_edit.clone();
                                                         view! {
-                                                            <td><span class=cls title=hint>
+                                                            <td><span class=cursor_cls title=hint
+                                                                on:contextmenu=move |ev: leptos::ev::MouseEvent| toggle(ev)>
                                                                 {glyph_left.then(|| view! { <span class="chip-glyph">{glyph_char.clone().unwrap_or_default()}</span> })}
                                                                 {body.clone()}
                                                                 {glyph_right.then(|| view! { <span class="chip-glyph">{glyph_char.clone().unwrap_or_default()}</span> })}
@@ -2755,7 +2990,10 @@ fn EntryTable(
                                                     }
                                                     None if is_null => {
                                                         let cls = if inh { "chip inh" } else { "chip" };
-                                                        view! { <td><span class=cls title=hint>
+                                                        let cursor_cls = format!("{cls} clickable");
+                                                        let toggle = toggle_edit.clone();
+                                                        view! { <td><span class=cursor_cls title=hint
+                                                            on:contextmenu=move |ev: leptos::ev::MouseEvent| toggle(ev)>
                                                             {glyph_left.then(|| view! { <span class="chip-glyph">{glyph_char.clone().unwrap_or_default()}</span> })}
                                                             {body.clone()}
                                                             {glyph_right.then(|| view! { <span class="chip-glyph">{glyph_char.clone().unwrap_or_default()}</span> })}
@@ -2764,7 +3002,9 @@ fn EntryTable(
                                                     None => {
                                                         // 无 chip 包裹的兜底分支（整数 / 浮点 / 字符串 / 时间型），
                                                         // 也带上标点——日期「◷ 09-12 14:30」和金额「¥ 1200」在此处拼出来。
-                                                        view! { <td title=hint>
+                                                        let toggle = toggle_edit.clone();
+                                                        view! { <td class="clickable" title=hint
+                                                            on:contextmenu=move |ev: leptos::ev::MouseEvent| toggle(ev)>
                                                             {glyph_left.then(|| view! { <span class="chip-glyph">{glyph_char.clone().unwrap_or_default()}</span> })}
                                                             {body.clone()}
                                                             {glyph_right.then(|| view! { <span class="chip-glyph">{glyph_char.clone().unwrap_or_default()}</span> })}
@@ -2774,7 +3014,6 @@ fn EntryTable(
                                             }
                                         }
                                     }).collect::<Vec<_>>()}
-                                    <td class="mut">{creator}</td>
                                     <td class="mut">{short_time(&e.updated_at)}</td>
                                 </tr>
                             }
@@ -2787,13 +3026,354 @@ fn EntryTable(
     }
 }
 
-/// 右侧详情面板的三个页签。
-const DETAIL_TABS: &[(&str, &str)] = &[
-    ("detail", "详情"),
-    ("relations", "关联"),
-    ("attachments", "附件"),
-    ("history", "历史"),
-];
+/// 表格单元格的内联标签编辑器：仅在 EntryTable 单元格进入编辑态时挂载。
+///
+/// 与 `label_editor::LabelRow` 的编辑控件分支基本同构（同一个 LabelEditor 是「值控件 +
+/// 删除按钮」全行；这里只剩值控件）。独立成组件而不是直接复用 `LabelRow` 是因为后者把标题、
+/// 删除按钮、配色都打在外层 div 上，强行塞进单元格里会与表格自身的列对齐 / 配色规则互相踩
+/// ——把共有的「按 value_type 切控件」部分提走，下游再合用。
+///
+/// 退出由外层 EntryTable 的全局 mousedown 监听负责（左键落在 `.lblcell.editing` 之外），
+/// 这里不再渲染「↩ 返回」按钮。
+///
+/// 视图表格里**不允许移除标签**：清空输入时不写入（保留原值）；无值标签只能「打上」、不能
+/// 移除。删除须到详情面板用完整 LabelEditor。
+#[component]
+fn LabelCellEditor(
+    /// 当前条目 code。落地要它，不能一次解锁。
+    code: String,
+    /// 标签 name；与 code 一起组成 `set_labeling` 的双键。
+    name: String,
+    /// 标签定义，决定出哪种控件。
+    schema: LabelSchema,
+    /// 当前值（不打标时 `None`，无值标签的「打上」按 `null` 处理）。
+    current: Option<Value>,
+    /// 工作空间成员表：Account 型标签从这里挑。
+    members: Vec<Member>,
+    /// 落地成功（与失败）都通知外层——让外层重拉条目表拿到最新值；编辑态同时关闭。
+    /// 失败也关：与「详情面板的 LabelEditor 没有失败分支 inline 提示」一致，不阻塞别的操作。
+    on_done: Callback<()>,
+) -> impl IntoView {
+    let i18n: I18nController = use_i18n();
+    // Local last user-typed text for branches that defer save to a button (email / currency /
+    // string/integer/float)。与 LabelRow 那边的实现一致，避免边输入边请求把偶发的空串也写回。
+    let current_text = current.as_ref().map(value_to_string).unwrap_or_default();
+    // 真正的「写」动作：把出错落到末尾集中显示，LabelEditor 的处理也是这一套。
+    let local_err: RwSignal<Option<String>> = RwSignal::new(None);
+    let on_set: Callback<Value> = {
+        let c = code.clone();
+        let n = name.clone();
+        Callback::new(move |v: Value| {
+            let c = c.clone();
+            let n = n.clone();
+            spawn_local(async move {
+                let res = set_labeling(&c, &n, &v).await;
+                local_err.set(res.err());
+                on_done.run(());
+            });
+        })
+    };
+
+    view! {
+        // 屏蔽浏览器右键菜单：编辑态不是来要菜单的；左键 stop_propagation 留给下面那些
+        // 控件自己用，免得点空白处冒到外层 td 把当前编辑关掉（外层 td 不再监听点击，
+        // 这一点当前行为没在用，但保留显式 stop_propagation 以防未来加 row 级点击）。
+        <div class="lblcell-edit"
+            on:contextmenu=|ev| ev.prevent_default()
+            on:click=|ev| ev.stop_propagation()>
+            {match &schema {
+                // 无值标签：未打标时允许「打上」（写 null）；已打标时无值可编辑，也不允许移除——
+                // 这里空着，让外层详情面板去删。空 schema 不应该进编辑态，但万一进了也安全收尾。
+                s if s.value_type == "null" => {
+                    let cur_is_none = current.is_none();
+                    if cur_is_none {
+                        let on_set = on_set.clone();
+                        view! {
+                            <button class="btn sm" on:click=move |_| on_set.run(Value::Null)>
+                                {move || i18n.t("label.set")}
+                            </button>
+                        }.into_any()
+                    } else {
+                        view! { <span class="mut">{move || i18n.t("label.no_value_hint")}</span> }
+                        .into_any()
+                    }
+                }
+                // 多选 Enum：勾选集合整体写成一个数组。
+                s if s.value_type == "enum" && s.multi => {
+                    let opts = s.enum_values.clone();
+                    let selected: std::collections::HashSet<String> = current
+                        .as_ref()
+                        .and_then(|v| v.as_array())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|x| x.as_str().map(str::to_string))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let current_arc = current.clone();
+                    view! {
+                        <div class="multienum">
+                            {opts.into_iter().map(|o| {
+                                let checked = selected.contains(&o);
+                                let cur = current_arc.clone();
+                                let oc = o.clone();
+                                let on_set = on_set.clone();
+                                view! {
+                                    <label class="mut">
+                                        <input type="checkbox" prop:checked=checked on:change=move |ev| {
+                                            let mut set: Vec<String> = cur
+                                                .as_ref()
+                                                .and_then(|v| v.as_array())
+                                                .map(|a| {
+                                                    a.iter()
+                                                        .filter_map(|x| x.as_str().map(str::to_string))
+                                                        .collect()
+                                                })
+                                                .unwrap_or_default();
+                                            if event_target_checked(&ev) {
+                                                if !set.contains(&oc) {
+                                                    set.push(oc.clone());
+                                                }
+                                            } else {
+                                                set.retain(|x| x != &oc);
+                                            }
+                                            // 不支持移除：全空时不写入，保留原值。
+                                            if !set.is_empty() {
+                                                on_set
+                                                    .run(
+                                                        Value::Array(
+                                                            set.into_iter().map(Value::String).collect(),
+                                                        ),
+                                                    );
+                                            }
+                                        } />
+                                        {display_enum_value(&o)}
+                                    </label>
+                                }
+                            }).collect::<Vec<_>>()}
+                        </div>
+                    }.into_any()
+                }
+                s if s.value_type == "enum" => {
+                    let opts = s.enum_values.clone();
+                    let cur_text = current_text.clone();
+                    let on_set = on_set.clone();
+                    view! {
+                        <select on:change=move |ev| {
+                            let v = event_target_value(&ev);
+                            if !v.is_empty() {
+                                on_set.run(Value::String(v));
+                            }
+                        }>
+                            <option value="" selected=cur_text.is_empty() disabled>
+                                {move || i18n.t("label.select_placeholder")}
+                            </option>
+                            {opts.into_iter().map(|o| {
+                                let cur_text = cur_text.clone();
+                                view! {
+                                    <option value=o.clone() selected=cur_text == o>
+                                        {display_enum_value(&o)}
+                                    </option>
+                                }
+                            }).collect::<Vec<_>>()}
+                        </select>
+                    }.into_any()
+                }
+                s if s.value_type == "boolean" => {
+                    let checked = current_text == "true";
+                    let on_set = on_set.clone();
+                    view! {
+                        <input type="checkbox" prop:checked=checked on:change=move |ev| {
+                            on_set.run(Value::Bool(event_target_checked(&ev)));
+                        } />
+                    }.into_any()
+                }
+                s if matches!(s.value_type.as_str(), "date" | "time" | "datetime") => {
+                    let vt = s.value_type.clone();
+                    let layout = crate::golayout::resolve(
+                        s.format.as_deref(),
+                        crate::golayout::default_go(&vt),
+                    );
+                    let native_ok = is_native_time_layout(&vt, s.format.as_deref());
+                    if !native_ok {
+                        let inp = RwSignal::new(current_text.clone());
+                        let layout_cb = layout.clone();
+                        let on_set = on_set.clone();
+                        view! {
+                            <input class="inp" style="width:140px" prop:value=inp
+                                on:input=move |ev| inp.set(event_target_value(&ev))
+                                on:change=move |ev| {
+                                    let v = event_target_value(&ev);
+                                    inp.set(v.clone());
+                                    // 不支持移除：清空时不写入，保留原值。
+                                    if !v.is_empty()
+                                        && crate::golayout::parse(&layout_cb, &v).is_some()
+                                    {
+                                        on_set.run(Value::String(v));
+                                    }
+                                } />
+                        }.into_any()
+                    } else {
+                        let input_type = match vt.as_str() {
+                            "date" => "date",
+                            "time" => "time",
+                            _ => "datetime-local",
+                        };
+                        let current_native = to_native(&vt, &current_text);
+                        let on_set = on_set.clone();
+                        view! {
+                            <input class="inp" type=input_type prop:value=current_native
+                                on:change=move |ev| {
+                                    let v = event_target_value(&ev);
+                                    // 不支持移除：清空时不写入。
+                                    if !v.is_empty() {
+                                        if let Some(stored) = from_native(&vt, &v) {
+                                            on_set.run(Value::String(stored));
+                                        }
+                                    }
+                                } />
+                        }.into_any()
+                    }
+                }
+                s if s.value_type == "currency" => {
+                    let inp = RwSignal::new(current_text.clone());
+                    let prefix = format!(
+                        "{}{}",
+                        s.currency_symbol.clone().unwrap_or_else(|| "¥".to_string()),
+                        s.unit.clone().map(|u| format!(" {u}")).unwrap_or_default()
+                    );
+                    let on_set = on_set.clone();
+                    view! {
+                        <div style="display:flex;gap:6px;align-items:center">
+                            <span class="mut">{prefix}</span>
+                            <input class="inp" style="width:90px" type="number" prop:value=inp
+                                on:input=move |ev| inp.set(event_target_value(&ev)) />
+                            <button class="btn" on:click=move |_| {
+                                let v = inp.get_untracked();
+                                // 不支持移除：清空时不写入，保留原值。
+                                if v.is_empty() {
+                                    return;
+                                }
+                                if let Some(n) = v
+                                    .parse::<f64>()
+                                    .ok()
+                                    .and_then(serde_json::Number::from_f64)
+                                {
+                                    on_set.run(Value::Number(n));
+                                }
+                            }>{move || i18n.t("label.set")}</button>
+                        </div>
+                    }.into_any()
+                }
+                s if s.value_type == "account" => {
+                    let s_multi = s.multi;
+                    let picked = {
+                        let on_set = on_set.clone();
+                        Callback::new(move |ids: Vec<String>| {
+                            if s_multi {
+                                // 不支持移除：清空选择时不写入，保留原值。
+                                if !ids.is_empty() {
+                                    on_set.run(Value::Array(
+                                        ids.into_iter().map(Value::String).collect(),
+                                    ));
+                                }
+                            } else {
+                                match ids.into_iter().next() {
+                                    Some(id) => on_set.run(Value::String(id)),
+                                    // 不支持移除：不写入，保留原值。
+                                    None => {}
+                                }
+                            }
+                        })
+                    };
+                    let selected: Vec<String> = if s.multi {
+                        current_text
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect()
+                    } else if current_text.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![current_text.clone()]
+                    };
+                    view! {
+                        <AccountPicker members=members.clone() selected=selected multi=s.multi
+                            on_change=picked />
+                    }.into_any()
+                }
+                s if s.value_type == "email" => {
+                    let inp = RwSignal::new(current_text.clone());
+                    let on_set = on_set.clone();
+                    view! {
+                        <div style="display:flex;gap:6px">
+                            <input class="inp" style="width:160px" type="email" prop:value=inp
+                                on:input=move |ev| inp.set(event_target_value(&ev)) />
+                            <button class="btn" on:click=move |_| {
+                                let v = inp.get_untracked();
+                                // 不支持移除：清空时不写入，保留原值。
+                                if v.is_empty() {
+                                    return;
+                                }
+                                if v.contains('@') {
+                                    on_set.run(Value::String(v));
+                                }
+                            }>{move || i18n.t("label.set")}</button>
+                        </div>
+                    }.into_any()
+                }
+                _ => {
+                    // 整数 / 浮点 / 字符串的统一处理：input + 「设置」按钮，留住半成品。
+                    let s_typed: LabelSchema = schema.clone();
+                    let vt = s_typed.value_type.clone();
+                    let inp = RwSignal::new(current_text.clone());
+                    let on_set = on_set.clone();
+                    view! {
+                        <div style="display:flex;gap:6px">
+                            <input class="inp" style="width:110px"
+                                type=if vt == "string" { "text" } else { "number" }
+                                prop:value=inp
+                                on:input=move |ev| inp.set(event_target_value(&ev)) />
+                            <button class="btn" on:click=move |_| {
+                                let v = inp.get_untracked();
+                                // 不支持移除：清空时不写入，保留原值。
+                                if v.is_empty() {
+                                    return;
+                                }
+                                let value = match vt.as_str() {
+                                    "integer" => v.parse::<i64>().ok().map(|i| Value::Number(i.into())),
+                                    "float" => v
+                                        .parse::<f64>()
+                                        .ok()
+                                        .and_then(serde_json::Number::from_f64)
+                                        .map(Value::Number),
+                                    _ => Some(Value::String(v)),
+                                };
+                                if let Some(val) = value {
+                                    on_set.run(val);
+                                }
+                            }>{move || i18n.t("label.set")}</button>
+                        </div>
+                    }.into_any()
+                }
+            }}
+            // 退出由外层 EntryTable 的全局 mousedown 监听负责：左键落在
+            // `.lblcell.editing` 之外就把 editing_cell 清掉。这条路径不再
+            // 需要「↩ 返回」按钮；亦无删除入口——视图表格不允许移除标签。
+            {move || local_err.get().map(|e| view! { <div class="hint">{"⚠ "}{e}</div> })}
+        </div>
+    }
+}
+
+/// 右侧详情面板的四个页签（key 是稳定的）。
+fn detail_tab_labels(i18n: &I18nController) -> [(String, String); 4] {
+    [
+        ("detail".to_string(), i18n.t("entry.tab_detail")),
+        ("relations".to_string(), i18n.t("entry.tab_relations")),
+        ("attachments".to_string(), i18n.t("entry.tab_attachments")),
+        ("history".to_string(), i18n.t("entry.tab_history")),
+    ]
+}
 
 /// 右侧详情面板：标题、详情与标签都可编辑，保存走乐观并发。
 #[component]
@@ -2805,12 +3385,18 @@ fn EntryPanel(
     members: RwSignal<Vec<Member>>,
     refresh: RwSignal<u32>,
 ) -> impl IntoView {
+    let i18n: I18nController = use_i18n();
     let navigate = use_navigate();
     let data: RwSignal<Option<Result<Entry, String>>> = RwSignal::new(None);
     let labels = RwSignal::new(Vec::<Labeling>::new());
     let title = RwSignal::new(String::new());
     let detail = RwSignal::new(String::new());
     let error = RwSignal::new(None::<String>);
+    // `code` 在多处的 `view!` 里通过 `Signal::derive(move || code.get())` 传给子组件；
+    // 父级在响应式闭包里反复创建这个 derive，Leptos 把它当作"新 prop"，
+    // 子组件里的 TinyEditor（评论输入框）被卸掉重挂，粘贴中的图片就丢。
+    // 这里提前物化一个稳定的 derived signal，让 prop 身份稳定。
+    let code_signal: Signal<String> = Signal::derive(move || code.get());
     // 标题平时只读，点击才换成输入框；输入框挂载后由 Effect 补焦点。
     let editing_title = RwSignal::new(false);
     let title_ref: NodeRef<Input> = NodeRef::new();
@@ -2832,6 +3418,11 @@ fn EntryPanel(
     // overwrite=true：清空编辑缓冲后全量填充（选中变化 / 并发冲突重载）。
     // overwrite=false：软重载，仅更新 data/labels，保留未保存的详情编辑。
     let load = move |overwrite: bool| {
+        // 诊断日志：观察侧栏 EntryPanel 何时触发 load。
+        #[cfg(target_arch = "wasm32")]
+        leptos::web_sys::console::log_1(
+            &format!("[EntryPanel] load(overwrite={})", overwrite).into(),
+        );
         let c = code.get();
         if c.is_empty() {
             return;
@@ -2869,7 +3460,7 @@ fn EntryPanel(
                         }
                         data.set(Some(Ok(e)));
                     }
-                    Ok(None) => data.set(Some(Err("条目不存在".to_string()))),
+                    Ok(None) => data.set(Some(Err(i18n.t("entry.errors.entry_not_found")))),
                     Err(err) => data.set(Some(Err(err))),
                 }
             });
@@ -2883,6 +3474,14 @@ fn EntryPanel(
     let on_changed = Callback::new(move |_| {
         load(false);
         refresh.update(|n| *n += 1);
+    });
+    // 附件上传只让面板自己重取条目（`updated_at` 推前了，乐观并发版本号失效）。
+    // 不刷表：表格里不展示附件，刚才那张图也不会影响列表里任何一列。
+    // 关键：必须与 `on_changed` 分离——后者会动 `refresh` 信号，触发整张表重查、
+    // 父布局随之重建，连带把评论输入框里的 TinyEditor 整个换掉，
+    // 用户刚粘贴还在上传的图就丢了。详见 `comment_list.rs` 的 `items_sig` 注释。
+    let on_uploaded = Callback::new(move |_| {
+        load(false);
     });
     let on_editor_change = Callback::new(move |d: String| detail.set(d));
 
@@ -2933,8 +3532,9 @@ fn EntryPanel(
                     refresh.update(|n| *n += 1);
                 }
                 Err(e) => {
+                    let concurrent = i18n.t("entry.errors.concurrent_edit");
                     error.set(Some(e.clone()));
-                    if e.contains("内容已被他人修改") {
+                    if e.contains(&concurrent) {
                         load(true);
                     }
                 }
@@ -2950,7 +3550,7 @@ fn EntryPanel(
                     code.set(String::new());
                     refresh.update(|n| *n += 1);
                 }
-                Ok(false) => error.set(Some("删除失败".to_string())),
+                Ok(false) => error.set(Some(i18n.t("entry.errors.delete_failed"))),
                 Err(e) => error.set(Some(e)),
             }
         });
@@ -2967,7 +3567,7 @@ fn EntryPanel(
                 return;
             }
             if dirty.get_untracked() {
-                error.set(Some("有未保存的改动，先保存再关闭".to_string()));
+                error.set(Some(i18n.t("entry.errors.unsaved_block")));
                 return;
             }
             close.run(());
@@ -2985,7 +3585,7 @@ fn EntryPanel(
                     code.set(String::new());
                     refresh.update(|n| *n += 1);
                 }
-                Ok(false) => error.set(Some("归档失败".to_string())),
+                Ok(false) => error.set(Some(i18n.t("entry.errors.archive_failed"))),
                 Err(e) => error.set(Some(e)),
             }
         });
@@ -3008,11 +3608,11 @@ fn EntryPanel(
                         {move || error.get().map(|e| view! { <div class="hint">{"⚠ "}{e}</div> })}
                         <div class="dhead">
                             <div class="dacts">
-                                <button class="btn sm" on:click=open_full.clone()>{ic_full()}"全屏"</button>
-                                <button class="btn pri sm" disabled=move || !dirty.get() on:click=move |_| do_save.run(())>"保存"</button>
-                                <button class="btn sm" on:click=arch>"归档"</button>
-                                <button class="btn danger sm" on:click=del>"删除"</button>
-                                <button class="ibtn" title="关闭面板" on:click=move |_| close.run(())>{ic_close()}</button>
+                                <button class="btn sm" on:click=open_full.clone()>{ic_full()}{move || i18n.t("entry.fullscreen")}</button>
+                                <button class="btn pri sm" disabled=move || !dirty.get() on:click=move |_| do_save.run(())>{move || i18n.t("common.save")}</button>
+                                <button class="btn sm" on:click=arch>{move || i18n.t("entry.archive")}</button>
+                                <button class="btn danger sm" on:click=del>{move || i18n.t("common.delete")}</button>
+                                <button class="ibtn" title=move || i18n.t("entry.close_panel") on:click=move |_| close.run(())>{ic_close()}</button>
                             </div>
                             {move || if editing_title.get() {
                                 view! {
@@ -3035,7 +3635,7 @@ fn EntryPanel(
                             } else {
                                 view! {
                                     <h3 class="dtitle"
-                                        title="点击编辑标题"
+                                        title=move || i18n.t("entry.edit_title_hint")
                                         on:click=move |_| editing_title.set(true)
                                     >{move || title.get()}</h3>
                                 }.into_any()
@@ -3053,29 +3653,29 @@ fn EntryPanel(
                             let by = |a: &Option<AccountBrief>| a.as_ref().map(|x| x.name.clone()).unwrap_or_else(|| "—".to_string());
                             view! {
                                 <div class="dmeta">
-                                    <div><span class="mut">"创建人"</span>{by(&e.created_by_account)}</div>
-                                    <div><span class="mut">"创建时间"</span>{fmt_datetime(&e.created_at)}</div>
-                                    <div><span class="mut">"更新人"</span>{by(&e.updated_by_account)}</div>
-                                    <div><span class="mut">"更新时间"</span>{fmt_datetime(&e.updated_at)}</div>
+                                    <div><span class="mut">{move || i18n.t("entry.created_by")}</span>{by(&e.created_by_account)}</div>
+                                    <div><span class="mut">{move || i18n.t("entry.created_at")}</span>{fmt_datetime(&e.created_at)}</div>
+                                    <div><span class="mut">{move || i18n.t("entry.updated_by")}</span>{by(&e.updated_by_account)}</div>
+                                    <div><span class="mut">{move || i18n.t("entry.updated_at")}</span>{fmt_datetime(&e.updated_at)}</div>
                                     {e.archived_at.clone().map(|at| view! {
-                                        <div><span class="mut">"归档时间"</span>{fmt_datetime(&at)}</div>
+                                        <div><span class="mut">{move || i18n.t("entry.archived_at")}</span>{fmt_datetime(&at)}</div>
                                     })}
                                 </div>
                             }
                         })}
-                        <div class="editing"><span class="dot"></span>"乐观并发 · 保存时检测冲突"</div>
-                        <TabBar tabs=DETAIL_TABS active=tab />
+                        <div class="editing"><span class="dot"></span>{move || i18n.t("entry.optimistic_lock_hint")}</div>
+                        <TabBar tabs=detail_tab_labels(&i18n).to_vec() active=tab />
                         {move || match tab.get().as_str() {
                             "relations" => view! {
                                 <RelationsPanel
-                                    code=Signal::derive(move || code.get())
+                                    code=code_signal
                                     workspace_id=workspace_id
                                     on_changed=on_changed
                                 />
                             }.into_any(),
                             "attachments" => view! {
                                 <AttachmentList
-                                    code=Signal::derive(move || code.get())
+                                    code=code_signal
                                     workspace_id=workspace_id
                                     on_changed=on_changed
                                 />
@@ -3083,7 +3683,7 @@ fn EntryPanel(
                             "history" => view! {
                                 <AuditTimeline
                                     logs=logs
-                                    code=Signal::derive(move || code.get())
+                                    code=code_signal
                                 />
                             }.into_any(),
                             _ => view! {
@@ -3097,23 +3697,36 @@ fn EntryPanel(
                                     {match data.get() {
                                         Some(Ok(e)) => {
                                             let initial = e.detail.clone();
+                                            // 同 entry.rs 注释：get_untracked 避免
+                                            // 成员表后续变化把编辑器重挂。
+                                            let ms = members.get_untracked();
                                             view! {
-                                                <TinyEditor initial entry_code=Signal::derive(move || code.get()) on_change=on_editor_change on_uploaded=on_changed />
+                                                <TinyEditor initial entry_code=code_signal
+                                                    on_change=on_editor_change on_uploaded=on_uploaded
+                                                    members=ms />
                                             }.into_any()
                                         }
                                         _ => view! {
-                                            <div class="ebody"><span class="mut">"加载中…"</span></div>
+                                            <div class="ebody"><span class="mut">{move || i18n.t("common.loading")}</span></div>
                                         }.into_any(),
                                     }}
                                 </div>
                                 <LabelEditor code=code schemas labels members on_changed />
-                                <CommentList
-                                    code=Signal::derive(move || code.get())
-                                    workspace_id=workspace_id
-                                    on_changed=on_changed
-                                />
                             }.into_any(),
                         }}
+                        // 评论列表放在 tab 之外：之前塞在 `_ =>` 分支的 view! 里时，
+                        // detail tab 的编辑器重渲染（`match data.get()` 重新求值）让外层
+                        // view! 整体被重算，Leptos diff 在这个边角下把 CommentList 槽位
+                        // 当作新组件，导致评论输入框（也是 TinyEditor）整块被卸载重挂，
+                        // 用户刚粘贴还在上传的图就丢了。提到 tab 之外后，无论用户在哪个
+                        // tab，CommentList 只挂一次。
+                        // 视觉上让评论常驻面板底部，与全屏详情页（entry.rs）一致。
+                        <CommentList
+                            code=code_signal
+                            workspace_id=workspace_id
+                            on_changed=on_changed
+                            on_uploaded=on_uploaded
+                        />
                     </aside>
                 }
                 .into_any()
@@ -3126,6 +3739,7 @@ fn EntryPanel(
 /// 等条目创建成功后再由 `create_submit` 逐个 upsert。
 #[component]
 fn LabelDraft(rows: RwSignal<Vec<DraftLabel>>, members: RwSignal<Vec<Member>>) -> impl IntoView {
+    let i18n: I18nController = use_i18n();
     view! {
         <div class="lbledit">
             {move || {
@@ -3144,7 +3758,7 @@ fn LabelDraft(rows: RwSignal<Vec<DraftLabel>>, members: RwSignal<Vec<Member>>) -
                                         <input type="checkbox"
                                             prop:checked=move || flag.get() == Some(true)
                                             on:change=move |ev| flag.set(event_target_checked(&ev).then_some(true)) />
-                                        <span>{move || if flag.get() == Some(true) { chip.clone() } else { "打上".to_string() }}</span>
+                                        <span>{move || if flag.get() == Some(true) { chip.clone() } else { i18n.t("label.apply") }}</span>
                                     </label>
                                 </div>
                             }.into_any()
@@ -3187,7 +3801,7 @@ fn LabelDraft(rows: RwSignal<Vec<DraftLabel>>, members: RwSignal<Vec<Member>>) -
                                 <div class="lblrow">
                                     <span class="k">{ic_tag()}{title}</span>
                                     <select on:change=move |ev| sel.set(event_target_value(&ev))>
-                                        <option value="" selected=move || sel.get().is_empty()>"（未设置）"</option>
+                                        <option value="" selected=move || sel.get().is_empty()>{move || i18n.t("common.unset")}</option>
                                         {opts.into_iter().map(|o| {
                                             let oc = o.clone();
                                             let hit = o.clone();
@@ -3212,9 +3826,9 @@ fn LabelDraft(rows: RwSignal<Vec<DraftLabel>>, members: RwSignal<Vec<Member>>) -
                                             _ => None,
                                         });
                                     }>
-                                        <option value="" selected=move || flag.get().is_none()>"（未设置）"</option>
-                                        <option value="true" selected=move || flag.get() == Some(true)>"是"</option>
-                                        <option value="false" selected=move || flag.get() == Some(false)>"否"</option>
+                                        <option value="" selected=move || flag.get().is_none()>{move || i18n.t("common.unset")}</option>
+                                        <option value="true" selected=move || flag.get() == Some(true)>{move || i18n.t("common.yes")}</option>
+                                        <option value="false" selected=move || flag.get() == Some(false)>{move || i18n.t("common.no")}</option>
                                     </select>
                                 </div>
                             }.into_any()
@@ -3282,17 +3896,40 @@ fn LabelDraft(rows: RwSignal<Vec<DraftLabel>>, members: RwSignal<Vec<Member>>) -
 /// 列选择器：把工作空间的标签以可勾选 chip 列出，产出「展示为列」的标签 name 列表。
 /// 用选择代替自由文本输入——用户手写的展示名与服务端要求的 name 不一致会被拒绝，
 /// 让新建/配置视图在无声中失败。
+///
+/// 顶部第一枚是「创建人」内置列：默认不勾选，勾上后在表格里固定插在标签列与更新时间列之间。
+/// 这里独立成一个 chip，不与 schema 行交错——内置列与标签列语义不同，混排会让勾选状态难追。
 #[component]
 fn ColumnPicker(
     schemas: RwSignal<Vec<LabelSchema>>,
     selected: RwSignal<Vec<String>>,
 ) -> impl IntoView {
+    let i18n: I18nController = use_i18n();
     view! {
         <div class="colpick">
+            // 内置列：「创建人」默认不显示，由用户在视图配置里勾上。
+            <label class=move || {
+                if show_created_by(&selected.get()) { "colchip on" } else { "colchip" }
+            }>
+                <input
+                    type="checkbox"
+                    prop:checked=move || show_created_by(&selected.get())
+                    on:change=move |_| {
+                        selected.update(|v| {
+                            if show_created_by(v) {
+                                v.retain(|x| x != COLUMN_CREATED_BY);
+                            } else {
+                                v.push(COLUMN_CREATED_BY.to_string());
+                            }
+                        });
+                    }
+                />
+                {move || i18n.t("entry.col_created_by")}
+            </label>
             {move || {
                 let list = schemas.get();
                 if list.is_empty() {
-                    return view! { <span class="mut">"工作空间暂无标签"</span> }.into_any();
+                    return view! { <span class="mut">{move || i18n.t("entry.no_labels")}</span> }.into_any();
                 }
                 list.into_iter()
                     .map(|s| {

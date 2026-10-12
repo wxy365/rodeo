@@ -16,6 +16,295 @@
     --r-l: 12px;
 }
 
+/* 暗色主题：data-theme="dark" 由 src/frontend/theme.rs 在 hydrate 后挂到 <html>；
+   prefers-color-scheme: dark 是「System」档下的回退。三处给同一套变量，
+   顺序必须是「System 默认 < light 显式 < dark 显式」——光看 media 不够，
+   还得让用户硬选的那一档压过系统偏好。 */
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+        --ink: #e6edf3;
+        --ink2: #8b949e;
+        --ink3: #6e7681;
+        --ink4: #484f58;
+        --line: #30363d;
+        --bg: #0d1117;
+        --bg2: #161b22;
+        --bg3: #21262d;
+        --pos: #3fb950;
+        --warn: #d29922;
+        --dgr: #f85149;
+        --blue: #58a6ff;
+        /* 暗色主题里「面板 / 编辑器」需要的变量。`--surface` 与
+           `--fe-editor-bg-color` 选 `--bg3`，对应亮色下 `--bg = #fff` 比
+           `--bg2 = #f5f6f7` 略亮的「卡片浮在页面上」层级关系。
+           这些变量原本只在亮色回退值里有定义（`var(--surface, #fff)` 等），
+           暗色不补就会一直回退到白色 → 编辑器与消息面板在暗色下底色仍是白，
+           文字继承浅色 --ink 时直接看不见。 */
+        --surface: var(--bg3);
+        --border: var(--line);
+        --border-soft: var(--bg3);
+        --hover: #2d333b;
+        --bg-unread: #1c2128;
+        --mut: #9da5b0;
+        --fg: var(--ink);
+        --fe-editor-bg-color: var(--bg3);
+        /* 工具栏统一色：picker 标签走 --ink（白），图标走 --blue（蓝），
+           默认态两层颜色不一致会让 H1/H2/H3 一档比粗体/斜体按钮跳出来。
+           取 RGB 中点 #9fcaf9 让所有默认态图标与文字用同一档；
+           hover/active/expanded 才回到饱和的 --blue。*/
+        --toolbar-icon: #9fcaf9;
+    }
+}
+
+:root[data-theme="dark"] {
+    --ink: #e6edf3;
+    --ink2: #8b949e;
+    --ink3: #6e7681;
+    --ink4: #484f58;
+    --line: #30363d;
+    --bg: #0d1117;
+    --bg2: #161b22;
+    --bg3: #21262d;
+    --pos: #3fb950;
+    --warn: #d29922;
+    --dgr: #f85149;
+    --blue: #58a6ff;
+    /* 与上一处保持同步：暗色下给「面板 / 编辑器」一组变量，让
+       `var(--surface, #fff)` / `var(--fe-editor-bg-color)` 等回退失效，
+       真正切到深色；正文继承 `--ink`（浅色）→ 深底浅字，对比足够。 */
+    --surface: var(--bg3);
+    --border: var(--line);
+    --border-soft: var(--bg3);
+    --hover: #2d333b;
+    --bg-unread: #1c2128;
+    --mut: #9da5b0;
+    --fg: var(--ink);
+    --fe-editor-bg-color: var(--bg3);
+    --toolbar-icon: #9fcaf9;
+}
+
+/* fluent-editor 把工具栏整条写死成亮色：背景 `#fff`、SVG 描边/填充
+   `#444`、按钮 hover/active 背景 `#f0f0f0`、`.ql-toolbar` 边框 `#adb0b8`、
+   hover/active 文字 `#06c`。在深底上要么看不清（白底 + 近白描边），
+   要么跟周边混在一起（浅边框）。下面这套按「默认态 / 交互态 / 触屏」
+   三档把它们整体改成深色配色。
+
+   默认态（未 hover、未 active）图标与 picker 标签文字都走 `--toolbar-icon`
+   （`--ink` 与 `--blue` 的 RGB 中点 #9fcaf9），保证 H1/H2/H3 一档跟
+   粗体/斜体按钮不跳；背景走 `--surface`，边框走 `--line`——三者与
+   编辑器主体一致。
+   `.ql-snow .ql-stroke / .ql-fill / .ql-stroke-miter` 是 (0,4,0)，
+   工具栏 hover 的 `.ql-snow.ql-toolbar button:hover .ql-stroke` 是 (0,4,1)，
+   多一个 element，hover 胜出，所以默认态不会盖掉交互态。
+
+   hover/active 文字色在亮色下走 `#06c`，深底上只有 3:1 对比度
+   （差不多够图标但不够文字）。补一组特异性更高的同款选择器，把 `color`
+   换成 `var(--blue)`；SVG 不用 `currentColor`（搜过 0 处），这条只动
+   文字、不会污染图标本身的描边/填充。
+
+   触屏（`@media (pointer: coarse)`）的 `:hover:not(.ql-active)` 走另一组
+   `#444`，深底触屏上完全看不见；用 `:root[data-theme="dark"]` 抬一档
+   特异性把它压过去。 */
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .ql-snow .ql-stroke,
+    :root:not([data-theme="light"]) .ql-snow .ql-fill,
+    :root:not([data-theme="light"]) .ql-snow .ql-stroke-miter {
+        /* 默认态图标走 `--toolbar-icon`（#9fcaf9，介于白与蓝之间的中性蓝）；
+           SVG 走 stroke/fill，不接 currentColor，所以 hover 态颜色不变；
+           交互反馈交给 `button:hover` 的背景色块（见下）。 */
+        stroke: var(--toolbar-icon);
+        fill: var(--toolbar-icon);
+    }
+    /* toolbar 背景写死 #fff，图标刚被改成 --blue（亮蓝）压在白底就消失——
+       「按钮难以看清」的根因。改成 var(--surface) 与编辑器主体一致。*/
+    :root:not([data-theme="light"]) .ql-toolbar {
+        background-color: var(--surface);
+        border-color: var(--line);
+    }
+    /* 按钮 hover/active 背景在亮色下是 #f0f0f0，深底上看不出点击范围，
+       改成 var(--hover) 略亮一档的色块；按钮默认态背景仍是透明（与容器同色）。*/
+    :root:not([data-theme="light"]) .ql-snow.ql-toolbar button:hover,
+    :root:not([data-theme="light"]) .ql-snow.ql-toolbar button.ql-active {
+        background-color: var(--hover);
+    }
+    :root:not([data-theme="light"]) .ql-snow.ql-toolbar button:hover,
+    :root:not([data-theme="light"]) .ql-snow.ql-toolbar button:focus,
+    :root:not([data-theme="light"]) .ql-snow.ql-toolbar button.ql-active,
+    :root:not([data-theme="light"]) .ql-snow.ql-toolbar .ql-picker-label:hover,
+    :root:not([data-theme="light"]) .ql-snow.ql-toolbar .ql-picker-label.ql-active,
+    :root:not([data-theme="light"]) .ql-snow.ql-toolbar .ql-picker-item:hover,
+    :root:not([data-theme="light"]) .ql-snow.ql-toolbar .ql-picker-item.ql-selected {
+        color: var(--blue);
+    }
+}
+
+:root[data-theme="dark"] .ql-snow .ql-stroke,
+:root[data-theme="dark"] .ql-snow .ql-fill,
+:root[data-theme="dark"] .ql-snow .ql-stroke-miter {
+    stroke: var(--toolbar-icon);
+    fill: var(--toolbar-icon);
+}
+:root[data-theme="dark"] .ql-toolbar {
+    background-color: var(--surface);
+    border-color: var(--line);
+}
+:root[data-theme="dark"] .ql-snow.ql-toolbar button:hover,
+:root[data-theme="dark"] .ql-snow.ql-toolbar button.ql-active {
+    background-color: var(--hover);
+}
+:root[data-theme="dark"] .ql-snow.ql-toolbar button:hover,
+:root[data-theme="dark"] .ql-snow.ql-toolbar button:focus,
+:root[data-theme="dark"] .ql-snow.ql-toolbar button.ql-active,
+:root[data-theme="dark"] .ql-snow.ql-toolbar .ql-picker-label:hover,
+:root[data-theme="dark"] .ql-snow.ql-toolbar .ql-picker-label.ql-active,
+:root[data-theme="dark"] .ql-snow.ql-toolbar .ql-picker-item:hover,
+:root[data-theme="dark"] .ql-snow.ql-toolbar .ql-picker-item.ql-selected {
+    color: var(--blue);
+}
+
+/* 触屏 hover-not-active：fluent-editor 在 `@media (pointer: coarse)` 里把
+   color/fill/stroke 又写回 `#444`，深底触屏上完全看不见。上面那组「hover
+   文字色 var(--blue)」用的是 `.ql-snow.ql-toolbar button:hover`（不含
+   `:not(.ql-active)`），hover 态下 `.ql-active` 与非 `.ql-active` 都被压成
+   var(--blue)，color 这边没问题；但 fill/stroke 的非 hover 覆盖用的是
+   `.ql-snow .ql-fill / .ql-stroke`（(0,4,0)），触屏那条
+   `.ql-snow.ql-toolbar button:hover:not(.ql-active) .ql-fill` 是 (0,7,1)，
+   触屏规则胜出 → 暗色 + 触屏下图标又是 #444。这里把 hover:not(.ql-active)
+   的 color/fill/stroke 三件一起再覆一层，走 --blue（饱和蓝），给触屏
+   「手指悬停」提供反馈；默认态走 --toolbar-icon 中性蓝，靠背景色块
+   做差异化。 */
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .ql-snow.ql-toolbar button:hover:not(.ql-active) {
+        color: var(--blue);
+    }
+    :root:not([data-theme="light"]) .ql-snow.ql-toolbar button:hover:not(.ql-active) .ql-fill,
+    :root:not([data-theme="light"]) .ql-snow.ql-toolbar button:hover:not(.ql-active) .ql-stroke,
+    :root:not([data-theme="light"]) .ql-snow.ql-toolbar button:hover:not(.ql-active) .ql-stroke-miter {
+        fill: var(--blue);
+        stroke: var(--blue);
+    }
+}
+
+:root[data-theme="dark"] .ql-snow.ql-toolbar button:hover:not(.ql-active) {
+    color: var(--blue);
+}
+:root[data-theme="dark"] .ql-snow.ql-toolbar button:hover:not(.ql-active) .ql-fill,
+:root[data-theme="dark"] .ql-snow.ql-toolbar button:hover:not(.ql-active) .ql-stroke,
+:root[data-theme="dark"] .ql-snow.ql-toolbar button:hover:not(.ql-active) .ql-stroke-miter {
+    fill: var(--blue);
+    stroke: var(--blue);
+}
+
+/* picker 弹层：fluent-editor 把 `.ql-snow .ql-picker` 文字写死 `#444`、
+   `.ql-picker-options` 背景写死 `#fff`、`.ql-picker.ql-expanded .ql-picker-label`
+   写死 `#ccc`。亮色下没问题，深色下 picker 文字看不见 + 弹层是一张白卡。
+   把 picker 文字改成 `var(--toolbar-icon)` 与工具栏图标统一一档，
+   弹层背景改成 `var(--surface)` 与编辑器/工具栏一致，expanded 态
+   的标签/图标颜色用 `var(--blue)` 作为「已展开」指示。
+   picker-options 加 `border` 让它跟工具栏视觉分离——光看背景色
+   区分不开（同为 `--bg3`）。 */
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .ql-snow .ql-picker {
+        /* picker 标签文字走 --toolbar-icon，与工具栏图标同一档
+           （避免 H1/H2/H3 比粗体按钮跳出来）。*/
+        color: var(--toolbar-icon);
+    }
+    :root:not([data-theme="light"]) .ql-snow .ql-picker-options {
+        background-color: var(--surface);
+        border: 1px solid var(--border);
+    }
+    /* picker 展开时，文字与下拉箭头（旋转 180°）走 --blue，作为
+       「已展开」状态指示；其它默认态用 --toolbar-icon 中性色。*/
+    :root:not([data-theme="light"]) .ql-snow .ql-picker.ql-expanded .ql-picker-label {
+        color: var(--blue);
+    }
+    :root:not([data-theme="light"]) .ql-snow .ql-picker.ql-expanded .ql-picker-label .ql-fill,
+    :root:not([data-theme="light"]) .ql-snow .ql-picker.ql-expanded .ql-picker-label .ql-stroke {
+        fill: var(--blue);
+        stroke: var(--blue);
+    }
+}
+
+:root[data-theme="dark"] .ql-snow .ql-picker {
+    color: var(--toolbar-icon);
+}
+:root[data-theme="dark"] .ql-snow .ql-picker-options {
+    background-color: var(--surface);
+    border: 1px solid var(--border);
+}
+:root[data-theme="dark"] .ql-snow .ql-picker.ql-expanded .ql-picker-label {
+    color: var(--blue);
+}
+:root[data-theme="dark"] .ql-snow .ql-picker.ql-expanded .ql-picker-label .ql-fill,
+:root[data-theme="dark"] .ql-snow .ql-picker.ql-expanded .ql-picker-label .ql-stroke {
+    fill: var(--blue);
+    stroke: var(--blue);
+}
+
+/* 占位符：`.ql-editor.ql-blank::before` 在空编辑器里提示「输入…」，fluent
+   写死 `#8a8e99`（深底 3.5:1，过低）。换成 `var(--ink2)` = `#8b949e` 在
+   深底 4.2:1，作为提示色略低但能看清；想要再亮可以升 `var(--ink)`。 */
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) .ql-editor.ql-blank::before {
+        color: var(--ink2);
+    }
+}
+
+:root[data-theme="dark"] .ql-editor.ql-blank::before {
+    color: var(--ink2);
+}
+
+/* 列表缩进：fluent-editor 给 ol/ul `padding-left: 1.5em`，每多一层
+   `.ql-indent-X` 再加 1.5em（li 上 1.5em 的倍数），三层列表能往右
+   推 4.5em+。改成「基础列表无缩进、嵌套每层 2ch ≈ 2 个空格」——比
+   fluent-editor 默认小一档。`.ql-ui:before` 的 `margin-left: -1.5em`
+   也清零，否则项目符号会跟着跑到 li 左缘之外而被切掉。
+   9 层覆盖到 fluent-editor 支持的最大嵌套。 */
+.ql-editor ol,
+.ql-editor ul,
+.ql-editor li {
+    padding-left: 0;
+}
+.ql-editor li > .ql-ui:before {
+    margin-left: 0;
+}
+.ql-editor .ql-indent-1:not(.ql-direction-rtl),
+.ql-editor li.ql-indent-1:not(.ql-direction-rtl) {
+    padding-left: 2ch;
+}
+.ql-editor .ql-indent-2:not(.ql-direction-rtl),
+.ql-editor li.ql-indent-2:not(.ql-direction-rtl) {
+    padding-left: 4ch;
+}
+.ql-editor .ql-indent-3:not(.ql-direction-rtl),
+.ql-editor li.ql-indent-3:not(.ql-direction-rtl) {
+    padding-left: 6ch;
+}
+.ql-editor .ql-indent-4:not(.ql-direction-rtl),
+.ql-editor li.ql-indent-4:not(.ql-direction-rtl) {
+    padding-left: 8ch;
+}
+.ql-editor .ql-indent-5:not(.ql-direction-rtl),
+.ql-editor li.ql-indent-5:not(.ql-direction-rtl) {
+    padding-left: 10ch;
+}
+.ql-editor .ql-indent-6:not(.ql-direction-rtl),
+.ql-editor li.ql-indent-6:not(.ql-direction-rtl) {
+    padding-left: 12ch;
+}
+.ql-editor .ql-indent-7:not(.ql-direction-rtl),
+.ql-editor li.ql-indent-7:not(.ql-direction-rtl) {
+    padding-left: 14ch;
+}
+.ql-editor .ql-indent-8:not(.ql-direction-rtl),
+.ql-editor li.ql-indent-8:not(.ql-direction-rtl) {
+    padding-left: 16ch;
+}
+.ql-editor .ql-indent-9:not(.ql-direction-rtl),
+.ql-editor li.ql-indent-9:not(.ql-direction-rtl) {
+    padding-left: 18ch;
+}
+
 * {
     box-sizing: border-box;
     margin: 0;
@@ -114,6 +403,36 @@ select:focus {
     outline: 2px solid color-mix(in srgb, var(--blue) 25%, transparent);
     outline-offset: -1px;
     border-color: var(--blue);
+}
+
+/* 工作空间列表页的搜索框：外层 `label` 承担边框/圆角/背景/图标，
+   内层 `<input>` 完全去样式（border/padding/background 都不要），
+   视觉上是同一个搜索框而不是「外面包了一个」。focus 落到外层上。 */
+.ws-search {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-m);
+    padding: 0 12px;
+    font-size: 14px;
+    background: var(--bg);
+    min-width: 260px;
+}
+.ws-search:focus-within {
+    outline: 2px solid color-mix(in srgb, var(--blue) 25%, transparent);
+    outline-offset: -1px;
+    border-color: var(--blue);
+}
+.ws-search input {
+    border: 0;
+    outline: 0;
+    background: none;
+    flex: 1;
+    min-width: 0;
+    padding: 7px 0;
+    font-size: 14px;
 }
 
 .chip {
@@ -248,9 +567,6 @@ select:focus {
 .tbl tr:last-child td {
     border-bottom: 0;
 }
-.tbl tbody tr {
-    cursor: pointer;
-}
 .tbl tbody tr:hover {
     background: var(--bg2);
 }
@@ -259,6 +575,25 @@ select:focus {
 }
 .tbl tbody tr.static {
     cursor: default;
+}
+/* 仅标题单元格是真正的交互区：单击展开侧栏，双击开全屏。其它单元格不动一行状态，
+   把指针手势收敛到这一格，配合下方 .chip 的编辑手势，避免「整行像可点」。 */
+.tbl td.title-cell {
+    cursor: pointer;
+}
+/* 标签单元格的右键手势：进入内联编辑态。覆盖在 chip span / 兜底 td 上，区分编辑态显式加粗描边。 */
+.tbl .clickable,
+.tbl .chip.clickable {
+    cursor: pointer;
+}
+.tbl td.lblcell.editing {
+    padding: 4px 6px;
+    min-width: 180px;
+}
+.tbl td.lblcell.editing .lblcell-edit {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
 }
 /* 批量勾选列：窄、居中，且不抢走行的点击手感。 */
 .tbl th.pick,
@@ -692,9 +1027,11 @@ select:focus {
     gap: 6px;
     align-self: flex-end;
 }
-/* 下限 150px 而非 200px：`.dmeta` 的内容盒是 423px，200px 时两列只剩 7px 余量，
-   经典的 15px 滚动条一挤就退回一列。150px 下即使 408px 也稳定排两列；
-   而 300px 的 `.entry-side` 内容盒只有 266px，仍是一列，符合那里窄栏的预期。 */
+/* 下限 150px 而非 200px：`.dmeta` 放在 423px 整宽行时，200px 时两列只剩 7px 余量，
+   经典的 15px 滚动条一挤就退回一列；150px 下即使 408px 也稳定排两列。
+   `.entry-side` 在视图页是 480px（`.view-body` 网格），去掉内边距后 ≈ 448px 内容盒，
+   在全屏页也用同一份宽度，四个元数据（创建人/创建时间/更新人/更新时间）
+   稳定排成两行两列。 */
 .dmeta { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
     gap: 4px 16px; padding: 8px 12px; font-size: 12px; }
 .dmeta .mut { margin-right: 6px; }
@@ -880,7 +1217,9 @@ select:focus {
 }
 .entry-layout {
     display: grid;
-    grid-template-columns: 1fr 300px;
+    /* 480px 跟视图页详情面板（见 `.view-body`）一致：两栏全屏与视图右栏
+       视觉上是同一块东西，宽度差几像素切换起来会跳。 */
+    grid-template-columns: 1fr 480px;
     gap: 16px;
     align-items: start;
 }
@@ -1640,7 +1979,7 @@ input[type="color"].sw:disabled {
 .avatar-menu { position: relative; }
 .msg-panel {
     position: absolute;
-    bottom: calc(100% + 8px);
+    top: calc(100% + 8px);
     right: 0;
     width: 360px;
     max-height: 480px;
@@ -1843,7 +2182,16 @@ input[type="color"].sw:disabled {
    把容器高度交回内容决定，父框随内容增长。 */
 .c-edit .tiny-editor{height:auto}
 .c-confirm{display:flex;align-items:center;gap:8px}
-.c-composer{display:flex;flex-direction:column;gap:6px}
+/* `@` 提及下拉（fluent-editor 的 `.ql-mention-list`）是 `position: absolute`，
+   它的 `left/top` 来自源码按 `quill.container.parentNode` 算出的偏移——
+   父级没有 `position` 时，下拉会跳出容器、贴到 body 左上角。父级设
+   `relative` 把下拉锁在编辑区内。
+   涉及的编辑区外壳有三种：
+     - `.c-edit` / `.c-composer`：评论区（comment_list.rs）
+     - `.editor`：工作空间内条目详情编辑器（workspace_main.rs:3652）
+     - `.ql-mention-list-container`：fluent-editor 自身在 quill 容器
+       之前插入的容器；也设上以兜底没匹配到上面任一外壳的边角情况。 */
+.c-edit,.c-composer,.editor,.ql-mention-list-container{position:relative}
 .c-badge{display:inline-flex;align-items:center;gap:3px;margin-left:6px;font-size:12px;color:var(--kimi-color-text-tertiary,#8f959e)}
 
 /* 条目关联侧栏：每行一个关联，badge + 箭头 + 目标条目 + 删除按钮。 */
@@ -1979,6 +2327,8 @@ input[type="color"].sw:disabled {
     display: flex;
     align-items: center;
     gap: 6px;
+    /* 内部 `.lblhint` 用 absolute 定位；没有这个锚点它会飘到视窗根部。 */
+    position: relative;
 }
 /* 工具列：help 在上、reset 在下，垂直堆叠在输入框最左侧。 */
 .querybar .q-expr .q-expr-tools {
@@ -2082,6 +2432,28 @@ input[type="color"].sw:disabled {
     transition: background 120ms ease, color 120ms ease;
 }
 .timeline-btn:hover {
+    background: var(--bg2);
+}
+
+/* 顶栏「主题切换」按钮：与 .timeline-btn 同尺寸同形状，只是不带 .on 态——
+   「三档循环」的指示靠图标本身的形状（左半暗 + 右半亮 / 太阳 / 月亮）
+   已经表达，背景不再加颜色。原先没有这条规则，按钮跌回浏览器默认样
+   式，看上去就是个普通 <button>，用户根本认不出来这是主题切换。 */
+.theme-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    border-radius: var(--r-m);
+    border: 0;
+    cursor: pointer;
+    background: transparent;
+    color: var(--ink);
+    transition: background 120ms ease, color 120ms ease;
+}
+.theme-btn:hover {
     background: var(--bg2);
 }
 .timeline-btn.on {
@@ -2249,48 +2621,219 @@ input[type="color"].sw:disabled {
     flex-direction: column;
     gap: 8px;
 }
+/* agent 输入区：垂直堆叠三块——附件行（上传按钮 + chip 列表）、错误提示、
+   输入行（textarea + 发送按钮）。曾经 `.agent-input` 用 row flex + 把上传按钮
+   跟发送按钮纵向堆叠，导致附件 chip / textarea / 快捷键提示三者横向并排、
+   textarea 被挤得很窄；现在 `flex-direction: column` 让每一块自己一行。 */
 .agent-input {
     flex: 0 0 auto;
     border-top: 1px solid var(--line);
     padding: 8px;
     display: flex;
+    flex-direction: column;
     gap: 6px;
-    align-items: flex-end;
+    align-items: stretch;
+}
+/* 附件行：现在只剩 chip 列表（上传按钮挪到底栏）。空时整个 chip-bar
+   `display:none`，行随之塌成 0 + 父容器 6px 间距——无附件时整段不占空间；
+   有附件时由 chip 自身的高度撑出，无须 min-height。 */
+.agent-attachments-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.agent-attachments-chips-bar {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+}
+.agent-attach-empty {
+    display: none;
+}
+.agent-attach-chips {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 4px;
+    padding: 2px 0;
+}
+.agent-attach-chip {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 6px;
+    background: var(--bg2);
+    border: 1px solid var(--line);
+    border-radius: var(--r-s);
+    font-size: 12px;
+    max-width: 200px;
+}
+.agent-attach-chip-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 140px;
+}
+.agent-attach-chip-size {
+    color: var(--ink3);
+    font-size: 11px;
+    flex: 0 0 auto;
+}
+.agent-attach-chip-x {
+    flex: 0 0 auto;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    line-height: 1;
+    border: 0;
+    background: transparent;
+    color: var(--ink3);
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 14px;
+}
+.agent-attach-chip-x:hover {
+    background: var(--dgr);
+    color: #fff;
+}
+/* 上传失败提示：单行 warn 色短文案，挂在附件行下方、输入行上方。 */
+.agent-att-warn {
+    color: var(--warn);
+    font-size: 12px;
+    margin: 0;
+}
+/* 输入区：textarea wrapper 直接吃下整个面板宽度，底栏绝对定位贴底部。
+   之前 `.agent-input-row` 还把 wrapper + 32x32 图标按钮放进 flex 行，
+   textarea 宽度被按钮 + padding 切走一半；现在 send/cancel 都是文字按钮塞
+   进底栏，textarea 独占整行宽度。 */
+.agent-textarea-wrapper {
+    flex: 1 1 auto;
+    min-width: 0;
+    position: relative;
 }
 .agent-textarea {
-    flex: 1 1 auto;
+    display: block;
+    width: 100%;
     min-height: 60px;
     max-height: 200px;
     border: 1px solid var(--line);
     border-radius: var(--r-m);
-    padding: 6px 8px;
+    /* 底部留 32px 给贴底的快捷键提示 + 文字按钮——文本不会跑到底栏下面；
+       hint/按钮用 pointer-events 不阻挡点击。 */
+    padding: 6px 8px 32px 8px;
     font: 13px system-ui;
     resize: vertical;
 }
+/* 图标按钮基类：24x24 矩形 + 居中 SVG。仅给附件按钮（`.agent-attach-pick`）
+   用——发送 / 取消改成文字按钮（见 `.agent-send` / `.agent-cancel`）。上传是低频
+   操作，刻意压小一档避免跟 textarea 抢视觉重点。 */
+.agent-icon-btn {
+    flex: 0 0 auto;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--line);
+    border-radius: var(--r-s);
+    background: var(--bg);
+    color: var(--ink);
+    cursor: pointer;
+    font: 0/0 system-ui;
+}
+/* 附件上传按钮现在贴在底栏，跟发送/取消组成右簇。`margin-left:auto` 让它
+   与左侧快捷键提示之间撑出空隙，把按钮推到右半边，再跟它后面的 send 按钮
+   紧挨在一起形成「📎 [发送]」的常见聊天面板动作簇。 */
+.agent-attach-pick {
+    margin-left: auto;
+}
+.agent-icon-btn:hover:not(:disabled):not(:has(input:disabled)) {
+    background: var(--bg2);
+}
+/* <label> 包了 <input type=file> 时，input 被 prop:disabled 后 label 换灰——
+   `:has(input:disabled)` 让 disabled 透传过来。 */
+.agent-icon-btn:has(input:disabled) {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+.agent-icon-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+/* 底栏：左侧快捷键提示，右侧文字按钮（发送 / 取消互斥）。hint 用
+   pointer-events:none 让点击穿透到 textarea，按钮自身 pointer-events:auto
+   正常接收点击。flex justify-content: space-between 让 hint 左贴边、
+   按钮右贴边，中间空隙自动伸缩。 */
+.agent-shortcut-bar {
+    position: absolute;
+    left: 8px;
+    right: 8px;
+    bottom: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    pointer-events: none;
+}
+.agent-shortcut-bar > * {
+    pointer-events: auto;
+}
+/* 快捷键提示：flex 子项占左侧空间，跟着 textarea 一起缩放；色用 --ink3
+   比 placeholder 略深一档，textarea 有内容时 hint 仍可见。 */
+.agent-shortcut-hint {
+    font-size: 11px;
+    color: var(--ink3);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    user-select: none;
+    pointer-events: none;
+}
+.agent-shortcut-hint kbd {
+    background: var(--bg3);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 0 4px;
+    font: 10px ui-monospace, "SF Mono", monospace;
+    color: var(--ink2);
+}
+.agent-shortcut-sep {
+    color: var(--ink4);
+}
+/* 发送按钮：文字按钮（i18n 走 "agent.send"），深底色与 hint 的灰底拉出层级。
+   输入为空 / 流式响应 / 附件上传中时置灰——trim().is_empty() 处理纯空格输入。 */
 .agent-send {
+    flex: 0 0 auto;
     border: 0;
     background: var(--ink);
     color: var(--bg);
-    padding: 6px 12px;
+    padding: 2px 12px;
     border-radius: var(--r-s);
     cursor: pointer;
-    font-size: 13px;
+    font-size: 12px;
+    line-height: 1.5;
+}
+.agent-send:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--ink) 88%, var(--bg3));
 }
 .agent-send:disabled {
     opacity: 0.5;
     cursor: not-allowed;
 }
+/* 取消按钮：与 `.agent-send` 同一右槽位、streaming 时挂载——用浅红边 + 红字
+   跟深底「发送」视觉上分开，避免按错时直接取消 turn。 */
 .agent-cancel {
-    /* 取消按钮：仅在 streaming 时挂载（Show when=streaming.get()），用
-       浅红边 + 红字把它和「发送」主按钮视觉上分开——按错也只是一次
-       no-op，不会丢掉已发的内容。 */
+    flex: 0 0 auto;
     border: 1px solid var(--danger, #c2410c);
     background: transparent;
     color: var(--danger, #c2410c);
-    padding: 5px 11px;
+    padding: 1px 12px;
     border-radius: var(--r-s);
     cursor: pointer;
-    font-size: 13px;
+    font-size: 12px;
+    line-height: 1.5;
 }
 .agent-cancel:hover {
     background: var(--danger, #c2410c);
@@ -2674,6 +3217,18 @@ input[type="color"].sw:disabled {
 }
 .lang-menu:hover .lang-drop,
 .lang-menu:focus-within .lang-drop { display: block; }
+/* 按钮与菜单之间那 6px 的 top 偏移是一片「死区」：光标从按钮往下走，跨过它的
+   一瞬间就已经离开了 `.lang-menu` 的悬停范围，菜单当场收起，手还没来得及点。
+   与 `.avatar-drop::before` 同套路：透明伪元素填缝——它属于 `.lang-drop`，
+   于是悬停链不断。 */
+.lang-drop::before {
+    content: "";
+    position: absolute;
+    top: -6px;
+    left: 0;
+    right: 0;
+    height: 6px;
+}
 
 .lang-mi {
     display: block;
@@ -2719,3 +3274,36 @@ input[type="color"].sw:disabled {
     /* 实际定位改用 inline-flex + margin-inline-start 已经在源头
        实现；这里只兜底：万一后续又有人写死 left/right，这一行兜住。 */
 }
+
+/* Entry 详情下的分享面板：默认可见（面板挂载就显示），父组件以 `.hidden` 切换显示。
+   行：URL 文本等宽，按钮组贴在右边——和现有 `.dmeta` / `.panel` 视觉词汇保持一致。 */
+.entry-share-panel { padding: 12px 16px; margin-bottom: 12px; }
+.entry-share-panel.hidden { display: none; }
+.entry-share-panel .entry-share-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 8px;
+}
+.entry-share-panel .entry-share-list { margin-top: 4px; }
+.share-row {
+    display: flex; align-items: center; gap: 8px; padding: 6px 0;
+    border-top: 1px dashed var(--line, #e5e7eb);
+}
+.share-row:first-child { border-top: 0; }
+.share-row .share-row-url.url {
+    flex: 1; min-width: 0;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px; color: var(--ink2, #4b5563);
+    background: transparent; padding: 4px 0;
+    overflow-x: auto; white-space: nowrap;
+}
+
+/* 公开分享页（`/share/{token}`）：套现有 `.panel` 视觉，让它跟登录页/详情页
+   长得像同一套系统。detail 自身是已 sanitized 的 HTML（与详情编辑器共用路径），所以仍走 inner_html。
+   不另设 `max-width`——`.page-wide` 已放开到视口宽，评论 / 附件 / 成员名单都是
+   数据密集型，宽屏就该占满整个屏幕，避免出现「正文单栏被压在中段、左右大块留白」。 */
+.shared-entry-page { padding-top: 24px; }
+.shared-entry-title { margin: 0 0 6px; font-size: 22px; line-height: 1.3; }
+.shared-entry-meta { font-size: 12px; color: var(--ink2, #6b7280); margin-bottom: 16px; }
+.shared-entry-labels { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+.shared-entry-detail { font-size: 14px; line-height: 1.6; }
+.shared-entry-detail img { max-width: 100%; height: auto; }

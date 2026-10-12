@@ -27,6 +27,11 @@ pub fn LabelEditor(
     /// 工作空间成员表：Account 型标签的值只从这里挑。
     members: RwSignal<Vec<Member>>,
     on_changed: Callback<()>,
+    /// 只读模式（匿名分享页）：只渲染已打标签的事实，
+    /// 不渲染「＋ 添加」选择器、不渲染每行的 × 删除按钮、不渲染任何值控件。
+    /// 配色 / 标签字段不变。
+    #[prop(default = false)]
+    read_only: bool,
 ) -> impl IntoView {
     let i18n: I18nController = use_i18n();
     // 正在新增、还没落库的标签名（本地待定行）。
@@ -72,13 +77,20 @@ pub fn LabelEditor(
                         let on_remove = remove_callback(apply, name);
                         view! {
                             <LabelRow title=title schema=schema value=Some(l.value) color=color
-                                members=members_now.clone() on_set on_remove />
+                                members=members_now.clone() on_set on_remove read_only />
                         }
                     })
                     .collect::<Vec<_>>()
             }}
             {move || {
                 // 待定行：选中但还没填值的新标签（无值标签和有默认值的标签不会走到这里）。
+                // 只读模式无新标签入口，根本不会产生 pending 行——但保留这段以备防御。
+                if read_only {
+                    return ().into_any();
+                }
+                // 把 `Option<View<_>>` 转成 `AnyView` 再交给 view! 调用方，
+                // 与「只读」早返分支类型一致。None 时变成空 View 块，
+                // 在 AnyView 路径里表现为「啥也不渲染」。
                 pending
                     .get()
                     .map(|name| {
@@ -91,8 +103,14 @@ pub fn LabelEditor(
                                 members=members.get() on_set=set_callback(apply, name) on_remove=cancel />
                         }
                     })
+                    .into_any()
             }}
             {move || {
+                // 只读模式：连「＋ 添加标签」下拉都不渲染——
+                // 公开页只是把已有标签当事实展示，不需要新增入口。
+                if read_only {
+                    return ().into_any();
+                }
                 // 「＋ 添加标签」：只列还没打上的标签定义，避免和已有行重复。
                 let taken: Vec<String> = labels.get().into_iter().map(|l| l.label_name).collect();
                 let pend = pending.get();
@@ -236,6 +254,8 @@ fn remove_callback(apply: Callback<(String, Option<Value>)>, name: String) -> Ca
 }
 
 /// 单行的值控件 + 删除按钮。`value=None` 表示这是还没落库的待定行。
+/// `read_only=true` 时整行降级为只读标签芯片：无 ×、无值控件（`value` 仍
+/// 会被格式化为 chip 文本展示），与 `LabelEditor` 的只读模式同源。
 #[component]
 fn LabelRow(
     title: String,
@@ -245,11 +265,45 @@ fn LabelRow(
     members: Vec<Member>,
     on_set: Callback<Value>,
     on_remove: Callback<()>,
+    #[prop(default = false)]
+    read_only: bool,
 ) -> impl IntoView {
     let i18n: I18nController = use_i18n();
     let current = value.as_ref().map(value_to_string).unwrap_or_default();
     // 各分支的闭包都要各自持有一份值，故在 match 之前克隆一份（`value` 之后不再使用）。
     let value_owned = value.clone();
+
+    // 配色直接落在 chip 上：底色淡、字色与描边用原色。
+    let style = color
+        .map(|c| {
+            format!(
+                "border-color:{c};background:color-mix(in srgb, {c} 12%, transparent);color:{c}"
+            )
+        })
+        .unwrap_or_default();
+
+    // 只读模式：把整行降级为只读 chip。必须在 `match schema { ... }` 之前
+    // 早返——match 里的 `Some(s)` 会移动 schema；只要走到 read_only 块时
+    // schema 仍然完整，未读到的字段（如 `color`、`value`）就可以直接借用。
+    if read_only {
+        let value_text = current.clone();
+        let vt = schema
+            .as_ref()
+            .map(|s| s.value_type.as_str())
+            .unwrap_or("");
+        // Boolean 的标点就是它的值；body 留空，与标签列的「title only」行为一致。
+        let body = match (vt, value_text.is_empty()) {
+            ("boolean", _) | (_, true) => title.clone(),
+            (_, false) => format!("{title}={value_text}"),
+        };
+        return view! {
+            <div class="lblrow" style=style>
+                <span class="k">{body}</span>
+            </div>
+        }
+        .into_any();
+    }
+
     let control = match schema {
         // 标签定义已被删除，但条目上还留着打标：只读显示原值，仍可移除。
         None => view! { <span class="mut">{current.clone()}</span> }.into_any(),
@@ -373,6 +427,11 @@ fn LabelRow(
                     _ => "datetime-local",
                 };
                 let current_native = to_native(&vt, &current);
+                // 注意：原生 datetime-local 控件挂载时锁住当时 <html lang>，
+                // 后续改 lang 不会重新本地化。Leptos 0.8 的 HtmlElement::key
+                // 不存在；强制重建元素必须由父组件的 key 信号（Show/For）
+                // 或受控重挂载驱动。当前选择保持轻量，把日历界面与 lang
+                // 同步这一项列在已知限制里——需要切语言时刷新一次页面即恢复。
                 view! {
                     <input class="inp" type=input_type prop:value=current_native on:change=move |ev| {
                         let v = event_target_value(&ev);
@@ -508,15 +567,6 @@ fn LabelRow(
         }
     };
 
-    // 配色直接落在 chip 上：底色淡、字色与描边用原色。
-    let style = color
-        .map(|c| {
-            format!(
-                "border-color:{c};background:color-mix(in srgb, {c} 12%, transparent);color:{c}"
-            )
-        })
-        .unwrap_or_default();
-
     view! {
         <div class="lblrow" style=style>
             <span class="k">{title}</span>
@@ -524,4 +574,5 @@ fn LabelRow(
             <button class="ibtn" title=move || i18n.t("label.remove") on:click=move |_| on_remove.run(())>{ic_close()}</button>
         </div>
     }
+    .into_any()
 }

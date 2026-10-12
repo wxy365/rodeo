@@ -1,30 +1,32 @@
 use leptos::html::Input;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use leptos_router::hooks::{use_navigate, use_params_map};
+use leptos_router::hooks::{use_navigate, use_params_map, use_query_map};
 
 use crate::frontend::attachment_list::AttachmentList;
 use crate::frontend::comment_list::CommentList;
 use crate::frontend::components::{fmt_datetime, logged_out, AuditTimeline, CodeCopy, TabBar};
 use crate::frontend::graphql_client::{
-    audit_logs, delete_entry, entry, label_schemas, members, update_entry, workspace_by_slug,
-    AccountBrief, AuditLog, Entry, Labeling, LabelSchema, Member, Workspace,
+    audit_logs, build_share_url, create_entry_share, delete_entry, entry, entry_shares,
+    label_schemas, members, revoke_entry_share, update_entry, workspace_by_slug,
+    AccountBrief, AuditLog, Entry, EntryShare, Labeling, LabelSchema, Member, Workspace,
 };
+use crate::frontend::share_clipboard::copy_share_url;
 use crate::frontend::i18n::{use_i18n, I18nController};
-use crate::frontend::icons::{ic_back, ic_check, ic_share, ic_tag};
+use crate::frontend::icons::{ic_back, ic_check, ic_close, ic_share, ic_tag};
 use crate::frontend::label_editor::LabelEditor;
 use crate::frontend::relations_panel::RelationsPanel;
 use crate::frontend::tiny_editor::TinyEditor;
 use crate::frontend::use_auth;
 
 // 全屏页侧栏的页签。标签编辑不在这里——它常驻在页签上方。
-// TabBar 的接口是 `&'static [(&str, &str)]`，目前 entry 还没必要为这点小改动给
-// TabBar 加 i18n 依赖；其它页面（workspace_main 的 DETAIL_TABS）也都没接 i18n。
-const SIDE_TABS: &[(&str, &str)] = &[
-    ("relations", "关联"),
-    ("attachments", "附件"),
-    ("history", "历史"),
-];
+fn side_tab_labels(i18n: &I18nController) -> [(String, String); 3] {
+    [
+        ("relations".to_string(), i18n.t("entry.side_relations")),
+        ("attachments".to_string(), i18n.t("entry.side_attachments")),
+        ("history".to_string(), i18n.t("entry.side_history")),
+    ]
+}
 
 #[component]
 pub fn EntryFullScreen() -> impl IntoView {
@@ -54,6 +56,10 @@ pub fn EntryFullScreen() -> impl IntoView {
     let ws_members = RwSignal::new(Vec::<Member>::new());
     let title = RwSignal::new(String::new());
     let detail = RwSignal::new(String::new());
+    // 分享面板：默认收起，「Share」按钮第一次点开后落地。`share_loading` 用来
+    // 在拉取 share 列表时灰掉触发按钮，避免重复请求。
+    let show_share_panel = RwSignal::new(false);
+    let share_loading = RwSignal::new(false);
     // 「当前编辑态 vs 已加载的条目」的差异。`data` 里的条目就是服务端最新版本
     // （保存成功后会被就地替换），所以无差异 ⇔ 没改动。
     // 不用一个 `saved` 布尔：它初值只能是 false，页面一加载就显示「未保存」，语义是错的。
@@ -201,9 +207,20 @@ pub fn EntryFullScreen() -> impl IntoView {
     };
 
     // 按钮与 Esc 监听两处都要用它；`Callback` 是 `Copy`，可以同时进两个 handler。
+    // 详情页 URL 上的 `?view=<id>` 透传给返回地址，让用户回到工作空间时仍是
+    // 之前选中的视图，而不是默认视图。
     let nav_back = navigate.clone();
-    let go_back: Callback<()> =
-        Callback::new(move |_| nav_back(&format!("/{}", slug()), Default::default()));
+    let view_on_back: Option<String> = use_query_map()
+        .get()
+        .get("view")
+        .filter(|s| !s.is_empty());
+    let go_back: Callback<()> = Callback::new(move |_| {
+        let href = match view_on_back.as_deref() {
+            Some(id) => format!("/{}?view={}", slug(), id),
+            None => format!("/{}", slug()),
+        };
+        nav_back(&href, Default::default());
+    });
 
     // Esc 返回视图页；有未保存改动时拦住，并把原因写进现成的提示位。
     // 显式按钮不受影响：Esc 容易误触，按钮是明确动作。
@@ -224,7 +241,7 @@ pub fn EntryFullScreen() -> impl IntoView {
     }
 
     view! {
-        <div class="page">
+        <div class="page page-wide">
             <div class="panel entry-top">
                 <button class="btn" on:click=move |_| go_back.run(())>{ic_back()}{move || i18n.t("entry.back_to_view")}</button>
                 <CodeCopy code=Signal::derive(code) />
@@ -262,12 +279,28 @@ pub fn EntryFullScreen() -> impl IntoView {
                 } else {
                     view! { <span class="chip c-done">{ic_check()}{move || i18n.t("entry.saved")}</span> }.into_any()
                 }}
-                <button class="btn" disabled>{ic_share()}{move || i18n.t("entry.share_soon")}</button>
+                // 「Share」按钮：切换面板可见性；拉 share 列表统一走下面的 effect。
+                    <button class="btn" disabled=move || share_loading.get() on:click=move |_| {
+                        show_share_panel.set(!show_share_panel.get_untracked());
+                    }>{ic_share()}{move || i18n.t("entry.share")}</button>
                 <button class="btn danger" on:click=del>{move || i18n.t("entry.delete")}</button>
             </div>
 
             {move || error.get().map(|e| view! { <div class="hint" style="margin-bottom:12px">{"⚠ "}{e}</div> })}
 
+            {move || if show_share_panel.get() {
+                let c = code();
+                // ws_id 在 data 没就绪时是空串——下面的 load_shares 看到空 ws_id
+                // 直接跳过，避免面板挂起等待。
+                let ws_id = data
+                    .get()
+                    .and_then(|r| r.ok())
+                    .map(|(w, _, _, _, _)| w.id)
+                    .unwrap_or_default();
+                view! { <SharePanel code=c ws_id=ws_id on_close=Callback::new(move |_| show_share_panel.set(false)) /> }.into_any()
+            } else {
+                view! { <div class="entry-share-panel hidden"></div> }.into_any()
+            }}
             <div class="entry-layout">
                 <div class="entry-main">
                     <div class="panel entry-editor" style="padding:0;overflow:hidden"
@@ -282,8 +315,15 @@ pub fn EntryFullScreen() -> impl IntoView {
                         {move || match data.get() {
                             Some(Ok((_ws, e, _, _, _))) => {
                                 let initial = e.detail.clone();
+                                // 成员名单：读 get_untracked 而不是 get()，
+                                // 否则 ws_members 后改会让这个闭包重跑、编辑器
+                                // 重新挂载、用户输入的内容丢光。data 装载的同
+                                // 一帧里 ws_members.set() 已经走过，名单已就位。
+                                let ms = ws_members.get_untracked();
                                 view! {
-                                    <TinyEditor initial entry_code=Signal::derive(code) on_change=on_editor_change on_uploaded=on_changed />
+                                    <TinyEditor initial entry_code=Signal::derive(code)
+                                        on_change=on_editor_change on_uploaded=on_changed
+                                        members=ms />
                                 }.into_any()
                             }
                             _ => view! {
@@ -299,6 +339,7 @@ pub fn EntryFullScreen() -> impl IntoView {
                             code=Signal::derive(code)
                             workspace_id=ws_id
                             on_changed=on_changed
+                            on_uploaded=on_changed
                         />
                     </div>
                 </div>
@@ -325,7 +366,7 @@ pub fn EntryFullScreen() -> impl IntoView {
                     </div>
 
                     <div>
-                        <TabBar tabs=SIDE_TABS active=side_tab />
+                        <TabBar tabs=side_tab_labels(&i18n).to_vec() active=side_tab />
                         {move || match side_tab.get().as_str() {
                             "relations" => view! {
                                 <RelationsPanel
@@ -347,6 +388,139 @@ pub fn EntryFullScreen() -> impl IntoView {
                         }}
                     </div>
                 </aside>
+            </div>
+        </div>
+    }
+}
+
+/// Entry 详情下面的分享面板。`show_share_panel` 在父组件控制可见性；
+/// 本组件挂载即拉一次 share 列表——避免每次点开都重发请求；同时提供
+/// 「Create」「Revoke」「Copy URL」三件套。
+#[component]
+fn SharePanel(
+    code: String,
+    ws_id: String,
+    on_close: Callback<()>,
+) -> impl IntoView {
+    let i18n: I18nController = use_i18n();
+    let shares = RwSignal::new(Vec::<EntryShare>::new());
+    let busy = RwSignal::new(false);
+    let copied_id = RwSignal::new(None::<String>);
+    // `code` / `ws_id` 是 String 不 Copy，多次闭包需要 clone 进去——直接把它们
+    // 提到 RwSignal 一次性持有，闭包读副本，避免「value moved」连环报错。
+    let code = RwSignal::new(code);
+    let ws_id = RwSignal::new(ws_id);
+
+    // 拉一次 share 列表。父组件点开按钮时 ws_id 已经走 data 装载完；这里用
+    // `cfg!` 在 SSR 下跳过，hydrate 后再补一次。
+    Effect::new(move |_| {
+        if !cfg!(target_arch = "wasm32") || ws_id.get().is_empty() {
+            return;
+        }
+        let c = code.get();
+        let w = ws_id.get();
+        spawn_local(async move {
+            match entry_shares(&w, &c).await {
+                Ok(list) => shares.set(list),
+                Err(_) => {}
+            }
+        });
+    });
+
+    // 「创建」：落到服务端即可拿回带 id 的 share 行；插入前端列表头（最新在前）。
+    let on_create = Callback::new(move |_: ()| {
+        if !cfg!(target_arch = "wasm32") || ws_id.get().is_empty() {
+            return;
+        }
+        if busy.get() {
+            return;
+        }
+        busy.set(true);
+        let c = code.get();
+        let w = ws_id.get();
+        spawn_local(async move {
+            match create_entry_share(&w, &c).await {
+                Ok(share) => shares.update(|list| list.insert(0, share)),
+                Err(_) => {}
+            }
+            busy.set(false);
+        });
+    });
+
+    // 「撤销」：调用 mutation，然后从前端列表就地更新——`revoked = true`，
+    // 让原行变灰显示「已撤销」。不再触发新的 list 拉取。
+    let on_revoke = Callback::new(move |sid: String| {
+        if !cfg!(target_arch = "wasm32") || ws_id.get().is_empty() {
+            return;
+        }
+        let w = ws_id.get();
+        spawn_local(async move {
+            if revoke_entry_share(&w, &sid).await.is_ok() {
+                shares.update(|list| {
+                    if let Some(s) = list.iter_mut().find(|x| x.id == sid) {
+                        s.revoked = true;
+                    }
+                });
+            }
+        });
+    });
+
+    view! {
+        <div class="panel entry-share-panel">
+            <div class="entry-share-header">
+                <span class="grp-h">{move || i18n.t("entry.share_title")}</span>
+                <button class="btn sm" on:click=move |_| on_close.run(()) title={move || i18n.t("common.close")}>
+                    {ic_close()}
+                </button>
+            </div>
+            {move || {
+                let list = shares.get();
+                if list.is_empty() {
+                    view! { <p class="mut">{move || i18n.t("entry.share_empty")}</p> }.into_any()
+                } else {
+                    view! {
+                        <div class="entry-share-list">
+                            {list.into_iter().map(|s| {
+                                let sid = s.id.clone();
+                                let sid_for_revoke = s.id.clone();
+                                let sid_for_copy = s.id.clone();
+                                let url = build_share_url(&s.id);
+                                let revoked = s.revoked;
+                                let copied_id = copied_id.clone();
+                                view! {
+                                    <div class="share-row">
+                                        <code class="share-row-url url">{url}</code>
+                                        <button class="btn sm" on:click={
+                                            let sid = sid_for_copy.clone();
+                                            let copied_id = copied_id.clone();
+                                            move |_| {
+                                                let url = build_share_url(&sid);
+                                                copy_share_url(sid.clone(), url, copied_id);
+                                            }
+                                        } disabled=revoked>
+                                            {move || if copied_id.get().as_deref() == Some(sid.as_str()) {
+                                                i18n.t("entry.share_copied")
+                                            } else {
+                                                i18n.t("entry.share_copy")
+                                            }}
+                                        </button>
+                                        <button class="btn sm danger" on:click={
+                                            let sid = sid_for_revoke.clone();
+                                            move |_| on_revoke.run(sid.clone())
+                                        } disabled=revoked>
+                                            {move || if revoked { i18n.t("entry.share_revoked") } else { i18n.t("entry.share_revoke") }}
+                                        </button>
+                                    </div>
+                                }
+                            }).collect::<Vec<_>>()}
+                        </div>
+                    }.into_any()
+                }
+            }}
+            <div style="margin-top:8px">
+                <button class="btn pri" disabled=move || busy.get() on:click=move |_| on_create.run(())>
+                    {move || i18n.t("entry.share_create")}
+                </button>
             </div>
         </div>
     }

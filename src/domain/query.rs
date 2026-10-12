@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -83,7 +83,13 @@ pub struct IndexHint {
 /// 继承标签（`LabelInherited`，语法上写为 `L4+`）与 `Contains`/`NotContains`/
 /// `Present`/`Absent` 都不索引——前者必须先做继承推导，后者没有等值语义。
 /// 限制在 `And` 顶层的原因：`Or`/`Not` 的集合运算成本大于收益，宁可走全扫。
-pub fn extract_index_hints(query: &Query) -> Vec<IndexHint> {
+///
+/// Account 类型跳过所有 hint：存储是 ULID，want 是名字/邮箱，
+/// 索引字节序比较拿不到「邮箱命中」那种语义；全扫路径由 `acc_set_op` /
+/// eval-side account 比较正确处理。schema 缺失也跳过——
+/// 让该 hint 在 `codes_for_hint` 走原有的「schema 找不到即跳过」分支，
+/// 与未改动前的行为一致。
+pub fn extract_index_hints(query: &Query, schemas: &[LabelSchema]) -> Vec<IndexHint> {
     let Query::And(children) = query else {
         return Vec::new();
     };
@@ -98,6 +104,14 @@ pub fn extract_index_hints(query: &Query) -> Vec<IndexHint> {
         let Some(value) = &cond.value else {
             continue;
         };
+        let Some(schema) = schemas.iter().find(|s| &s.name == name) else {
+            continue;
+        };
+        // 账号标签跳过：候选全集交给全扫的 `acc_set_op`（或将来的 account-aware
+        // Eq/Ne/In/NotIn）去走 ULID ↔ name/email 翻译，索引帮不上忙。
+        if schema.value_type == LabelValueType::Account {
+            continue;
+        }
         match cond.op {
             Op::Eq | Op::Ne | Op::Gt | Op::Ge | Op::Lt | Op::Le => {
                 out.push(IndexHint {
@@ -110,6 +124,16 @@ pub fn extract_index_hints(query: &Query) -> Vec<IndexHint> {
                 out.push(IndexHint {
                     label_name: name.clone(),
                     op: cond.op,
+                    value: value.clone(),
+                });
+            }
+            // 多值「包含」= 标签值集合里包含右值集合的每个元素；对单值右值来说
+            // 退化成「列表里有 X」，可被 (ws, name, value=X) 的 LABELINGS_BY_LABEL 索引命中。
+            // 多值「等于」需要的是「所有候选都命中」=多次索引 + 集合交，暂不索引。
+            Op::SetContains => {
+                out.push(IndexHint {
+                    label_name: name.clone(),
+                    op: Op::Eq,
                     value: value.clone(),
                 });
             }
@@ -134,6 +158,11 @@ pub enum Op {
     Le,
     Contains,
     NotContains,
+    // 追加在末尾：多值标签专属集合语义。
+    // 「包含」= 标签值集合包含右值集合的每个元素；「等于」= 两集合相等。
+    // 单值标签不可用，op_allowed 在 vt + multi 双重条件下放行。
+    SetContains,
+    SetEquals,
 }
 
 impl Query {
@@ -188,11 +217,23 @@ impl Query {
         }
     }
 
+    /// 查询是否需要把账号表预加载进 `EvalEnv::account_of`。
+    ///
+    /// 包含三类用法：
+    ///  - 内置 `CreatedBy` / `UpdatedBy`：按 id 取名字邮箱参与比较。
+    ///  - `Eq` / `Ne` / `In` / `NotIn` 作用在账号型标签上：单值 / 多值都走同一套。
+    ///  - 多值账号标签的 `SetContains` / `SetEquals`：集合语义按 (name|email) 比，
+    ///    不预加载就连一次都命中不了。
+    ///
+    /// 标签名位看不出类型（要看 schema），所以这一层只把"含任意标签条件"或
+    /// "含 CreatedBy/UpdatedBy"算作需要预加载，过宽一点但不会算错。
     pub fn contains_account_field(&self) -> bool {
         match self {
             Query::And(v) | Query::Or(v) => v.iter().any(Query::contains_account_field),
             Query::Not(q) => q.contains_account_field(),
-            Query::Cond(c) => matches!(c.field, Field::CreatedBy | Field::UpdatedBy),
+            Query::Cond(c) => {
+                matches!(c.field, Field::CreatedBy | Field::UpdatedBy) || c.field.label_of().is_some()
+            }
         }
     }
 
@@ -350,7 +391,7 @@ impl Condition {
                     .iter()
                     .find(|s| &s.name == name)
                     .ok_or_else(|| AppError::InvalidQuery(format!("标签不存在: {name}")))?;
-                if !op_allowed(schema.value_type, self.op) {
+                if !op_allowed(schema.value_type, self.op, schema.multi) {
                     return Err(AppError::InvalidQuery(format!(
                         "运算符 {} 不适用于标签 {name}（{}）",
                         op_label(self.op),
@@ -545,6 +586,21 @@ impl Condition {
                             self.value.as_ref(),
                         );
                     }
+                    // 账号类型多值的 `has` / `is` 走 `acc_set_op`：存储的是 id 列表，
+                    // want 是名字或邮箱；裸 id 字符串比较会拿不到「邮箱命中」那种语义，
+                    // 所以要靠 `env.account_of` 把每个 id 翻成 (name, email) 再比。
+                    // EnumList 的 `has` / `is` 两侧都是字符串数组，下面的通用 cmp_value
+                    // 路径直接命中，不需要单独一条分支。
+                    if vt == LabelValueType::Account
+                        && matches!(self.op, Op::SetContains | Op::SetEquals)
+                    {
+                        return acc_set_op(
+                            &value.account_ids(),
+                            self.op,
+                            self.value.as_ref(),
+                            env.account_of,
+                        );
+                    }
                 }
                 cmp_value(&value.to_json(), self.op, self.value.as_ref())
             }
@@ -575,6 +631,58 @@ fn acc_in(name: &str, email: &str, want: Option<&serde_json::Value>) -> bool {
         x.as_str()
             .is_some_and(|w| name.eq_ignore_ascii_case(w) || email.eq_ignore_ascii_case(w))
     })
+}
+
+/// 多值账号标签的 `has` / `is`：把每个存储的 id 通过 `account_of` 翻成 (name, email)，
+/// 两侧都按 (name|email) 集合比较——用户表达式里写邮箱、写显示名都命中。
+///
+///  - `SetContains`（`has`）：want 的每一个元素都至少匹配到 stored 集合里的一个 (name, email)。
+///  - `SetEquals`（`is`）：stored 与 want 一一对应（按 name/email 任一相等）。
+///
+/// want 接受标量或数组；空 want 一律返回 false（与 `SetEquals` 的"集合相等"语义一致——
+/// 空 want 不应误命中空 stored）。
+fn acc_set_op(
+    stored_ids: &[&str],
+    op: Op,
+    want: Option<&serde_json::Value>,
+    account_of: &dyn Fn(Ulid) -> Option<(String, String)>,
+) -> bool {
+    let stored: Vec<(String, String)> = stored_ids
+        .iter()
+        .filter_map(|id| Ulid::from_string(id).ok().and_then(|u| account_of(u)))
+        .collect();
+    if stored.is_empty() {
+        return false;
+    }
+    let wants: Vec<&str> = match want {
+        Some(serde_json::Value::Array(a)) => a.iter().filter_map(|v| v.as_str()).collect(),
+        Some(serde_json::Value::String(s)) => vec![s.as_str()],
+        _ => Vec::new(),
+    };
+    if wants.is_empty() {
+        return false;
+    }
+    match op {
+        Op::SetContains => wants
+            .iter()
+            .all(|w| stored.iter().any(|(n, e)| n.eq_ignore_ascii_case(w) || e.eq_ignore_ascii_case(w))),
+        Op::SetEquals => {
+            // 两边都按 (name|email) 集合比：每个 stored 至少有一个 want 命中，反之亦然。
+            // 同一个 stored 在两边集合里只能"占一个位"——`matched` 用来避免重复配对。
+            let mut used = vec![false; stored.len()];
+            for w in &wants {
+                let Some((idx, _)) = stored.iter().enumerate().find(|(i, (n, e))| {
+                    !used[*i] && (n.eq_ignore_ascii_case(w) || e.eq_ignore_ascii_case(w))
+                }) else {
+                    return false;
+                };
+                used[idx] = true;
+            }
+            // 还要保证每个 stored 都被 want 命中（防止 [A,B] is [A] 这种半边相等漏过）。
+            used.iter().all(|&u| u)
+        }
+        _ => false,
+    }
 }
 
 /// 时间型标签比较：两侧按同一布局解析成 YmdHms，按字典序比较字段元组。
@@ -622,6 +730,8 @@ fn op_label(op: Op) -> &'static str {
         Op::Le => "<=",
         Op::Contains => "~",
         Op::NotContains => "!~",
+        Op::SetContains => "has",
+        Op::SetEquals => "is",
     }
 }
 
@@ -676,7 +786,9 @@ fn collect_text_keywords(q: &Query, out: &mut HashSet<String>) {
     }
 }
 
-fn op_allowed(vt: LabelValueType, op: Op) -> bool {
+/// 运算符是否可用于该标签。`multi` 决定 Account / Enum 是否启用集合语义运算符：
+/// 单值与多值都允许 `Eq/Ne/In/NotIn`；只有多值 Account/Enum 才允许 `SetContains/SetEquals`。
+fn op_allowed(vt: LabelValueType, op: Op, multi: bool) -> bool {
     use LabelValueType::*;
     let existence = matches!(op, Op::Present | Op::Absent);
     let cmp = match vt {
@@ -688,12 +800,28 @@ fn op_allowed(vt: LabelValueType, op: Op) -> bool {
         Date | Time | DateTime => {
             matches!(op, Op::Eq | Op::Ne | Op::Gt | Op::Ge | Op::Lt | Op::Le)
         }
-        // 账号按 id 比较，比较值就是账号 id：只有精确匹配有意义。
-        String | Enum | Email => matches!(
+        // 字符串 / 邮箱：精确 + 子串 + 列表匹配。
+        String | Email => matches!(
             op,
             Op::Eq | Op::Ne | Op::Contains | Op::NotContains | Op::In | Op::NotIn
         ),
-        Account => matches!(op, Op::Eq | Op::Ne | Op::In | Op::NotIn),
+        // Enum：单值时与字符串等价（精确 / 子串 / 列表匹配）；
+        // 多值时额外允许 SetContains / SetEquals，语义是值集合而非字符串集合。
+        Enum => {
+            let base = matches!(
+                op,
+                Op::Eq | Op::Ne | Op::Contains | Op::NotContains | Op::In | Op::NotIn
+            );
+            let set_ops = multi && matches!(op, Op::SetContains | Op::SetEquals);
+            base || set_ops
+        }
+        // 账号：Eq/Ne/In/NotIn 在 `eval_label` 里走 id → 名字邮箱 转换；
+        // SetContains/SetEquals（仅多值）也走同一套，集合语义不靠裸 id 字符串。
+        Account => {
+            let base = matches!(op, Op::Eq | Op::Ne | Op::In | Op::NotIn);
+            let set_ops = multi && matches!(op, Op::SetContains | Op::SetEquals);
+            base || set_ops
+        }
     };
     existence || cmp
 }
@@ -798,6 +926,19 @@ fn cmp_value(got: &serde_json::Value, op: Op, want: Option<&serde_json::Value>) 
             },
             _ => false,
         },
+        // 多值集合语义：`got` 与 `want` 都按标量字符串集合处理，want 接受标量或数组。
+        // 集合里出现非标量元素（对象等）会被 elem_strings 静默丢掉——这与既有 In/Contains 路径一致。
+        Op::SetContains => {
+            let got_set: BTreeSet<String> = elem_strings(got).into_iter().collect();
+            let want_set: BTreeSet<String> = elem_strings(want).into_iter().collect();
+            // 空 want 是无意义查询：避免「has 」匹配到一切有任意值的标签。
+            !want_set.is_empty() && want_set.iter().all(|w| got_set.contains(w))
+        }
+        Op::SetEquals => {
+            let got_set: BTreeSet<String> = elem_strings(got).into_iter().collect();
+            let want_set: BTreeSet<String> = elem_strings(want).into_iter().collect();
+            got_set == want_set
+        }
         Op::Present | Op::Absent => false,
     }
 }
@@ -1198,6 +1339,18 @@ impl Parser {
                 self.eat(&Tok::In)?;
                 Op::NotIn
             }
+            // 上下文相关：`is` / `has` 在运算符位被解释为集合语义运算符；
+            // 在标签名位仍是普通 `Tok::Ident`，所以「标签叫 is」的工作空间不会被这一行打坏。
+            // 不在 lex 阶段一上来就关键字化（那是 plan 阶段反复强调的点）。
+            Some(Tok::Ident(s)) => match s.to_ascii_lowercase().as_str() {
+                "has" => Op::SetContains,
+                "is" => Op::SetEquals,
+                _ => {
+                    return Err(AppError::InvalidQuery(format!(
+                        "期望运算符，实际 {s}"
+                    )))
+                }
+            },
             other => {
                 return Err(AppError::InvalidQuery(format!(
                     "期望运算符，实际 {}",
@@ -1270,6 +1423,7 @@ impl Parser {
                         | Tok::NotTilde
                         | Tok::In
                         | Tok::Not
+                        | Tok::Ident(_)
                 )
             ) {
                 return Ok(Query::Cond(Condition {
@@ -1300,6 +1454,7 @@ impl Parser {
                         | Tok::NotTilde
                         | Tok::In
                         | Tok::Not
+                        | Tok::Ident(_)
                 )
             ) {
                 return Ok(Query::Cond(Condition {
@@ -1346,6 +1501,9 @@ fn expr_op(op: Op) -> &'static str {
         Op::NotContains => "!~",
         Op::In => "in",
         Op::NotIn => "not in",
+        // 多值集合语义在表达式里以 `has` / `is` 写出来（与 `comparison_op` 反向一致）。
+        Op::SetContains => "has",
+        Op::SetEquals => "is",
         Op::Present | Op::Absent => "",
     }
 }

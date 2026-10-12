@@ -1115,7 +1115,7 @@ mod tests {
         /// 与 `Services::new` 启动顺序一致。规则引擎测试不需要搜索索引，所以不调 `with_search`.
         fn entry_svc(store: &Arc<DocStore>) -> EntryService {
             let ws_svc = WorkspaceService::new(store.clone());
-            let msg_svc = MessageService::new(store.clone(), ws_svc);
+            let msg_svc = MessageService::new(store.clone(), ws_svc, None);
             let rel_svc = RelationService::new(store.clone());
             EntryService::new(store.clone(), msg_svc, rel_svc)
         }

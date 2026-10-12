@@ -172,13 +172,128 @@ impl I18nController {
 
     pub fn set(&self, loc: Locale) {
         self.locale.set(loc);
+        #[cfg(target_arch = "wasm32")]
+        persist_locale(loc);
+    }
+}
+
+/// 把用户最近的显式选择写回 localStorage + cookie + 当前文档的 `<html lang/dir>`。
+///
+/// 三处一起更新，避免下次 SSR（读 cookie）和下次 head 内联脚本（读 localStorage）
+/// 退回 SSR 的兜底决议。`localStorage.set_item` 在隐私模式下会抛
+/// `SecurityError`，这里吞错——和 `agent_panel.rs::save_panel_layout` 同款，
+/// 下次刷新退化到 SSR 默认值，不会让面板/语言切死。
+///
+/// cookie setter 在 web-sys 里挂在 `HtmlDocument` 上，`Window::document()` 返回
+/// 的 `Document` 类型本身没有——`dyn_into` 一次把接口对齐过去。`lang` / `dir` 改
+/// `documentElement`（`Element`），那个接口就在 `Document` 上，不需要 cast。
+#[cfg(target_arch = "wasm32")]
+fn persist_locale(loc: Locale) {
+    use wasm_bindgen::JsCast;
+    let Some(window) = web_sys::window() else { return };
+    if let Ok(Some(storage)) = window.local_storage() {
+        let _ = storage.set_item("rodeo_lang", loc.as_str());
+    }
+    let Some(document) = window.document() else { return };
+    if let Some(root) = document.document_element() {
+        let _ = root.set_attribute("lang", loc.as_str());
+        let _ = root.set_attribute(
+            "dir",
+            if loc.is_rtl() { "rtl" } else { "ltr" },
+        );
+    }
+    // 写 cookie：cast 到 HtmlDocument。cast 失败（极端环境）就静默退回，
+    // 下次 SSR 还能从 localStorage 落回 head 脚本里。
+    if let Ok(html_doc) = document.dyn_into::<web_sys::HtmlDocument>() {
+        let cookie = format!(
+            "rodeo_lang={}; path=/; max-age=31536000; samesite=lax",
+            loc.as_str()
+        );
+        let _ = html_doc.set_cookie(&cookie);
     }
 }
 
 pub fn provide_i18n(initial: Locale) -> I18nController {
     let ctrl = I18nController { locale: RwSignal::new(initial) };
     provide_context(ctrl);
+    // On hydrate, force the controller signal to match what the head script
+    // actually set on `<html lang>`. The head script reads localStorage and
+    // may override `<html lang>` away from the SSR-resolved value (e.g.
+    // cookie=en + localStorage=zh → SSR rendered English, head script flipped
+    // `<html lang>` to "zh"). Without this, the body stays in the SSR locale
+    // because Leptos hydrate doesn't trigger a re-render when a signal's
+    // initial value differs from the SSR value — the change must go through
+    // the signal's reactive machinery. `set()` is a no-op when detected ==
+    // initial, so the cookie-only path doesn't churn. SSR (`cfg(feature="ssr")`)
+    // never runs this branch because there is no DOM.
+    #[cfg(target_arch = "wasm32")]
+    sync_locale_to_html_lang(&ctrl);
     ctrl
+}
+
+/// Re-read `<html lang>` (post-head-script) and force the controller
+/// to land on it. See `provide_i18n` doc for the rationale.
+///
+/// Mismatch case (cookie=en + localStorage=zh) lands here with
+/// `current == detected` because `resolve_initial_locale` already pulled the
+/// post-head-script value into the controller's initial signal. The DOM body
+/// still carries the SSR (English) text, but Leptos hydrate won't re-render
+/// unless the signal's value actually changes after hydrate finishes. A plain
+/// `set(detected)` is a no-op. We schedule a two-step En-bounce in
+/// separate macrotasks: first set to En (re-renders body in English), then
+/// set to `detected` (re-renders body in `detected`). Each macrotask is its
+/// own reactive flush so both writes fire and the second one wins. The
+/// intermediate English flash is unavoidable in the SSR/hydrate mismatch
+/// case but only happens once per page-load on a stale-localStorage tab.
+#[cfg(target_arch = "wasm32")]
+fn sync_locale_to_html_lang(ctrl: &I18nController) {
+    let Some(window) = web_sys::window() else { return };
+    let Some(document) = window.document() else { return };
+    let Some(root) = document.document_element() else { return };
+    let Some(lang) = root.get_attribute("lang") else { return };
+    let Some(detected) = Locale::from_browser(&lang) else { return };
+    let current = ctrl.locale.get_untracked();
+    if current != detected {
+        // Genuine mismatch: the initial signal is wrong. Force it now so
+        // the body re-renders. (Plain Leptos hydration skipped this update
+        // because the SSR DOM was rendered against a *different* locale
+        // signal — cookie-driven SSR vs localStorage-driven hydrate.)
+        ctrl.locale.set(detected);
+        return;
+    }
+    // current == detected: hydrate's reactive system collapses the
+    // initial-signal-write. Schedule a two-tick En→detected re-apply via
+    // `setTimeout(0)`. Each macrotask is its own reactive flush, so each
+    // `set` fires its own re-render: first back to English (matching the
+    // SSR DOM), then back to `detected` (what the head script chose).
+    schedule_en_bounce(&window, ctrl, detected);
+}
+
+#[cfg(target_arch = "wasm32")]
+#[inline(never)]
+fn schedule_en_bounce(window: &web_sys::Window, ctrl: &I18nController, detected: Locale) {
+    use wasm_bindgen::JsCast;
+    let ctrl_a = *ctrl;
+    let cb_a = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
+        ctrl_a.locale.set(Locale::En);
+        let ctrl_b = ctrl_a;
+        let window_b = web_sys::window();
+        let cb_b = wasm_bindgen::closure::Closure::wrap(Box::new(move || {
+            ctrl_b.locale.set(detected);
+        }) as Box<dyn FnMut()>);
+        if let Some(w) = window_b {
+            let _ = w.set_timeout_with_callback_and_timeout_and_arguments_0(
+                cb_b.as_ref().unchecked_ref(),
+                0,
+            );
+        }
+        cb_b.forget();
+    }) as Box<dyn FnMut()>);
+    let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
+        cb_a.as_ref().unchecked_ref(),
+        0,
+    );
+    cb_a.forget();
 }
 
 /// 静态兜底控制器：`generate_route_list(App)` 在启动期会走一遍 App 子树，

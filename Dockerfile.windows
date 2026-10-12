@@ -1,0 +1,73 @@
+# Windows x86_64 生产构建环境。在 Linux 容器里用 mingw-w64 交叉编译 rodeo.exe，
+# 产物经 `docker build --target dist --output type=local,dest=dist` 抽回宿主，
+# 再由 Makefile 的 _pack_zip 组装 rodeo-windows-x86_64/{rodeo.exe,site,hash.txt,...}.zip。
+#
+# 与 Dockerfile.build 的差异
+#     * 加装 mingw-w64 让 gcc/g++/ar 有 Windows 目标；用 CC_x86_64_pc_windows_gnu 等环境
+#       变量指给 cargo / cc-rs / bindgen，不动默认 cc。
+#     * 多装 zip（虽然最终打包在宿主管，但容器内也可备一份——这里其实没用到，是预留）。
+#     * 不再装 librocksdb-sys 在 Linux 上跑的依赖；rocksdb-sys 走 cmake + mingw 自带的
+#       Windows 头/库自洽。
+#
+# "不依赖操作系统动态库" 解读：默认 mingw 链 MSVCRT.DLL（Windows 自带 system DLL，
+# 部署机永远有），不需要额外带 VC++ redist。要彻底静态可在 `make package-windows`
+# 时设 RUSTFLAGS="-Ctarget-feature=+crt-static"，但 rocksdb-sys 走 cmake，C 端要
+# 配 CMAKE_C_FLAGS=-static / ROCKSDB_STATIC=1 才会同步静态化，这一版不动。
+ARG RUST_IMAGE=rust:1-bookworm
+FROM ${RUST_IMAGE} AS builder
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        mingw-w64 \
+        clang libclang-dev cmake pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN rustup target add wasm32-unknown-unknown
+RUN rustup target add x86_64-pc-windows-gnu
+
+# 与 Dockerfile.build 同样的 registry 镜像处理——Fastly IPv4 限速的坑是同一个。
+ARG CARGO_REGISTRY_MIRROR
+RUN if [ -n "${CARGO_REGISTRY_MIRROR}" ]; then \
+        printf '[source.crates-io]\nreplace-with = "mirror"\n[source.mirror]\nregistry = "sparse+%s"\n' \
+            "${CARGO_REGISTRY_MIRROR}" > /usr/local/cargo/config.toml ; \
+    fi
+
+# 版本与宿主 `cargo leptos --version` 对齐，避免本地与构建机行为分叉。
+ARG CARGO_LEPTOS_VERSION=0.3.7
+RUN cargo install cargo-leptos --version "${CARGO_LEPTOS_VERSION}" --locked
+
+# mingw 工具链：cargo / cc-rs / bindgen 都按环境变量名找（变量名 = 目标三元组，- 换 _）。
+ENV CC_x86_64_pc_windows_gnu=x86_64-w64-mingw32-gcc \
+    CXX_x86_64_pc_windows_gnu=x86_64-w64-mingw32-g++ \
+    AR_x86_64_pc_windows_gnu=x86_64-w64-mingw32-ar
+
+WORKDIR /app
+COPY . .
+
+# GitHub 上的 wasm-bindgen / wasm-opt 走宿主代理（同 Dockerfile.build 的机制）。
+ARG CARGO_DOWNLOAD_PROXY
+ARG CARGO_NO_PROXY
+
+# cargo-leptos --target 把 bin 编到 x86_64-pc-windows-gnu，把 lib 编到
+# wasm32-unknown-unknown。bin 产物路径是
+# target/x86_64-pc-windows-gnu/release/rodeo.exe，hash.txt 落在同级目录
+# （HashFile::new 的 abs_dir + exe parent + rel）；wasm 走 target/wasm32-unknown-unknown/，
+# site/ 仍在 target/site/。如果 0.3.7 改路径，按 BinPackage.exe_path 调整下面三处 cp。
+RUN --mount=type=cache,target=/app/target \
+    --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/root/.cache/cargo-leptos \
+    if [ -n "${CARGO_DOWNLOAD_PROXY}" ]; then \
+        export HTTP_PROXY="${CARGO_DOWNLOAD_PROXY}" \
+               HTTPS_PROXY="${CARGO_DOWNLOAD_PROXY}" \
+               NO_PROXY="${CARGO_NO_PROXY}" ; \
+    fi ; \
+    cargo leptos build --release --target x86_64-pc-windows-gnu \
+    && mkdir -p /out \
+    && cp target/x86_64-pc-windows-gnu/release/rodeo.exe /out/rodeo.exe \
+    && cp target/x86_64-pc-windows-gnu/release/hash.txt /out/hash.txt \
+    && cp -r target/site /out/site \
+    && cp config.example.toml /out/config.example.toml \
+    && printf '@echo off\r\ncd /d "%%~dp0"\r\nset LEPTOS_SITE_ROOT=site\r\nset LEPTOS_HASH_FILES=true\r\nrodeo.exe config.toml\r\n' > /out/start.bat
+
+FROM scratch AS dist
+COPY --from=builder /out/ /

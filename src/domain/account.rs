@@ -5,6 +5,10 @@ use ulid::Ulid;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Account {
     pub id: Ulid,
+    /// 登录标识符（login identifier）。私有化部署下可以是普通账号名（如 `alice`），
+    /// 也可以是邮箱形态（如 `alice@company.com`）；唯一性由
+    /// `cf::ACCOUNTS_EMAIL_IDX` 索引保证。字段名沿用 `email` 是为了存量 GraphQL
+    /// 接口兼容与 bincode 历史数据兼容——见 plan/decision A。
     pub email: String,
     pub name: String,
     pub password_hash: String,

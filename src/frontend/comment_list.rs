@@ -4,7 +4,8 @@ use leptos::task::spawn_local;
 use crate::frontend::agent_side_effects::AgentSideEffects;
 use crate::frontend::components::{logged_out, role_at_least, short_time, Avatar};
 use crate::frontend::graphql_client::{
-    comments, create_comment, delete_comment, me, my_role, update_comment, Comment,
+    comments, create_comment, delete_comment, me, members as fetch_members, my_role, update_comment,
+    Comment, Member,
 };
 use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::icons::ic_comment;
@@ -38,11 +39,38 @@ pub fn CommentList(
     workspace_id: Signal<String>,
     /// 评论增删改后通知外层：表格的「更新时间」列与评论徽标要跟着刷新。
     on_changed: Callback<()>,
+    /// 评论输入框里粘贴图片上传完成后通知外层：只需要面板自己重取条目
+    /// （`updated_at` 推前了，乐观并发版本号失效），不刷表——表格里看不到附件，
+    /// 走 `on_changed` 会顺带把整张表重查、父布局重建、把评论 TinyEditor 整个
+    /// 换掉，用户刚粘贴还在上传的图就丢了。与 `entry.rs` 全屏页 `on_changed`
+    /// 是一致的分离。`on_changed` 仍然负责评论本身的增删改。
+    on_uploaded: Callback<()>,
+    /// 只读模式（匿名分享页）：列表照常取数 / 展示，但输入表单、每条评论的
+    /// 编辑 / 删除按钮全部不渲染——读者无法写评论、更无法操作他人的评论。
+    /// 取数逻辑仍保留，正文 HTML 仍渲染（评论是 Entry 的一部分）。
+    #[prop(default = false)]
+    read_only: bool,
 ) -> impl IntoView {
     let i18n: I18nController = use_i18n();
     let items = RwSignal::new(None::<Result<Vec<CommentView>, String>>);
+    // 评论列表的「签名」，用来在 `load()` 末尾判断是否真的需要回写 items。
+    // 见下方 `load()` 内 `my_id` / `role` 处的注释——同一类问题，items.set 也得守护。
+    // 用 (id, updated_at_str) 而不是只比 id，是因为编辑评论时 id 不变但 body 改了、
+    // 服务端的 updated_at 也会被推前，那种刷新必须透传到 UI。
+    let items_sig: RwSignal<Vec<(String, String)>> = RwSignal::new(Vec::new());
     let role = RwSignal::new(String::new());
     let my_id = RwSignal::new(String::new());
+    // @ 提及候选：评论编辑器挂在工作空间里，候选就是工作空间成员。
+    // 单独信号而不是跟 role 一起拿，是因为 role 经常变（用户角色变更）
+    // 但成员名单不会每个 tick 都变——让 TinyEditor 在挂载时一次性快照。
+    let ws_members = RwSignal::new(Vec::<Member>::new());
+    // 首次取到成员名单（成功或失败）的标记。编辑器必须等这个信号亮了才挂：
+    // mount_when_ready 只跑一次（节点上的 __rodeo_editor 守卫会跳过重挂），
+    // 因此挂载时 ws_members 还是空 Vec 的话，下拉永远 enabled=false。
+    // 这里与 entry.rs EntryPanel 的「data 装载后编辑器才出现」是同一个不变式
+    // ——EntryPanel 靠 data → editor 的天然顺序保证；这里父组件一上来就渲染编辑器，
+    // 必须手动加一层闸。
+    let members_loaded = RwSignal::new(false);
     let draft = RwSignal::new(String::new());
     let editing = RwSignal::new(None::<String>);
     let edit_body = RwSignal::new(String::new());
@@ -70,7 +98,9 @@ pub fn CommentList(
                     let list = comments(&c).await?;
                     let user = me().await?;
                     let r = my_role(&ws).await?;
-                    Ok::<_, String>((list, user, r))
+                    // 取成员名单：给评论编辑器做 @ 候选。失败就空列表。
+                    let ml = fetch_members(&ws).await.unwrap_or_default();
+                    Ok::<_, String>((list, user, r, ml))
                 }
                 .await;
                 // 请求返回前组件也可能已经被卸载（同上），此时 `code` 已释放，读取会 panic。
@@ -78,7 +108,7 @@ pub fn CommentList(
                     return;
                 }
                 match r {
-                    Ok((list, user, r)) => {
+                    Ok((list, user, r, ml)) => {
                         // 只在真正变化时写入。这两项被「发表评论」子树读取，而本次刷新常由
                         // 外部原因触发（粘贴图片上传成功后会推进 entry.updated_at，宿主随即
                         // 重取条目，连带重跑本组件的 load）。无条件 set 会重建那个子树，把
@@ -90,13 +120,31 @@ pub fn CommentList(
                         if role.get_untracked() != r {
                             role.set(r);
                         }
-                        items.set(Some(Ok(list
-                            .into_iter()
-                            .map(|comment| CommentView {
-                                html: delta_to_html(&comment.body),
-                                comment,
-                            })
-                            .collect())));
+                        // 成员表也守护：list 翻页或评论增删不会动成员，无脑 set
+                        // 会顺带让评论编辑器重挂——同 items 的守护一个理由。
+                        if ws_members.get_untracked() != ml {
+                            ws_members.set(ml);
+                        }
+                        // 首次取到成员就把闸门打开，编辑器得以挂上正确的名单。
+                        // 放在「值变了才写」的 guard 之后，避免同名单 no-op 时漏亮信号。
+                        members_loaded.set(true);
+                        // 同理守护 items：用 (id, updated_at) 当签名，list 里有任何
+                        // 新评论、删除评论、编辑评论（id 不变但 updated_at 推前了）才算
+                        // 真变化；其他时候跳过 set，评论子树和编辑器整体保留。
+                        let new_sig: Vec<(String, String)> = list
+                            .iter()
+                            .map(|c| (c.id.clone(), c.updated_at.clone()))
+                            .collect();
+                        if items_sig.get_untracked() != new_sig {
+                            items_sig.set(new_sig);
+                            items.set(Some(Ok(list
+                                .into_iter()
+                                .map(|comment| CommentView {
+                                    html: delta_to_html(&comment.body),
+                                    comment,
+                                })
+                                .collect())));
+                        }
                     }
                     Err(e) => items.set(Some(Err(e))),
                 }
@@ -216,8 +264,11 @@ pub fn CommentList(
                                         let id_for_del = id.clone();
                                         let id_for_confirm = id.clone();
                                         let is_mine = c.created_by == mine;
-                                        let can_edit = can_write && is_mine;
-                                        let can_delete = is_mine || can_moderate;
+                                        // 只读模式：即便当前用户满足角色条件，也
+                                        // 强制关闭一切编辑 / 删除操作入口——分享
+                                        // 公开页共用这个面板，避免忘记改这里。
+                                        let can_edit = !read_only && can_write && is_mine;
+                                        let can_delete = !read_only && (is_mine || can_moderate);
                                         let is_editing = editing_now.as_deref() == Some(id.as_str());
                                         let author = c
                                             .created_by_account
@@ -260,18 +311,27 @@ pub fn CommentList(
                                                         </span>
                                                     </div>
                                                     {if is_editing {
-                                                        view! {
-                                                            <div class="c-edit">
-                                                                <TinyEditor initial=body_for_editor entry_code=code on_change=on_edit_change on_uploaded=on_changed />
-                                                                <div class="c-edit-acts">
-                                                                    <button class="btn pri sm" on:click={
-                                                                        let sid = id_for_save.clone();
-                                                                        move |_| save_edit(sid.clone())
-                                                                    }>{move || i18n.t("common.save")}</button>
-                                                                    <button class="btn sm" on:click=move |_| editing.set(None)>{move || i18n.t("common.cancel")}</button>
+                                                        // 闸门：ws_members 第一次没就位就显示加载占位，
+                                                        // 让 TinyEditor 在挂载时已经持有非空成员名单。
+                                                        if !members_loaded.get() {
+                                                            view! { <div class="c-edit"><div class="mut">{move || i18n.t("common.loading")}</div></div> }.into_any()
+                                                        } else {
+                                                            let ms = ws_members.get_untracked();
+                                                            view! {
+                                                                <div class="c-edit">
+                                                                    <TinyEditor initial=body_for_editor entry_code=code
+                                                                        on_change=on_edit_change on_uploaded=on_uploaded
+                                                                        members=ms />
+                                                                    <div class="c-edit-acts">
+                                                                        <button class="btn pri sm" on:click={
+                                                                            let sid = id_for_save.clone();
+                                                                            move |_| save_edit(sid.clone())
+                                                                        }>{move || i18n.t("common.save")}</button>
+                                                                        <button class="btn sm" on:click=move |_| editing.set(None)>{move || i18n.t("common.cancel")}</button>
+                                                                    </div>
                                                                 </div>
-                                                            </div>
-                                                        }.into_any()
+                                                            }.into_any()
+                                                        }
                                                     } else {
                                                         view! {
                                                             <div class="c-body" inner_html=body_html></div>
@@ -299,6 +359,10 @@ pub fn CommentList(
             }}
 
             {move || {
+                // 只读模式：连发表评论的入口都不渲染——匿名读者来这是看，不是写。
+                if read_only {
+                    return view! { <div></div> }.into_any();
+                }
                 if !role_at_least(&role.get(), "worker") {
                     return view! { <div></div> }.into_any();
                 }
@@ -312,9 +376,18 @@ pub fn CommentList(
                 view! {
                     <div class="c-composer">
                         {move || if composer_ready.get() {
-                            view! {
-                                <TinyEditor initial=String::new() entry_code=code on_change=on_composer_change on_uploaded=on_changed />
-                            }.into_any()
+                            // 闸门：首次成员名单还没回就不挂编辑器，否则 mention 模块
+                            // 会在 enabled=false 上定型，再来多少成员都救不回来。
+                            if !members_loaded.get() {
+                                view! { <div class="mut">{move || i18n.t("common.loading")}</div> }.into_any()
+                            } else {
+                                let ms = ws_members.get_untracked();
+                                view! {
+                                    <TinyEditor initial=String::new() entry_code=code
+                                        on_change=on_composer_change on_uploaded=on_uploaded
+                                        members=ms />
+                                }.into_any()
+                            }
                         } else {
                             view! { <div class="mut">"…"</div> }.into_any()
                         }}

@@ -46,6 +46,8 @@ const ALL_CFS: &[&str] = &[
     cf::ENTRY_RELATIONS,
     cf::ENTRY_RELATIONS_BY_FROM,
     cf::ENTRY_RELATIONS_BY_TO,
+    cf::ENTRY_SHARES,
+    cf::ENTRY_SHARES_BY_ENTRY,
 ];
 
 /// RocksDB 文档存储：每个 CF 存一类文档（bincode 序列化）或二级索引（裸字节）。

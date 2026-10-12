@@ -816,7 +816,7 @@ mod tests {
         let auth = AuthService::new(store.clone(), Arc::new(crate::config::Config::default()));
         let ws_svc = WorkspaceService::new(store.clone());
 
-        let owner = auth.register("owner@x.io", "Owner", "Passw0rd!").unwrap();
+        let owner = auth.create_by_admin("owner@x.io", "Owner", "Passw0rd!", false).unwrap();
         let ws = ws_svc
             .create(owner.id, "原名", Some("old-slug"), "旧描述")
             .unwrap();
@@ -857,7 +857,7 @@ mod tests {
         let auth = AuthService::new(store.clone(), Arc::new(crate::config::Config::default()));
         let ws_svc = WorkspaceService::new(store.clone());
 
-        let owner = auth.register("owner@x.io", "Owner", "Passw0rd!").unwrap();
+        let owner = auth.create_by_admin("owner@x.io", "Owner", "Passw0rd!", false).unwrap();
         let a = ws_svc.create(owner.id, "甲", Some("jia"), "").unwrap();
         ws_svc.create(owner.id, "乙", Some("yi"), "").unwrap();
 
@@ -887,7 +887,7 @@ mod tests {
         let auth = AuthService::new(store.clone(), Arc::new(crate::config::Config::default()));
         let ws_svc = WorkspaceService::new(store.clone());
 
-        let owner = auth.register("owner@x.io", "Owner", "Passw0rd!").unwrap();
+        let owner = auth.create_by_admin("owner@x.io", "Owner", "Passw0rd!", false).unwrap();
         let ws = ws_svc.create(owner.id, "团队", Some("team"), "").unwrap();
 
         assert!(!ws_svc.is_deleted(ws.id).unwrap());
@@ -946,9 +946,9 @@ mod tests {
         let auth = AuthService::new(store.clone(), Arc::new(crate::config::Config::default()));
         let ws_svc = WorkspaceService::new(store.clone());
 
-        let owner = auth.register("owner@x.io", "Owner", "Passw0rd!").unwrap();
-        let bob = auth.register("bob@x.io", "Bob", "Passw0rd!").unwrap();
-        let carol = auth.register("carol@x.io", "Carol", "Passw0rd!").unwrap();
+        let owner = auth.create_by_admin("owner@x.io", "Owner", "Passw0rd!", false).unwrap();
+        let bob = auth.create_by_admin("bob@x.io", "Bob", "Passw0rd!", false).unwrap();
+        let carol = auth.create_by_admin("carol@x.io", "Carol", "Passw0rd!", false).unwrap();
         let ws = ws_svc.create(owner.id, "团队", None, "").unwrap();
         ws_svc
             .invite(owner.id, ws.id, "bob@x.io", WorkspaceRole::Worker)
@@ -1014,8 +1014,8 @@ mod tests {
         let auth = AuthService::new(store.clone(), Arc::new(crate::config::Config::default()));
         let ws_svc = WorkspaceService::new(store.clone());
 
-        let owner = auth.register("owner@x.io", "Owner", "Passw0rd!").unwrap();
-        let bob = auth.register("bob@x.io", "Bob", "Passw0rd!").unwrap();
+        let owner = auth.create_by_admin("owner@x.io", "Owner", "Passw0rd!", false).unwrap();
+        let bob = auth.create_by_admin("bob@x.io", "Bob", "Passw0rd!", false).unwrap();
         let ws = ws_svc.create(owner.id, "团队", None, "").unwrap();
 
         // 初始只有 Owner。
@@ -1075,8 +1075,8 @@ mod tests {
         let auth = AuthService::new(store.clone(), Arc::new(crate::config::Config::default()));
         let ws_svc = WorkspaceService::new(store.clone());
 
-        let owner = auth.register("owner@x.io", "Owner", "Passw0rd!").unwrap();
-        let bob = auth.register("bob@x.io", "Bob", "Passw0rd!").unwrap();
+        let owner = auth.create_by_admin("owner@x.io", "Owner", "Passw0rd!", false).unwrap();
+        let bob = auth.create_by_admin("bob@x.io", "Bob", "Passw0rd!", false).unwrap();
         let ws = ws_svc.create(owner.id, "团队", None, "").unwrap();
 
         let inv = ws_svc
@@ -1143,9 +1143,9 @@ mod tests {
         let auth = AuthService::new(store.clone(), Arc::new(crate::config::Config::default()));
         let ws_svc = WorkspaceService::new(store.clone());
 
-        let owner = auth.register("owner@x.io", "Owner", "Passw0rd!").unwrap();
-        let bob = auth.register("bob@x.io", "Bob", "Passw0rd!").unwrap();
-        let carol = auth.register("carol@x.io", "Carol", "Passw0rd!").unwrap();
+        let owner = auth.create_by_admin("owner@x.io", "Owner", "Passw0rd!", false).unwrap();
+        let bob = auth.create_by_admin("bob@x.io", "Bob", "Passw0rd!", false).unwrap();
+        let carol = auth.create_by_admin("carol@x.io", "Carol", "Passw0rd!", false).unwrap();
         let ws = ws_svc.create(owner.id, "团队", None, "").unwrap();
 
         // Bob 拒绝。
@@ -1196,8 +1196,8 @@ mod tests {
         let auth = AuthService::new(store.clone(), Arc::new(crate::config::Config::default()));
         let ws_svc = WorkspaceService::new(store.clone());
 
-        let owner = auth.register("owner@x.io", "Owner", "Passw0rd!").unwrap();
-        let bob = auth.register("bob@x.io", "Bob", "Passw0rd!").unwrap();
+        let owner = auth.create_by_admin("owner@x.io", "Owner", "Passw0rd!", false).unwrap();
+        let bob = auth.create_by_admin("bob@x.io", "Bob", "Passw0rd!", false).unwrap();
         let ws = ws_svc.create(owner.id, "团队", None, "").unwrap();
 
         // 没有邀请 → NotFound。

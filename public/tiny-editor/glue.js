@@ -98,26 +98,97 @@ let renderEditor = null;
 window.__rodeo_tiny_editor__ = {
   // 创建编辑器实例。deltaJson 为已归一化的 Quill Delta JSON 字符串（可为空串）。
   // opts.upload(file) -> Promise<string>：粘贴/拖入图片时的上传函数，返回可插入的 URL。
+  // opts.readOnly=true：仅展示，不要工具栏、不要粘贴上传、不要 on_change（匿名分享页用）。
   create(el, deltaJson, opts) {
     cleanupAux(el);
     sweepOrphans();
     // 再清空容器，避免复用节点时叠加旧内容。
     el.innerHTML = '';
+    // 只读模式：跳过会产生工具栏/上传监听/绑定 on_change 的全部支路。
+    // 必须放在任何 use-before-init 之前；read_only 路径不向外界暴露任何副作用。
+    const readOnly = !!(opts && opts.readOnly);
+    if (readOnly) {
+      const readOnlyEditor = new FluentEditor(el, {
+        theme: 'snow',
+        placeholder: '',
+        readOnly: true,
+        modules: { toolbar: false },
+      });
+      if (deltaJson) {
+        try {
+          readOnlyEditor.setContents(JSON.parse(deltaJson), 'silent');
+        } catch (e) {
+          // 非法 Delta 走纯文本回退——只读场景里允许「展示成段落文本」。
+          try {
+            readOnlyEditor.setText(deltaJson, 'silent');
+          } catch (e2) {
+            // 最坏情况忽略，编辑器保持空内容。
+          }
+        }
+      }
+      el.__rodeo_editor = readOnlyEditor;
+      return readOnlyEditor;
+    }
     // 记下这次新建过程中新增的兄弟节点（工具栏/浮层），供下次创建时精确清理。
     const before = new Set(el.parentNode.children);
+    // @ 提及：fluent-editor 3.x 的 mention 模块只接受 `search(term) -> item[]`，
+    // 不认 `mentionList` / `enabled` / `spaceAfterInsert`——这些字段在源码里
+    // 完全没被读到，传过去也是 silently merged 进去、被默认项覆盖。**没有
+    // search 时模块构造函数直接 return，键盘绑定和下拉 DOM 都不创建**，
+    // 所以控制台才会出现 "please provide a search function!" 的警告。
+    //
+    // 这里把成员名单快照成闭包变量，再写一个简单的「按 name 前缀过滤、
+    // 大小写无关」的 search，候选项沿用 {id, name, ...} 的形态，让默认的
+    // `renderMentionItem` / `renderMentionText` 都能直接用。
+    //
+    // 名单为空时不传 `mention` 模块，让编辑器走纯文本路径——后端
+    // `service/mention.rs::extract_mention_names` 仍能从纯文本里抓
+    // `@姓名` 触发通知，UI 侧只是没了下拉提示。
+    const rawMembers = (opts && opts.members) || [];
+    let memberItems = [];
+    try {
+      const parsed = typeof rawMembers === 'string' ? JSON.parse(rawMembers) : rawMembers;
+      if (Array.isArray(parsed)) {
+        memberItems = parsed
+          .map((m) => ({
+            id: m.account_id || m.accountId || m.id,
+            name: m.name || '',
+            avatar: m.email || '',
+          }))
+          .filter((m) => m.id && m.name);
+      }
+    } catch (e) {
+      memberItems = [];
+    }
+    const mentionModule = memberItems.length > 0
+      ? {
+          // 空查询返回前 8 个；非空按 name 前缀过滤（lower-case 比较）。
+          // 列表已在此闭包里，不需要再走 JSON.parse，每按一次 @ 都跑一遍。
+          search(term) {
+            const t = (term || '').toLowerCase();
+            if (!t) return memberItems.slice(0, 8);
+            return memberItems.filter((m) => m.name.toLowerCase().includes(t)).slice(0, 8);
+          },
+        }
+      : false;
+    const modules = {
+      toolbar: [
+        ['bold', 'italic', 'underline', 'strike'],
+        [{ header: 1 }, { header: 2 }, { header: 3 }],
+        [{ list: 'ordered' }, { list: 'bullet' }],
+        ['blockquote', 'code-block'],
+        ['link'],
+        ['clean'],
+      ],
+    };
+    // 成员名单空就不挂 mention 模块——fluent-editor 收到一个没有 search
+    // 字段的 options 会在控制台 warn "please provide a search function!"，
+    // 而且构造函数会直接 return，键盘绑定和下拉 DOM 都不会创建。
+    if (mentionModule) modules.mention = mentionModule;
     const editor = new FluentEditor(el, {
       theme: 'snow',
       placeholder: '输入详情…',
-      modules: {
-        toolbar: [
-          ['bold', 'italic', 'underline', 'strike'],
-          [{ header: 1 }, { header: 2 }, { header: 3 }],
-          [{ list: 'ordered' }, { list: 'bullet' }],
-          ['blockquote', 'code-block'],
-          ['link'],
-          ['clean'],
-        ],
-      },
+      modules,
     });
     el.__rodeo_aux = Array.from(el.parentNode.children).filter((n) => !before.has(n));
     el.__rodeo_aux.forEach((n) => auxOwners.set(n, el));

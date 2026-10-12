@@ -99,6 +99,17 @@ pub mod cf {
     /// TO 索引：(workspace_id, to_code, relation_id) → 空值。前缀扫描取
     /// 「指向某条目的全部关联」——反向查询的关键索引。
     pub const ENTRY_RELATIONS_BY_TO: &str = "entry_relations_by_to";
+    /// Entry 分享主键：share_id（16B ULID）→ `EntryShare`（bincode）。
+    /// share_id 自身即 token，所以这就是公开 URL `/share/{id}` 的能力；与
+    /// `INLINE_ATTACHMENTS` 的「免鉴权能力 URL」同构，但本 CF 的 value 是结构化
+    /// (`EntryShare`)，不是空值——既要点名查、又要在撤销时写回 `revoked` 等字段。
+    pub const ENTRY_SHARES: &str = "entry_shares";
+    /// 二级索引：(workspace_id 16B || entry_code 变长 || share_id 16B) → 空值。
+    /// 前缀扫 (workspace_id, entry_code) 拿该 Entry 的全部 share——
+    /// 与 `comment_key` / `attachment_by_entry_key` 同源，加上 workspace_id
+    /// 段是为了撤销时越权检查更顺手：`scan_prefix(prefix)` 时不会把别工作空间的
+    /// share 抖进来。
+    pub const ENTRY_SHARES_BY_ENTRY: &str = "entry_shares_by_entry";
 }
 
 /// 单个批量写操作：文档/索引/审计统一原子写入。

@@ -219,7 +219,7 @@ pub fn RelationsPanel(
                                                                         let id = rid_for_del.clone();
                                                                         move |_| do_delete(id.clone())
                                                                     }
-                                                                >{move || i18n.t("common.confirm_delete")}</button>
+                                                                >{move || i18n.t("settings.danger.confirm_delete")}</button>
                                                                 <button
                                                                     class="btn sm"
                                                                     on:click=move |_| confirm_del.set(None)

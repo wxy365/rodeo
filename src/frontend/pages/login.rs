@@ -3,7 +3,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::hooks::use_navigate;
 
-use crate::frontend::graphql_client::{allow_registration as fetch_allow_registration, login, register, set_token};
+use crate::frontend::graphql_client::{login, set_token};
 use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::icons::ic_logo;
 use crate::frontend::pages::wechat_bind::WeChatBindPanel;
@@ -57,16 +57,12 @@ fn window_set_href(_url: &str) {}
 #[component]
 pub fn Login() -> impl IntoView {
     let auth = use_auth();
-    let navigate = use_navigate();
+    let _navigate = use_navigate();
     let i18n: I18nController = use_i18n();
     let email = RwSignal::new(String::new());
     let password = RwSignal::new(String::new());
-    let name = RwSignal::new(String::new());
-    let is_register = RwSignal::new(false);
     let error = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
-    // 服务端是否开放注册；None = 还没问到。未知时先不渲染注册入口，避免闪一下又消失。
-    let allow_reg = RwSignal::new(None::<bool>);
     // 客户端是否已接管这个表单。SSR 直出的只是个普通 <form>，`on:submit` 要等 wasm 下载并
     // hydrate 之后才存在；在那之前点「登录」走的是浏览器原生表单提交——整页刷新回登录页、
     // 输入被丢弃，而且会重新开始下载 wasm，慢网下一次点击就能让用户一直卡在登录页。
@@ -76,15 +72,6 @@ pub fn Login() -> impl IntoView {
         if cfg!(target_arch = "wasm32") {
             ready.set(true);
         }
-    });
-
-    Effect::new_sync(move |_| {
-        if !cfg!(target_arch = "wasm32") {
-            return;
-        }
-        spawn_local(async move {
-            allow_reg.set(Some(fetch_allow_registration().await));
-        });
     });
 
     let oauth_providers = RwSignal::new(Vec::<String>::new());
@@ -123,27 +110,20 @@ pub fn Login() -> impl IntoView {
         let search = window_search();
         if let Some(code) = url_param(&search, "oauth_error") {
             oauth_error.set(Some(match code.as_str() {
-                "missing_token" => "登录失败：未收到令牌，请重新扫码".to_string(),
-                _ => format!("登录失败：{code}"),
+                "missing_token" => i18n.t("login.oauth_missing_token"),
+                _ => i18n.tf("login.oauth_failed", &[("code", &code)]),
             }));
         }
     });
 
     let submit = move |ev: SubmitEvent| {
         ev.prevent_default();
-        let navigate = navigate.clone();
         let email = email.get();
         let password = password.get();
-        let name = name.get();
-        let registering = is_register.get();
         busy.set(true);
         error.set(None);
         spawn_local(async move {
-            let result = if registering {
-                register(&email, &name, &password).await
-            } else {
-                login(&email, &password).await
-            };
+            let result = login(&email, &password).await;
             match result {
                 Ok((token, user)) => {
                     set_token(&token);
@@ -151,7 +131,14 @@ pub fn Login() -> impl IntoView {
                     // 登录成功，失效提示就此翻篇；否则这个位会一直留着，用户下次
                     // 主动来登录页还会看到一句莫名其妙的「登录已失效」。
                     auth.session_lost.set(false);
-                    navigate("/workspaces", Default::default());
+                    // 用整页跳转而不是 `navigate("/workspaces", …)`：邮箱密码登录
+                    // 没有 OAuthCallback 那种独立路由做中转，hydrate 之后直接从 async
+                    // 闭包里调 navigate 在 leptos 0.8.x 有边角问题（URL pushState 了但
+                    // Router 没换页——曾让用户卡在 Login 看到 /workspaces URL）。
+                    // OAuth 按钮走 `/api/auth/{}/start` 整页跳走，没有这个问题。
+                    // `replace` 让浏览器历史里没有「/login」这一站，回退按钮不会把用户
+                    // 拽回已登录态的登录页。
+                    window_set_href("/workspaces");
                 }
                 Err(e) => {
                     error.set(Some(e));
@@ -178,14 +165,7 @@ pub fn Login() -> impl IntoView {
                             <b>{move || i18n.t("appbar.brand")}</b>
                             <span class="chip dim">{move || i18n.t("login.tagline")}</span>
                         </div>
-                        {move || if is_register.get() {
-                            view! {
-                                <input class="inp" placeholder={move || i18n.t("login.name")} prop:value=name on:input=move |ev| name.set(event_target_value(&ev)) />
-                            }.into_any()
-                        } else {
-                            view! { <div></div> }.into_any()
-                        }}
-                        <input class="inp" type="email" placeholder={move || i18n.t("login.email")} prop:value=email on:input=move |ev| email.set(event_target_value(&ev)) />
+                        <input class="inp" type="text" placeholder={move || i18n.t("login.identifier")} prop:value=email on:input=move |ev| email.set(event_target_value(&ev)) />
                         <input class="inp" type="password" placeholder={move || i18n.t("login.password")} prop:value=password on:input=move |ev| password.set(event_target_value(&ev)) />
                         {move || auth.session_lost.get().then(|| view! {
                             <p class="error">{move || i18n.t("login.session_lost")}</p>
@@ -198,21 +178,10 @@ pub fn Login() -> impl IntoView {
                             <p class="mut" style="text-align:center">{move || i18n.t("login.loading")}</p>
                         })}
                         <button class="btn pri" type="submit" style="justify-content:center;padding:9px" disabled=move || busy.get() || !ready.get()>
-                            {move || if is_register.get() { i18n.t("login.submit_register") } else { i18n.t("login.submit_login") }}
+                            {move || i18n.t("login.submit_login")}
                         </button>
-                        <div style="display:flex;justify-content:space-between" class="mut">
-                            {move || match allow_reg.get() {
-                                Some(true) => view! {
-                                    <span class="link" on:click=move |_| is_register.update(|v| *v = !*v)>
-                                        {move || if is_register.get() { i18n.t("login.to_login") } else { i18n.t("login.to_register") }}
-                                    </span>
-                                }.into_any(),
-                                Some(false) => view! {
-                                    <span class="mut">{move || i18n.t("login.reg_disabled")}</span>
-                                }.into_any(),
-                                None => ().into_any(),
-                            }}
-                            <u class="mut">{move || i18n.t("login.forgot_password")}</u>
+                        <div class="mut" style="text-align:center">
+                            {move || i18n.t("login.no_account_hint")}
                         </div>
                         {move || {
                             let ps = oauth_providers.get();
@@ -225,10 +194,10 @@ pub fn Login() -> impl IntoView {
                                 // 生命周期跟闭包返回点对不上，会爆 E0515。
                                 let buttons: Vec<(String, String)> = ps.iter().map(|name| {
                                     let label = match name.as_str() {
-                                        "wechat" => "微信扫码登录",
-                                        "google" => "Google 账号登录",
-                                        "github" => "GitHub 账号登录",
-                                        _ => name.as_str(),
+                                        "wechat" => i18n.t("login.oauth_wechat"),
+                                        "google" => i18n.t("login.oauth_google"),
+                                        "github" => i18n.t("login.oauth_github"),
+                                        _ => name.clone(),
                                     };
                                     let start_url = format!(
                                         "/api/auth/{}/start?return_to={}",

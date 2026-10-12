@@ -42,7 +42,7 @@ use crate::frontend::agent_side_effects::SideEffectHint;
 #[cfg(target_arch = "wasm32")]
 use crate::frontend::graphql_client::get_token;
 use crate::frontend::components::human_size;
-use crate::frontend::icons::{ic_loading, ic_send, ic_upload};
+use crate::frontend::icons::ic_upload;
 use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::graphql_client::{
     cancel_agent_turn, create_agent_session, delete_agent_session, list_agent_messages,
@@ -79,10 +79,13 @@ struct ToolCallDisplay {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ToolCallStatus {
     /// 工具调用刚发出，还未拿到结果。
+    #[allow(dead_code)] // 预留：与 ToolCallDisplay 配对，在流式事件里被构造/消费
     Running,
     /// 工具调用成功完成（含 ToolErrorKind::Ok）。
+    #[allow(dead_code)] // 同上
     Ok,
     /// 工具调用失败（bad_args / rejected / server_error 任一）。
+    #[allow(dead_code)] // 同上
     Err,
 }
 
@@ -615,6 +618,8 @@ pub fn AgentPanel() -> impl IntoView {
             attachments,
             attachments_uploading,
             attachments_error,
+            i18n.t("agent.attach_need_session"),
+            i18n.t("agent.unnamed_file"),
         );
     };
 
@@ -922,16 +927,17 @@ pub fn AgentPanel() -> impl IntoView {
                                         }}
                                     </div>
                                     <div class="agent-input">
-                                        // 已选附件 chip 横滚条：空时拿 .agent-attach-empty
-                                        // 触发 CSS `display: none`，不占行高；非空时
-                                        // overflow-x: auto 把溢出 chip 收进横向滚动。
-                                        // 这里没用 <For> key 索引 id——ids 是 ULID，
-                                        // 重复概率极低，且渲染顺序就是添加顺序，键稳定。
-                                        <div
-                                            class="agent-attachments-chips-bar"
-                                            class:agent-attach-empty=move || attachments.get().is_empty()
-                                        >
-                                            <div class="agent-attach-chips">
+                                        // 附件行：只剩 chip 列表，上传按钮挪到底栏左侧（见下）。
+                                        // chip 列表：空时拿 .agent-attach-empty 触发 CSS `display: none`，
+                                        // 不占行高；非空时 overflow-x: auto 把溢出 chip 收进横向滚动。
+                                        // 这里没用 <For> key 索引 id——ids 是 ULID，重复概率极低，
+                                        // 且渲染顺序就是添加顺序，键稳定。
+                                        <div class="agent-attachments-row">
+                                            <div
+                                                class="agent-attachments-chips-bar"
+                                                class:agent-attach-empty=move || attachments.get().is_empty()
+                                            >
+                                                <div class="agent-attach-chips">
                                                 {move || {
                                                     attachments.get().into_iter().map(|chip| {
                                                         let remove_id = chip.id.clone();
@@ -957,6 +963,7 @@ pub fn AgentPanel() -> impl IntoView {
                                                         }
                                                     }).collect::<Vec<_>>()}
                                                 }
+                                                </div>
                                             </div>
                                         </div>
                                         <Show
@@ -967,126 +974,118 @@ pub fn AgentPanel() -> impl IntoView {
                                                 {move || attachments_error.get().unwrap_or_default()}
                                             </p>
                                         </Show>
-                                        // 输入行：textarea 撑满水平空间，右侧 .agent-side-actions
-                                        // 纵向堆叠附件 + 发送两个 32×28 图标按钮——几何由 .agent-icon-btn
-                                        // 基类托管，textarea min-height 60px 跟两按钮 + 4px gap 严格相等。
-                                        <div class="agent-input-row">
-                                            <textarea
-                                                class="agent-textarea"
-                                                bind:value=input
-                                                prop:disabled=move || streaming.get()
-                                                placeholder=move || i18n.t("agent.placeholder")
-                                                on:keydown=move |ev: leptos::ev::KeyboardEvent| {
-                                                    // 回车直接发送：与主流 IM / 聊天面板一致;
-                                                    // Shift+Enter / Ctrl+Enter / ⌘+Enter 留给浏览器默认
-                                                    // （插入换行）——避免与全局快捷键（Ctrl+Enter 也
-                                                    // 经常被绑成「换行」以外的语义）冲突。
-                                                    // 输入期间按下时 textarea 仍是焦点元素,
-                                                    // prevent_default 阻止浏览器在按 Enter 时
-                                                    // 默认的「插入换行」生效——on_send 触发的发送流程
-                                                    // 负责清空 textarea。
-                                                    if ev.key() == "Enter"
-                                                        && !ev.shift_key()
-                                                        && !ev.ctrl_key()
-                                                        && !ev.meta_key()
-                                                    {
-                                                        ev.prevent_default();
-                                                        on_send();
+                                        <div class="agent-textarea-wrapper">
+                                                <textarea
+                                                    class="agent-textarea"
+                                                    bind:value=input
+                                                    prop:disabled=move || streaming.get()
+                                                    placeholder=move || i18n.t("agent.placeholder")
+                                                    on:keydown=move |ev: leptos::ev::KeyboardEvent| {
+                                                        // 回车直接发送：与主流 IM / 聊天面板一致;
+                                                        // Shift+Enter / Ctrl+Enter / ⌘+Enter 留给浏览器默认
+                                                        // （插入换行）——避免与全局快捷键（Ctrl+Enter 也
+                                                        // 经常被绑成「换行」以外的语义）冲突。
+                                                        // 输入期间按下时 textarea 仍是焦点元素,
+                                                        // prevent_default 阻止浏览器在按 Enter 时
+                                                        // 默认的「插入换行」生效——on_send 触发的发送流程
+                                                        // 负责清空 textarea。
+                                                        if ev.key() == "Enter"
+                                                            && !ev.shift_key()
+                                                            && !ev.ctrl_key()
+                                                            && !ev.meta_key()
+                                                        {
+                                                            ev.prevent_default();
+                                                            on_send();
+                                                        }
                                                     }
-                                                }
-                                            />
-                                            <div class="agent-side-actions">
-                                                // 附件按钮：作为 <label> 包裹隐藏的 <input type=file>，
-                                                // 点图标触发原生文件选择对话框；uploading / streaming
-                                                // 时 input 被 prop:disabled，CSS :has(input:disabled)
-                                                // 给 label 换灰。
-                                                <label
-                                                    class="agent-icon-btn agent-attach-pick"
-                                                    title=move || if attachments_uploading.get() {
-                                                        i18n.t("attachment.uploading")
-                                                    } else {
-                                                        i18n.t("attachment.section_title")
-                                                    }
-                                                >
-                                                    {ic_upload()}
-                                                    <input
-                                                        type="file"
-                                                        multiple=true
-                                                        style="display:none"
-                                                        prop:disabled=move || attachments_uploading.get() || streaming.get()
-                                                        on:change=on_pick_files
-                                                    />
-                                                </label>
-                                                // 发送按钮：输入为空 / 流式响应 / 附件上传中时置灰。
-                                                // trim().is_empty() 处理纯空格输入——避免只敲了一堆
-                                                // 空白就能发出去这种边缘 case。
-                                                <button
-                                                    class="agent-icon-btn agent-send"
-                                                    on:click=move |_| on_send()
-                                                    prop:disabled=move || {
-                                                        input.get().trim().is_empty()
-                                                            || streaming.get()
-                                                            || attachments_uploading.get()
-                                                    }
-                                                    title=move || i18n.t("agent.send")
-                                                >
-                                                    {move || if streaming.get() {
-                                                        ic_loading().into_any()
-                                                    } else {
-                                                        ic_send().into_any()
-                                                    }}
-                                                </button>
-                                            </div>
-                                        </div>
-                                        // 快捷键提示：从 placeholder 搬到面板底部，套 `<kbd>` 让「键帽」视觉成立。
-                                        // 不用 `.mut`（那是更弱的灰）；用 `.agent-shortcut-hint` 单挂样式，色比 `.mut` 深一档
-                                        // 但仍然低于正文，避免抢 textarea 焦点感。
-                                        <div class="agent-shortcut-hint">
-                                            <kbd>"Enter"</kbd>
-                                            <span>{move || i18n.t("agent.send")}</span>
-                                            <span class="agent-shortcut-sep">"·"</span>
-                                            <kbd>"Ctrl/⌘+Enter"</kbd>
-                                            <span>{move || i18n.t("agent.newline")}</span>
-                                        </div>
-                                        // 取消按钮：只在 streaming 期间出现。
-                                        // 调 cancelAgentTurn，服务端 finish() 把 turn
-                                        // 从 SessionTurns 注册表移除；runner 还在跑也
-                                        // 无所谓——前端立即关 streaming 指示器、释放
-                                        // 输入框让用户接着打字。Error 路径只 console.warn
-                                        // 不弹错误：用户重复点或服务端已结束都不会让面板
-                                        // 失去响应。
-                                        <Show
-                                            when=move || streaming.get()
-                                            fallback=move || view! { <span></span> }
-                                        >
-                                            <button
-                                                class="agent-cancel"
-                                                on:click={
-                                                    let streaming = streaming;
-                                                    let current_turn_id = current_turn_id;
-                                                    move |_| {
-                                                        let Some(tid) = current_turn_id.get_untracked() else {
-                                                            // streaming=true 但 turn_id 还没就绪
-                                                            // （send_agent_message 阶段）——按钮
-                                                            // 不该被点；如果真的点了（极快双击）就静默
-                                                            // no-op，等下一次按钮出现。
-                                                            return;
-                                                        };
-                                                        streaming.set(false);
-                                                        current_turn_id.set(None);
-                                                        spawn_local(async move {
-                                                            if let Err(e) = cancel_agent_turn(&tid).await {
-                                                                web_sys_console_warn(&format!(
-                                                                    "cancel_agent_turn failed: {e}"
-                                                                ));
+                                                />
+                                                // 底栏：左贴边快捷键提示，中段空闲，右簇按钮（📎 + 发送/取消）。
+                                                // hint 用 pointer-events:none 让点击穿透到 textarea；按钮自身
+                                                // pointer-events:auto 正常接收点击。
+                                                // 上传按钮：作为 <label> 包裹隐藏的 <input type=file>，点图标
+                                                // 触发原生文件选择对话框；uploading / streaming 时 input 被
+                                                // prop:disabled，CSS :has(input:disabled) 给 label 换灰。
+                                                // streaming 时显示「取消」，否则显示「发送」——同一右槽位
+                                                // 两种状态靠 Show fallback 切换，避免布局跳。
+                                                <div class="agent-shortcut-bar">
+                                                    <div class="agent-shortcut-hint" aria-hidden="true">
+                                                        <kbd>"Enter"</kbd>
+                                                        <span>{move || i18n.t("agent.send")}</span>
+                                                        <span class="agent-shortcut-sep">"·"</span>
+                                                        <kbd>"Ctrl/⌘+Enter"</kbd>
+                                                        <span>{move || i18n.t("agent.newline")}</span>
+                                                    </div>
+                                                    <label
+                                                        class="agent-icon-btn agent-attach-pick"
+                                                        title=move || if attachments_uploading.get() {
+                                                            i18n.t("attachment.uploading")
+                                                        } else {
+                                                            i18n.t("attachment.section_title")
+                                                        }
+                                                    >
+                                                        {ic_upload()}
+                                                        <input
+                                                            type="file"
+                                                            multiple=true
+                                                            style="display:none"
+                                                            prop:disabled=move || attachments_uploading.get() || streaming.get()
+                                                            on:change=on_pick_files
+                                                        />
+                                                    </label>
+                                                    <Show
+                                                        when=move || streaming.get()
+                                                        fallback=move || view! {
+                                                            // 发送按钮：输入为空 / 流式响应 / 附件上传中时置灰。
+                                                            // trim().is_empty() 处理纯空格输入——避免只敲了一堆
+                                                            // 空白就能发出去这种边缘 case。
+                                                            <button
+                                                                class="agent-send"
+                                                                on:click=move |_| on_send()
+                                                                prop:disabled=move || {
+                                                                    input.get().trim().is_empty()
+                                                                        || streaming.get()
+                                                                        || attachments_uploading.get()
+                                                                }
+                                                            >
+                                                                {move || i18n.t("agent.send")}
+                                                            </button>
+                                                        }
+                                                    >
+                                                        // 取消按钮：调 cancelAgentTurn，服务端 finish() 把 turn
+                                                        // 从 SessionTurns 注册表移除；runner 还在跑也无
+                                                        // 所谓——前端立即关 streaming 指示器、释放输入框让
+                                                        // 用户接着打字。Error 路径只 console.warn 不弹错
+                                                        // 误：用户重复点或服务端已结束都不会让面板失去响应。
+                                                        <button
+                                                            class="agent-cancel"
+                                                            on:click={
+                                                                let streaming = streaming;
+                                                                let current_turn_id = current_turn_id;
+                                                                move |_| {
+                                                                    let Some(tid) = current_turn_id.get_untracked() else {
+                                                                        // streaming=true 但 turn_id 还没就绪
+                                                                        // （send_agent_message 阶段）——按钮
+                                                                        // 不该被点；如果真的点了（极快双击）就静默
+                                                                        // no-op，等下一次按钮出现。
+                                                                        return;
+                                                                    };
+                                                                    streaming.set(false);
+                                                                    current_turn_id.set(None);
+                                                                    spawn_local(async move {
+                                                                        if let Err(e) = cancel_agent_turn(&tid).await {
+                                                                            web_sys_console_warn(&format!(
+                                                                                "cancel_agent_turn failed: {e}"
+                                                                            ));
+                                                                        }
+                                                                    });
+                                                                }
                                                             }
-                                                        });
-                                                    }
-                                                }
-                                            >
-                                                {move || i18n.t("common.cancel")}
-                                            </button>
-                                        </Show>
+                                                        >
+                                                            {move || i18n.t("common.cancel")}
+                                                        </button>
+                                                    </Show>
+                                                </div>
+                                            </div>
                                     </div>
                                     // 流式期间在输入区下方挂一条 status：spinner + 文案
                                     // 「Buckaroo 正在思考…」——让用户看见 agent 确实在跑，
@@ -1857,12 +1856,14 @@ fn spawn_attachment_uploads(
     attachments: RwSignal<Vec<AgentAttachmentChip>>,
     uploading: RwSignal<bool>,
     error: RwSignal<Option<String>>,
+    need_session_msg: String,
+    unnamed_file_msg: String,
 ) {
     use js_sys::Reflect;
     use wasm_bindgen::{JsCast, JsValue};
 
     let Some(sid) = session_id else {
-        error.set(Some("请先选择会话再添加附件".to_string()));
+        error.set(Some(need_session_msg));
         return;
     };
     let Some(input) = ev
@@ -1941,7 +1942,7 @@ fn spawn_attachment_uploads(
         let filename = Reflect::get(&file_js, &JsValue::from_str("name"))
             .ok()
             .and_then(|v| v.as_string())
-            .unwrap_or_else(|| "未命名文件".to_string());
+            .unwrap_or_else(|| unnamed_file_msg.clone());
         // Array.from 出来的元素仍是 File 实例，但 wasm-bindgen 的
         // dyn_into::<web_sys::File> 走静态 prototype 检查会失败（FileList
         // / 跨 realm 场景常见），改走 unchecked_from_js：File 继承 Blob，
@@ -1985,5 +1986,7 @@ fn spawn_attachment_uploads(
     _attachments: RwSignal<Vec<AgentAttachmentChip>>,
     _uploading: RwSignal<bool>,
     _error: RwSignal<Option<String>>,
+    _need_session_msg: String,
+    _unnamed_file_msg: String,
 ) {
 }

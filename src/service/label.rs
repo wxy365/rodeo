@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use ulid::Ulid;
@@ -453,6 +454,100 @@ impl LabelService {
         )?);
         self.store.write_batch(ops)?;
         Ok(schema)
+    }
+
+    /// 删标签定义的「主行 + 审计」部分：返回必须同步——保证用户立刻能拿同名重建。
+    ///
+    /// 1. 读 schema（不在则 NotFound）
+    /// 2. 写一条 `LabelSchemaDeleted` 审计
+    /// 3. 删 `LABEL_SCHEMAS` 主行
+    /// 三件事一次 `write_batch` 原子落盘；返回删掉的 schema。
+    ///
+    /// 重活（bulk 摘除 entry 标签、视图列清理、reindex）拆到 `cascade_delete`，
+    /// 由 resolver 通过 `tokio::task::spawn_blocking` 异步跑，标签主行一旦删掉，
+    /// 任何后续读路径都看得到「标签已删」，cascade 中途崩掉下次删除或启动 repair 兜底。
+    pub fn delete_schema_meta(
+        &self,
+        actor: Ulid,
+        ws_id: Ulid,
+        name: &str,
+    ) -> Result<LabelSchema, AppError> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(AppError::Internal("标签名称不能为空".to_string()));
+        }
+        let schema = self
+            .get_schema(ws_id, name)?
+            .ok_or(AppError::NotFound)?;
+        let before = serde_json::to_string(&schema).unwrap_or_default();
+        let audit = AuditLog::new(
+            AuditAction::LabelSchemaDeleted,
+            actor,
+            "label_schema",
+            name,
+            Some(ws_id),
+            Some(before),
+            None,
+        );
+        let mut ops = audit_ops(&audit)?;
+        ops.push(BatchOp::delete(
+            cf::LABEL_SCHEMAS,
+            keys::label_schema_key(ws_id, name),
+        ));
+        self.store.write_batch(ops)?;
+        Ok(schema)
+    }
+
+    /// 级联清理已被打标的 entry：在 (ws, name) 命中的 `LABELINGS_BY_LABEL` 子树上
+    /// 按 key 末 16 字节解码 entry_code，删 `LABELINGS` / `LABELINGS_BY_WORKSPACE`
+    /// / `LABELINGS_BY_LABEL` 三组键。一次 `write_batch` 原子落盘。
+    ///
+    /// 返回受影响的 entry_code 列表（去重，按 base62 自然序），交给调用方在
+    /// `spawn_blocking` 闭包里逐条 `reindex_by_code` 重建搜索索引。
+    ///
+    /// 之所以在这里不复用 service/entry.rs::extract_entry_code_from_key（私有）：
+    /// 拷贝 6 行比跨 crate 改可见性干净；语义完全一致（entry_code 由 generate_entry_code
+    /// 锁死为 16 字符 base62，末 16 字节即 code 的 utf-8）。
+    pub fn cascade_delete(
+        &self,
+        ws_id: Ulid,
+        name: &str,
+    ) -> Result<Vec<String>, AppError> {
+        let name = name.trim();
+        let label_prefix = keys::labeling_by_label_prefix(ws_id, name);
+        let mut ops = Vec::new();
+        let mut affected: BTreeSet<String> = BTreeSet::new();
+        let mut label_index_keys: Vec<Vec<u8>> = Vec::new();
+        for (k, _) in self
+            .store
+            .scan_prefix(cf::LABELINGS_BY_LABEL, &label_prefix)?
+        {
+            // key = ws ‖ name ‖ 0x00 ‖ encoded ‖ code(16 字节 base62)
+            if k.len() < label_prefix.len() + 16 {
+                continue;
+            }
+            let code = std::str::from_utf8(&k[k.len() - 16..])
+                .map_err(|_| AppError::Internal("标签索引键解码失败".to_string()))?;
+            affected.insert(code.to_string());
+            label_index_keys.push(k);
+        }
+        for code in &affected {
+            ops.push(BatchOp::delete(
+                cf::LABELINGS,
+                keys::labeling_key(code, name),
+            ));
+            ops.push(BatchOp::delete(
+                cf::LABELINGS_BY_WORKSPACE,
+                keys::labeling_by_workspace_key(ws_id, code, name),
+            ));
+        }
+        for k in &label_index_keys {
+            ops.push(BatchOp::delete(cf::LABELINGS_BY_LABEL, k.clone()));
+        }
+        if !ops.is_empty() {
+            self.store.write_batch(ops)?;
+        }
+        Ok(affected.into_iter().collect())
     }
 }
 

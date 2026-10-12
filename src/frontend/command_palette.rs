@@ -18,7 +18,7 @@
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use leptos_router::hooks::{use_location, use_navigate};
+use leptos_router::hooks::{use_location, use_navigate, use_query_map};
 
 use super::components::short_time;
 use super::graphql_client::{search_entries, workspaces, Entry, WorkspaceItem};
@@ -395,7 +395,18 @@ fn do_invoke(
             PaletteCommand::GoSettings => {
                 let slug = current_slug();
                 if !slug.is_empty() {
-                    navigate(&format!("/{slug}/settings"), Default::default());
+                    // 把当前视图 id 透传：用户从工作空间主页面板里打开设置，
+                    // 再点返回时能回到原视图。`use_query_map` 仅在 Router 内可用，
+                    // 这里的 command_palette 已经在 Router 内（见 AppBar 挂载位）。
+                    let view = use_query_map()
+                        .get()
+                        .get("view")
+                        .filter(|s| !s.is_empty());
+                    let href = match view.as_deref() {
+                        Some(v) => format!("/{slug}/settings?view={v}"),
+                        None => format!("/{slug}/settings"),
+                    };
+                    navigate(&href, Default::default());
                 }
             }
             PaletteCommand::ThemeToggle => {

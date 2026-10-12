@@ -20,7 +20,7 @@ pub mod tantivy;
 
 pub use helpers::{comments_text, strip_rich_text};
 pub use meilisearch::MeilisearchBackend;
-pub use tantivy::TantivyBackend;
+pub use tantivy::{TantivyBackend, TEXT_CANDIDATE_LIMIT};
 
 /// 全文检索后端的统一接口。所有实现必须能在多线程上下文中共享
 ///（axum 的 State 是 `Arc`，后端实例也是 `Arc<dyn SearchBackend>`）。

@@ -712,7 +712,18 @@ pub fn TimelineView(
                 let uns_count = uns.len();
 
                 view! {
-                    <div class="tl-scroll">
+                    <div class="tl-scroll"
+                        on:wheel=move |ev| {
+                            // Shift + 滚轮 → 横向滚动。纵向拖选区（tl-axis 的 pointerdown）
+                            // 不受影响——wheel 与 pointer 互不干扰；没按 Shift 不
+                            // prevent_default，让浏览器按默认竖直走，画面不会抖。
+                            if ev.shift_key() && ev.delta_y() != 0.0 {
+                                ev.prevent_default();
+                                #[cfg(target_arch = "wasm32")]
+                                crate::frontend::wheel::shift_wheel_horizontal(&ev);
+                            }
+                        }
+                    >
                         <div class="tl-canvas" style=format!("width:{width:.1}px")>
                             <div
                                 class="tl-axis"

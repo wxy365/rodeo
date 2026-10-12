@@ -31,7 +31,34 @@ pub fn flat_text(delta_json: &str) -> String {
         };
         match insert {
             serde_json::Value::String(s) => out.push_str(s),
-            // image / mention 嵌入：跳过（避免给消息预览塞奇怪的字符）。
+            // mention 嵌入：从 fluent-editor 的 mention 模块插入。`text` 是
+            // 用户在下拉里选中的显示名（默认 `renderMentionText` 取 item.name），
+            // `char` 是触发字符（默认 '@'）。把 `@姓名` 形式补回去，让下游的
+            // `extract_mention_names` 能按现有「`@` 后接非空白连续字符」的正则
+            // 抓出来——否则选下拉插入的 chip 在后端就是一段看不见的嵌入，
+            // 通知发不出去。手敲 `@姓名` 走 String 路径，原本就 OK。
+            serde_json::Value::Object(m) if m.get("mention").is_some() => {
+                let m = &m["mention"];
+                // fluent-editor 的 mention chip：`text` 是下拉里选中的显示名
+                // （默认 `renderMentionText` 取 item.name），`char` 是触发字符
+                // （默认 '@'）。这里固定补回 `@` 前缀，让下游的
+                // `extract_mention_names` 沿用「`@` 后接非空白连续字符」的正则。
+                // 万一未来 mention 模块把 char 暴露给配置，再回这里读 char。
+                let text = m
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| {
+                        m.get("mention")
+                            .and_then(|mm| mm.get("name"))
+                            .and_then(|v| v.as_str())
+                    })
+                    .unwrap_or("");
+                if !text.is_empty() {
+                    out.push('@');
+                    out.push_str(text);
+                }
+            }
+            // image / 其他嵌入：跳过（避免给消息预览塞奇怪的字符）。
             _ => {}
         }
     }

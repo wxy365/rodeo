@@ -1,6 +1,7 @@
 /target
 /dist
 /data
+/logs
 /public/pkg
 node_modules
 /config.toml

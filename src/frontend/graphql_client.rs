@@ -189,10 +189,16 @@ pub struct WorkspaceItem {
 }
 
 /// 创建人 / 更新人账号的精简投影。账号已删除时服务端返回 None。
-#[derive(Clone, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountBrief {
+    /// `#[serde(default)]` 让 GraphQL 片段不包含此字段时反序列化落空串——
+    /// 给公开页 `GqlAccountPublic { name }` 这种最小投影留口子，避免共享同一类型
+    /// 的全字段详情页（id/email 都拉到）因少字段就报错。空串表达式仍按「未渲染」
+    /// 处理（上游链路都是 `if account.id.is_empty()` 之类显式判空）。
+    #[serde(default)]
     pub id: String,
+    #[serde(default)]
     pub email: String,
     pub name: String,
 }
@@ -231,7 +237,7 @@ pub struct Entry {
     pub labels: Vec<Labeling>,
 }
 
-#[derive(Clone, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Labeling {
     pub label_name: String,
@@ -266,6 +272,90 @@ pub struct RelationSemantic {
     pub value: Option<String>,
 }
 
+/// Entry 分享行（owner 面板用）。**不带 `url`**：前端用 `id` +
+/// `window.location.origin` 自拼 `"/share/" + share.id`——避免在
+/// GraphQL 层抓 HTTP 上下文。字段名来自服务端 `GqlEntryShare` 的 camelCase
+/// 投影。
+#[derive(Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntryShare {
+    pub id: String,
+    pub entry_code: String,
+    pub workspace_id: String,
+    pub created_at: String,
+    pub created_by: String,
+    pub revoked: bool,
+}
+
+/// 公开分享页拿到的 Entry 子集（`GqlSharedEntry` 投影）。复用现有
+/// `AccountBrief` / `Labeling` 类型以减少重复定义；详情页与公开页
+/// 的标签结构是同一份事实。
+///
+/// 同时派生 `Serialize` 是让 `leptos::Resource::new` 满足 `JsonSerdeCodec`
+/// 内部 `Encoder<T>` / `Decoder<T>` 约束——SSR 把 Resource 序列化到
+/// hydration script 里需要 `Serialize`，hydrate 后还要 `Deserialize`。
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedEntry {
+    pub code: String,
+    pub title: String,
+    pub detail: String,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default)]
+    pub created_by_account: Option<AccountBrief>,
+    pub labels: Vec<Labeling>,
+}
+
+/// `/share/{token}` 全屏只读视图的返回类型——与 `SharedEntry` 的字段全部
+/// `entry.*` 嵌套，额外补 workspace / comments / attachments / label_schemas /
+/// members。所有 PII 字段（author email / id 等）在 GraphQL 端就已经裁掉。
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntryFullPublic {
+    pub entry: SharedEntry,
+    pub workspace_name: String,
+    pub workspace_slug: String,
+    pub comments: Vec<SharedComment>,
+    pub attachments: Vec<SharedAttachment>,
+    pub label_schemas: Vec<LabelSchema>,
+    pub members: Vec<MemberPublic>,
+}
+
+/// 公开分享评论投影：仅作者名 + 时间，id 暴露是为了让前端在 hooks /
+/// reactive 流里有稳定 key（实际是「键」而非「暴露」）。
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedComment {
+    pub id: String,
+    pub body: String,
+    pub author_name: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub edited: bool,
+}
+
+/// 公开分享附件投影：与 `Attachment` 等价但不带 `created_by` 系列字段——前者
+/// 是说「有人上传了某文件」，后者是「谁上传的」，后者与匿名读者无关。
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedAttachment {
+    pub id: String,
+    pub filename: String,
+    pub content_type: String,
+    pub size: i64,
+    pub url: String,
+    pub created_at: String,
+}
+
+/// 公开分享成员投影：仅 id + name。`role` / `email` 不暴露。
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MemberPublic {
+    pub id: String,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Relation {
@@ -292,6 +382,9 @@ pub struct GqlMessage {
     pub id: String,
     pub workspace_id: String,
     pub workspace_name: String,
+    /// 工作空间 slug（URL 段），点击消息跳转 Entry 全屏时用。
+    /// 服务端在工作空间已被硬删时回空串，前端据此跳过跳转、退化为只标已读。
+    pub workspace_slug: String,
     pub entry_code: String,
     pub source_type: String,
     pub source_id: Option<String>,
@@ -321,7 +414,7 @@ pub struct Attachment {
 const ATTACHMENT_FIELDS: &str =
     "id entryCode filename contentType size url createdAt createdBy createdByAccount { id email name }";
 
-#[derive(Clone, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LabelSchema {
     pub name: String,
@@ -414,16 +507,6 @@ pub async fn me() -> Result<Option<User>, String> {
         .and_then(|v| serde_json::from_value(v).ok()))
 }
 
-/// 免登录：登录页据此决定是否展示注册入口。取不到时按「关闭」处理（保守，宁可少显示）。
-pub async fn allow_registration() -> bool {
-    graphql("query { serverConfig { allowRegistration } }", json!({}))
-        .await
-        .ok()
-        .and_then(|d| d.get("serverConfig").cloned())
-        .and_then(|v| v.get("allowRegistration").and_then(|b| b.as_bool()))
-        .unwrap_or(false)
-}
-
 /// 服务端吊销当前令牌，再清理本地存储。吊销请求失败（离线等）也要清本地，
 /// 否则用户会卡在「退不出去」的状态——代价是那张令牌要到过期才失效。
 pub async fn logout() {
@@ -496,23 +579,6 @@ pub async fn login(email: &str, password: &str) -> Result<(String, User), String
     )
     .await?;
     let r = data.get("login").ok_or("登录响应缺失")?;
-    let token = r
-        .get("token")
-        .and_then(|v| v.as_str())
-        .ok_or("token 缺失")?
-        .to_string();
-    let account: User = serde_json::from_value(r.get("account").cloned().unwrap_or(Value::Null))
-        .map_err(|e| e.to_string())?;
-    Ok((token, account))
-}
-
-pub async fn register(email: &str, name: &str, password: &str) -> Result<(String, User), String> {
-    let data = graphql(
-        "mutation($e: String!, $n: String!, $p: String!) { register(email: $e, name: $n, password: $p) { token account { id email name isAdmin hasPassword } } }",
-        json!({ "e": email, "n": name, "p": password }),
-    )
-    .await?;
-    let r = data.get("register").ok_or("注册响应缺失")?;
     let token = r
         .get("token")
         .and_then(|v| v.as_str())
@@ -920,7 +986,7 @@ pub async fn delete_entry_relation(workspace_id: &str, relation_id: &str) -> Res
         .unwrap_or(false))
 }
 
-const MESSAGE_FIELDS: &str = "id workspaceId workspaceName entryCode sourceType sourceId actorId actorName preview read createdAt";
+const MESSAGE_FIELDS: &str = "id workspaceId workspaceName workspaceSlug entryCode sourceType sourceId actorId actorName preview read createdAt";
 
 pub async fn unread_message_count() -> Result<i32, String> {
     let q = "query { unreadMessageCount }";
@@ -1183,6 +1249,16 @@ pub async fn update_label_schema(
     .map_err(|e| e.to_string())
 }
 
+/// 删一条标签定义（级联清理所有打标与索引）。返回服务端是否真的命中（不存在返回 false）。
+pub async fn delete_label_schema(workspace_id: &str, name: &str) -> Result<bool, String> {
+    let q = "mutation($id: ID!, $n: String!) { deleteLabelSchema(workspaceId: $id, name: $n) }";
+    let data = graphql(&q, json!({ "id": workspace_id, "n": name })).await?;
+    Ok(data
+        .get("deleteLabelSchema")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false))
+}
+
 pub async fn audit_logs(workspace_id: &str) -> Result<Vec<AuditLog>, String> {
     let data = graphql(
         "query($id: ID!) { auditLogs(workspaceId: $id) { id action resourceType resourceId at before after } }",
@@ -1208,7 +1284,7 @@ pub async fn my_role(workspace_id: &str) -> Result<String, String> {
 
 // ---------- 成员（Member） ----------
 
-#[derive(Clone, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Member {
     pub account_id: String,
@@ -1930,30 +2006,6 @@ pub async fn bind_oauth_to_existing(
     Ok((token, account))
 }
 
-pub async fn bind_oauth_to_new(
-    bind_token: &str,
-    email: &str,
-    name: &str,
-    password: Option<&str>,
-) -> Result<(String, User), String> {
-    let data = graphql(
-        "mutation($t: String!, $e: String!, $n: String!, $p: String) { \
-         bindOAuthToNew(bindToken: $t, email: $e, name: $n, password: $p) \
-         { token account { id email name isAdmin hasPassword } } }",
-        json!({ "t": bind_token, "e": email, "n": name, "p": password }),
-    )
-    .await?;
-    let r = data.get("bindOAuthToNew").ok_or("绑定响应缺失")?;
-    let token = r
-        .get("token")
-        .and_then(|v| v.as_str())
-        .ok_or("token 缺失")?
-        .to_string();
-    let account: User = serde_json::from_value(r.get("account").cloned().unwrap_or(Value::Null))
-        .map_err(|e| e.to_string())?;
-    Ok((token, account))
-}
-
 /// 当前账号已绑定的第三方登录方式（账号页展示 / 解除用）。
 pub async fn my_oauth_bindings() -> Result<Vec<OAuthBinding>, String> {
     let data = graphql(
@@ -2002,4 +2054,109 @@ pub async fn set_password(new_password: &str) -> Result<(String, User), String> 
     let account: User = serde_json::from_value(r.get("account").cloned().unwrap_or(Value::Null))
         .map_err(|e| e.to_string())?;
     Ok((token, account))
+}
+
+// ---------- Entry 分享：公开解析 + Owner 端的 create/list/revoke ----------
+
+const ENTRY_SHARE_FIELDS: &str =
+    "id entryCode workspaceId createdAt createdBy revoked";
+
+const SHARED_ENTRY_FIELDS: &str = "code title detail createdAt updatedAt \
+     createdByAccount { name } labels { labelName value }";
+
+/// 公开分享全量读视图的 GraphQL 字段集合。字段顺序对应服务端 `GqlEntryFullPublic`
+/// 嵌套结构；前端 `EntryFullPublic` 一次性 deserialize——任何字段不匹配都会
+/// 让 `serde_json::from_value` 直接报错（`#[serde(default)]` 用在
+/// optional 字段，缺这一层的字段不会静默回退）。
+const ENTRY_FULL_PUBLIC_FIELDS: &str = "entry { code title detail createdAt updatedAt \
+     createdByAccount { name } labels { labelName value } } \
+     workspaceName workspaceSlug \
+     comments { id body authorName createdAt updatedAt edited } \
+     attachments { id filename contentType size url createdAt } \
+     labelSchemas { name title valueType enumValues color valueColors multi format currencySymbol unit defaultValue links } \
+     members { id name }";
+
+/// 公开解析分享 token。`Ok(None)`：token 无效 / 已撤销 / Entry 删了，
+/// UI 走「该分享链接无效或已撤销」即可——与登录路径「无命中」同源安全策略。
+pub async fn entry_by_share_token(token: &str) -> Result<Option<SharedEntry>, String> {
+    let q = format!(
+        "query($t: String!) {{ entryByShareToken(token: $t) {{ {SHARED_ENTRY_FIELDS} }} }}"
+    );
+    let data = graphql(&q, json!({ "t": token })).await?;
+    let raw = data.get("entryByShareToken").cloned().unwrap_or(Value::Null);
+    if raw.is_null() {
+        return Ok(None);
+    }
+    let entry: SharedEntry = serde_json::from_value(raw).map_err(|e| e.to_string())?;
+    Ok(Some(entry))
+}
+
+/// 公开拉取分享页全量只读视图：`/share/{token}` 一次性拿到 entry / 评论 /
+/// 附件 / 标签定义 / 成员名，与 `entry_by_share_token` 同款安全策略——失败
+/// 形态统一 `None`，不分流。匿名访问、不传 Authorization。
+pub async fn entry_full_by_share_token(
+    token: &str,
+) -> Result<Option<EntryFullPublic>, String> {
+    let q = format!(
+        "query($t: String!) {{ entryFullByShareToken(token: $t) {{ {ENTRY_FULL_PUBLIC_FIELDS} }} }}"
+    );
+    let data = graphql(&q, json!({ "t": token })).await?;
+    let raw = data
+        .get("entryFullByShareToken")
+        .cloned()
+        .unwrap_or(Value::Null);
+    if raw.is_null() {
+        return Ok(None);
+    }
+    let full: EntryFullPublic = serde_json::from_value(raw).map_err(|e| e.to_string())?;
+    Ok(Some(full))
+}
+
+/// 列出某条目下的全部分享（含已撤销）。Owner 面板用，鉴权调用。
+pub async fn entry_shares(workspace_id: &str, entry_code: &str) -> Result<Vec<EntryShare>, String> {
+    let q = format!(
+        "query($w: ID!, $c: String!) {{ entryShares(workspaceId: $w, entryCode: $c) {{ {ENTRY_SHARE_FIELDS} }} }}"
+    );
+    let data = graphql(&q, json!({ "w": workspace_id, "c": entry_code })).await?;
+    serde_json::from_value(data.get("entryShares").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+/// 新建一个分享链接，返回带 `id` 的 share 行；前端用 `id` + 当前 origin 自拼 URL。
+pub async fn create_entry_share(
+    workspace_id: &str,
+    entry_code: &str,
+) -> Result<EntryShare, String> {
+    let q = format!(
+        "mutation($w: ID!, $c: String!) {{ createEntryShare(workspaceId: $w, entryCode: $c) {{ {ENTRY_SHARE_FIELDS} }} }}"
+    );
+    let data = graphql(&q, json!({ "w": workspace_id, "c": entry_code })).await?;
+    serde_json::from_value(data.get("createEntryShare").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+/// 软撤销分享（幂等）。
+pub async fn revoke_entry_share(workspace_id: &str, share_id: &str) -> Result<bool, String> {
+    let q = "mutation($w: ID!, $s: ID!) { revokeEntryShare(workspaceId: $w, shareId: $s) }";
+    let data = graphql(q, json!({ "w": workspace_id, "s": share_id })).await?;
+    Ok(data
+        .get("revokeEntryShare")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false))
+}
+
+/// 前端拼分享 URL：anonymous reader 看到的「完整地址」文本。
+/// SSR 下 origin 取空串，前端组件此时也不挂载（页面永远 hydrate 后才用）。
+/// web_sys 只在 wasm 编译；native 编译走空 origin。
+#[cfg(target_arch = "wasm32")]
+pub fn build_share_url(share_id: &str) -> String {
+    let origin = web_sys::window()
+        .and_then(|w| w.location().origin().ok())
+        .unwrap_or_default();
+    format!("{}/share/{}", origin.trim_end_matches('/'), share_id)
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn build_share_url(share_id: &str) -> String {
+    format!("/share/{}", share_id)
 }

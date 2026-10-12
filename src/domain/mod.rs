@@ -12,6 +12,7 @@ pub mod oauth;
 pub mod query;
 pub mod relation;
 pub mod rule;
+pub mod share;
 pub mod view;
 pub mod workspace;
 
@@ -36,5 +37,6 @@ pub use relation::{Relation, RelationSemantic, SemanticKind};
 pub use rule::{
     ActionTarget, AutomationRule, LabelEvent, LabelWrite, RuleAction, ValueSource, WriteOp,
 };
+pub use share::EntryShare;
 pub use view::{SortField, SortKey, SortSpec, TitleColorRule, View, ViewTimeline};
 pub use workspace::{Invite, Workspace, WorkspaceMember, WorkspaceRole};

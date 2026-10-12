@@ -49,6 +49,12 @@ pub enum AuditAction {
     RelationCreated,
     RelationUpdated,
     RelationDeleted,
+    // 追加在末尾：bincode 按变体序号编码，新变体只能往后加，否则存量审计日志会错位。
+    LabelSchemaDeleted,
+    // Entry 分享（Owner/Member 可创建、任意 Member 可撤销）。审计只在主动动作
+    // 时写，匿名读者点了链接**不**写——既无 visitor identity 也无 IP，不强行拼意义。
+    EntryShareCreated,
+    EntryShareRevoked,
 }
 
 /// 审计日志。before/after 为 JSON 字符串（序列化后的快照）。

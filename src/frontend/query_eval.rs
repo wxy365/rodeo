@@ -393,6 +393,27 @@ fn cmp_value(got: &Value, op: &str, want: Option<&Value>) -> bool {
                 !hit
             }
         }
+        // 多值标签的「包含 / 等于」运算符（与后端 `Op::SetContains` / `Op::SetEquals` 同构）。
+        // 仅适用于多值 Account / Enum：单值标签走这里时 `elem_strings` 只会返回 1 个元素，
+        // 集合语义上「包含单元素 want」=「want 等于该元素」=「=」，等于回退到单值语义而不会误判。
+        "setContains" => {
+            // want 可以是标量或单元素数组；任一元素都得能在 got 里找到。
+            let want_elems: Vec<String> = match want {
+                Value::Array(a) => a.iter().filter_map(scalar_string).collect(),
+                other => scalar_string(other).into_iter().collect(),
+            };
+            // got 是多值数组：走集合语义（用字符串集合）；got 是单值：elem_strings 退化为 1 元素 vec。
+            let got_set: std::collections::BTreeSet<String> = elem_strings(got).into_iter().collect();
+            !want_elems.is_empty() && want_elems.iter().all(|w| got_set.contains(w))
+        }
+        "setEquals" => {
+            let want_set: std::collections::BTreeSet<String> = match want {
+                Value::Array(a) => a.iter().filter_map(scalar_string).collect(),
+                other => scalar_string(other).into_iter().collect(),
+            };
+            let got_set: std::collections::BTreeSet<String> = elem_strings(got).into_iter().collect();
+            got_set == want_set
+        }
         "gt" | "ge" | "lt" | "le" => {
             if let (Some(a), Some(b)) = (as_f64(got), as_f64(want)) {
                 return match op {

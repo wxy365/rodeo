@@ -99,6 +99,11 @@ pub fn AttachmentList(
     workspace_id: Signal<String>,
     /// 增删后通知外层：条目的「更新时间」要跟着刷新。
     on_changed: Callback<()>,
+    /// 只读模式（匿名分享页）：附件列表照常展示、下载链接仍可点（id 自身即
+    /// capability URL），但「上传」按钮、每行的「删除」按钮都不渲染——读者只
+    /// 能看，能下，不能改。
+    #[prop(default = false)]
+    read_only: bool,
 ) -> impl IntoView {
     let i18n: I18nController = use_i18n();
     let items = RwSignal::new(None::<Result<Vec<Attachment>, String>>);
@@ -199,7 +204,8 @@ pub fn AttachmentList(
                             {list.into_iter().map(|a| {
                                 let id = a.id.clone();
                                 let id_for_confirm = id.clone();
-                                let can_delete = a.created_by == mine || can_moderate;
+                                // 只读模式下：即便当前用户满足角色条件也不让删。
+                                let can_delete = !read_only && (a.created_by == mine || can_moderate);
                                 let confirming = confirm_del.get().as_deref() == Some(id.as_str());
                                 view! {
                                     <div class="att">
@@ -235,6 +241,10 @@ pub fn AttachmentList(
         }}
 
         {move || {
+            // 只读模式：连上传入口都不渲染——匿名分享页不允许写。
+            if read_only {
+                return view! { <div></div> }.into_any();
+            }
             if !role_at_least(&role.get(), "worker") {
                 return view! { <div></div> }.into_any();
             }

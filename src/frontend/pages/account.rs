@@ -143,9 +143,9 @@ pub fn Account() -> impl IntoView {
 
             {move || (!bindings.get().is_empty()).then(|| view! {
                 <div class="panel set-body">
-                    <h2>"第三方账号"</h2>
-                    <div class="mut">"通过下列方式登录后即视为已绑定；解除绑定后该登录方式将无法再用于此账号。"</div>
-                    {binding_rows(&bindings, &bind_error, &auth)}
+                    <h2>{move || i18n.t("account.oauth_title")}</h2>
+                    <div class="mut">{move || i18n.t("account.oauth_desc")}</div>
+                    {binding_rows(&bindings, &bind_error, &auth, i18n)}
                     {move || bind_error.get().map(|e| view! {
                         <div class="hint" style="margin-top:8px">{"⚠ "}{e}</div>
                     })}
@@ -154,7 +154,7 @@ pub fn Account() -> impl IntoView {
 
             {move || {
                 let show = auth.user.get().as_ref().map(|u| !u.has_password).unwrap_or(false);
-                show.then(|| set_password_section(auth, &new_pw, &pw_busy, &pw_error))
+                show.then(|| set_password_section(auth, &new_pw, &pw_busy, &pw_error, i18n))
             }}
 
             <div class="panel set-body">
@@ -192,14 +192,14 @@ pub fn Account() -> impl IntoView {
     }
 }
 
-/// 把内部 provider 标识翻成中文/英文标签。新 provider 在这里加一行就行——别去
+/// 把内部 provider 标识翻成本地化显示名。新 provider 在这里加一行就行——别去
 /// fallback 到原字符串，避免「wechat」这种内部值直接漏到用户眼前。
-fn provider_label(p: &str) -> &'static str {
+fn provider_label(p: &str, i18n: &I18nController) -> String {
     match p {
-        "wechat" => "微信",
-        "google" => "Google",
-        "github" => "GitHub",
-        _ => "其他",
+        "wechat" => i18n.t("account.provider_wechat"),
+        "google" => i18n.t("account.provider_google"),
+        "github" => i18n.t("account.provider_github"),
+        _ => i18n.t("account.provider_other"),
     }
 }
 
@@ -220,6 +220,7 @@ fn binding_rows(
     bindings: &RwSignal<Vec<OAuthBinding>>,
     bind_error: &RwSignal<Option<String>>,
     user: &AuthState,
+    i18n: I18nController,
 ) -> Vec<AnyView> {
     let snapshot: Vec<OAuthBinding> = bindings.get_untracked();
     snapshot
@@ -247,14 +248,14 @@ fn binding_rows(
                     style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--bd)"
                 >
                     <div>
-                        <b>{provider_label(&provider)}</b>
+                        <b>{move || provider_label(&provider, &i18n)}</b>
                         <span class="mut" style="margin-left:8px">
                             {email
                                 .or(display_name)
                                 .unwrap_or_else(|| external_for_fallback.clone())}
                         </span>
                         <span class="mut" style="margin-left:8px;font-size:12px">
-                            {"绑定于 "}{format_dt(&bound_at)}
+                            {move || i18n.t("account.bound_at")}{format_dt(&bound_at)}
                         </span>
                     </div>
                     <button
@@ -275,7 +276,7 @@ fn binding_rows(
                                 }
                             });
                         }
-                    >"解除绑定"</button>
+                    >{move || i18n.t("account.unbind")}</button>
                 </div>
             }
             .into_any()
@@ -290,6 +291,7 @@ fn set_password_section(
     new_pw: &RwSignal<String>,
     pw_busy: &RwSignal<bool>,
     pw_error: &RwSignal<Option<String>>,
+    i18n: I18nController,
 ) -> AnyView {
     let user_sig = user.user;
     let pw = *new_pw;
@@ -320,11 +322,11 @@ fn set_password_section(
     };
     view! {
         <div class="panel set-body">
-            <h2>"设置密码"</h2>
-            <div class="mut">"此账号尚未设置本地密码。设置后即可用邮箱 + 密码登录。"</div>
+            <h2>{move || i18n.t("account.set_password_title")}</h2>
+            <div class="mut">{move || i18n.t("account.set_password_desc")}</div>
             <form class="stack" on:submit=submit>
                 <label class="fld">
-                    <span>"新密码"</span>
+                    <span>{move || i18n.t("account.new_password_label")}</span>
                     <input
                         class="inp"
                         type="password"
@@ -333,7 +335,7 @@ fn set_password_section(
                         on:input=move |ev| pw.set(event_target_value(&ev))
                     />
                 </label>
-                <div class="mut">"最少 8 位，需包含大小写字母和数字。"</div>
+                <div class="mut">{move || i18n.t("account.password_requirements")}</div>
                 {move || err.get().map(|e| view! {
                     <div class="hint" style="margin-top:8px">{"⚠ "}{e}</div>
                 })}
@@ -342,7 +344,7 @@ fn set_password_section(
                     type="submit"
                     style="align-self:flex-start"
                     disabled=move || busy.get() || pw.get().is_empty()
-                >"保存密码"</button>
+                >{move || i18n.t("account.save_password")}</button>
             </form>
         </div>
     }

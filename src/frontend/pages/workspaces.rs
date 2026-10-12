@@ -27,6 +27,9 @@ pub fn WorkspaceList() -> impl IntoView {
     let desc = RwSignal::new(String::new());
     let error = RwSignal::new(None::<String>);
     let refresh = RwSignal::new(0u32);
+    // 顶部搜索框当前输入。按 name / slug / description 做客户端子串过滤——
+    // 工作空间列表通常几十条，客户端过滤不需要搜索后端，也避免每键一次 roundtrip。
+    let filter_text = RwSignal::new(String::new());
 
     let nav_effect = navigate.clone();
     Effect::new_sync(move |_| {
@@ -110,9 +113,11 @@ pub fn WorkspaceList() -> impl IntoView {
             // 里被定成「全文检索本视图」的占位，未来服务端接通后用同一个 query bar 即可。
             <div style="display:flex;align-items:center;margin-bottom:16px;gap:12px">
                 <h2 style="font-size:20px;font-weight:500;margin:0">{move || i18n.t("workspaces.title")}</h2>
-                <label class="inp" style="margin-left:auto;display:flex;align-items:center;gap:6px;padding:0 12px;min-width:260px">
+                <label class="ws-search">
                     {ic_search()}
-                    <input placeholder={move || i18n.t("workspaces.search")} disabled />
+                    <input type="search" aria-label={move || i18n.t("workspaces.search")}
+                        prop:value=filter_text
+                        on:input=move |ev| filter_text.set(event_target_value(&ev)) />
                 </label>
             </div>
 
@@ -140,15 +145,31 @@ pub fn WorkspaceList() -> impl IntoView {
                     None => view! { <div class="empty">{move || i18n.t("workspaces.loading")}</div> }.into_any(),
                     Some(Err(e)) => view! { <div class="empty error">{e.clone()}</div> }.into_any(),
                     Some(Ok(list)) => {
-                        let live: Vec<_> = list
+                        let live_raw: Vec<_> = list
                             .into_iter()
                             .filter(|w| w.workspace.deleted_at.is_none())
                             .collect();
+                        // 客户端子串过滤：trim + lowercase 后对 name / slug / description 做 contains。
+                        // CJK 不需要 ngram——列表通常远小于索引条目，contains 已经足够。
+                        let query = filter_text.get().trim().to_lowercase();
+                        let live_filtered: Vec<_> = if query.is_empty() {
+                            live_raw.clone()
+                        } else {
+                            live_raw
+                                .iter()
+                                .filter(|w| {
+                                    w.workspace.name.to_lowercase().contains(&query)
+                                        || w.workspace.slug.to_lowercase().contains(&query)
+                                        || w.workspace.description.to_lowercase().contains(&query)
+                                })
+                                .cloned()
+                                .collect()
+                        };
                         let inbox_now = inbox.get();
                         // 真·空状态：没有任何工作空间 + 没有任何邀请。
                         // 普通状态下网格外已经有那张小 dashed CTA，但用户初次进入时小卡夹
                         // 在栅格里和正式卡片并列不显眼——hero 变体在这里给它一个独立的"邀请位"。
-                        let truly_empty = live.is_empty() && inbox_now.is_empty();
+                        let truly_empty = live_raw.is_empty() && inbox_now.is_empty();
                         if truly_empty {
                             return view! {
                                 <div class="panel ws-card ws-hero">
@@ -164,14 +185,17 @@ pub fn WorkspaceList() -> impl IntoView {
                                 </div>
                             }.into_any();
                         }
+                        // 过滤后无命中：用户输了字但没匹配到任何工作空间——
+                        // 在邀请卡之后、`+` CTA 之前插一行提示，CTA 与邀请仍保留。
+                        let no_match = !query.is_empty() && live_filtered.is_empty();
                         view! {
                             // 邀请卡片：与正式卡片同栅格、视觉用虚线 / 「邀请」角标区分。
                             // 接受 / 拒绝按钮就地放在卡片上，避免在页面顶部再来一条横条收件箱。
-                            {inbox.get().into_iter().map(|inv| {
+                            {inbox_now.into_iter().map(|inv| {
                                 let accept_id = inv.workspace_id.clone();
                                 let slug = inv.workspace_slug.clone();
                                 let decline_id = inv.workspace_id.clone();
-                                let role_str = role_label(&inv.role);
+                                let role_str = role_label(&inv.role, &i18n);
                                 let inviter = inv.invited_by.trim().is_empty().then(|| inv.email.clone()).unwrap_or_else(|| inv.invited_by.clone());
                                 view! {
                                     <div class="panel ws-card ws-invite">
@@ -190,7 +214,12 @@ pub fn WorkspaceList() -> impl IntoView {
                                     </div>
                                 }
                             }).collect::<Vec<_>>()}
-                            {live.into_iter().map(|w| {
+                            {move || if no_match {
+                                Some(view! { <div class="empty">{move || i18n.t("workspaces.no_match")}</div> }.into_any())
+                            } else {
+                                None
+                            }}
+                            {live_filtered.into_iter().map(|w| {
                                 let slug = w.workspace.slug.clone();
                                 let nav = nav_grid.clone();
                                 let card = w.workspace;
@@ -200,7 +229,7 @@ pub fn WorkspaceList() -> impl IntoView {
                                         <span class="code">{card.slug.clone()}</span>
                                         <div class="mut">{card.description.clone()}</div>
                                         <div>
-                                            <span class=format!("chip {}", role_chip_class(&w.role))>{role_label(&w.role)}</span>
+                                            <span class=format!("chip {}", role_chip_class(&w.role))>{role_label(&w.role, &i18n)}</span>
                                         </div>
                                     </div>
                                 }
@@ -247,7 +276,7 @@ pub fn WorkspaceList() -> impl IntoView {
                                     <span class="code">{card.slug.clone()}</span>
                                     <div class="mut">{move || i18n.tf("workspaces.deleted_at", &[("time", &time_str)])}</div>
                                     <div style="display:flex;gap:8px;align-items:center">
-                                        <span class=format!("chip {}", role_chip_class(&w.role))>{role_label(&w.role)}</span>
+                                        <span class=format!("chip {}", role_chip_class(&w.role))>{role_label(&w.role, &i18n)}</span>
                                         <button class="btn sm" on:click=move |_| restore.run(id.clone())>{move || i18n.t("workspaces.restore")}</button>
                                     </div>
                                 </div>

@@ -140,9 +140,9 @@ impl MeilisearchBackend {
                 return s.to_string();
             }
             // ngram tokenizer 不会失败——构造用 unwrap_e 是 new() 的固定签名
-            let tokenizer = NgramTokenizer::new(1, 2, false)
+            let mut tokenizer = NgramTokenizer::new(1, 2, false)
                 .expect("NgramTokenizer::new(1, 2, false) 是固定签名，不应失败");
-            let mut stream: TokenStream<_> = tokenizer.token_stream(s);
+            let mut stream: Box<dyn TokenStream> = Box::new(tokenizer.token_stream(s));
             let mut out = String::new();
             while let Some(token) = stream.next() {
                 if !out.is_empty() {
@@ -214,9 +214,9 @@ impl SearchBackend for MeilisearchBackend {
             return Ok(Vec::new());
         }
         let q = if self.pre_segment {
-            let tokenizer = NgramTokenizer::new(1, 2, false)
+            let mut tokenizer = NgramTokenizer::new(1, 2, false)
                 .map_err(|e| AppError::Storage(format!("ngram tokenizer 构造失败: {e}")))?;
-            let mut stream: TokenStream<_> = tokenizer.token_stream(keyword);
+            let mut stream: Box<dyn TokenStream> = Box::new(tokenizer.token_stream(keyword));
             let mut out = String::new();
             while let Some(token) = stream.next() {
                 if !out.is_empty() {

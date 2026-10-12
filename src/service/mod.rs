@@ -163,6 +163,10 @@ impl Services {
             crate::service::oauth_bindings::OAuthBindingsService::new(store.clone());
         // Entry 分享：仅依赖 `DocStore`，在最后的 Services 拼装前构造。
         let share = ShareService::new(store.clone());
+        // ViewService 必须在 `workspace` / `message` 被 move 进 Self 之前构造——
+        // 它的 new 签名要 clone 这两个实例，struct literal 字段按源序求值，
+        // 写到 `view:` 那一行时它们已经被 move 走了（E0382）。
+        let view = ViewService::new(store.clone(), workspace.clone(), message.clone());
         let services = Self {
             auth: AuthService::new(store.clone(), config.clone()),
             workspace,
@@ -172,7 +176,7 @@ impl Services {
             attachment,
             label: LabelService::new(store.clone()),
             audit: AuditService::new(store.clone()),
-            view: ViewService::new(store.clone(), workspace.clone(), message.clone()),
+            view,
             ai: AiService::new(store.clone()),
             rig_client,
             rule: RuleService::new(store.clone()),

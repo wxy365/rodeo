@@ -2,21 +2,40 @@ use leptos::ev::SubmitEvent;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
-use leptos_router::hooks::{use_navigate, use_params_map};
+use leptos_router::hooks::{use_navigate, use_params_map, use_query_map};
 use serde_json::Value;
+
+#[cfg(target_arch = "wasm32")]
+fn after_ms<F>(ms: u32, f: F)
+where
+    F: FnOnce() + 'static,
+{
+    use gloo_timers::callback::Timeout;
+    let t = Timeout::new(ms, f);
+    t.forget();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn after_ms<F>(_ms: u32, _f: F)
+where
+    F: FnOnce() + 'static,
+{
+    // SSR 不需要「再次点击确认」自动回退；空实现避免编译期拉 gloo_timers。
+}
 
 use crate::frontend::ai_prompt_editor::{rows_from, rows_to_value, PromptRow, PromptRows};
 use crate::frontend::automation_tab::AutomationTab;
+use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::components::{
     action_label, audit_change, display_enum_value, logged_out, role_label, short_time,
     value_type_label, ColorPick, DefaultValueInput, FormatSelect,
 };
 use crate::frontend::graphql_client::{
-    audit_logs, create_label_schema, delete_workspace, invite_member, invites, label_attrs,
-    label_schemas, members, my_role, remove_member, restore_workspace, revoke_invite,
-    transfer_owner, update_label_schema, update_member_role, update_view, update_workspace,
-    update_workspace_ai_config, views, workspace_ai_config, workspace_by_slug, AuditLog, Invite,
-    LabelSchema, Member, View, Workspace,
+    audit_logs, create_label_schema, delete_label_schema, delete_workspace, invite_member,
+    invites, label_attrs, label_schemas, members, my_role, remove_member, restore_workspace,
+    revoke_invite, transfer_owner, update_label_schema, update_member_role, update_view,
+    update_workspace, update_workspace_ai_config, views, workspace_ai_config, workspace_by_slug,
+    AuditLog, Invite, LabelSchema, Member, View, Workspace,
 };
 use crate::frontend::icons::{
     ic_add, ic_back, ic_close, ic_comment, ic_history, ic_link, ic_profile, ic_setting, ic_share,
@@ -42,8 +61,14 @@ pub fn WorkspaceSettings() -> impl IntoView {
     let slug = move || params.get_untracked().get("slug").unwrap_or_default();
     let auth = use_auth();
     let navigate = use_navigate();
+    let i18n: I18nController = use_i18n();
     // 存成 StoredValue（Copy），事件闭包才能保持 Copy 而被视图重复使用。
     let nav_store = StoredValue::new(navigate.clone());
+    // URL 上的 `?view=<id>`：返回视图页时回到原视图，而不是默认视图。
+    let back_view_id: Option<String> = use_query_map()
+        .get()
+        .get("view")
+        .filter(|s| !s.is_empty());
 
     let data: RwSignal<
         Option<
@@ -113,7 +138,7 @@ pub fn WorkspaceSettings() -> impl IntoView {
             let result = async {
                 let ws = workspace_by_slug(&s)
                     .await?
-                    .ok_or("工作空间不存在".to_string())?;
+                    .ok_or(i18n.t("settings.errors.ws_not_found"))?;
                 let role = my_role(&ws.id).await?;
                 let schemas = label_schemas(&ws.id).await?;
                 let logs = audit_logs(&ws.id).await?;
@@ -201,7 +226,7 @@ pub fn WorkspaceSettings() -> impl IntoView {
             let sy = sv.trim();
             let u = uv.trim();
             label_attrs(
-                vt == "enum" && new_multi.get(),
+                (vt == "enum" || vt == "account") && new_multi.get(),
                 if is_time && !f.is_empty() {
                     Some(f)
                 } else {
@@ -287,7 +312,7 @@ pub fn WorkspaceSettings() -> impl IntoView {
                     // 回填服务端落库后的结果：空行被丢掉、名称被 trim，界面应与库内一致。
                     ai_scenarios.set(rows_from(&cfg.scenarios));
                     ai_tones.set(rows_from(&cfg.tones));
-                    ai_msg.set(Some("已保存".to_string()));
+                    ai_msg.set(Some(i18n.t("settings.ai.saved")));
                 }
                 Err(e) => ai_error.set(Some(e)),
             }
@@ -301,7 +326,7 @@ pub fn WorkspaceSettings() -> impl IntoView {
         let email = invite_email.get();
         let role = invite_role.get();
         if email.trim().is_empty() {
-            error.set(Some("请填写要邀请的邮箱".to_string()));
+            error.set(Some(i18n.t("settings.members.email_required")));
             return;
         }
         spawn_local(async move {
@@ -436,25 +461,31 @@ pub fn WorkspaceSettings() -> impl IntoView {
             // 路径说明前挂一个带箭头的轻量按钮，避免按钮悬在页面顶端挤占设置面板的纵向空间
             // 这一点交由 `.crumb` 行高自己解决，不再塞进 set-nav。
             <div class="crumb" style="display:flex;align-items:center;gap:8px">
-                <A href=move || format!("/{}", slug())>
-                    <button class="btn sm">{ic_back()}"工作空间"</button>
+                <A href=move || {
+                    let base = format!("/{}", slug());
+                    match back_view_id.as_deref() {
+                        Some(id) if !id.is_empty() => format!("{base}?view={id}"),
+                        _ => base,
+                    }
+                }>
+                    <button class="btn sm">{ic_back()}{move || i18n.t("settings.crumb_back_workspace")}</button>
                 </A>
-                <span>{move || format!("/{} · 设置（Maintainer 及以上）", slug())}</span>
+                <span>{move || i18n.tf("settings.crumb_with_role", &[("slug", &slug())])}</span>
             </div>
             <div class="set-layout">
                 <aside class="panel set-nav">
                     <div class="grp" style="padding:8px 12px 4px;font-size:12px;color:var(--ink3)">
                         {move || data.get().and_then(|r| r.ok()).map(|(w, _, _, _, _, _, _)| w.name.clone()).unwrap_or_default()}
-                        " · 设置"
+                        {move || i18n.t("settings.crumb_suffix")}
                     </div>
                     <div class="it" class:on=move || tab.get() == "general" on:click=move |_| tab.set("general".into())>
-                        {ic_setting()}"基础信息"
+                        {ic_setting()}{move || i18n.t("settings.tab.basic")}
                     </div>
                     <div class="it" class:on=move || tab.get() == "members" on:click=move |_| tab.set("members".into())>
-                        {ic_profile()}"成员"
+                        {ic_profile()}{move || i18n.t("settings.tab.members")}
                     </div>
                     <div class="it" class:on=move || tab.get() == "labels" on:click=move |_| tab.set("labels".into())>
-                        {ic_tag()}"标签定义"
+                        {ic_tag()}{move || i18n.t("settings.tab.labels")}
                     </div>
                     <div class="it" class:on=move || tab.get() == "ai"
                         on:click=move |_| {
@@ -463,19 +494,19 @@ pub fn WorkspaceSettings() -> impl IntoView {
                                 load_ai(ws_id);
                             }
                         }>
-                        {ic_comment()}"AI 总结"
+                        {ic_comment()}{move || i18n.t("settings.tab.ai")}
                     </div>
                     <div class="it" class:on=move || tab.get() == "views" on:click=move |_| tab.set("views".into())>
-                        {ic_share()}"视图共享"
+                        {ic_share()}{move || i18n.t("settings.tab.share")}
                     </div>
                     <div class="it" class:on=move || tab.get() == "automation" on:click=move |_| tab.set("automation".into())>
-                        {ic_history()}"自动化"
+                        {ic_history()}{move || i18n.t("settings.tab.automation")}
                     </div>
                     <div class="it" class:on=move || tab.get() == "audit" on:click=move |_| tab.set("audit".into())>
-                        {ic_history()}"审计日志"
+                        {ic_history()}{move || i18n.t("settings.tab.audit")}
                     </div>
                     <div class="it dgr" class:on=move || tab.get() == "danger" on:click=move |_| tab.set("danger".into())>
-                        "危险操作"
+                        {move || i18n.t("settings.danger_zone")}
                     </div>
                 </aside>
 
@@ -483,7 +514,7 @@ pub fn WorkspaceSettings() -> impl IntoView {
                     {move || error.get().map(|e| view! { <p class="error">{e}</p> })}
 
                     {move || match data.get() {
-                        None => view! { <div class="empty">"加载中…"</div> }.into_any(),
+                        None => view! { <div class="empty">{move || i18n.t("common.loading")}</div> }.into_any(),
                         Some(Err(e)) => view! { <div class="empty error">{e.clone()}</div> }.into_any(),
                         Some(Ok((_ws, role, schemas, logs, member_list, invite_list, view_list))) => {
                             let can_manage = role == "owner" || role == "maintainer";
@@ -491,56 +522,56 @@ pub fn WorkspaceSettings() -> impl IntoView {
                             let cur_tab = tab.get();
                             if cur_tab == "general" {
                                 view! {
-                                    <h2>"基础信息"</h2>
-                                    <p class="mut">"名称与描述 Maintainer 及以上可改；地址（slug）是工作空间的 URL 身份，变更需 Owner，且会让既有链接失效。"</p>
+                                    <h2>{move || i18n.t("settings.basic.title")}</h2>
+                                    <p class="mut">{move || i18n.t("settings.basic.desc")}</p>
                                     <form class="stack" on:submit=save_general>
                                         <label class="fld">
-                                            <span>"名称"</span>
+                                            <span>{move || i18n.t("settings.basic.name")}</span>
                                             <input class="inp" prop:value=edit_name disabled=!can_manage
                                                 on:input=move |ev| edit_name.set(event_target_value(&ev)) />
                                         </label>
                                         <label class="fld">
-                                            <span>"描述"</span>
+                                            <span>{move || i18n.t("settings.basic.desc_label")}</span>
                                             <textarea class="inp" rows="3" prop:value=edit_desc disabled=!can_manage
                                                 on:input=move |ev| edit_desc.set(event_target_value(&ev))></textarea>
                                         </label>
                                         <label class="fld">
-                                            <span>"地址（slug）"</span>
+                                            <span>{move || i18n.t("settings.basic.slug")}</span>
                                             <input class="inp" prop:value=edit_slug disabled=!is_owner
                                                 on:input=move |ev| edit_slug.set(event_target_value(&ev)) />
                                         </label>
                                         {if can_manage {
                                             view! {
-                                                <button class="btn pri" type="submit" style="align-self:flex-start">"保存"</button>
+                                                <button class="btn pri" type="submit" style="align-self:flex-start">{move || i18n.t("common.save")}</button>
                                             }.into_any()
                                         } else {
-                                            view! { <p class="mut">"仅 Maintainer 及以上可修改"</p> }.into_any()
+                                            view! { <p class="mut">{move || i18n.t("settings.maintainer_only")}</p> }.into_any()
                                         }}
                                     </form>
                                 }.into_any()
                             } else if cur_tab == "members" {
                                 view! {
-                                    <h2>"成员管理"</h2>
+                                    <h2>{move || i18n.t("settings.members.title")}</h2>
                                     {if can_manage {
                                         view! {
                                             <form class="invite" on:submit=do_invite>
-                                                <input class="inp" placeholder="邮箱（须已注册）" prop:value=invite_email
+                                                <input class="inp" placeholder=move || i18n.t("settings.members.invite_ph") prop:value=invite_email
                                                     on:input=move |ev| invite_email.set(event_target_value(&ev)) />
                                                 <select class="inp" style="width:140px" prop:value=invite_role
                                                     on:change=move |ev| invite_role.set(event_target_value(&ev))>
-                                                    <option value="reader">"Reader（只读）"</option>
-                                                    <option value="worker">"Worker（可编辑条目）"</option>
-                                                    <option value="maintainer">"Maintainer（可管理）"</option>
-                                                    <option value="owner">"Owner（所有者）"</option>
+                                                    <option value="reader">{move || i18n.t("settings.members.role_reader")}</option>
+                                                    <option value="worker">{move || i18n.t("settings.members.role_worker")}</option>
+                                                    <option value="maintainer">{move || i18n.t("settings.members.role_maintainer")}</option>
+                                                    <option value="owner">{move || i18n.t("settings.members.role_owner")}</option>
                                                 </select>
-                                                <button class="btn pri" type="submit">{ic_add()}"邀请"</button>
+                                                <button class="btn pri" type="submit">{ic_add()}{move || i18n.t("settings.members.invite")}</button>
                                             </form>
                                         }.into_any()
                                     } else {
-                                        view! { <p class="mut">"仅 Maintainer 及以上可管理成员"</p> }.into_any()
+                                        view! { <p class="mut">{move || i18n.t("settings.maintainer_only")}</p> }.into_any()
                                     }}
                                     <table class="tbl">
-                                        <thead><tr><th>"邮箱"</th><th>"姓名"</th><th>"角色"</th><th>"加入时间"</th><th style="width:60px"></th></tr></thead>
+                                        <thead><tr><th>{move || i18n.t("settings.members.col_email")}</th><th>{move || i18n.t("settings.members.col_name")}</th><th>{move || i18n.t("settings.members.col_role")}</th><th>{move || i18n.t("settings.members.col_joined")}</th><th style="width:60px"></th></tr></thead>
                                         <tbody>
                                             {let me = auth.user.get().map(|u| u.id).unwrap_or_default();
                                             member_list.into_iter().map(|m| {
@@ -550,45 +581,45 @@ pub fn WorkspaceSettings() -> impl IntoView {
                                             }).collect::<Vec<_>>()}
                                         </tbody>
                                     </table>
-                                    <div class="mut">"权限：Owner > Maintainer > Worker > Reader；工作空间至少保留一名 Owner。"</div>
+                                    <div class="mut">{move || i18n.t("settings.members.permission_hint")}</div>
                                     {(!invite_list.is_empty()).then(move || view! {
-                                        <h3 style="margin:18px 0 8px">"待接受的邀请"</h3>
+                                        <h3 style="margin:18px 0 8px">{move || i18n.t("settings.members.pending_title")}</h3>
                                         <table class="tbl">
-                                            <thead><tr><th>"邮箱"</th><th>"姓名"</th><th>"角色"</th><th>"邀请时间"</th><th style="width:60px"></th></tr></thead>
+                                            <thead><tr><th>{move || i18n.t("settings.members.col_email")}</th><th>{move || i18n.t("settings.members.col_name")}</th><th>{move || i18n.t("settings.members.col_role")}</th><th>{move || i18n.t("settings.members.col_invited")}</th><th style="width:60px"></th></tr></thead>
                                             <tbody>
                                                 {invite_list.into_iter().map(|inv| invite_row(inv, can_manage, do_revoke)).collect::<Vec<_>>()}
                                             </tbody>
                                         </table>
-                                        <div class="mut">"对方接受后才成为成员；撤销会直接删掉这条邀请。"</div>
+                                        <div class="mut">{move || i18n.t("settings.members.pending_hint")}</div>
                                     })}
                                 }.into_any()
                             } else if cur_tab == "labels" {
                                 view! {
                                     <div style="display:flex;align-items:center">
-                                        <h2 style="margin-right:auto">"标签定义（LabelSchema）"</h2>
+                                        <h2 style="margin-right:auto">{move || i18n.t("settings.title")}</h2>
                                     </div>
                                     {if can_manage {
                                         view! {
                                             <form class="invite" on:submit=create>
-                                                <input class="inp" style="width:160px" placeholder="名称（不可改，如 Priority）" prop:value=new_name on:input=move |ev| new_name.set(event_target_value(&ev)) />
-                                                <input class="inp" style="width:140px" placeholder="显示名称" prop:value=new_title on:input=move |ev| new_title.set(event_target_value(&ev)) />
+                                                <input class="inp" style="width:160px" placeholder=move || i18n.t("settings.name_ph") prop:value=new_name on:input=move |ev| new_name.set(event_target_value(&ev)) />
+                                                <input class="inp" style="width:140px" placeholder=move || i18n.t("settings.title_ph") prop:value=new_title on:input=move |ev| new_title.set(event_target_value(&ev)) />
                                                 <select class="inp" style="width:130px" prop:value=new_type on:change=move |ev| {
                                                     new_type.set(event_target_value(&ev));
                                                     // 默认值的形状随类型而变，切类型先清掉，免得把上一个类型的值写到新类型下。
                                                     new_default.set(Value::Null);
                                                 }>
-                                                    <option value="null">"Null（无值）"</option>
-                                                    <option value="enum">"Enum"</option>
-                                                    <option value="string">"String"</option>
-                                                    <option value="boolean">"Boolean"</option>
-                                                    <option value="integer">"Integer"</option>
-                                                    <option value="float">"Float"</option>
-                                                    <option value="date">"日期"</option>
-                                                    <option value="time">"时间"</option>
-                                                    <option value="datetime">"日期时间"</option>
-                                                    <option value="currency">"金额"</option>
-                                                    <option value="email">"邮箱"</option>
-                                                    <option value="account">"账号"</option>
+                                                    <option value="null">{move || value_type_label("null", &i18n)}</option>
+                                                    <option value="enum">{move || value_type_label("enum", &i18n)}</option>
+                                                    <option value="string">{move || value_type_label("string", &i18n)}</option>
+                                                    <option value="boolean">{move || value_type_label("boolean", &i18n)}</option>
+                                                    <option value="integer">{move || value_type_label("integer", &i18n)}</option>
+                                                    <option value="float">{move || value_type_label("float", &i18n)}</option>
+                                                    <option value="date">{move || value_type_label("date", &i18n)}</option>
+                                                    <option value="time">{move || value_type_label("time", &i18n)}</option>
+                                                    <option value="datetime">{move || value_type_label("datetime", &i18n)}</option>
+                                                    <option value="currency">{move || value_type_label("currency", &i18n)}</option>
+                                                    <option value="email">{move || value_type_label("email", &i18n)}</option>
+                                                    <option value="account">{move || value_type_label("account", &i18n)}</option>
                                                 </select>
                                                 {move || {
                                                     let vt = new_type.get();
@@ -597,21 +628,30 @@ pub fn WorkspaceSettings() -> impl IntoView {
                                                         // name / title / type 都是有限字符的标识，
                                                         // 而枚举值列表常常是一长串，挤在小框里用户翻不到全部。
                                                         view! {
-                                                            <input class="inp" style="flex:1;min-width:280px" placeholder="枚举值（逗号分隔）" prop:value=new_enum
+                                                            <input class="inp" style="flex:1;min-width:280px" placeholder=move || i18n.t("settings.enum_ph") prop:value=new_enum
                                                                 on:input=move |ev| new_enum.set(event_target_value(&ev)) />
                                                             <label style="display:flex;align-items:center;gap:6px;white-space:nowrap">
                                                                 <input type="checkbox" prop:checked=move || new_multi.get()
                                                                     on:change=move |ev| new_multi.set(event_target_checked(&ev)) />
-                                                                "多选"
+                                                                {move || i18n.t("settings.multi")}
+                                                            </label>
+                                                        }.into_any()
+                                                    } else if vt == "account" {
+                                                        // 账号标签没有可选值；多选才是这里唯一的「类型专属配置」。
+                                                        view! {
+                                                            <label style="display:flex;align-items:center;gap:6px;white-space:nowrap">
+                                                                <input type="checkbox" prop:checked=move || new_multi.get()
+                                                                    on:change=move |ev| new_multi.set(event_target_checked(&ev)) />
+                                                                {move || i18n.t("settings.multi")}
                                                             </label>
                                                         }.into_any()
                                                     } else if vt == "date" || vt == "time" || vt == "datetime" {
                                                         view! { <FormatSelect value_type=vt format=new_format /> }.into_any()
                                                     } else if vt == "currency" {
                                                         view! {
-                                                            <input class="inp" style="width:100px" placeholder="符号（如 ¥）" prop:value=new_symbol
+                                                            <input class="inp" style="width:100px" placeholder=move || i18n.t("settings.symbol_ph") prop:value=new_symbol
                                                                 on:input=move |ev| new_symbol.set(event_target_value(&ev)) />
-                                                            <input class="inp" style="width:100px" placeholder="单位（如 万）" prop:value=new_unit
+                                                            <input class="inp" style="width:100px" placeholder=move || i18n.t("settings.unit_ph") prop:value=new_unit
                                                                 on:input=move |ev| new_unit.set(event_target_value(&ev)) />
                                                         }.into_any()
                                                     } else {
@@ -632,55 +672,55 @@ pub fn WorkspaceSettings() -> impl IntoView {
                                                             value=new_default />
                                                     }
                                                 }}
-                                                <button class="btn pri" type="submit">{ic_add()}"新建标签"</button>
+                                                <button class="btn pri" type="submit">{ic_add()}{move || i18n.t("settings.create")}</button>
                                             </form>
                                         }.into_any()
                                     } else {
-                                        view! { <p class="mut">"仅 Maintainer 及以上可管理标签"</p> }.into_any()
+                                        view! { <p class="mut">{move || i18n.t("settings.maintainer_only")}</p> }.into_any()
                                     }}
                                     <table class="tbl">
-                                        <thead><tr><th>"name（不可改）"</th><th>"title"</th><th>"值类型"</th><th>"可选值 / 说明"</th><th>"属性"</th><th>"颜色"</th><th style="width:56px">"关系"</th><th style="width:90px"></th></tr></thead>
+                                        <thead><tr><th>{move || i18n.t("settings.col_name")}</th><th>{move || i18n.t("settings.col_title")}</th><th>{move || i18n.t("settings.col_value_type")}</th><th>{move || i18n.t("settings.col_options")}</th><th>{move || i18n.t("settings.col_props")}</th><th>{move || i18n.t("settings.col_color")}</th><th style="width:56px">{move || i18n.t("settings.col_rel")}</th><th style="width:90px"></th></tr></thead>
                                         <tbody>
-                                            {schemas.iter().map(|s| schema_row(s, can_manage, _ws.id.clone(), member_list.clone(), schemas.clone(), refresh, error)).collect::<Vec<_>>()}
+                                            {schemas.iter().map(|s| schema_row(s, can_manage, _ws.id.clone(), member_list.clone(), schemas.clone(), refresh, error, i18n)).collect::<Vec<_>>()}
                                         </tbody>
                                     </table>
-                                    <div class="mut">"同一 Entry 对同一 Schema 仅一条 Labeling，更新即 upsert；变更自动记录操作人与时间。"</div>
+                                    <div class="mut">{move || i18n.t("settings.upsert_hint")}</div>
                                 }.into_any()
                             } else if cur_tab == "ai" {
                                 view! {
-                                    <h2>"AI 总结"</h2>
-                                    <p class="mut">"生成总结时可选「场景」与「语气」；两项都是工作空间内可维护的「名称 + 提示词」。生成总结会把提示词追加到内置模板之后。"</p>
-                                    <p class="mut">"服务端的模型与密钥在 config.toml 的 [ai] 段配置，不在本页。"</p>
+                                    <h2>{move || i18n.t("settings.ai.title")}</h2>
+                                    <p class="mut">{move || i18n.t("settings.ai.desc1")}</p>
+                                    <p class="mut">{move || i18n.t("settings.ai.desc2")}</p>
                                     {move || ai_loading.get().then(|| view! {
-                                        <p class="mut">"正在读取场景与语气…"</p>
+                                        <p class="mut">{move || i18n.t("settings.ai.loading")}</p>
                                     })}
                                     {move || ai_error.get().map(|e| view! { <p class="error">{e}</p> })}
                                     {move || ai_msg.get().map(|m| view! { <p class="mut">{m}</p> })}
                                     {if can_manage {
                                         view! {
                                             <form class="stack" on:submit=save_ai>
-                                                <h3 style="margin-top:18px">"场景"</h3>
-                                                <PromptRows rows=ai_scenarios placeholder="场景名称，如「迭代复盘」".to_string() />
-                                                <h3 style="margin-top:18px">"语气"</h3>
-                                                <PromptRows rows=ai_tones placeholder="语气名称，如「简洁」".to_string() />
+                                                <h3 style="margin-top:18px">{move || i18n.t("settings.ai.scenario")}</h3>
+                                                <PromptRows rows=ai_scenarios placeholder=i18n.t("settings.ai.scenario_ph") />
+                                                <h3 style="margin-top:18px">{move || i18n.t("settings.ai.tone")}</h3>
+                                                <PromptRows rows=ai_tones placeholder=i18n.t("settings.ai.tone_ph") />
                                                 <button class="btn pri" type="submit" disabled=move || ai_busy.get()
                                                     style="align-self:flex-start">
-                                                    {move || if ai_busy.get() { "保存中…" } else { "保存" }}
+                                                    {move || if ai_busy.get() { i18n.t("settings.ai.saving") } else { i18n.t("common.save") }}
                                                 </button>
                                             </form>
                                         }.into_any()
                                     } else {
                                         view! {
                                             <div class="stack">
-                                                <h3>"场景"</h3>
+                                                <h3>{move || i18n.t("settings.ai.scenario")}</h3>
                                                 {move || ai_scenarios.get().into_iter().map(|r| view! {
                                                     <div class="mut">{r.name.get()}</div>
                                                 }).collect::<Vec<_>>()}
-                                                <h3>"语气"</h3>
+                                                <h3>{move || i18n.t("settings.ai.tone")}</h3>
                                                 {move || ai_tones.get().into_iter().map(|r| view! {
                                                     <div class="mut">{r.name.get()}</div>
                                                 }).collect::<Vec<_>>()}
-                                                <p class="mut">"仅 Maintainer 及以上可修改"</p>
+                                                <p class="mut">{move || i18n.t("settings.maintainer_only")}</p>
                                             </div>
                                         }.into_any()
                                     }}
@@ -700,18 +740,18 @@ pub fn WorkspaceSettings() -> impl IntoView {
                                 }.into_any()
                             } else if cur_tab == "audit" {
                                 view! {
-                                    <h2>"审计日志"</h2>
+                                    <h2>{move || i18n.t("settings.audit.title")}</h2>
                                     <table class="tbl">
-                                        <thead><tr><th>"时间"</th><th>"操作"</th><th>"变更内容"</th><th>"资源"</th></tr></thead>
+                                        <thead><tr><th>{move || i18n.t("settings.audit.col_time")}</th><th>{move || i18n.t("settings.audit.col_action")}</th><th>{move || i18n.t("settings.audit.col_diff")}</th><th>{move || i18n.t("settings.audit.col_resource")}</th></tr></thead>
                                         <tbody>
                                             {if logs.is_empty() {
-                                                view! { <tr><td colspan="4" class="empty">"暂无记录"</td></tr> }.into_any()
+                                                view! { <tr><td colspan="4" class="empty">{i18n.t("common.empty")}</td></tr> }.into_any()
                                             } else {
                                                 logs.iter().map(|l| view! {
                                                     <tr class="static">
                                                         <td class="mut">{short_time(&l.at)}</td>
-                                                        <td>{action_label(&l.action)}</td>
-                                                        <td class="mut">{audit_change(l.before.as_deref(), l.after.as_deref())}</td>
+                                                        <td>{action_label(&l.action, &i18n)}</td>
+                                                        <td class="mut">{audit_change(l.before.as_deref(), l.after.as_deref(), &i18n)}</td>
                                                         <td class="code">{format!("{} {}", l.resource_type.clone(), l.resource_id.clone())}</td>
                                                     </tr>
                                                 }).collect::<Vec<_>>().into_any()
@@ -729,9 +769,9 @@ pub fn WorkspaceSettings() -> impl IntoView {
                                         .unwrap_or_else(|| account_id.to_string())
                                 };
                                 view! {
-                                    <h2>"视图共享"</h2>
+                                    <h2>{move || i18n.t("settings.share.title")}</h2>
                                     <table class="tbl">
-                                        <thead><tr><th>"视图名称"</th><th>"所有者"</th><th>"条目"</th><th>"共享给工作空间"</th></tr></thead>
+                                        <thead><tr><th>{move || i18n.t("settings.share.col_view")}</th><th>{move || i18n.t("settings.share.col_owner")}</th><th>{move || i18n.t("settings.share.col_entries")}</th><th>{move || i18n.t("settings.share.col_shared")}</th></tr></thead>
                                         <tbody>
                                             {view_list.into_iter().map(|v| {
                                                 let owner = email_of(&v.owner_id);
@@ -747,7 +787,7 @@ pub fn WorkspaceSettings() -> impl IntoView {
                                                                 <input type="checkbox" prop:checked=v.is_shared disabled=!can_manage || is_default
                                                                     on:change=move |ev| toggle_shared.run((id.clone(), event_target_checked(&ev))) />
                                                                 {if is_default {
-                                                                    view! { <span class="mut">"基础视图始终共享"</span> }.into_any()
+                                                                    view! { <span class="mut">{i18n.t("sidebar.base_view_always_shared")}</span> }.into_any()
                                                                 } else {
                                                                     ().into_any()
                                                                 }}
@@ -758,38 +798,38 @@ pub fn WorkspaceSettings() -> impl IntoView {
                                             }).collect::<Vec<_>>()}
                                         </tbody>
                                     </table>
-                                    <div class="mut">"共享视图对工作空间内所有人可见；个人视图仅所有者本人可见。"</div>
+                                    <div class="mut">{move || i18n.t("settings.share.hint")}</div>
                                 }.into_any()
                             } else if cur_tab == "danger" {
                                 let deleted_at = _ws.deleted_at.clone();
                                 view! {
-                                    <h2>"危险操作"</h2>
+                                    <h2>{move || i18n.t("settings.danger_zone")}</h2>
                                     {match deleted_at {
                                         Some(at) => view! {
                                             <div class="danger-box">
-                                                <p><b>"此工作空间已被删除。"</b>
-                                                    <span class="mut">{format!("（{}）", short_time(&at))}</span>
+                                                <p><b>{move || i18n.t("settings.danger.deleted")}</b>
+                                                    <span class="mut">{move || i18n.tf("settings.danger.deleted_at", &[("at", &short_time(&at))])}</span>
                                                 </p>
-                                                <p class="mut">"条目、标签、视图、成员等数据全部保留；恢复后立即重新出现在工作空间列表中。"</p>
+                                                <p class="mut">{move || i18n.t("settings.danger.deleted_hint")}</p>
                                                 {if is_owner {
                                                     view! {
-                                                        <button class="btn pri" on:click=move |_| do_restore.run(())>"恢复工作空间"</button>
+                                                        <button class="btn pri" on:click=move |_| do_restore.run(())>{move || i18n.t("settings.danger.restore")}</button>
                                                     }.into_any()
                                                 } else {
-                                                    view! { <p class="mut">"仅 Owner 可恢复。"</p> }.into_any()
+                                                    view! { <p class="mut">{move || i18n.t("settings.danger.owner_only")}</p> }.into_any()
                                                 }}
                                             </div>
                                         }.into_any(),
                                         None => view! {
                                             <div class="danger-box">
-                                                <p><b>"删除工作空间"</b></p>
-                                                <p class="mut">"软删除：工作空间会移入工作空间列表的「回收站」，数据全部保留，可随时恢复。"</p>
+                                                <p><b>{move || i18n.t("settings.danger.delete_btn")}</b></p>
+                                                <p class="mut">{move || i18n.t("settings.danger.delete_desc")}</p>
                                                 {if is_owner {
                                                     view! {
-                                                        <button class="btn dgr" on:click=move |_| show_delete_confirm.set(true)>"删除工作空间"</button>
+                                                        <button class="btn dgr" on:click=move |_| show_delete_confirm.set(true)>{move || i18n.t("settings.danger.delete_btn")}</button>
                                                     }.into_any()
                                                 } else {
-                                                    view! { <p class="mut">"仅 Owner 可删除。"</p> }.into_any()
+                                                    view! { <p class="mut">{move || i18n.t("settings.danger.delete_owner_only")}</p> }.into_any()
                                                 }}
                                             </div>
                                         }.into_any(),
@@ -797,8 +837,8 @@ pub fn WorkspaceSettings() -> impl IntoView {
                                 }.into_any()
                             } else {
                                 view! {
-                                    <h2>"即将上线"</h2>
-                                    <p class="mut">"敬请期待。"</p>
+                                    <h2>{move || i18n.t("settings.danger.coming_soon")}</h2>
+                                    <p class="mut">{move || i18n.t("settings.danger.stay_tuned")}</p>
                                 }.into_any()
                             }
                         }
@@ -809,11 +849,11 @@ pub fn WorkspaceSettings() -> impl IntoView {
             {move || pending_transfer.get().map(|(account_id, email)| view! {
                 <div class="dmodal" on:click=move |_| pending_transfer.set(None)>
                     <div class="panel dmbox" on:click=|ev| ev.stop_propagation()>
-                        <h3>"转让所有权？"</h3>
-                        <p class="mut">{format!("转让后 {} 成为 Owner，你降为 Maintainer。对方可以再转回给你。", email)}</p>
+                        <h3>{move || i18n.t("settings.danger.confirm_transfer")}</h3>
+                        <p class="mut">{move || i18n.tf("settings.danger.transfer_desc", &[("email", &email)])}</p>
                         <div style="display:flex;gap:8px;justify-content:flex-end">
-                            <button class="btn" on:click=move |_| pending_transfer.set(None)>"取消"</button>
-                            <button class="btn pri" on:click=move |_| do_transfer.run(account_id.clone())>"确认转让"</button>
+                            <button class="btn" on:click=move |_| pending_transfer.set(None)>{move || i18n.t("common.cancel")}</button>
+                            <button class="btn pri" on:click=move |_| do_transfer.run(account_id.clone())>{move || i18n.t("settings.danger.transfer_title")}</button>
                         </div>
                     </div>
                 </div>
@@ -828,11 +868,11 @@ pub fn WorkspaceSettings() -> impl IntoView {
                 view! {
                     <div class="dmodal" on:click=move |_| show_delete_confirm.set(false)>
                         <div class="panel dmbox" on:click=|ev| ev.stop_propagation()>
-                            <h3>"删除工作空间？"</h3>
-                            <p class="mut">{format!("「{}」会被移入回收站，条目、标签、视图、成员全部保留，可随时恢复。", ws_name)}</p>
+                            <h3>{move || i18n.t("settings.danger.delete_title")}</h3>
+                            <p class="mut">{move || i18n.tf("settings.danger.delete_confirm_desc", &[("name", &ws_name)])}</p>
                             <div style="display:flex;gap:8px;justify-content:flex-end">
-                                <button class="btn" on:click=move |_| show_delete_confirm.set(false)>"取消"</button>
-                                <button class="btn dgr" on:click=move |_| do_delete.run(())>"确认删除"</button>
+                                <button class="btn" on:click=move |_| show_delete_confirm.set(false)>{move || i18n.t("common.cancel")}</button>
+                                <button class="btn dgr" on:click=move |_| do_delete.run(())>{move || i18n.t("settings.danger.confirm_delete")}</button>
                             </div>
                         </div>
                     </div>
@@ -851,6 +891,7 @@ fn member_row(
     on_remove: Callback<String>,
     on_transfer: Callback<(String, String)>,
 ) -> impl IntoView {
+    let i18n: I18nController = use_i18n();
     let account_id = m.account_id.clone();
     let remove_id = m.account_id.clone();
     let transfer_id = m.account_id.clone();
@@ -862,21 +903,21 @@ fn member_row(
             <td>
                 <select class="inp" style="width:150px" prop:value=m.role.clone() disabled=!can_manage
                     on:change=move |ev| on_role.run((account_id.clone(), event_target_value(&ev)))>
-                    <option value="reader">"Reader（只读）"</option>
-                    <option value="worker">"Worker（可编辑条目）"</option>
-                    <option value="maintainer">"Maintainer（可管理）"</option>
-                    <option value="owner">"Owner（所有者）"</option>
+                    <option value="reader">{move || i18n.t("settings.members.role_reader")}</option>
+                    <option value="worker">{move || i18n.t("settings.members.role_worker")}</option>
+                    <option value="maintainer">{move || i18n.t("settings.members.role_maintainer")}</option>
+                    <option value="owner">{move || i18n.t("settings.members.role_owner")}</option>
                 </select>
             </td>
             <td class="mut">{short_time(&m.joined_at)}</td>
             <td style="display:flex;gap:6px;align-items:center">
                 {can_transfer.then(|| view! {
-                    <button class="btn sm" title="把所有权转让给对方，自己降为 Maintainer"
+                    <button class="btn sm" title=move || i18n.t("settings.members.transfer_title")
                         on:click=move |_| on_transfer.run((transfer_id.clone(), transfer_email.clone()))>
-                        "转让"
+                        {move || i18n.t("settings.members.transfer_btn")}
                     </button>
                 })}
-                <button class="ibtn" title="移除成员" disabled=!can_manage
+                <button class="ibtn" title=move || i18n.t("settings.members.remove_title") disabled=!can_manage
                     on:click=move |_| on_remove.run(remove_id.clone())>{ic_close()}</button>
             </td>
         </tr>
@@ -886,15 +927,16 @@ fn member_row(
 /// 单个待接受邀请行：邮箱 / 姓名 / 角色 / 邀请时间 / 撤销按钮。
 /// 角色此处只读——要换角色，撤销后重新邀请即可。
 fn invite_row(inv: Invite, can_manage: bool, on_revoke: Callback<String>) -> impl IntoView {
+    let i18n: I18nController = use_i18n();
     let account_id = inv.account_id.clone();
     view! {
         <tr class="static">
             <td>{inv.email.clone()}</td>
             <td class="mut">{inv.name.clone()}</td>
-            <td class="mut">{role_label(&inv.role)}</td>
+            <td class="mut">{role_label(&inv.role, &i18n)}</td>
             <td class="mut">{short_time(&inv.created_at)}</td>
             <td>
-                <button class="ibtn" title="撤销邀请" disabled=!can_manage
+                <button class="ibtn" title=move || i18n.t("settings.members.revoke_title") disabled=!can_manage
                     on:click=move |_| on_revoke.run(account_id.clone())>{ic_close()}</button>
             </td>
         </tr>
@@ -1127,6 +1169,7 @@ fn link_row_view(
     rows: RwSignal<Vec<LinkRow>>,
     editable: bool,
     dirty: RwSignal<bool>,
+    i18n: I18nController,
 ) -> impl IntoView {
     let metas_for_other = metas.clone();
     let own_has_value = own.has_value();
@@ -1134,11 +1177,11 @@ fn link_row_view(
     view! {
         <div class="link-grid">
             // 本标签 Key 只读：标出这条关系是从哪条标签出去的。
-            <span class="code mut" title="本标签">{own_name}</span>
+            <span class="code mut" title=move || i18n.t("settings.col_this_label")>{own_name}</span>
             // 本标签的值：只在有值标签上出现，无值标签的关系只能约束「有没有」。
             // 无值标签也要占住这一格，否则后面的控件会整体左移一列。
             {if own_has_value {
-                value_input(r.own_value, own.clone(), "本标签值", editable, dirty).into_any()
+                value_input(r.own_value, own.clone(), i18n.t("settings.col_this_value"), editable, dirty, i18n).into_any()
             } else {
                 view! { <span></span> }.into_any()
             }}
@@ -1148,8 +1191,8 @@ fn link_row_view(
                     r.kind.set(event_target_value(&ev));
                     dirty.set(true);
                 }>
-                <option value="inherit">"继承"</option>
-                <option value="override">"覆盖"</option>
+                <option value="inherit">{move || i18n.t("settings.kind_inherit")}</option>
+                <option value="override">{move || i18n.t("settings.kind_override")}</option>
             </select>
             <select class="inp" disabled=!editable
                 prop:value=move || r.other.get()
@@ -1159,7 +1202,7 @@ fn link_row_view(
                     r.other_value.set(String::new());
                     dirty.set(true);
                 }>
-                <option value="">"（选择标签）"</option>
+                <option value="">{move || i18n.t("settings.pick_label")}</option>
                 {metas_for_other.iter().map(|m| view! {
                     <option value=m.name.clone()>{m.name.clone()}</option>
                 }).collect::<Vec<_>>()}
@@ -1168,11 +1211,11 @@ fn link_row_view(
             {move || {
                 let cur = r.other.get();
                 match metas.iter().find(|m| m.name == cur).filter(|m| m.has_value()) {
-                    Some(m) => value_input(r.other_value, m.clone(), "目标标签值", editable, dirty).into_any(),
+                    Some(m) => value_input(r.other_value, m.clone(), i18n.t("settings.col_target_value"), editable, dirty, i18n).into_any(),
                     None => view! { <span></span> }.into_any(),
                 }
             }}
-            <button class="vc-op vc-del" title="删除" disabled=!editable on:click=move |_| {
+            <button class="vc-op vc-del" title=move || i18n.t("settings.op_delete") disabled=!editable on:click=move |_| {
                 dirty.set(true);
                 rows.update(|rows| rows.retain(|x| x.id != r.id));
             }>"×"</button>
@@ -1185,9 +1228,10 @@ fn link_row_view(
 fn value_input(
     sig: RwSignal<String>,
     meta: LabelMeta,
-    placeholder: &'static str,
+    placeholder: String,
     editable: bool,
     dirty: RwSignal<bool>,
+    i18n: I18nController,
 ) -> impl IntoView {
     if meta.value_type == "enum" && !meta.multi {
         view! {
@@ -1197,7 +1241,7 @@ fn value_input(
                     sig.set(event_target_value(&ev));
                     dirty.set(true);
                 }>
-                <option value="">"（可空）"</option>
+                <option value="">{move || i18n.t("settings.optional")}</option>
                 {meta.enum_values.iter().cloned().map(|o| view! {
                     <option value=o.clone()>{display_enum_value(&o)}</option>
                 }).collect::<Vec<_>>()}
@@ -1206,7 +1250,7 @@ fn value_input(
         .into_any()
     } else {
         let ph = if meta.value_type == "enum" && meta.multi {
-            "多值，逗号分隔"
+            i18n.t("settings.multi_csv")
         } else {
             placeholder
         };
@@ -1232,6 +1276,7 @@ fn schema_row(
     all: Vec<LabelSchema>,
     refresh: RwSignal<u32>,
     error: RwSignal<Option<String>>,
+    i18n: I18nController,
 ) -> impl IntoView {
     let builtin = is_builtin(s);
     let name = s.name.clone();
@@ -1254,6 +1299,9 @@ fn schema_row(
     let editable = !builtin && can_manage;
     let is_numeric = value_type == "integer" || value_type == "float";
     let vc_enabled = is_numeric || value_type == "enum";
+    // 删除二次确认：第一次点击把行内 `confirm_del` 设成自己的名字，第二次（同名字）
+    // 才真正发请求；3 秒没回点，自动复位。
+    let confirm_del: RwSignal<Option<String>> = RwSignal::new(None);
 
     let init_rows: Vec<VcRow> = s
         .value_colors
@@ -1372,7 +1420,7 @@ fn schema_row(
     let ops = move |r: VcRow, reorder: bool| {
         view! {
             {reorder.then(|| view! {
-                <button class="vc-op" title="上移" disabled=!editable on:click=move |_| {
+                <button class="vc-op" title=move || i18n.t("settings.op_up") disabled=!editable on:click=move |_| {
                     dirty.set(true);
                     vc_rows.update(|rows| {
                         if let Some(i) = rows.iter().position(|x| x.id == r.id) {
@@ -1380,7 +1428,7 @@ fn schema_row(
                         }
                     });
                 }>"↑"</button>
-                <button class="vc-op" title="下移" disabled=!editable on:click=move |_| {
+                <button class="vc-op" title=move || i18n.t("settings.op_down") disabled=!editable on:click=move |_| {
                     dirty.set(true);
                     vc_rows.update(|rows| {
                         if let Some(i) = rows.iter().position(|x| x.id == r.id) {
@@ -1389,7 +1437,7 @@ fn schema_row(
                     });
                 }>"↓"</button>
             })}
-            <button class="vc-op vc-del" title="删除" disabled=!editable on:click=move |_| {
+            <button class="vc-op vc-del" title=move || i18n.t("settings.op_delete") disabled=!editable on:click=move |_| {
                 dirty.set(true);
                 vc_rows.update(|rows| rows.retain(|x| x.id != r.id));
             }>"×"</button>
@@ -1499,14 +1547,14 @@ fn schema_row(
                     view! { <span>{s.title.clone()}</span> }.into_any()
                 }}
             </td>
-            <td class="mut">{value_type_label(&value_type)}</td>
+            <td class="mut">{value_type_label(&value_type, &i18n)}</td>
             <td>
                 {if value_type == "enum" {
                     if builtin {
                         view! { <span class="mut">{enum_str.clone()}</span> }.into_any()
                     } else if can_manage {
                         view! {
-                            <input class="inp" style="width:100%" placeholder="逗号分隔" prop:value=enum_input on:input=move |ev| {
+                            <input class="inp" style="width:100%" placeholder=move || i18n.t("settings.comma_ph") prop:value=enum_input on:input=move |ev| {
                                 enum_input.set(event_target_value(&ev));
                                 dirty.set(true);
                             } />
@@ -1528,13 +1576,37 @@ fn schema_row(
                                         multi_input.set(event_target_checked(&ev));
                                         dirty.set(true);
                                     } />
-                                "多选"
+                                {move || i18n.t("settings.multi")}
                             </label>
                             // 可选值边改边影响默认值的候选，故跟着 enum_input 重渲染。
                             {move || view! {
                                 <DefaultValueInput value_type="enum".to_string()
                                     multi=multi_input.get()
                                     enum_values=enum_values_of(&enum_input.get())
+                                    value=default_input disabled=!editable />
+                            }}
+                        </div>
+                    }.into_any()
+                } else if value_type == "account" {
+                    // 账号标签与枚举一样有「多选」开关，默认值控件要工作区成员表才能列出候选项。
+                    let vt = value_type.clone();
+                    let mem = members.clone();
+                    // 账号标签没有「可选值」枚举，enum_values 给空 vec；抬到外层避免在
+                    // view! 里写 `Vec::<String>::new()` turbofish 触发宏解析器歧义。
+                    let empty_values: Vec<String> = Vec::new();
+                    view! {
+                        <div class="attrs">
+                            <label style="display:flex;align-items:center;gap:6px;white-space:nowrap">
+                                <input type="checkbox" disabled=!editable prop:checked=move || multi_input.get()
+                                    on:change=move |ev| {
+                                        multi_input.set(event_target_checked(&ev));
+                                        dirty.set(true);
+                                    } />
+                                {move || i18n.t("settings.multi")}
+                            </label>
+                            {move || view! {
+                                <DefaultValueInput value_type=vt.clone() multi=multi_input.get()
+                                    enum_values=empty_values.clone() members=mem.clone()
                                     value=default_input disabled=!editable />
                             }}
                         </div>
@@ -1558,13 +1630,13 @@ fn schema_row(
                     view! {
                         <div class="attrs">
                             <div style="display:flex;gap:6px">
-                                <input class="inp" style="width:80px" placeholder="符号" disabled=!editable
+                                <input class="inp" style="width:80px" placeholder=move || i18n.t("settings.ph_symbol") disabled=!editable
                                     prop:value=move || symbol_input.get()
                                     on:input=move |ev| {
                                         symbol_input.set(event_target_value(&ev));
                                         dirty.set(true);
                                     } />
-                                <input class="inp" style="width:80px" placeholder="单位" disabled=!editable
+                                <input class="inp" style="width:80px" placeholder=move || i18n.t("settings.ph_unit") disabled=!editable
                                     prop:value=move || unit_input.get()
                                     on:input=move |ev| {
                                         unit_input.set(event_target_value(&ev));
@@ -1609,12 +1681,12 @@ fn schema_row(
                             })
                         />
                         <span class="code" style="font-size:11px">
-                            {move || base_color.get().unwrap_or_else(|| "未设置".to_string())}
+                            {move || base_color.get().unwrap_or_else(|| i18n.t("common.unset"))}
                         </span>
-                        <button class="vc-op" title="清除基础色" disabled=!can_edit_basic on:click=move |_| {
+                        <button class="vc-op" title=move || i18n.t("settings.op_clear_base") disabled=!can_edit_basic on:click=move |_| {
                             base_color.set(None);
                             dirty.set(true);
-                        }>"清除"</button>
+                        }>{move || i18n.t("settings.op_clear")}</button>
                     </div>
                     {if vc_enabled {
                         view! {
@@ -1626,13 +1698,13 @@ fn schema_row(
                                         if is_numeric {
                                             view! {
                                                 <div class="vc-row">
-                                                    <input class="inp vc-num" type="number" placeholder="最小" disabled=!editable
+                                                    <input class="inp vc-num" type="number" placeholder=move || i18n.t("settings.ph_min") disabled=!editable
                                                         prop:value=move || r.min.get()
                                                         on:input=move |ev| {
                                                             r.min.set(event_target_value(&ev));
                                                             dirty.set(true);
                                                         } />
-                                                    <input class="inp vc-num" type="number" placeholder="最大" disabled=!editable
+                                                    <input class="inp vc-num" type="number" placeholder=move || i18n.t("settings.ph_max") disabled=!editable
                                                         prop:value=move || r.max.get()
                                                         on:input=move |ev| {
                                                             r.max.set(event_target_value(&ev));
@@ -1652,7 +1724,7 @@ fn schema_row(
                                                             r.value.set(event_target_value(&ev));
                                                             dirty.set(true);
                                                         }>
-                                                        <option value="">"（选择枚举值）"</option>
+                                                        <option value="">{move || i18n.t("settings.pick_enum")}</option>
                                                         {evs.iter().cloned().map(|o| view! {
                                                             <option value=o.clone()>{display_enum_value(&o)}</option>
                                                         }).collect::<Vec<_>>()}
@@ -1664,7 +1736,7 @@ fn schema_row(
                                         }
                                     }
                                 />
-                                <button class="btn sm" disabled=!editable on:click=add_row>"＋ 值色"</button>
+                                <button class="btn sm" disabled=!editable on:click=add_row>{move || i18n.t("settings.add_value_color")}</button>
                             </div>
                         }.into_any()
                     } else {
@@ -1678,7 +1750,7 @@ fn schema_row(
                 <button class="icbtn" on:click=move |_| show_links.set(true)
                     title=move || {
                         let n = link_rows.get().len();
-                        if n > 0 { format!("配置关系（已 {n} 条）") } else { "配置关系".to_string() }
+                        if n > 0 { i18n.tf("settings.links_with_count", &[("n", &n.to_string())]) } else { i18n.t("settings.links") }
                     }>
                     {ic_link()}
                 </button>
@@ -1696,15 +1768,15 @@ fn schema_row(
                     view! {
                         <div class="dmodal" on:click=close_a>
                             <div class="panel dmbox" style="width:620px" on:click=|ev| ev.stop_propagation()>
-                                <h3>"关系（继承 / 覆盖）"</h3>
-                                <p class="mut">"继承：目标标签取到某个值时，本条跟着显示同一个值。覆盖：目标标签取到某个值时，本条改取另一个值。两侧的值都可留空，留空表示只约束「有没有值」。"</p>
+                                <h3>{move || i18n.t("settings.links_title")}</h3>
+                                <p class="mut">{move || i18n.t("settings.links_help")}</p>
                                 <div class="vc-list">
                                     <div class="link-grid link-head">
-                                        <span>"本标签"</span>
-                                        <span>"本标签值"</span>
-                                        <span>"种类"</span>
-                                        <span>"目标标签"</span>
-                                        <span>"目标标签值"</span>
+                                        <span>{move || i18n.t("settings.col_this_label")}</span>
+                                        <span>{move || i18n.t("settings.col_this_value")}</span>
+                                        <span>{move || i18n.t("settings.col_kind")}</span>
+                                        <span>{move || i18n.t("settings.col_target_label")}</span>
+                                        <span>{move || i18n.t("settings.col_target_value")}</span>
                                         <span></span>
                                     </div>
                                     <For
@@ -1717,27 +1789,28 @@ fn schema_row(
                                             link_rows,
                                             editable,
                                             dirty,
+                                            i18n,
                                         )
                                     />
                                     {editable.then(move || view! {
-                                        <button class="btn sm" on:click=add>"＋ 关系"</button>
+                                        <button class="btn sm" on:click=add>{move || i18n.t("settings.add_link")}</button>
                                     })}
                                     {move || link_rows.get().is_empty().then(|| {
-                                        view! { <span class="mut">"尚未配置关系。"</span> }
+                                        view! { <span class="mut">{move || i18n.t("settings.no_links")}</span> }
                                     })}
                                 </div>
                                 {(!editable).then(|| view! {
-                                    <p class="mut">"内置标签或权限不足，关系只能查看。"</p>
+                                    <p class="mut">{move || i18n.t("settings.readonly_hint")}</p>
                                 })}
                                 // 保存失败时错误显示在这里：遮罩盖住了页面顶部那条错误提示。
                                 {move || error.get().map(|e| view! { <p class="error">{e}</p> })}
                                 <div style="display:flex;gap:8px;justify-content:flex-end">
                                     <button class="btn" on:click=close_b>
-                                        {move || if editable { "取消" } else { "关闭" }}
+                                        {move || if editable { i18n.t("common.cancel") } else { i18n.t("common.close") }}
                                     </button>
                                     {editable.then(move || view! {
                                         <button class="btn pri" disabled=move || !dirty.get()
-                                            on:click=move |_| save.run(Some(close_saved))>"保存"</button>
+                                            on:click=move |_| save.run(Some(close_saved))>{move || i18n.t("common.save")}</button>
                                     })}
                                 </div>
                             </div>
@@ -1748,7 +1821,73 @@ fn schema_row(
             <td>
                 {if can_edit_basic {
                     view! {
-                        <button class="btn rowact" disabled=move || !dirty.get() on:click=move |_| save.run(None)>"保存"</button>
+                        <button class="btn rowact" disabled=move || !dirty.get() on:click=move |_| save.run(None)>{move || i18n.t("common.save")}</button>
+                    }.into_any()
+                } else {
+                    view! { <span></span> }.into_any()
+                }}
+                {if editable {
+                    // 删除按钮：内置 Task / Bug 不能删；自定义标签首次点切换文案与样式
+                    // （不再用 .danger，避免视觉噪点），二次点才真正发请求。
+                    let n = name.clone();
+                    let ws = ws_id.clone();
+                    let i18n_del = i18n.clone();
+                    let refresh_del = refresh.clone();
+                    let error_del = error.clone();
+                    let confirm_del_c = confirm_del.clone();
+                    // 给两处 closure 各自一份 `n`：class 判定用一份、按钮文案用一份。
+                    // 都 clone 一次就够了——闭包不要求值存活到 call 之外。
+                    let n_for_class = n.clone();
+                    let n_for_text = n.clone();
+                    let n_for_click = n.clone();
+                    view! {
+                        <button
+                            class="btn rowact"
+                            class:danger=move || confirm_del.get().as_deref() == Some(n_for_class.as_str())
+                            disabled=move || dirty.get()
+                            on:click=move |_| {
+                                let cur = confirm_del.get_untracked();
+                                if cur.as_deref() == Some(n_for_click.as_str()) {
+                                    // 二次点击：真正发删除。
+                                    let ws = ws.clone();
+                                    let n = n.clone();
+                                    let refresh = refresh_del.clone();
+                                    let error = error_del.clone();
+                                    let i18n = i18n_del.clone();
+                                    let confirm = confirm_del_c.clone();
+                                    spawn_local(async move {
+                                        match delete_label_schema(&ws, &n).await {
+                                            Ok(true) => {
+                                                error.set(None);
+                                                refresh.update(|x| *x += 1);
+                                            }
+                                            Ok(false) => {
+                                                error.set(Some(i18n.t("settings.label_delete_done")));
+                                                // 标签其实已不在了，刷新一次让行消失。
+                                                refresh.update(|x| *x += 1);
+                                            }
+                                            Err(e) => error.set(Some(e)),
+                                        }
+                                        let _ = confirm.set(None);
+                                    });
+                                } else {
+                                    // 首次点击：进入「再次点击以确认」态，3 秒自动复位。
+                                    confirm_del_c.set(Some(n.clone()));
+                                    let confirm = confirm_del_c.clone();
+                                    let n_back = n.clone();
+                                    after_ms(3_000, move || {
+                                        // 只复位自己这一行：别的行同名不会撞（标签名全局唯一）。
+                                        if confirm.get_untracked().as_deref() == Some(n_back.as_str()) {
+                                            confirm.set(None);
+                                        }
+                                    });
+                                }
+                            }
+                        >{move || if confirm_del.get().as_deref() == Some(n_for_text.as_str()) {
+                            i18n.t("settings.label_delete_confirm")
+                        } else {
+                            i18n.t("settings.label_delete")
+                        }}</button>
                     }.into_any()
                 } else {
                     view! { <span></span> }.into_any()

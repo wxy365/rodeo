@@ -3,9 +3,10 @@
 //! 复用 `.theme-btn` 的视觉重量；菜单用 `:hover` + `:focus-within` 双触发，
 //! 与 `AvatarMenu` 同款（无需 JS 切换显隐）。
 //!
-//! `i18n.set(loc)` 只更新控制器信号——持久化由 head 内联脚本负责：用户首
-//! 次到访时 SSR 把决议写回 `localStorage.rodeo_lang` 与 cookie
-//! `rodeo_lang`，下次 SSR 自动从 cookie 回来同一个 locale。
+//! `i18n.set(loc)` 四件事同步：更新控制器信号 + 写 `localStorage.rodeo_lang` +
+//! 写 `rodeo_lang` cookie + 改 `<html lang/dir>`。下次 SSR 从 cookie 回来同一个
+//! locale，下次 hydrate 从 `<html lang>` 拿到同一个 locale——hydrate 不再退回
+//! 硬编码的英文。
 
 use leptos::prelude::*;
 

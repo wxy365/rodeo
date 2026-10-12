@@ -7,7 +7,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::extract::ws::{Message as AxumMsg, WebSocket, WebSocketUpgrade};
+use axum::body::Bytes;
+use axum::extract::ws::{Message as AxumMsg, Utf8Bytes, WebSocket, WebSocketUpgrade};
 use axum::extract::{Extension, Query};
 use axum::response::IntoResponse;
 use serde::Deserialize;
@@ -52,7 +53,7 @@ pub async fn ws_handler(
 /// 3. 持续从 hub 收新消息推给客户端
 /// 4. 持续读客户端消息（忽略内容）
 /// 5. 任一端关闭 → 清理 unsubscribe
-async fn connection_task(socket: WebSocket, state: Arc<AppState>, user_id: Ulid) {
+async fn connection_task(mut socket: WebSocket, state: Arc<AppState>, user_id: Ulid) {
     let mut rx = state.services.ws_hub.subscribe(user_id).await;
 
     // 1. Hello
@@ -61,7 +62,7 @@ async fn connection_task(socket: WebSocket, state: Arc<AppState>, user_id: Ulid)
         server_time: chrono::Utc::now().timestamp(),
     })
     .unwrap_or_default();
-    if socket.send(AxumMsg::Text(hello)).await.is_err() {
+    if socket.send(AxumMsg::Text(Utf8Bytes::from(hello))).await.is_err() {
         state.services.ws_hub.unsubscribe(user_id).await;
         return;
     }
@@ -70,7 +71,6 @@ async fn connection_task(socket: WebSocket, state: Arc<AppState>, user_id: Ulid)
     let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
     heartbeat.tick().await; // 跳过立即 fire 的第一次 tick
 
-    let mut socket = socket;
     loop {
         tokio::select! {
             // 从 hub 收新消息 → 推给客户端
@@ -78,18 +78,18 @@ async fn connection_task(socket: WebSocket, state: Arc<AppState>, user_id: Ulid)
                 match ws_msg {
                     Ok(msg) => {
                         let text = serde_json::to_string(&msg).unwrap_or_default();
-                        if socket.send(AxumMsg::Text(text)).await.is_err() {
+                        if socket.send(AxumMsg::Text(Utf8Bytes::from(text))).await.is_err() {
                             break;
                         }
                     }
                     // 溢出：跳过旧消息继续；polling 兜底会拉全量未读
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(broadcast::error::RecvError::Closed) => break,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
             // 心跳
             _ = heartbeat.tick() => {
-                if socket.send(AxumMsg::Ping(vec![])).await.is_err() {
+                if socket.send(AxumMsg::Ping(Bytes::new())).await.is_err() {
                     break;
                 }
             }
