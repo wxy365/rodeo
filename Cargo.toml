@@ -85,9 +85,8 @@ async-stream = { version = "0.3", optional = true }
 # 实现前者但都不直接 re-export；后者要写 `stream.next().await` 就必须在作用域内。
 # 已经是间接依赖（async-stream / axum-core / async-graphql 都依赖它），体积零增量。
 # default-features = false：关掉它的 allocator / io 特性，只留 stream 适配器，
-# 避免把 tokio 的 io-util / sync 再次拉进来。`channel` 给 wasm 端 WS 客户端用——
-# 把 close / error 事件转成 await 信号。
-futures-util = { version = "0.3", optional = true, default-features = false, features = ["std", "channel"] }
+# 避免把 tokio 的 io-util / sync 再次拉进来。
+futures-util = { version = "0.3", optional = true, default-features = false, features = ["std"] }
 # Agent turn 注册表使用的同步互斥（避免 async 锁在同步临界区的可取消性问题）。
 parking_lot = { version = "0.12", optional = true }
 # Agent runner 用 `CancellationToken` 让 SSE 断连时干净地中止 turn。
@@ -109,6 +108,10 @@ gloo-timers = { version = "0.3", features = ["futures"] }
 js-sys = "0.3"
 wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["Clipboard", "Navigator", "Window", "Document", "HtmlDocument", "DomStringMap", "FormData", "File", "Blob", "Element", "HtmlElement", "CssStyleDeclaration", "DomRect", "TextDecoder", "ReadableStream", "ReadableStreamDefaultReader"] }
+# `leptos → rand → getrandom 0.3.4` 在 wasm32-unknown-unknown 上要求 `wasm_js`
+# configuration flag；直挂一份 wasm-only 触发 cargo 的 feature unification，
+# 见 https://docs.rs/getrandom/0.3.4/#webassembly-support 。
+getrandom = { version = "0.3", features = ["wasm_js"] }
 
 [features]
 default = ["ssr"]
@@ -117,6 +120,8 @@ hydrate = [
     "dep:console_error_panic_hook",
     "dep:wasm-bindgen",
     "dep:urlencoding",
+    "dep:ulid",
+    "dep:futures-util",
 ]
 ssr = [
     "dep:axum",
