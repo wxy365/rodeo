@@ -584,10 +584,7 @@ impl LabelService {
             // 跳 soft-deleted 的 entry（labels 留下但 entry 主表删了）。
             if self
                 .store
-                .get::<Entry>(
-                    cf::ENTRIES,
-                    &keys::entry_by_workspace_key(ws_id, &labeling.entry_code),
-                )?
+                .get::<Entry>(cf::ENTRIES, labeling.entry_code.as_bytes())?
                 .is_none()
             {
                 continue;
@@ -597,7 +594,7 @@ impl LabelService {
                 schema.value_type,
             ) {
                 ops.push(BatchOp::put_raw(
-                    cf_name_static.to_string(),
+                    cf_name_static,
                     idx_label_key(ws_id, &schema.name, &encoded, &labeling.entry_code),
                     Vec::new(),
                 ));

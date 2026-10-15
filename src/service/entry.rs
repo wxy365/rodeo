@@ -22,6 +22,7 @@ use crate::storage::{cf, keys, BatchOp, DocStore};
 #[derive(Clone)]
 pub struct EntryService {
     store: Arc<DocStore>,
+    index: Arc<crate::service::entry_index::EntryIndexService>,
     search: Option<Arc<dyn SearchBackend>>,
     rules: RuleEngine,
     messages: crate::service::message::MessageService,
@@ -91,12 +92,14 @@ impl EntryService {
         relations: crate::service::relation::RelationService,
     ) -> Self {
         let rules = RuleEngine::new(store.clone());
+        let index = crate::service::entry_index::EntryIndexService::new(store.clone());
         Self {
             store,
             search: None,
             rules,
             messages,
             relations,
+            index,
         }
     }
 
@@ -105,6 +108,7 @@ impl EntryService {
         search: Arc<dyn SearchBackend>,
         messages: crate::service::message::MessageService,
         relations: crate::service::relation::RelationService,
+        index: Arc<crate::service::entry_index::EntryIndexService>,
     ) -> Self {
         let rules = RuleEngine::new(store.clone());
         Self {
@@ -113,6 +117,7 @@ impl EntryService {
             rules,
             messages,
             relations,
+            index,
         }
     }
 
@@ -812,6 +817,8 @@ impl EntryService {
 
     /// 单个 entry 的 idx BatchOp 列表（写完后插入）。给定 entry 当前状态 + 该 entry 的
     /// 打标列表，生成 3 个内建字段 + 每个 sortable 标签的索引条目。
+    /// 调用之后会自动 mark_covered(ws, cf) —— 写路径每写一次索引，cache 同步前进，
+    /// 不依赖启动期灌库（Task 10）扫到该 ws。
     fn idx_puts_for(
         &self,
         ws: Ulid,
@@ -819,7 +826,14 @@ impl EntryService {
         labels: &[Labeling],
     ) -> Vec<BatchOp> {
         let schemas = self.sortable_schemas(ws);
-        self.idx_batch_puts(ws, entry, labels, &schemas)
+        let ops = self.idx_batch_puts(ws, entry, labels, &schemas);
+        // 写过一次索引就标记该 ws 的 3 个内建 CF 已覆盖。
+        // （sortable label 的 cf 标记留给 enable_sortable / backfill_all 路径，
+        // 因为写单条 entry 不足以代表整个 ws 的 sortable 标签索引已就绪。）
+        self.index.mark_covered(ws, cf::ENTRIES_IDX_UPDATED);
+        self.index.mark_covered(ws, cf::ENTRIES_IDX_CREATED);
+        self.index.mark_covered(ws, cf::ENTRIES_IDX_TITLE);
+        ops
     }
 
     /// 单个 entry 的 idx BatchOp 列表（写完前删除旧条目）。与 idx_puts_for 配对；
@@ -1242,10 +1256,7 @@ impl EntryService {
                     }
                 }
                 cursor_key_set = true;
-                let entry = match self
-                    .store
-                    .get::<Entry>(cf::ENTRIES, &keys::entry_by_workspace_key(ws, &code))?
-                {
+                let entry = match self.store.get::<Entry>(cf::ENTRIES, code.as_bytes())? {
                     Some(e) => e,
                     None => continue, // 主表已删但索引还在 —— 跳过
                 };
@@ -2127,7 +2138,7 @@ mod tests {
             None,
         );
         let rel_svc = crate::service::relation::RelationService::new(store.clone());
-        let svc = EntryService::with_search(store.clone(), search, msg_svc, rel_svc);
+        let svc = EntryService::with_search(store.clone(), search, msg_svc, rel_svc, crate::service::entry_index::EntryIndexService::new(store.clone()));
         for i in 0..5 {
             let e = svc.create(actor, ws_id, &format!("条目{i}")).unwrap();
             if i % 2 == 0 {
@@ -2161,7 +2172,7 @@ mod tests {
             None,
         );
         let rel_svc = crate::service::relation::RelationService::new(store.clone());
-        let svc = EntryService::with_search(store.clone(), search, msg_svc, rel_svc);
+        let svc = EntryService::with_search(store.clone(), search, msg_svc, rel_svc, crate::service::entry_index::EntryIndexService::new(store.clone()));
         let a = svc.create(actor, ws_id, "找回密码失败").unwrap();
         svc.update(
             actor,
@@ -2207,7 +2218,7 @@ mod tests {
             None,
         );
         let rel_svc = crate::service::relation::RelationService::new(store.clone());
-        let svc = EntryService::with_search(store.clone(), search, msg_svc, rel_svc);
+        let svc = EntryService::with_search(store.clone(), search, msg_svc, rel_svc, crate::service::entry_index::EntryIndexService::new(store.clone()));
         let a = svc.create(actor, ws_id, "甲").unwrap();
         svc.set_labeling(actor, &a.code, "Task", &serde_json::json!(null))
             .unwrap();
@@ -2252,7 +2263,7 @@ mod tests {
             None,
         );
         let rel_svc = crate::service::relation::RelationService::new(store.clone());
-        let svc = EntryService::with_search(store.clone(), search, msg_svc, rel_svc);
+        let svc = EntryService::with_search(store.clone(), search, msg_svc, rel_svc, crate::service::entry_index::EntryIndexService::new(store.clone()));
         for t in ["b", "a", "c"] {
             svc.create(actor, ws_id, t).unwrap();
         }
@@ -2435,7 +2446,7 @@ mod tests {
             None,
         );
         let rel_svc = crate::service::relation::RelationService::new(store.clone());
-        let svc = EntryService::with_search(store.clone(), search.clone(), msg_svc, rel_svc);
+        let svc = EntryService::with_search(store.clone(), search.clone(), msg_svc, rel_svc, crate::service::entry_index::EntryIndexService::new(store.clone()));
         let e = svc.create(actor, ws_id, "独一无二的关键词").unwrap();
         assert_eq!(search.num_docs(), 1);
 

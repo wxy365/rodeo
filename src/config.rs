@@ -410,6 +410,7 @@ impl Default for Config {
             agent: AgentConfig::default(),
             search: SearchConfig::default(),
             logging: LoggingConfig::default(),
+            query: QueryConfig::default(),
         }
     }
 }

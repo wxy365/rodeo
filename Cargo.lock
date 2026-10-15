@@ -3688,6 +3688,7 @@ dependencies = [
  "async-trait",
  "axum",
  "axum-server",
+ "base64 0.22.1",
  "bincode",
  "chrono",
  "console_error_panic_hook",

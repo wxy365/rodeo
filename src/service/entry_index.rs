@@ -152,7 +152,7 @@ impl EntryIndexService {
                 for (_ek, ev) in store.scan_prefix(crate::storage::cf::ENTRIES_BY_WORKSPACE, &ws.to_bytes())? {
                     let entry: Entry = bincode::deserialize(&ev)?;
                     ops.push(BatchOp::put_raw(
-                        cf_name.to_string(),
+                        cf_name,
                         key_fn(&entry),
                         Vec::new(),
                     ));
@@ -192,7 +192,7 @@ impl EntryIndexService {
                         schema.value_type,
                     ) {
                         ops.push(BatchOp::put_raw(
-                            cf_name.to_string(),
+                            cf_name,
                             idx_label_key(ws, &schema.name, &encoded, &labeling.entry_code),
                             Vec::new(),
                         ));

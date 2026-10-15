@@ -1582,7 +1582,7 @@ pub async fn query_all_entries(
     // 给个 `0i64` 初值只会在编译期被判为从未读取，招来 unused_assignments 告警。
     let mut total;
     for page in 1..=pages {
-        let ep = query_entries(workspace_id, query, sorts, page, PAGE_SIZE).await?;
+        let ep = query_entries(workspace_id, query, sorts, page, PAGE_SIZE, None, None).await?;
         total = ep.total;
         for n in ep.label_names {
             if !names.contains(&n) {

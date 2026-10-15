@@ -24,6 +24,7 @@ use std::sync::Arc;
 
 use crate::api::graphql::{build_schema, AppSchema};
 use crate::config::Config;
+use crate::service::entry_index::EntryIndexService;
 use crate::error::AppError;
 use crate::service::agent::runner::SessionTurns;
 use crate::storage::{BlobStore, DocStore};
@@ -114,15 +115,17 @@ impl Services {
         // RelationService 在 EntryService 之前：条目软删除要把关联清理拼进自己的
         // write_batch，必须先有 instance 才能传引用。
         let relation = RelationService::new(store.clone());
+        // 索引覆盖率服务：路径选择 + 启动期灌库标记。Phase 1 给 cursor 分页用。
+        // 必须在 entry 之前构造 —— EntryService::with_search 现在收 index。
+        let entry_index = EntryIndexService::new(store.clone());
         // messages 必须在 workspaces 之后构造，EntryService 的 mention 派发要走它的成员表。
         let entry = EntryService::with_search(
             store.clone(),
             search.clone(),
             message.clone(),
             relation.clone(),
+            entry_index.clone(),
         );
-        // 索引覆盖率服务：路径选择 + 启动期灌库标记。Phase 1 给 cursor 分页用。
-        let entry_index = EntryIndexService::new(store.clone());
         // 评论服务要与 EntryService 共用同一份实例：评论变更后要触发它的重索引。
         let comment = CommentService::new(store.clone(), entry.clone(), message.clone());
         // 附件服务同样要与 EntryService 共用同一份实例：上传后要推进条目更新时间并重索引。
