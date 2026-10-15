@@ -222,6 +222,11 @@ impl Services {
         if let Err(e) = services.agent.repair_legacy_messages() {
             tracing::warn!("agent 消息启动修复失败（不阻塞启动）: {e}");
         }
+        // 视图排序索引：3 个内建字段 + 每个 sortable 标签。
+        // idempotent：已覆盖的 (ws, cf) 直接跳过；启动延迟可能达分钟级，按需留 warn。
+        if let Err(e) = services.entry_index.backfill_all(&services.store) {
+            tracing::warn!("视图排序索引启动灌库失败（不阻塞启动）: {e}");
+        }
         Ok(services)
     }
 }
