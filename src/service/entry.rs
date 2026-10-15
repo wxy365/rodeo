@@ -2636,6 +2636,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
+                    sortable: false,
                     links: vec![],
                 },
             )
