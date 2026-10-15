@@ -370,6 +370,14 @@ pub struct LabelSchema {
     /// 本标签与其他标签的继承 / 覆盖关系。见 `LabelLink`。
     #[serde(default)]
     pub links: Vec<LabelLink>,
+    // 同样只能追加
+    /// 本标签可作为视图排序键。`true` 时 `EntryIndexService` 启动期与
+    /// `LabelService::enable_sortable` 触发期会建立/校验
+    /// `(ws_id, tag_name, encoded_value, code)` 的有序索引；
+    /// 视图排序命中该标签时走 cursor 分页路径。
+    /// 老记录无此字段 → #[serde(default)] → false。
+    #[serde(default)]
+    pub sortable: bool,
 }
 
 /// 关系的两种写法。二者归一后是同一件事——「源命中即获得目标」——
@@ -584,6 +592,7 @@ impl LabelSchema {
             unit: None,
             default_value: None,
             links: Vec::new(),
+            sortable: false,
         }
     }
 
