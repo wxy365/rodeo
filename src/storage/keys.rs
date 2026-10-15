@@ -300,6 +300,86 @@ pub fn entry_share_by_entry_prefix(workspace_id: Ulid, entry_code: &str) -> Vec<
     out
 }
 
+// ── entry view sort indexes (2026-10-15) ────────────────────────────────
+//
+// 键布局：
+//   内建三字段（updated/created/title）：(ws_id, encoded_sort_value, code)
+//   标签桶（同桶多标签）：             (ws_id, tag_name, encoded_value, code)
+//
+// 降序字段（updated_at / created_at）按 i64::MAX - ms 编 8 字节大端，
+// 与 message_key / audit_log_key 同构 —— 字节序升序 = 时间倒序。
+
+/// 计算 sortable 标签名落在哪个桶。FNV-1a 64-bit，简单稳定，不引入新依赖。
+pub fn label_bucket_cf(tag_name: &str) -> &'static str {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in tag_name.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    let idx = (h % 16) as usize;
+    crate::storage::cf::ENTRIES_IDX_LABEL_BUCKETS[idx]
+}
+
+fn desc_ms(ms: i64) -> [u8; 8] {
+    (i64::MAX - ms).to_be_bytes()
+}
+
+/// (ws_id, ~updated_at_ms_be, code)
+pub fn idx_updated_key(ws: Ulid, ts_ms: i64, code: &str) -> Vec<u8> {
+    let mut k = Vec::with_capacity(16 + 8 + code.len());
+    k.extend_from_slice(&ws.to_bytes());
+    k.extend_from_slice(&desc_ms(ts_ms));
+    k.extend_from_slice(code.as_bytes());
+    k
+}
+
+/// (ws_id, ~created_at_ms_be, code)
+pub fn idx_created_key(ws: Ulid, ts_ms: i64, code: &str) -> Vec<u8> {
+    let mut k = Vec::with_capacity(16 + 8 + code.len());
+    k.extend_from_slice(&ws.to_bytes());
+    k.extend_from_slice(&desc_ms(ts_ms));
+    k.extend_from_slice(code.as_bytes());
+    k
+}
+
+/// (ws_id, title_utf8, code)
+pub fn idx_title_key(ws: Ulid, title: &str, code: &str) -> Vec<u8> {
+    let mut k = Vec::with_capacity(16 + title.len() + code.len());
+    k.extend_from_slice(&ws.to_bytes());
+    k.extend_from_slice(title.as_bytes());
+    k.extend_from_slice(code.as_bytes());
+    k
+}
+
+/// (ws_id, tag_name, encoded_value, code) —— 同桶多标签靠 tag_name 区分。
+pub fn idx_label_key(ws: Ulid, tag: &str, encoded: &[u8], code: &str) -> Vec<u8> {
+    let mut k = Vec::with_capacity(16 + tag.len() + encoded.len() + code.len());
+    k.extend_from_slice(&ws.to_bytes());
+    k.extend_from_slice(tag.as_bytes());
+    k.extend_from_slice(encoded);
+    k.extend_from_slice(code.as_bytes());
+    k
+}
+
+/// 范围扫描的起始键：workspace 内某 CF 的最小键。
+pub fn ws_start(ws: Ulid) -> Vec<u8> {
+    ws.to_bytes().to_vec()
+}
+
+/// 范围扫描的结束键（不含）：workspace 内某 CF 的最大键之后一字节。
+/// 全 0xFF 时返回 None —— 表示「没有上界，扫到 CF 末尾为止」。
+pub fn ws_end_exclusive(ws: Ulid) -> Option<Vec<u8>> {
+    let bytes = ws.to_bytes();
+    if bytes.iter().all(|b| *b == 0xFF) {
+        return None;
+    }
+    let mut end = bytes.to_vec();
+    let pos = end.iter().rposition(|b| *b != 0xFF).unwrap();
+    end[pos] += 1;
+    end.truncate(pos + 1);
+    Some(end)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

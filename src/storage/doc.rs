@@ -110,6 +110,36 @@ pub mod cf {
     /// 段是为了撤销时越权检查更顺手：`scan_prefix(prefix)` 时不会把别工作空间的
     /// share 抖进来。
     pub const ENTRY_SHARES_BY_ENTRY: &str = "entry_shares_by_entry";
+    // ── entry view sort indexes (added 2026-10-15, see
+    // docs/superpowers/specs/2026-10-15-entry-view-cursor-pagination-design.md)
+    /// (ws_id, ~updated_at_ms_be, code) → 空值。视图默认排序 (`updatedAt desc`)
+    /// 走这条路径，cursor 续扫也走它。
+    pub const ENTRIES_IDX_UPDATED: &str = "entries_idx_updated";
+    /// (ws_id, ~created_at_ms_be, code) → 空值。
+    pub const ENTRIES_IDX_CREATED: &str = "entries_idx_created";
+    /// (ws_id, title_utf8, code) → 空值。
+    pub const ENTRIES_IDX_TITLE: &str = "entries_idx_title";
+    /// 16 个 sortable 标签索引桶，同一桶里多个 sortable 标签按
+    /// `(ws_id, tag_name, encoded_value, code)` 复合键区分。`label_bucket_cf(name)`
+    /// 把标签名 fnv1a 64-bit 哈希 mod 16 选桶。
+    pub const ENTRIES_IDX_LABEL_BUCKETS: [&str; 16] = [
+        "entries_idx_label_00",
+        "entries_idx_label_01",
+        "entries_idx_label_02",
+        "entries_idx_label_03",
+        "entries_idx_label_04",
+        "entries_idx_label_05",
+        "entries_idx_label_06",
+        "entries_idx_label_07",
+        "entries_idx_label_08",
+        "entries_idx_label_09",
+        "entries_idx_label_0a",
+        "entries_idx_label_0b",
+        "entries_idx_label_0c",
+        "entries_idx_label_0d",
+        "entries_idx_label_0e",
+        "entries_idx_label_0f",
+    ];
 }
 
 /// 单个批量写操作：文档/索引/审计统一原子写入。
