@@ -123,6 +123,13 @@ src/
 - **Leptos 上下文只向下传播**：AppBar 渲染在 `<Router>` 之外，与 WorkspaceMain 是兄弟节点。`provide_workspace_new_menu_slot()` / `provide_workspace_timeline_slot()` 这两个 slot 是为了解决「App 级别提供、兄弟共享读写」用的，新加跨 Router 的全局能力先沿用同一模式。
 - **`/api/graphql` body limit 64MiB**，给 multipart 边界留余量；附件本身在服务层 50MiB 拒绝。
 
+## 工作流规则
+
+- **每完成一个任务立即 `git commit`**：bug 修复、功能添加、配置 / 翻译 / UI 调整、缺陷记录修复等任何有边界的修改，都要在验证通过（`make check` / `make build` 等）后立即 `git add` + `git commit`，按改动用约定前缀（fix / feat / chore / refactor / docs / style / perf / build / ci），避免未提交修改在会话切换、机器休眠、异常终止时丢失。
+- **按模块拆 commit**：一次任务涉及多个独立模块或多种语义类型时按模块 / 类型各 commit 一次，不堆成一个巨大 commit。`git status` 决定拆分粒度。
+- **WIP 状态可用 `WIP:` 前缀**；长期分支上的半成品不要等"完成"再 commit，会忘。
+- **永远不 force-push、不绕过 hooks**（不带 `--no-verify`）；验证失败的红 → 修 → 再次跑验证，不要把日志污染 main。
+
 ## 预先索引好的工具
 
 - `.codegraph/` 有预构建的 SQLite 知识图。在改代码前优先用 `codegraph_explore`，比 `Read` + `Grep` 循环快得多。
