@@ -85,11 +85,17 @@ impl Services {
         // 端点/key/index 名错就直接带着原因失败，不留到第一次搜索。
         let search: Arc<dyn SearchBackend> = match config.search.backend {
             crate::config::SearchBackend::Tantivy => {
+                // `search.tantivy.dir` 是 `Option<String>`：TOML 把 `dir = ""` 解析成
+                // `Some("")`，而不是 `None`。这里把空串也视作「走默认」，否则
+                // `format!("{dir}/search")` 会拼成 `/search`，create_dir_all 在根
+                // 目录下失败 → 启动期 panic `Storage("Read-only file system (os error 30)")`。
                 let dir = config
                     .search
                     .tantivy
                     .dir
-                    .clone()
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
                     .unwrap_or_else(|| config.data_dir());
                 Arc::new(TantivyBackend::open(&format!("{dir}/search"))?)
             }
