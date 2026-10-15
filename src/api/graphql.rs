@@ -1040,6 +1040,9 @@ pub struct GqlEntryConnection {
     page_size: i32,
     /// 命中条目实际带有的标签名（跨分页去重），前端用它提示可用标签。
     label_names: Vec<String>,
+    /// 视图排序走 cursor 路径且后面还有匹配时返回；前端用它翻下一页。
+    /// 老 page 路径下恒为 None。
+    next_cursor: Option<String>,
 }
 
 #[derive(async_graphql::InputObject)]
@@ -1080,6 +1083,10 @@ fn to_sort(sorts: Option<Vec<SortInput>>) -> SortSpec {
 pub struct PageInput {
     page: Option<i32>,
     page_size: Option<i32>,
+    /// 走 cursor 路径时传；与 page 二选一；同传时 cursor 优先。
+    cursor: Option<String>,
+    /// cursor 模式下的返回上限。默认 50，上限 200。
+    limit: Option<i32>,
 }
 
 impl PageInput {
@@ -1922,8 +1929,35 @@ impl Query {
         let q = parse_query_json(query)?;
         q.validate(&gql.services.label.list_schemas(ws)?)?;
         let sort = to_sort(sorts);
-        let page = page.map(|p| p.to_page()).unwrap_or_default();
-        let result = gql.services.entry.query(ws, &q, &sort, page)?;
+        let schemas = gql.services.label.list_schemas(ws)?;
+
+        let page = page.unwrap_or_default();
+        let use_cursor_path = page.cursor.is_some()
+            || (gql.services.entry_index.sort_is_indexed(ws, &sort, &schemas)
+                && (page.cursor.is_some() || page.page.unwrap_or(1) <= 1));
+
+        let (result, page_for_response, page_size_for_response) = if use_cursor_path {
+            if page.cursor.is_some() && !gql.services.entry_index.sort_is_indexed(ws, &sort, &schemas) {
+                return Err(AppError::InvalidQuery("当前排序不支持 cursor 分页".to_string()).into());
+            }
+            let input = EntryQueryInput {
+                page: page.page.map(|p| p as u32),
+                page_size: page.page_size.map(|p| p as u32),
+                cursor: page.cursor,
+                limit: page.limit.map(|l| l as u32),
+            };
+            if page.page.unwrap_or(1) > 1 {
+                eprintln!("[query_entries] page>1 with indexable sort; recommend cursor");
+            }
+            let r = gql.services.entry.query_indexed(ws, &q, &sort, &input)?;
+            let lim = input.limit();
+            (r, 1, lim as i32)
+        } else {
+            let entry_page = page.to_page();
+            let r = gql.services.entry.query(ws, &q, &sort, entry_page)?;
+            (r, entry_page.page as i32, entry_page.page_size as i32)
+        };
+
         let items = result
             .items
             .into_iter()
@@ -1932,9 +1966,10 @@ impl Query {
         Ok(GqlEntryConnection {
             items,
             total: result.total as i32,
-            page: page.page as i32,
-            page_size: page.page_size as i32,
+            page: page_for_response,
+            page_size: page_size_for_response,
             label_names: result.label_names,
+            next_cursor: result.next_cursor,
         })
     }
 
