@@ -441,8 +441,11 @@ pub fn TimelineView(
     members: RwSignal<Vec<Member>>,
     /// 当前视图的时间轴配置。
     config: Signal<Option<ViewTimeline>>,
-    /// 单击色块 → 写进这里，右侧详情面板据此打开（与表格行同一套交互）。
+    /// 单击色块 → 写进这里，色块自身的 `.sel` 高亮据此切换（与表格行同一套交互）。
     selected: RwSignal<String>,
+    /// 单击色块 → 同时写进这里，右侧详情面板据此打开。色块没有「列」的概念，
+    /// 所以一次单击同时驱动高亮与侧栏——与表格「点标题」的语义对齐。
+    panel_code: RwSignal<String>,
     /// 双击色块 → 打开条目全屏页。
     on_open: Callback<String>,
 ) -> impl IntoView {
@@ -658,8 +661,10 @@ pub fn TimelineView(
                                     remember_pick(c_click.clone(), ev.client_x(), ev.client_y());
                                     if selected.get_untracked() == c_click {
                                         selected.set(String::new());
+                                        panel_code.set(String::new());
                                     } else {
                                         selected.set(c_click.clone());
+                                        panel_code.set(c_click.clone());
                                     }
                                 }
                                 on:dblclick=move |_| {
@@ -695,8 +700,10 @@ pub fn TimelineView(
                                     remember_pick(c_click.clone(), ev.client_x(), ev.client_y());
                                     if selected.get_untracked() == c_click {
                                         selected.set(String::new());
+                                        panel_code.set(String::new());
                                     } else {
                                         selected.set(c_click.clone());
+                                        panel_code.set(c_click.clone());
                                     }
                                 }
                                 on:dblclick=move |_| {

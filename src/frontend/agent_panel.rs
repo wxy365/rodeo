@@ -39,17 +39,17 @@ use serde_json::Value;
 use crate::frontend::agent_side_effects::AgentSideEffects;
 #[cfg(target_arch = "wasm32")]
 use crate::frontend::agent_side_effects::SideEffectHint;
+use crate::frontend::components::human_size;
 #[cfg(target_arch = "wasm32")]
 use crate::frontend::graphql_client::get_token;
-use crate::frontend::components::human_size;
-use crate::frontend::icons::ic_upload;
-use crate::frontend::i18n::{use_i18n, I18nController};
+#[cfg(target_arch = "wasm32")]
+use crate::frontend::graphql_client::upload_attachment;
 use crate::frontend::graphql_client::{
     cancel_agent_turn, create_agent_session, delete_agent_session, list_agent_messages,
     list_agent_sessions, send_agent_message, AgentMessage, AgentMessageContext, AgentSession,
 };
-#[cfg(target_arch = "wasm32")]
-use crate::frontend::graphql_client::upload_attachment;
+use crate::frontend::i18n::{use_i18n, I18nController};
+use crate::frontend::icons::ic_upload;
 
 /// 已选附件（上传成功后存 id）。发消息时按 id 列表传给 sendAgentMessage。
 #[derive(Clone)]
@@ -290,7 +290,9 @@ pub fn AgentPanel() -> impl IntoView {
     // TimeoutFuture 直接 .await，不引第三方定时器库。
     #[cfg(target_arch = "wasm32")]
     Effect::new(move |_| {
-        let Some(turn) = retry_signal.get() else { return };
+        let Some(turn) = retry_signal.get() else {
+            return;
+        };
         spawn_local(async move {
             gloo_timers::future::TimeoutFuture::new(3_000).await;
             if retry_signal.get_untracked() == Some(turn) {
@@ -513,15 +515,29 @@ pub fn AgentPanel() -> impl IntoView {
                 &sid,
                 &content,
                 context_md,
-                if attachment_ids_for_send.is_empty() { None } else { Some(attachment_ids_for_send) },
-            ).await {
+                if attachment_ids_for_send.is_empty() {
+                    None
+                } else {
+                    Some(attachment_ids_for_send)
+                },
+            )
+            .await
+            {
                 Ok(turn) => {
                     // 占位自然由 open_stream 之后的 post-stream list_agent_messages
                     // 替换为真 ULID 消息——SSE 路径出错也不需要就地清，因为
                     // 服务端已经把 user_msg 落库（graphql.rs send_agent_message
                     // 先 append 再 run_turn），list_agent_messages 能拿回真消息。
                     current_turn_id.set(Some(turn.id.clone()));
-                    open_stream(&turn.id, messages, streaming, streaming_tool_calls, retry_signal, effects).await;
+                    open_stream(
+                        &turn.id,
+                        messages,
+                        streaming,
+                        streaming_tool_calls,
+                        retry_signal,
+                        effects,
+                    )
+                    .await;
                     // open_stream 结束后清掉 current_turn_id（无论正常 done 还是
                     // 流错误退出，streaming 已经被置 false）：取消按钮基于
                     // streaming 显隐，但万一未来加「超时清空」之类的逻辑时
@@ -1581,7 +1597,13 @@ async fn open_stream(
                     Ok(v) => v,
                     Err(_) => continue,
                 };
-                handle_event(&parsed, &messages, &streaming_tool_calls, &retry_signal, &effects);
+                handle_event(
+                    &parsed,
+                    &messages,
+                    &streaming_tool_calls,
+                    &retry_signal,
+                    &effects,
+                );
             }
         }
     }
@@ -1692,10 +1714,7 @@ fn handle_event(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let args = parsed
-                .get("args")
-                .cloned()
-                .unwrap_or(Value::Null);
+            let args = parsed.get("args").cloned().unwrap_or(Value::Null);
             streaming_tool_calls.update(|tcs| {
                 tcs.push(ToolCallDisplay {
                     id: ulid_compat_id(),
@@ -1722,12 +1741,13 @@ fn handle_event(
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let kind = parsed
-                .get("kind")
-                .and_then(|v| v.as_str())
-                .unwrap_or("ok");
+            let kind = parsed.get("kind").and_then(|v| v.as_str()).unwrap_or("ok");
             let ok = matches!(kind, "ok");
-            let target_status = if ok { ToolCallStatus::Ok } else { ToolCallStatus::Err };
+            let target_status = if ok {
+                ToolCallStatus::Ok
+            } else {
+                ToolCallStatus::Err
+            };
             // 先用 snapshot 找一遍索引,再用 update 改——RwSignal::update 签名
             // 返回 ()，把匹配结果塞在 update 闭包里反而拿不出来。
             let idx = streaming_tool_calls
@@ -1823,7 +1843,11 @@ fn parse_retry_turn(message: &str) -> Option<usize> {
     const PREFIX: &str = "LLM 内部重试 turn ";
     let rest = message.strip_prefix(PREFIX)?;
     // 扫描连续 ASCII 数字；前面可能留一段空白前缀（防御性）。
-    let digits: String = rest.trim_start().chars().take_while(|c| c.is_ascii_digit()).collect();
+    let digits: String = rest
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
     digits.parse().ok()
 }
 
@@ -1832,10 +1856,7 @@ fn parse_retry_turn(message: &str) -> Option<usize> {
 /// list_agent_sessions。改任一处算法时记得同步另一边。
 fn local_session_title(content: &str) -> Option<String> {
     const MAX_CHARS: usize = 30;
-    let first_line = content
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())?;
+    let first_line = content.lines().map(str::trim).find(|l| !l.is_empty())?;
     let truncated: String = first_line.chars().take(MAX_CHARS).collect();
     if first_line.chars().count() > MAX_CHARS {
         Some(format!("{truncated}…"))
@@ -1872,9 +1893,10 @@ fn spawn_attachment_uploads(
     else {
         return;
     };
-    let Ok(files_js) =
-        Reflect::get(AsRef::<JsValue>::as_ref(&input), &JsValue::from_str("files"))
-    else {
+    let Ok(files_js) = Reflect::get(
+        AsRef::<JsValue>::as_ref(&input),
+        &JsValue::from_str("files"),
+    ) else {
         return;
     };
     // FileList 没有数值属性（Reflect::get(files, idx) 拿到 undefined），也不能

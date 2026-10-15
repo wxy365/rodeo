@@ -25,18 +25,18 @@ where
 
 use crate::frontend::ai_prompt_editor::{rows_from, rows_to_value, PromptRow, PromptRows};
 use crate::frontend::automation_tab::AutomationTab;
-use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::components::{
     action_label, audit_change, display_enum_value, logged_out, role_label, short_time,
     value_type_label, ColorPick, DefaultValueInput, FormatSelect,
 };
 use crate::frontend::graphql_client::{
-    audit_logs, create_label_schema, delete_label_schema, delete_workspace, invite_member,
-    invites, label_attrs, label_schemas, members, my_role, remove_member, restore_workspace,
-    revoke_invite, transfer_owner, update_label_schema, update_member_role, update_view,
-    update_workspace, update_workspace_ai_config, views, workspace_ai_config, workspace_by_slug,
-    AuditLog, Invite, LabelSchema, Member, View, Workspace,
+    audit_logs, create_label_schema, delete_label_schema, delete_workspace, invite_member, invites,
+    label_attrs, label_schemas, members, my_role, remove_member, restore_workspace, revoke_invite,
+    transfer_owner, update_label_schema, update_member_role, update_view, update_workspace,
+    update_workspace_ai_config, views, workspace_ai_config, workspace_by_slug, AuditLog, Invite,
+    LabelSchema, Member, View, Workspace,
 };
+use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::icons::{
     ic_add, ic_back, ic_close, ic_comment, ic_history, ic_link, ic_profile, ic_setting, ic_share,
     ic_tag,
@@ -65,10 +65,7 @@ pub fn WorkspaceSettings() -> impl IntoView {
     // 存成 StoredValue（Copy），事件闭包才能保持 Copy 而被视图重复使用。
     let nav_store = StoredValue::new(navigate.clone());
     // URL 上的 `?view=<id>`：返回视图页时回到原视图，而不是默认视图。
-    let back_view_id: Option<String> = use_query_map()
-        .get()
-        .get("view")
-        .filter(|s| !s.is_empty());
+    let back_view_id: Option<String> = use_query_map().get().get("view").filter(|s| !s.is_empty());
 
     let data: RwSignal<
         Option<

@@ -46,9 +46,18 @@ impl Locale {
             Locale::Ar => "العربية",
         }
     }
-    pub fn is_rtl(self) -> bool { matches!(self, Locale::Ar) }
+    pub fn is_rtl(self) -> bool {
+        matches!(self, Locale::Ar)
+    }
 
-    pub const ALL: [Locale; 6] = [Locale::Zh, Locale::En, Locale::Ja, Locale::Pt, Locale::Es, Locale::Ar];
+    pub const ALL: [Locale; 6] = [
+        Locale::Zh,
+        Locale::En,
+        Locale::Ja,
+        Locale::Pt,
+        Locale::Es,
+        Locale::Ar,
+    ];
 
     pub fn from_str_ci(s: &str) -> Option<Self> {
         match s.to_ascii_lowercase().as_str() {
@@ -66,8 +75,12 @@ impl Locale {
     /// language ("zh","zh","fr"), then try `from_str_ci`.
     pub fn from_browser(s: &str) -> Option<Self> {
         let s = s.trim();
-        if s.is_empty() { return None; }
-        if let Some(loc) = Self::from_str_ci(s) { return Some(loc); }
+        if s.is_empty() {
+            return None;
+        }
+        if let Some(loc) = Self::from_str_ci(s) {
+            return Some(loc);
+        }
         // Strip region / script suffixes.
         let base = s.split(['-', '_']).next().unwrap_or(s);
         Self::from_str_ci(base)
@@ -81,7 +94,9 @@ impl Locale {
         let mut best: Option<(f32, Self)> = None;
         for raw in header.split(',') {
             let item = raw.trim();
-            if item.is_empty() { continue; }
+            if item.is_empty() {
+                continue;
+            }
             let (tag, q) = match item.split_once(";q=") {
                 Some((t, q)) => (t.trim(), q.parse::<f32>().unwrap_or(1.0)),
                 None => match item.split_once(';') {
@@ -89,7 +104,9 @@ impl Locale {
                     None => (item, 1.0),
                 },
             };
-            if !(q > 0.0) { continue; }
+            if !(q > 0.0) {
+                continue;
+            }
             if let Some(loc) = Self::from_browser(tag) {
                 match best {
                     Some((bq, _)) if bq >= q => {}
@@ -109,17 +126,23 @@ fn build_flat(json: &str) -> FlatMap {
     // 不能同时用 `#[serde(flatten)]`（rust 派生会在两个 flatten 字段间
     // 产生冲突，要么一个也起不到作用，要么在某个非 string 值上报
     // "invalid type: map, expected a string"）。手剥只取 string leaf。
-    let parsed: serde_json::Value = serde_json::from_str(json)
-        .unwrap_or_else(|e| panic!("locale JSON malformed: {e}"));
+    let parsed: serde_json::Value =
+        serde_json::from_str(json).unwrap_or_else(|e| panic!("locale JSON malformed: {e}"));
     let mut out = FlatMap::with_capacity(64);
     let Some(root) = parsed.as_object() else {
         panic!("locale JSON malformed: top-level must be an object");
     };
     for (section, kvs) in root {
-        if section == "_meta" { continue; }
-        let Some(kvs) = kvs.as_object() else { continue; };
+        if section == "_meta" {
+            continue;
+        }
+        let Some(kvs) = kvs.as_object() else {
+            continue;
+        };
         for (k, v) in kvs {
-            let Some(s) = v.as_str() else { continue; };
+            let Some(s) = v.as_str() else {
+                continue;
+            };
             out.insert(format!("{section}.{k}"), s.to_string());
         }
     }
@@ -144,7 +167,9 @@ fn map_for(loc: Locale) -> &'static FlatMap {
 }
 
 #[derive(Clone, Copy)]
-pub struct I18nController { pub locale: RwSignal<Locale> }
+pub struct I18nController {
+    pub locale: RwSignal<Locale>,
+}
 
 impl I18nController {
     /// Look up an id in the current locale, fall back to en, fall back to the id itself.
@@ -155,8 +180,12 @@ impl I18nController {
     /// extra tracking cost is negligible compared to the bug of stale strings.
     pub fn t(&self, id: &str) -> String {
         let loc = self.locale.get();
-        if let Some(v) = map_for(loc).get(id) { return v.clone(); }
-        if let Some(v) = map_for(Locale::En).get(id) { return v.clone(); }
+        if let Some(v) = map_for(loc).get(id) {
+            return v.clone();
+        }
+        if let Some(v) = map_for(Locale::En).get(id) {
+            return v.clone();
+        }
         id.to_string()
     }
 
@@ -190,17 +219,18 @@ impl I18nController {
 #[cfg(target_arch = "wasm32")]
 fn persist_locale(loc: Locale) {
     use wasm_bindgen::JsCast;
-    let Some(window) = web_sys::window() else { return };
+    let Some(window) = web_sys::window() else {
+        return;
+    };
     if let Ok(Some(storage)) = window.local_storage() {
         let _ = storage.set_item("rodeo_lang", loc.as_str());
     }
-    let Some(document) = window.document() else { return };
+    let Some(document) = window.document() else {
+        return;
+    };
     if let Some(root) = document.document_element() {
         let _ = root.set_attribute("lang", loc.as_str());
-        let _ = root.set_attribute(
-            "dir",
-            if loc.is_rtl() { "rtl" } else { "ltr" },
-        );
+        let _ = root.set_attribute("dir", if loc.is_rtl() { "rtl" } else { "ltr" });
     }
     // 写 cookie：cast 到 HtmlDocument。cast 失败（极端环境）就静默退回，
     // 下次 SSR 还能从 localStorage 落回 head 脚本里。
@@ -214,7 +244,9 @@ fn persist_locale(loc: Locale) {
 }
 
 pub fn provide_i18n(initial: Locale) -> I18nController {
-    let ctrl = I18nController { locale: RwSignal::new(initial) };
+    let ctrl = I18nController {
+        locale: RwSignal::new(initial),
+    };
     provide_context(ctrl);
     // On hydrate, force the controller signal to match what the head script
     // actually set on `<html lang>`. The head script reads localStorage and
@@ -247,11 +279,21 @@ pub fn provide_i18n(initial: Locale) -> I18nController {
 /// case but only happens once per page-load on a stale-localStorage tab.
 #[cfg(target_arch = "wasm32")]
 fn sync_locale_to_html_lang(ctrl: &I18nController) {
-    let Some(window) = web_sys::window() else { return };
-    let Some(document) = window.document() else { return };
-    let Some(root) = document.document_element() else { return };
-    let Some(lang) = root.get_attribute("lang") else { return };
-    let Some(detected) = Locale::from_browser(&lang) else { return };
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Some(document) = window.document() else {
+        return;
+    };
+    let Some(root) = document.document_element() else {
+        return;
+    };
+    let Some(lang) = root.get_attribute("lang") else {
+        return;
+    };
+    let Some(detected) = Locale::from_browser(&lang) else {
+        return;
+    };
     let current = ctrl.locale.get_untracked();
     if current != detected {
         // Genuine mismatch: the initial signal is wrong. Force it now so
@@ -289,10 +331,8 @@ fn schedule_en_bounce(window: &web_sys::Window, ctrl: &I18nController, detected:
         }
         cb_b.forget();
     }) as Box<dyn FnMut()>);
-    let _ = window.set_timeout_with_callback_and_timeout_and_arguments_0(
-        cb_a.as_ref().unchecked_ref(),
-        0,
-    );
+    let _ = window
+        .set_timeout_with_callback_and_timeout_and_arguments_0(cb_a.as_ref().unchecked_ref(), 0);
     cb_a.forget();
 }
 
@@ -302,7 +342,9 @@ fn schedule_en_bounce(window: &web_sys::Window, ctrl: &I18nController, detected:
 /// 真正渲染时 ShellInner 提供的 controller 会在最近的作用域里覆盖它。
 fn fallback_controller() -> I18nController {
     static CTRL: OnceLock<I18nController> = OnceLock::new();
-    *CTRL.get_or_init(|| I18nController { locale: RwSignal::new(Locale::En) })
+    *CTRL.get_or_init(|| I18nController {
+        locale: RwSignal::new(Locale::En),
+    })
 }
 
 pub fn use_i18n() -> I18nController {

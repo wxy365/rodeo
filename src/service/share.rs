@@ -109,11 +109,7 @@ impl ShareService {
     /// 列出某条目的全部 share（含已撤销的；UI 自行渲染「已撤销」标记）。
     /// ULID 后缀字节序即时间升序；share 数量小（同一 Entry 通常 < 10）就不
     /// 额外排了——依赖 ULID 自然的单调性。
-    pub fn list(
-        &self,
-        workspace_id: Ulid,
-        entry_code: &str,
-    ) -> Result<Vec<EntryShare>, AppError> {
+    pub fn list(&self, workspace_id: Ulid, entry_code: &str) -> Result<Vec<EntryShare>, AppError> {
         let prefix = keys::entry_share_by_entry_prefix(workspace_id, entry_code);
         let mut out = Vec::new();
         for (k, _) in self.store.scan_prefix(cf::ENTRY_SHARES_BY_ENTRY, &prefix)? {
@@ -133,12 +129,7 @@ impl ShareService {
     /// 软撤销。校验 share 属于该 workspace——防越权：账号 A 在 ws1 是成员
     /// 但拿到 ws2 的 share id 仍会被拒。**幂等**：重复撤销直接成功，不重写
     /// `revoked_by` / `revoked_at`，也不重复写审计。
-    pub fn revoke(
-        &self,
-        share_id: Ulid,
-        workspace_id: Ulid,
-        actor: Ulid,
-    ) -> Result<(), AppError> {
+    pub fn revoke(&self, share_id: Ulid, workspace_id: Ulid, actor: Ulid) -> Result<(), AppError> {
         let mut share = self
             .store
             .get::<EntryShare>(cf::ENTRY_SHARES, &share_id.to_bytes())?
@@ -251,10 +242,7 @@ impl ShareService {
     /// ——分享页只要「附件」列表，不含正文里嵌入的图片（后者只有作者在
     /// 详情页能看到）。匿名读者拿到 `Attachment` 全文无所谓：id 是
     /// capability URL 的钥匙，作者字段不会泄露。
-    fn fetch_public_attachments(
-        &self,
-        entry_code: &str,
-    ) -> Result<Vec<Attachment>, AppError> {
+    fn fetch_public_attachments(&self, entry_code: &str) -> Result<Vec<Attachment>, AppError> {
         // 这里走底层 `scan_prefix` 而非 `AttachmentService::list`，因为后者
         // 是 service 方法、`share.rs` 还没有也不该有 `AttachmentService`
         // 依赖（单向：`AttachmentService` 也不该依赖 `ShareService`）。
@@ -273,20 +261,14 @@ impl ShareService {
             if self.store.exists(cf::INLINE_ATTACHMENTS, &arr)? {
                 continue;
             }
-            if let Some(a) = self
-                .store
-                .get::<Attachment>(cf::ATTACHMENTS, &arr)?
-            {
+            if let Some(a) = self.store.get::<Attachment>(cf::ATTACHMENTS, &arr)? {
                 out.push(a);
             }
         }
         Ok(out)
     }
 
-    fn fetch_public_label_schemas(
-        &self,
-        ws_id: Ulid,
-    ) -> Result<Vec<LabelSchema>, AppError> {
+    fn fetch_public_label_schemas(&self, ws_id: Ulid) -> Result<Vec<LabelSchema>, AppError> {
         let prefix = ws_id.to_bytes();
         let mut out = Vec::new();
         for (_, v) in self.store.scan_prefix(cf::LABEL_SCHEMAS, &prefix)? {
@@ -299,10 +281,7 @@ impl ShareService {
 
     /// 拉工作空间成员（公开投影：仅 id + name）。`role` / `status` / `email`
     /// 在 `PublicMemberData` 里已经被裁掉，与匿名读者无关。
-    fn fetch_public_members(
-        &self,
-        ws_id: Ulid,
-    ) -> Result<Vec<PublicMemberData>, AppError> {
+    fn fetch_public_members(&self, ws_id: Ulid) -> Result<Vec<PublicMemberData>, AppError> {
         let prefix = ws_id.to_bytes();
         let mut out = Vec::new();
         for (k, _) in self.store.scan_prefix(cf::WORKSPACE_MEMBERS, &prefix)? {

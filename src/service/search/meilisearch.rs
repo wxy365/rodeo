@@ -14,7 +14,7 @@
 
 use meilisearch_sdk::client::Client;
 use serde::{Deserialize, Serialize};
-use tantivy::tokenizer::{NgramTokenizer, Tokenizer, TokenStream};
+use tantivy::tokenizer::{NgramTokenizer, TokenStream, Tokenizer};
 use ulid::Ulid;
 
 use crate::config::MeilisearchSearchConfig;
@@ -27,13 +27,7 @@ use super::SearchBackend;
 
 const PRIMARY_KEY: &str = "entry_code";
 const FILTERABLE: &[&str] = &["workspace_id"];
-const SEARCHABLE: &[&str] = &[
-    "title",
-    "content",
-    "labels",
-    "code_text",
-    "comments",
-];
+const SEARCHABLE: &[&str] = &["title", "content", "labels", "code_text", "comments"];
 
 /// Meilisearch 索引里的文档形态。字段名必须与 `SEARCHABLE` / `FILTERABLE` 字面量一致。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,12 +56,13 @@ impl MeilisearchBackend {
             .thread_name("rodeo-meili")
             .build()
             .map_err(|e| AppError::Storage(format!("创建 meili tokio runtime 失败: {e}")))?;
-        let client = Client::new(cfg.url.trim_end_matches('/'), Some(&cfg.api_key)).map_err(|e| {
-            AppError::Storage(format!(
-                "初始化 meilisearch client 失败 (url={}): {e}",
-                cfg.url
-            ))
-        })?;
+        let client =
+            Client::new(cfg.url.trim_end_matches('/'), Some(&cfg.api_key)).map_err(|e| {
+                AppError::Storage(format!(
+                    "初始化 meilisearch client 失败 (url={}): {e}",
+                    cfg.url
+                ))
+            })?;
         Ok(Self {
             rt,
             client,
@@ -81,13 +76,12 @@ impl MeilisearchBackend {
     /// 内部 `block_on` 在 meili 自管的 runtime 上跑。
     pub fn health_check(&self) -> Result<(), AppError> {
         self.rt.block_on(async {
-            self.client
-                .health()
-                .await
-                .map_err(|e| AppError::Storage(format!(
+            self.client.health().await.map_err(|e| {
+                AppError::Storage(format!(
                     "meilisearch 不可达 (url-host={}): {e}",
                     self.index_name
-                )))?;
+                ))
+            })?;
             match self.client.get_index(&self.index_name).await {
                 Ok(idx) => {
                     apply_settings(&idx).await?;
@@ -97,15 +91,15 @@ impl MeilisearchBackend {
                         .client
                         .create_index(&self.index_name, Some(PRIMARY_KEY))
                         .await
-                        .map_err(|e| AppError::Storage(format!(
-                            "创建 meili 索引失败 (index={}): {e}",
-                            self.index_name
-                        )))?;
+                        .map_err(|e| {
+                            AppError::Storage(format!(
+                                "创建 meili 索引失败 (index={}): {e}",
+                                self.index_name
+                            ))
+                        })?;
                     task.wait_for_completion(&self.client, None, None)
                         .await
-                        .map_err(|e| AppError::Storage(format!(
-                            "等待 meili 索引创建失败: {e}"
-                        )))?;
+                        .map_err(|e| AppError::Storage(format!("等待 meili 索引创建失败: {e}")))?;
                     let idx = self.client.index(&self.index_name);
                     apply_settings(&idx).await?;
                 }
@@ -114,12 +108,7 @@ impl MeilisearchBackend {
         })
     }
 
-    fn build_doc(
-        &self,
-        entry: &Entry,
-        labels: &[Labeling],
-        comments: &str,
-    ) -> MeiliDoc {
+    fn build_doc(&self, entry: &Entry, labels: &[Labeling], comments: &str) -> MeiliDoc {
         let label_text = labels
             .iter()
             .map(|l| {
@@ -164,9 +153,7 @@ impl MeilisearchBackend {
     }
 }
 
-async fn apply_settings(
-    idx: &meilisearch_sdk::indexes::Index,
-) -> Result<(), AppError> {
+async fn apply_settings(idx: &meilisearch_sdk::indexes::Index) -> Result<(), AppError> {
     idx.set_filterable_attributes(FILTERABLE)
         .await
         .map_err(|e| AppError::Storage(format!("设置 meili filterable 失败: {e}")))?;
@@ -203,12 +190,7 @@ impl SearchBackend for MeilisearchBackend {
         })
     }
 
-    fn search(
-        &self,
-        ws: Ulid,
-        keyword: &str,
-        limit: usize,
-    ) -> Result<Vec<String>, AppError> {
+    fn search(&self, ws: Ulid, keyword: &str, limit: usize) -> Result<Vec<String>, AppError> {
         let keyword = keyword.trim();
         if keyword.is_empty() {
             return Ok(Vec::new());
@@ -254,10 +236,7 @@ impl SearchBackend for MeilisearchBackend {
         for (_, v) in rows {
             let entry: Entry = bincode::deserialize(&v)?;
             if entry.is_deleted()
-                || store.exists(
-                    crate::storage::cf::ENTRIES_ARCHIVED,
-                    entry.code.as_bytes(),
-                )?
+                || store.exists(crate::storage::cf::ENTRIES_ARCHIVED, entry.code.as_bytes())?
             {
                 continue;
             }

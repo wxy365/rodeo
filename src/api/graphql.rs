@@ -16,10 +16,10 @@ use crate::domain::agent::{AssistantContent, ToolResultContent, UserContent};
 use crate::domain::{
     Account, AccountStatus, ActionTarget, AgentMessage, AgentMessageRecord, Attachment, AuditLog,
     AutomationRule, Comment, Entry, EntryShare, IdentityBinding, Invite, LabelSchema,
-    LabelValueType, LabelWrite, Labeling, LinkKind, Message, NamedPrompt,
-    Query as ViewQuery, Relation, RelationSemantic, SemanticKind, SortField, SortKey, SortSpec,
-    TitleColorRule, ValueColor, ValueSource, View, ViewTimeline, Workspace, WorkspaceAiConfig,
-    WorkspaceMember, WorkspaceRole, WriteOp, ATTACHMENT_URL_PREFIX,
+    LabelValueType, LabelWrite, Labeling, LinkKind, Message, NamedPrompt, Query as ViewQuery,
+    Relation, RelationSemantic, SemanticKind, SortField, SortKey, SortSpec, TitleColorRule,
+    ValueColor, ValueSource, View, ViewTimeline, Workspace, WorkspaceAiConfig, WorkspaceMember,
+    WorkspaceRole, WriteOp, ATTACHMENT_URL_PREFIX,
 };
 use crate::error::AppError;
 use crate::service::agent::runner::run_turn;
@@ -1204,7 +1204,11 @@ impl From<AgentMessageRecord> for GqlAgentMessage {
                         }
                     }
                 }
-                let role = if is_tool { GqlAgentRole::Tool } else { GqlAgentRole::User };
+                let role = if is_tool {
+                    GqlAgentRole::Tool
+                } else {
+                    GqlAgentRole::User
+                };
                 let content = if is_tool { tool_preview } else { text };
                 (role, content, Vec::new(), extracted_call_id)
             }
@@ -2311,18 +2315,27 @@ impl Mutation {
         Ok(true)
     }
 
-    /// 新建条目（Worker+）。返回新条目的 id / code / title。
+    /// 新建条目（Worker+）。`detail` 可选：传非空就走 `create_with_detail` 一次性
+    /// 落标题与正文（与 summarizeEntries 同一路径，省一次乐观并发往返），
+    /// 省略或空串则走 `create`（保持原行为，向后兼容 agent 工具等只传标题的调用方）。
     async fn create_entry(
         &self,
         ctx: &Context<'_>,
         workspace_id: ID,
         title: String,
+        detail: Option<String>,
     ) -> GqlResult<GqlEntry> {
         let gql = ctx.data::<GraphqlContext>()?;
         let auth = gql.require_auth()?;
         let ws_id = parse_ulid(workspace_id.as_str())?;
         gql.require_role(ws_id, WorkspaceRole::Worker)?;
-        let entry = gql.services.entry.create(auth.account_id, ws_id, &title)?;
+        let entry = match detail.filter(|d| !d.is_empty()) {
+            Some(d) => gql
+                .services
+                .entry
+                .create_with_detail(auth.account_id, ws_id, &title, &d)?,
+            None => gql.services.entry.create(auth.account_id, ws_id, &title)?,
+        };
         gql_entry(gql, entry, vec![])
     }
 
@@ -2402,7 +2415,10 @@ impl Mutation {
         let auth = gql.require_auth()?;
         let ws_id = parse_ulid(workspace_id.as_str())?;
         gql.require_member(ws_id)?;
-        let share = gql.services.share.create(&entry_code, ws_id, auth.account_id)?;
+        let share = gql
+            .services
+            .share
+            .create(&entry_code, ws_id, auth.account_id)?;
         Ok(share.into())
     }
 
@@ -2545,8 +2561,14 @@ impl Mutation {
         let auth = gql.require_auth()?;
         let entry = gql.services.entry.get(&code)?.ok_or(AppError::NotFound)?;
         gql.require_role(entry.workspace_id, WorkspaceRole::Worker)?;
-        let name = gql.services.auth.account_name(auth.account_id)?.unwrap_or_default();
-        gql.services.entry.soft_delete(auth.account_id, &name, &code)?;
+        let name = gql
+            .services
+            .auth
+            .account_name(auth.account_id)?
+            .unwrap_or_default();
+        gql.services
+            .entry
+            .soft_delete(auth.account_id, &name, &code)?;
         Ok(true)
     }
 
@@ -2926,11 +2948,10 @@ impl Mutation {
         let ws_id = parse_ulid(workspace_id.as_str())?;
         gql.require_role(ws_id, WorkspaceRole::Maintainer)?;
         // 同步：标签主行 + 一条 LabelSchemaDeleted 审计。
-        let _schema = gql.services.label.delete_schema_meta(
-            auth.account_id,
-            ws_id,
-            &name,
-        )?;
+        let _schema = gql
+            .services
+            .label
+            .delete_schema_meta(auth.account_id, ws_id, &name)?;
         // 异步：bulk 摘除 entry 上的标签引用、视图列清理、受影响 entry 重建索引。
         // GraphqlContext.services 已经是 Arc<Services>，clone 一份进闭包即可。
         let services = gql.services.clone();
@@ -2938,7 +2959,9 @@ impl Mutation {
         let label_name = name;
         let affected_workspace = ws_id;
         tokio::task::spawn_blocking(move || {
-            let affected = match services.label.cascade_delete(affected_workspace, &label_name)
+            let affected = match services
+                .label
+                .cascade_delete(affected_workspace, &label_name)
             {
                 Ok(codes) => codes,
                 Err(e) => {
@@ -3712,9 +3735,7 @@ async fn build_agent_context_md(
                 entry.code, entry.title, snippet
             ));
         }
-        md.push_str(
-            "\n> ⚠ 优先围绕上述已选中条目作答；不要扩展到未选中条目。\n",
-        );
+        md.push_str("\n> ⚠ 优先围绕上述已选中条目作答；不要扩展到未选中条目。\n");
         md.push('\n');
     }
 

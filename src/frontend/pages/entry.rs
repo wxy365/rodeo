@@ -8,14 +8,14 @@ use crate::frontend::comment_list::CommentList;
 use crate::frontend::components::{fmt_datetime, logged_out, AuditTimeline, CodeCopy, TabBar};
 use crate::frontend::graphql_client::{
     audit_logs, build_share_url, create_entry_share, delete_entry, entry, entry_shares,
-    label_schemas, members, revoke_entry_share, update_entry, workspace_by_slug,
-    AccountBrief, AuditLog, Entry, EntryShare, Labeling, LabelSchema, Member, Workspace,
+    label_schemas, members, revoke_entry_share, update_entry, workspace_by_slug, AccountBrief,
+    AuditLog, Entry, EntryShare, LabelSchema, Labeling, Member, Workspace,
 };
-use crate::frontend::share_clipboard::copy_share_url;
 use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::icons::{ic_back, ic_check, ic_close, ic_share, ic_tag};
 use crate::frontend::label_editor::LabelEditor;
 use crate::frontend::relations_panel::RelationsPanel;
+use crate::frontend::share_clipboard::copy_share_url;
 use crate::frontend::tiny_editor::TinyEditor;
 use crate::frontend::use_auth;
 
@@ -97,7 +97,9 @@ pub fn EntryFullScreen() -> impl IntoView {
         if cfg!(target_arch = "wasm32") {
             spawn_local(async move {
                 let result = async {
-                    let ws = workspace_by_slug(&s).await?.ok_or(i18n.t("entry.workspace_missing"))?;
+                    let ws = workspace_by_slug(&s)
+                        .await?
+                        .ok_or(i18n.t("entry.workspace_missing"))?;
                     let e = entry(&c).await?.ok_or(i18n.t("entry.entry_missing"))?;
                     let schema_list = label_schemas(&ws.id).await?;
                     let logs = audit_logs(&ws.id).await?;
@@ -210,10 +212,7 @@ pub fn EntryFullScreen() -> impl IntoView {
     // 详情页 URL 上的 `?view=<id>` 透传给返回地址，让用户回到工作空间时仍是
     // 之前选中的视图，而不是默认视图。
     let nav_back = navigate.clone();
-    let view_on_back: Option<String> = use_query_map()
-        .get()
-        .get("view")
-        .filter(|s| !s.is_empty());
+    let view_on_back: Option<String> = use_query_map().get().get("view").filter(|s| !s.is_empty());
     let go_back: Callback<()> = Callback::new(move |_| {
         let href = match view_on_back.as_deref() {
             Some(id) => format!("/{}?view={}", slug(), id),
@@ -397,11 +396,7 @@ pub fn EntryFullScreen() -> impl IntoView {
 /// 本组件挂载即拉一次 share 列表——避免每次点开都重发请求；同时提供
 /// 「Create」「Revoke」「Copy URL」三件套。
 #[component]
-fn SharePanel(
-    code: String,
-    ws_id: String,
-    on_close: Callback<()>,
-) -> impl IntoView {
+fn SharePanel(code: String, ws_id: String, on_close: Callback<()>) -> impl IntoView {
     let i18n: I18nController = use_i18n();
     let shares = RwSignal::new(Vec::<EntryShare>::new());
     let busy = RwSignal::new(false);

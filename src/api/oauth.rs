@@ -234,7 +234,14 @@ pub async fn wechat_callback(
         .get("return_to")
         .cloned()
         .unwrap_or_else(|| DEFAULT_RETURN_TO.to_string());
-    oauth_callback_common(state, OAuthProvider::WeChat.as_str(), code, state_token, return_to).await
+    oauth_callback_common(
+        state,
+        OAuthProvider::WeChat.as_str(),
+        code,
+        state_token,
+        return_to,
+    )
+    .await
 }
 
 /// Spec 2: Google / GitHub 的 start 公共壳。`provider_name` 是 `"google"` / `"github"`
@@ -282,9 +289,7 @@ async fn start_for_provider(
         .services
         .oauth_registry
         .get(provider_name)
-        .ok_or_else(|| {
-            AppError::OAuthNotConfigured(provider_name.to_string())
-        })?;
+        .ok_or_else(|| AppError::OAuthNotConfigured(provider_name.to_string()))?;
 
     let csrf_token = crate::service::oauth_state::OAuthStateStore::new_token();
     state.services.oauth_state.put_csrf(

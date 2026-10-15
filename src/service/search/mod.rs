@@ -37,12 +37,7 @@ pub trait SearchBackend: Send + Sync {
     fn remove_entry(&self, code: &str) -> Result<(), AppError>;
 
     /// 在工作空间内做关键词检索，返回条目 code 列表（按相关度降序）。
-    fn search(
-        &self,
-        ws: Ulid,
-        keyword: &str,
-        limit: usize,
-    ) -> Result<Vec<String>, AppError>;
+    fn search(&self, ws: Ulid, keyword: &str, limit: usize) -> Result<Vec<String>, AppError>;
 
     /// 启动期回填：扫 `DocStore` 的 `cf::ENTRIES`，把每条（非删除/非归档）写入索引。
     /// 已有文档时跳过（幂等）。

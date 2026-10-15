@@ -1,5 +1,3 @@
-pub mod i18n;
-pub mod i18n_macros;
 pub mod agent_panel;
 pub mod agent_side_effects;
 pub mod ai_prompt_editor;
@@ -10,6 +8,8 @@ pub mod comment_list;
 pub mod components;
 pub mod entry_picker;
 pub mod graphql_client;
+pub mod i18n;
+pub mod i18n_macros;
 pub mod icons;
 pub mod label_editor;
 pub mod language_button;
@@ -21,9 +21,9 @@ pub mod share_clipboard;
 pub mod theme;
 pub mod timeline;
 pub mod tiny_editor;
-pub mod ws;
 pub mod view_filter;
 pub mod wheel;
+pub mod ws;
 
 use leptos::prelude::*;
 

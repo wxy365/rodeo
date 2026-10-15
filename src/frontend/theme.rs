@@ -106,9 +106,13 @@ fn apply_to_dom(mode: ThemeMode) {
 
 #[cfg(target_arch = "wasm32")]
 fn apply_data_theme(value: Option<&str>) {
-    let Some(window) = web_sys::window() else { return };
+    let Some(window) = web_sys::window() else {
+        return;
+    };
     let Some(doc) = window.document() else { return };
-    let Some(html) = doc.document_element() else { return };
+    let Some(html) = doc.document_element() else {
+        return;
+    };
     match value {
         Some(v) => {
             html.set_attribute("data-theme", v).ok();
@@ -126,8 +130,12 @@ fn apply_data_theme(_value: Option<&str>) {
 
 #[cfg(target_arch = "wasm32")]
 fn write_storage(mode: ThemeMode) {
-    let Some(window) = web_sys::window() else { return };
-    let Ok(Some(storage)) = window.local_storage() else { return };
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Ok(Some(storage)) = window.local_storage() else {
+        return;
+    };
     let _ = storage.set_item("rodeo_theme", mode.as_str());
 }
 

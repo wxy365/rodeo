@@ -282,11 +282,7 @@ pub fn entry_share_key(share_id: Ulid) -> [u8; 16] {
 /// → 空值。前缀扫 `(workspace_id, entry_code)` 拿该条目的全部 share。键布局
 /// 与 `comment_key` / `attachment_by_entry_key` 同源，只是前缀加了 workspace_id
 /// 段——分享不会跨工作空间，但 share_id 即 token 让跨工作空间的可能性天然为零。
-pub fn entry_share_by_entry_key(
-    workspace_id: Ulid,
-    entry_code: &str,
-    share_id: Ulid,
-) -> Vec<u8> {
+pub fn entry_share_by_entry_key(workspace_id: Ulid, entry_code: &str, share_id: Ulid) -> Vec<u8> {
     let mut out = Vec::with_capacity(16 + entry_code.len() + 16);
     out.extend_from_slice(&workspace_id.to_bytes());
     out.extend_from_slice(entry_code.as_bytes());

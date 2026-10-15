@@ -139,26 +139,27 @@ pub fn Admin() -> impl IntoView {
     // 写成 `Callback` 是为了让外层的多个 `on:click=move |_| change_status(...)` 各自
     // 拿到一份 clone；普通的 `move |...| { ... }` 闭包不是 Clone，多个内层闭包会争抢
     // 同一个实例，外层闭包被迫退化成 FnOnce。
-    let change_status: Callback<(String, String)> = Callback::new(move |(id, status): (String, String)| {
-        row_busy.set(Some(id.clone()));
-        confirm_id.set(None);
-        spawn_local(async move {
-            match set_account_status(&id, &status).await {
-                Ok(updated) => {
-                    account_list.update(|l| {
-                        if let Some(l) = l.as_mut() {
-                            if let Some(row) = l.iter_mut().find(|a| a.id == updated.id) {
-                                *row = updated;
+    let change_status: Callback<(String, String)> =
+        Callback::new(move |(id, status): (String, String)| {
+            row_busy.set(Some(id.clone()));
+            confirm_id.set(None);
+            spawn_local(async move {
+                match set_account_status(&id, &status).await {
+                    Ok(updated) => {
+                        account_list.update(|l| {
+                            if let Some(l) = l.as_mut() {
+                                if let Some(row) = l.iter_mut().find(|a| a.id == updated.id) {
+                                    *row = updated;
+                                }
                             }
-                        }
-                    });
-                    list_error.set(None);
+                        });
+                        list_error.set(None);
+                    }
+                    Err(e) => list_error.set(Some(e)),
                 }
-                Err(e) => list_error.set(Some(e)),
-            }
-            row_busy.set(None);
+                row_busy.set(None);
+            });
         });
-    });
 
     // 未登录、或本地令牌已被服务端判死，都回登录页。与 entry.rs 用同一条路径：
     // `logged_out()` 在 SSR 阶段恒为 true，所以只在 wasm 上跳转，否则服务端渲染会直接跳走。

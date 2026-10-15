@@ -149,6 +149,13 @@ fn eval_cond(
     let op = cond.get("op").and_then(Value::as_str).unwrap_or("");
     let want = cond.get("value");
 
+    // 标签值历史变更：前端 wasm 拿不到审计数据，统一兜底为 false。
+    // 服务端 evaluate 在 `EvalEnv.changed_during` / `changed_value` 钩子里给出真值；
+    // 这里不参与前端缓存复算——与现有 `Event*` 字段在规则引擎专用同理。
+    if matches!(op, "changed" | "changedValue") {
+        return false;
+    }
+
     if let Some(name) = field.get("label").and_then(Value::as_str) {
         return eval_label(name, false, op, want, labels, schemas, derived);
     }
@@ -257,6 +264,21 @@ fn eval_label(
                             default_layout(&s.value_type),
                         );
                         return cmp_time_layout(v, &layout, op, want);
+                    }
+                    // 字符串标签的范围运算符按 UTF-8 code-point 序（Rust &str 默认序）。
+                    // 与后端 `eval_label` 的 String 分支同构；提前分支以绕开
+                    // `cmp_value` 的 `as_f64` 快路径，避免「10」>「9」的字典序结果被
+                    // 数值语义污染。
+                    if s.value_type == "string" && matches!(op, "gt" | "ge" | "lt" | "le") {
+                        let (Some(a), Some(b)) = (v.as_str(), want.and_then(Value::as_str)) else {
+                            return false;
+                        };
+                        return match op {
+                            "gt" => a > b,
+                            "ge" => a >= b,
+                            "lt" => a < b,
+                            _ => a <= b,
+                        };
                     }
                 }
                 cmp_value(v, op, want)
@@ -403,7 +425,8 @@ fn cmp_value(got: &Value, op: &str, want: Option<&Value>) -> bool {
                 other => scalar_string(other).into_iter().collect(),
             };
             // got 是多值数组：走集合语义（用字符串集合）；got 是单值：elem_strings 退化为 1 元素 vec。
-            let got_set: std::collections::BTreeSet<String> = elem_strings(got).into_iter().collect();
+            let got_set: std::collections::BTreeSet<String> =
+                elem_strings(got).into_iter().collect();
             !want_elems.is_empty() && want_elems.iter().all(|w| got_set.contains(w))
         }
         "setEquals" => {
@@ -411,7 +434,8 @@ fn cmp_value(got: &Value, op: &str, want: Option<&Value>) -> bool {
                 Value::Array(a) => a.iter().filter_map(scalar_string).collect(),
                 other => scalar_string(other).into_iter().collect(),
             };
-            let got_set: std::collections::BTreeSet<String> = elem_strings(got).into_iter().collect();
+            let got_set: std::collections::BTreeSet<String> =
+                elem_strings(got).into_iter().collect();
             got_set == want_set
         }
         "gt" | "ge" | "lt" | "le" => {

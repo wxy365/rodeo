@@ -101,9 +101,7 @@ impl OAuthProviderTrait for GithubProvider {
                 AppError::OAuthWechat("github".to_string(), format!("token request failed: {e}"))
             })?
             .error_for_status()
-            .map_err(|e| {
-                AppError::OAuthWechat("github".to_string(), format!("token status: {e}"))
-            })?
+            .map_err(|e| AppError::OAuthWechat("github".to_string(), format!("token status: {e}")))?
             .json()
             .await
             .map_err(|e| {
@@ -121,9 +119,7 @@ impl OAuthProviderTrait for GithubProvider {
                 AppError::OAuthWechat("github".to_string(), format!("user request failed: {e}"))
             })?
             .error_for_status()
-            .map_err(|e| {
-                AppError::OAuthWechat("github".to_string(), format!("user status: {e}"))
-            })?
+            .map_err(|e| AppError::OAuthWechat("github".to_string(), format!("user status: {e}")))?
             .json()
             .await
             .map_err(|e| {
@@ -163,18 +159,12 @@ impl OAuthProviderTrait for GithubProvider {
                 })?
                 .error_for_status()
                 .map_err(|e| {
-                    AppError::OAuthWechat(
-                        "github".to_string(),
-                        format!("emails status: {e}"),
-                    )
+                    AppError::OAuthWechat("github".to_string(), format!("emails status: {e}"))
                 })?
                 .json()
                 .await
                 .map_err(|e| {
-                    AppError::OAuthWechat(
-                        "github".to_string(),
-                        format!("emails decode: {e}"),
-                    )
+                    AppError::OAuthWechat("github".to_string(), format!("emails decode: {e}"))
                 })?;
             emails
                 .into_iter()

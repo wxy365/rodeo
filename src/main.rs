@@ -15,7 +15,7 @@ async fn main() {
 
     use rodeo::api::{
         agent_stream_handler, build_schema, download_attachment, github_callback, github_start,
-        graphql_handler, google_callback, google_start, wechat_callback, wechat_start, ws_handler,
+        google_callback, google_start, graphql_handler, wechat_callback, wechat_start, ws_handler,
         AppState,
     };
     use rodeo::app::*;
@@ -106,7 +106,10 @@ async fn main() {
         .route("/api/auth/github/callback", get(github_callback))
         .route("/api/health", get(|| async { "ok" }))
         .route("/api/attachments/{id}", get(download_attachment))
-        .route("/api/agent/turns/{turn_id}/stream", get(agent_stream_handler))
+        .route(
+            "/api/agent/turns/{turn_id}/stream",
+            get(agent_stream_handler),
+        )
         // WebSocket 实时推送通道。token 走 query param（axum WebSocketUpgrade 不能
         // 收自定义 header）。鉴权失败在 upgrade 之前返回 401，handler 内部完成。
         .route("/api/ws", get(ws_handler))
@@ -132,34 +135,33 @@ async fn main() {
         .with_state(leptos_options);
 
     // 把两种监听模式包成同型 future 喂给 select。任一异常退出都将被记录。
-    let server: std::pin::Pin<
-        Box<dyn std::future::Future<Output = std::io::Result<()>>>,
-    > = match config.tls() {
-        Some(tls) => {
-            let rustls_config =
-                axum_server::tls_rustls::RustlsConfig::from_pem_file(&tls.cert_path, &tls.key_path)
-                    .await
-                    .unwrap_or_else(|e| {
-                        panic!(
-                            "加载 TLS 证书失败 (cert={}, key={}): {e}",
-                            tls.cert_path, tls.key_path
-                        )
-                    });
-            tracing::info!("listening on https://{addr}（来源 {addr_src}）");
-            Box::pin(async move {
-                axum_server::bind_rustls(addr, rustls_config)
-                    .serve(app.into_make_service())
-                    .await
-            })
-        }
-        None => {
-            tracing::info!("listening on http://{addr}（来源 {addr_src}）");
-            let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-            Box::pin(async move {
-                axum::serve(listener, app.into_make_service()).await
-            })
-        }
-    };
+    let server: std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>>>> =
+        match config.tls() {
+            Some(tls) => {
+                let rustls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
+                    &tls.cert_path,
+                    &tls.key_path,
+                )
+                .await
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "加载 TLS 证书失败 (cert={}, key={}): {e}",
+                        tls.cert_path, tls.key_path
+                    )
+                });
+                tracing::info!("listening on https://{addr}（来源 {addr_src}）");
+                Box::pin(async move {
+                    axum_server::bind_rustls(addr, rustls_config)
+                        .serve(app.into_make_service())
+                        .await
+                })
+            }
+            None => {
+                tracing::info!("listening on http://{addr}（来源 {addr_src}）");
+                let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+                Box::pin(async move { axum::serve(listener, app.into_make_service()).await })
+            }
+        };
 
     // 任一分支先完成即退出：服务端异常 → 记 error 退出；收到退出信号 → 记 warn 退出。
     tokio::select! {
@@ -194,8 +196,8 @@ fn install_ring_crypto_provider() {
 fn init_tracing(logging: &rodeo::config::LoggingConfig) {
     use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-    let env_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| "rodeo=info,tower_http=info".into());
+    let env_filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| "rodeo=info,tower_http=info".into());
 
     let stdout_layer = fmt::layer().with_writer(std::io::stdout);
     let file_appender = tracing_appender::rolling::daily(&logging.dir, &logging.prefix);
@@ -238,9 +240,9 @@ fn cleanup_old_logs(dir: &std::path::Path, prefix: &str, keep_days: u32) {
     if keep_days == 0 {
         return;
     }
-    let Some(cutoff) = std::time::SystemTime::now()
-        .checked_sub(std::time::Duration::from_secs(u64::from(keep_days) * 86_400))
-    else {
+    let Some(cutoff) = std::time::SystemTime::now().checked_sub(std::time::Duration::from_secs(
+        u64::from(keep_days) * 86_400,
+    )) else {
         return;
     };
     let Ok(entries) = std::fs::read_dir(dir) else {

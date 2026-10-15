@@ -1,3 +1,92 @@
+//! 标签表达式语法与求值。
+//!
+//! 本模块是 rodeo 的「标签表达式」核心：定义 AST、词法/语法分析器、求值引擎，
+//! 同一份类型前后端共用（`frontend::query_eval` 复算用于过滤本地缓存）。
+//!
+//! ## 一、语法速查
+//!
+//! 顶层文法（`b_expr` 是布尔表达式，`c_expr` 是单条条件，`f` 是字段，`op` 是运算符）：
+//!
+//! ```text
+//! query     := or_expr
+//! or_expr   := and_expr ( OR and_expr )*
+//! and_expr  := unary    ( AND unary )*
+//! unary     := NOT unary | '!' primary | primary
+//! primary   := '(' query ')' | c_expr
+//! c_expr    := f op scalar
+//!             | f op '(' scalar (',' scalar)* ')'
+//!             | f                                  // 标签 / 事件字段单独出现 = present
+//!             | f 'changed' [FROM str] [TO str]    // 标签值历史变更
+//! op        := '=' | '!=' | '>' | '>=' | '<' | '<=' | '~' | '!~'
+//!             | 'in' | 'not' 'in' | 'has' | 'is' | 'changed'
+//! f         := builtin | '$' event | ident ( '+' )?
+//! builtin   := 'Code' | 'Title' | 'Detail' | 'CreatedBy' | 'CreatedAt'
+//!             | 'UpdatedBy' | 'UpdatedAt' | 'text'
+//! event     := 'label' | 'old' | 'new'
+//! scalar    := '"' chars '"' | "'" chars "'" | number | 'true' | 'false' | ident
+//! ```
+//!
+//! 顶层 `AND`/`OR` 关键字**必须大写**（大小写不敏感时词法器会优先命中 `and`/`or`）；
+//! `not`/`in`/`has`/`is`/`changed`/`text`/`true`/`false` 大小写不敏感。
+//!
+//! ## 二、字段表
+//!
+//! | 字段语法 | 语义 | 适用 Op |
+//! |---|---|---|
+//! | `LabelName` | 当前 entry 上的标签 `LabelName` 是否被直接打标 / 比较值 | 全部（依赖 schema 的 `valueType` / `multi`） |
+//! | `LabelName+` | 同上，但**包含**继承关联（key 继承也命中） | 同上 |
+//! | `Code` / `Title` / `Detail` / `CreatedBy` / `UpdatedBy` | 内置元数据字段 | `=` `!=` `~` `!~` `in` `not in` |
+//! | `CreatedAt` / `UpdatedAt` | 内置时间字段 | `=` `!=` `>` `>=` `<` `<=`（值是 RFC3339 或 `YYYY-MM-DD[ HH:MM[:SS]]` 或 `HH:MM[:SS]`） |
+//! | `text` | 全文检索命中（tantivy） | 仅 `~` |
+//! | `$label` / `$old` / `$new` | 自动化规则触发事件（**仅规则**；视图中恒假） | 同内置元数据 + 时间型标签的对应 Op |
+//!
+//! ## 三、运算符表
+//!
+//! | 语法 | Op | 适用值类型 | 语义 |
+//! |---|---|---|---|
+//! | `=` | `Eq` | 全部非 Null | 数值优先走 `f64` 比较；其余按标量字符串集合等值（数组值任一元素命中即真） |
+//! | `!=` | `Ne` | 同 `=` | `Eq` 取反 |
+//! | `>` `>=` `<` `<=` | `Gt`/`Ge`/`Lt`/`Le` | Integer / Float / Currency / Date / Time / DateTime；String（仅字典序，按 &str 序） | 数值走 `f64`；时间按各自布局解析成 (Y, M, D, h, m, s) 元组比较 |
+//! | `~` | `Contains` | String / Email / Enum / 全文 | 大小写不敏感子串匹配 |
+//! | `!~` | `NotContains` | 同 `~` | `Contains` 取反 |
+//! | `in` | `In` | 同 `~` 适用类型（Enum 候选须在 `enum_values` 内） | 值落在右值数组中 |
+//! | `not in` | `NotIn` | 同 `in` | `In` 取反 |
+//! | `has` | `SetContains` | **多值**标签（Account / Enum） | 标签值集合**包含**右值集合的每个元素 |
+//! | `is` | `SetEquals` | **多值**标签 | 标签值集合**等于**右值集合 |
+//! | `present()` / `absent()` | — | — | **已移除**——单独写 `Label` 即「存在」；前缀 `!Label` 即「不存在」 |
+//! | `Label` | `Present` | 标签 / 事件字段 | 「该标签存在」——继承 / 直接打标任一命中即真（继承按 `+` 后缀决定） |
+//! | `!Label` | `Absent` | 同 `Present` | `Present` 取反 |
+//! | `Label changed` | `ChangedBetween` | 标签 | 区间内至少一次 `LabelingSet` / `LabelingRemoved` 事件 |
+//! | `Label changed from "X" to "Y"` | `NetChangedIn` | 标签 | 闭区间 `[from, to]` 内首末状态对比发生变化；`from` 与 `to` 都必填 |
+//!
+//! ## 四、值字面量
+//!
+//! - **字符串**：`"…"` 或 `'…'`，支持 `\"` / `\'` / `\\` 转义。Enum 值允许省略引号（裸标识符），由 `expr_scalar` 反向序列化时统一加引号。
+//! - **数字**：可选负号 + 十进制 + 小数点；底层 `f64`，整数与浮点共用同一比较路径。
+//! - **布尔**：`true` / `false`（大小写不敏感）。
+//! - **数组**：`in`/`not in`/`has`/`is` 的右值必须是 `(a, b, c)` 形式的元组——数组里元素按 `scalar` 文法解析。
+//! - **`{from, to}` 对象**：`changed` 的右值是 keyword 形式，**不**用括号，由 `parse_change_window` 按 `from "X"` / `to "Y"` 顺序读取；缺省端点视作「无限早 / 无限远」。
+//!
+//! ## 五、典型用法
+//!
+//! ```text
+//! Task = "Open" AND Priority >= 3
+//! (Status = "Doing" OR Status = "Review") AND NOT !Priority
+//! Assignee has ("alice@x.io", "bob@x.io")
+//! Tags is ("frontend", "p0")
+//! text ~ "登录"
+//! CreatedAt >= "2026-09-01" AND CreatedAt < "2026-10-01"
+//! Priority+ >= 3                       // 含继承
+//! Task changed from "Open" to "Done"   // 区间内值发生过净变化
+//! ```
+//!
+//! ## 六、保留关键字
+//!
+//! 词法器把下列 token 视为运算符 / 内置字段 / 字面量，**不可**作为标签名：
+//! `and` `or` `not` `in` `has` `is` `changed` `text` `true` `false`
+//! `Code` `Title` `Detail` `CreatedBy` `CreatedAt` `UpdatedBy` `UpdatedAt`
+//! `$label` `$old` `$new`（以及任何 `$xxx` 形式）
+
 use std::collections::{BTreeSet, HashSet};
 
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
@@ -9,6 +98,11 @@ use crate::domain::{
 };
 use crate::error::AppError;
 
+/// 标签表达式的根节点。
+///
+/// `And` / `Or` 的子节点可为空（`Vec::new()`）：空 `And` 恒真，空 `Or` 恒假，
+/// 与布尔代数的幺元 / 零元语义一致。`Not` 的内部必须是 `Query`，不允许重复否定
+/// ——`parse_unary` 会把连续的 `NOT` 折叠成一层。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Query {
@@ -18,6 +112,14 @@ pub enum Query {
     Cond(Condition),
 }
 
+/// 单条比较条件：`<field> <op> <value>`。
+///
+/// `value` 的 JSON 形状由 `op` 决定：
+/// - 标量运算符（`=`/`!=`/`>`/`<`/…）：`Some(json_scalar)`
+/// - 存在性（`Present`/`Absent`）：`None`
+/// - 列表运算符（`in`/`not in`/`has`/`is`）：`Some(json_array)`
+/// - `ChangedBetween`：`Some({from: Option<rfc3339>, to: Option<rfc3339>})`，两端可空
+/// - `NetChangedIn`：`Some({from: rfc3339, to: rfc3339})`，两端都必填
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Condition {
@@ -26,25 +128,59 @@ pub struct Condition {
     pub value: Option<serde_json::Value>,
 }
 
+/// 表达式左侧的「字段」节点。
+///
+/// 语法映射：
+/// - `LabelName`           → `Field::Label(s)`
+/// - `LabelName+`          → `Field::LabelInherited(s)`（带后缀 `+`，含继承关联）
+/// - `Code` / `Title` / `Detail` / `CreatedBy` / `UpdatedBy` / `CreatedAt` / `UpdatedAt`
+///                         → 对应 builtin 变体
+/// - `text`                → `Field::Text`
+/// - `$label` / `$old` / `$new` → `Field::EventLabel` / `EventOld` / `EventNew`（仅规则）
+///
+/// `validate` 会按 `field` 与 `op` 的组合拒绝非法用法（如 `Text` 不接 `>`、事件字段出现在视图中）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Field {
+    /// 直接打上的标签。语法：`LabelName`。
+    ///
+    /// 适用 Op 取决于 schema：`present` / `absent` 总是合法；
+    /// 比较型 Op 由 `op_allowed(value_type, op, multi)` 决定（数字 / 时间 / String / Email / Enum / Account）。
     Label(String),
+    /// entry 最近一次更新时间。语法：`UpdatedAt`，值是 RFC3339 或 `YYYY-MM-DD[ HH:MM[:SS]]` 或 `HH:MM[:SS]`。
+    ///
+    /// 适用 Op：`=` `!=` `>` `>=` `<` `<=`。
     UpdatedAt,
+    /// entry 创建时间。语法：`CreatedAt`，同 `UpdatedAt`。
     CreatedAt,
+    /// 全文检索命中判定（tantivy 提供）。语法：`text`，**只**接 `~ scalar`。
+    ///
+    /// 与 `String` 标签的 `~` 不同：`text ~` 命中由 `EvalEnv::text_hit` 闭包决定，
+    /// 不是子串匹配。一条表达式里至多一个全文条件（见 `collect_text_keywords`）。
     Text,
-    // 追加在末尾：内置元数据
+    /// entry 的全局唯一编码。语法：`Code`。
     Code,
+    /// entry 的标题。语法：`Title`，适用 `~` / `!~` 子串匹配。
     Title,
+    /// entry 的富文本详情。语法：`Detail`，适用 `~` / `!~`。
     Detail,
+    /// entry 创建者的 account。语法：`CreatedBy`，值与 `(name, email)` 任一大小写不敏感相等即命中。
     CreatedBy,
+    /// entry 最近一次修改者的 account。语法：`UpdatedBy`，同 `CreatedBy`。
     UpdatedBy,
-    // 追加在末尾：事件字段，仅规则触发条件可用
-    EventLabel, // $label
-    EventOld,   // $old
-    EventNew,   // $new
-    // 追加在末尾：标签字段的「含继承」写法（表达式里写作 `L4+`）。
-    // 默认只匹配直接打上的打标，这个变体把继承关联来的也算上。
+    /// 自动化规则触发事件的「被变更标签名」。语法：`$label`，**仅规则**；视图中恒假。
+    EventLabel,
+    /// 自动化规则触发事件的「旧值」。语法：`$old`，**仅规则**。
+    ///
+    /// 时间型标签的 `=`/`!=`/范围比较按被变更标签的 `value_type` + `format` 布局解析；
+    /// Account 类型走 `acc_set_op`；其余按 `cmp_value`。
+    EventOld,
+    /// 自动化规则触发事件的「新值」。语法：`$new`，语义同 `$old`。
+    EventNew,
+    /// 含继承关联的标签。语法：`LabelName+`（后缀 `+`）。
+    ///
+    /// 与 `Label` 的区别是：当 entry 没有直接打该标签时，**继承推导**出的关联（来自
+    /// `InheritanceGraph::derive`）也算命中。`+` 仅对标签有效，内置元数据接 `+` 会被 `parse_condition` 拒绝。
     LabelInherited(String),
 }
 
@@ -112,6 +248,16 @@ pub fn extract_index_hints(query: &Query, schemas: &[LabelSchema]) -> Vec<IndexH
         if schema.value_type == LabelValueType::Account {
             continue;
         }
+        // 字符串标签的范围扫描不走索引：`encode_label_value_for_index` 用 4 字节
+        // 长度前缀 + UTF-8 编码，长度前缀的字节序不等于字符串字典序——
+        // 例如「z」编码为 `[0,0,0,1,'z']` 小于「aa」编码的 `[0,0,0,2,'a','a']`，
+        // 跨长度比较会得出错误候选。等值（Eq / Ne / NotIn）不受影响，因为它们走
+        // 严格等值 scan_prefix，不比编码长度。
+        if schema.value_type == LabelValueType::String
+            && matches!(cond.op, Op::Gt | Op::Ge | Op::Lt | Op::Le)
+        {
+            continue;
+        }
         match cond.op {
             Op::Eq | Op::Ne | Op::Gt | Op::Ge | Op::Lt | Op::Le => {
                 out.push(IndexHint {
@@ -143,26 +289,144 @@ pub fn extract_index_hints(query: &Query, schemas: &[LabelSchema]) -> Vec<IndexH
     out
 }
 
+/// 表达式运算符。语法形式由 `parse_condition` / `parse_unary` 提供。
+///
+/// 适用域：
+/// - `Present` / `Absent`：所有字段（标签 / 事件字段 / 内置元数据）。
+/// - `Eq` / `Ne` / `In` / `NotIn` / `Contains` / `NotContains`：所有非 Null 字段
+///   （具体可用的字段类型由 `op_allowed` / `string_field_op_allowed` 控制）。
+/// - `Gt` / `Ge` / `Lt` / `Le`：数字、货币、时间型标签，以及字符串（按字典序）。
+/// - `SetContains` / `SetEquals`：**多值**标签（Account / Enum）的集合语义，单值不可用。
+/// - `Changed` / `ChangedValue`：仅标签字段，依赖 `EvalEnv::changed_during` /
+///   `changed_value` 闭包；前端 wasm 闭包为 `None`，所以 wasm 端求值恒假。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Op {
+    /// 「存在」判断。语法：字段名单独出现，或 `field` 不带运算符。
+    ///
+    /// 例：`Task` 等价于旧的 `present(Task)`。标签 / 事件字段 / 继承标签均可。
+    /// 标签条件下：`direct`（直接打标）或 `derived`（继承标签 + 后缀 `+`）任一存在即真。
     Present,
+    /// 「不存在」判断。语法：`!Field`（前缀 `!` 是 `Absent` 的语法糖）。
     Absent,
+    /// 等值比较。语法：`=`。
+    ///
+    /// 数字优先走 `f64` 比较；其余按「标量字符串集合等值」——数组值任一元素命中即真。
+    /// 账号类型走 `acc_set_op`：want 与存储值的 (name, email) 任一相等。
     Eq,
+    /// 不等比较。语法：`!=`。`Eq` 取反。
     Ne,
+    /// 「落在集合内」判断。语法：`in (a, b, c)`。
+    ///
+    /// 数组值任一元素命中候选即真；Enum 候选必须在 `schema.enum_values` 内；候选是数字时按 `f64` 比。
     In,
+    /// `In` 取反。语法：`not in (a, b, c)`。
     NotIn,
+    /// 大于。语法：`>`。数值按 `f64`；时间按布局解析后比较；字符串按字典序（&str 序）。
     Gt,
+    /// 大于等于。语法：`>=`。
     Ge,
+    /// 小于。语法：`<`。
     Lt,
+    /// 小于等于。语法：`<=`。
     Le,
+    /// 子串匹配。语法：`~`。
+    ///
+    /// 大小写不敏感；非字符串标量（数字 / 布尔 / null）直接返回 false；
+    /// 数组值按 `elem_strings` 展平后任一元素命中 needle 即真。
     Contains,
+    /// `Contains` 取反。语法：`!~`。注意：非字符串标量也返回 false，**不**是恒真。
     NotContains,
-    // 追加在末尾：多值标签专属集合语义。
-    // 「包含」= 标签值集合包含右值集合的每个元素；「等于」= 两集合相等。
-    // 单值标签不可用，op_allowed 在 vt + multi 双重条件下放行。
+    /// 集合「包含」语义。语法：`has (a, b, c)`，仅**多值**标签。
+    ///
+    /// 标签值集合**包含**右值集合的每个元素（want 是空 → false）。
+    /// 账号类型按 (name, email) 比；Enum 按标量字符串集合比。
     SetContains,
+    /// 集合「等于」语义。语法：`is (a, b, c)`，仅**多值**标签。
+    ///
+    /// 两侧集合相等（包括空 want → 仅当标签值集合也为空时为真）。
     SetEquals,
+    /// 标签值发生任意一次变更（可选时间窗）。语法：`field changed [during (T1, T2)]`。
+    ///
+    /// 仅标签字段；`value` 形状是 `{"during": Option<Interval>}`（无 `during` 时为 `null`）。
+    /// `during` 缺省视作「任意时间」= 整个时间轴的区间 `(-∞, +∞)`。
+    /// 审计数据由 `EvalEnv::changed_during` 注入；闭包为 `None` 时恒假。
+    Changed,
+    /// 标签值发生指定变更（from → to），可选时间窗。语法：
+    /// `field changed from V1 to V2 [during (T1, T2)]`。
+    ///
+    /// 仅标签字段；`value` 形状是 `{"from": Value, "to": Value, "during": Option<Interval>}`。
+    /// from/to 是 JSON 值（string / number / boolean / null），按 JSON 等值匹配。
+    /// 审计事件 `at` 必须落在 `during` 区间内（无 `during` 时任意时间）。
+    /// 审计数据由 `EvalEnv::changed_value` 注入；闭包为 `None` 时恒假。
+    ChangedValue,
+}
+
+/// 标签值历史变更运算符的「时间区间」参数。区间记号：
+/// `(T1, T2)` / `[T1, T2]` / `(T1, T2]` / `[T1, T2)`，
+/// 端点可以是 RFC3339 字符串、`-`（-∞）、或 `+`（+∞）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Interval {
+    /// 区间起点：(端点, 端点开闭)。
+    pub start: (IntervalBound, BoundKind),
+    /// 区间终点：(端点, 端点开闭)。
+    pub end: (IntervalBound, BoundKind),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum IntervalBound {
+    /// 解析后的时刻（来自 `parse_time`）。
+    Time(DateTime<Utc>),
+    /// 负无穷。语法：`-`（仅在 `during (...)` 内的端点位出现）。
+    NegInfinity,
+    /// 正无穷。语法：`+`（仅在 `during (...)` 内的端点位出现）。
+    PosInfinity,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum BoundKind {
+    /// 端点**不在**区间内。语法：`-∞` / `+∞` 端点恒为开（语义上不可达），
+    /// 时间端点写作 `(` 或 `)`。
+    Open,
+    /// 端点**在**区间内。时间端点写作 `[` 或 `]`。
+    Closed,
+}
+
+impl Interval {
+    /// 「任意时间」区间：开区间 `(-∞, +∞)`。无 `during` 子句时使用。
+    pub fn unbounded() -> Self {
+        Self {
+            start: (IntervalBound::NegInfinity, BoundKind::Open),
+            end: (IntervalBound::PosInfinity, BoundKind::Open),
+        }
+    }
+
+    /// 审计事件 `at` 是否落在本区间内。
+    pub fn contains(&self, at: DateTime<Utc>) -> bool {
+        let start_ok = match &self.start.0 {
+            IntervalBound::Time(t) => match self.start.1 {
+                BoundKind::Open => at > *t,
+                BoundKind::Closed => at >= *t,
+            },
+            // -∞ 端点：开闭不影响可达性，闭区间端点也命中所有有效时刻。
+            IntervalBound::NegInfinity => true,
+            IntervalBound::PosInfinity => unreachable!("PosInfinity 不可作为 start"),
+        };
+        if !start_ok {
+            return false;
+        }
+        match &self.end.0 {
+            IntervalBound::Time(t) => match self.end.1 {
+                BoundKind::Open => at < *t,
+                BoundKind::Closed => at <= *t,
+            },
+            IntervalBound::PosInfinity => true,
+            IntervalBound::NegInfinity => unreachable!("NegInfinity 不可作为 end"),
+        }
+    }
 }
 
 impl Query {
@@ -184,6 +448,16 @@ impl Query {
             Query::And(v) | Query::Or(v) => v.iter().any(Query::contains_inherited_label),
             Query::Not(q) => q.contains_inherited_label(),
             Query::Cond(c) => matches!(c.field, Field::LabelInherited(_)),
+        }
+    }
+
+    /// 表达式里是否出现 `Label changed [from V1 to V2] [during (T1, T2)]` 这类历史变更条件。
+    /// `EntryService::query` 据此决定是否扫审计——没有就不付出「全 workspace 审计前缀扫描」的代价。
+    pub fn contains_label_change(&self) -> bool {
+        match self {
+            Query::And(v) | Query::Or(v) => v.iter().any(Query::contains_label_change),
+            Query::Not(q) => q.contains_label_change(),
+            Query::Cond(c) => matches!(c.op, Op::Changed | Op::ChangedValue),
         }
     }
 
@@ -232,7 +506,8 @@ impl Query {
             Query::And(v) | Query::Or(v) => v.iter().any(Query::contains_account_field),
             Query::Not(q) => q.contains_account_field(),
             Query::Cond(c) => {
-                matches!(c.field, Field::CreatedBy | Field::UpdatedBy) || c.field.label_of().is_some()
+                matches!(c.field, Field::CreatedBy | Field::UpdatedBy)
+                    || c.field.label_of().is_some()
             }
         }
     }
@@ -331,6 +606,59 @@ pub struct EvalEnv<'a> {
     /// 继承推导出的标签（`InheritanceGraph::derive` 的结果），只被 `L4+` 这类条件使用。
     /// 传给普通条件也无妨——它们压根不看这一项。
     pub derived: &'a [DerivedLabel],
+    /// 标签值在区间内是否至少发生过一次变更（含端点按区间记号决定）。
+    /// `None` 表示后端未提供审计（如前端 wasm、规则引擎事件评估）——条件直接为假。
+    /// 闭包形参 = (entry_code, label_name, &Interval)。
+    pub changed_during: Option<&'a dyn Fn(&str, &str, &Interval) -> bool>,
+    /// 标签值发生过指定变更（from → to），且事件 `at` 落在 `during` 区间内。
+    /// `from` / `to` 任一为 `None` 时该侧按通配处理（任意值匹配）——覆盖
+    /// `changed from V` / `changed to V` 两种半边形式。
+    /// `None` 表示后端未提供审计。闭包形参 = (entry_code, label_name, from?, to?, &Interval)。
+    pub changed_value: Option<
+        &'a dyn Fn(
+            &str,
+            &str,
+            Option<&serde_json::Value>,
+            Option<&serde_json::Value>,
+            &Interval,
+        ) -> bool,
+    >,
+}
+
+/// 校验 Op::ChangedValue 的 from/to 值类型是否与标签 schema 一致。
+/// 与「`In` / `NotIn` 候选值落在 enum_values 内」同思路：值类型不匹配直接报错。
+fn validate_change_value_type(
+    name: &str,
+    vt: LabelValueType,
+    role: &str, // "from" 或 "to"
+    v: &serde_json::Value,
+) -> Result<(), AppError> {
+    let ok = match vt {
+        LabelValueType::String | LabelValueType::Email => v.is_string(),
+        LabelValueType::Enum => v.is_string(),
+        LabelValueType::Integer => v.is_i64() || v.is_u64(),
+        LabelValueType::Float | LabelValueType::Currency => v.is_number(),
+        LabelValueType::Boolean => v.is_boolean(),
+        LabelValueType::Date | LabelValueType::Time | LabelValueType::DateTime => {
+            v.is_string()
+                && v.as_str().is_some_and(|s| parse_time(s).is_some())
+        }
+        LabelValueType::Null | LabelValueType::Account => {
+            // Account 标签的值是 ULID 字符串，类型简单按字符串走；
+            // Null 标签的值本来就是 null。
+            if vt == LabelValueType::Null {
+                v.is_null()
+            } else {
+                v.is_string()
+            }
+        }
+    };
+    if !ok {
+        return Err(AppError::InvalidQuery(format!(
+            "标签 {name} 的 changed value {role} 类型与 schema 不匹配（{vt:?}）"
+        )));
+    }
+    Ok(())
 }
 
 impl Condition {
@@ -342,6 +670,14 @@ impl Condition {
             Field::EventLabel | Field::EventOld | Field::EventNew
         ) {
             return Ok(());
+        }
+        // 标签值历史变更只对 Label / LabelInherited 有意义——其他字段直接拒。
+        // 这一关放在字段 match 之前，避免内层每个分支都要复述。
+        if matches!(self.op, Op::Changed | Op::ChangedValue) && self.field.label_of().is_none() {
+            return Err(AppError::InvalidQuery(format!(
+                "运算符 {} 只能用于标签字段",
+                op_label(self.op)
+            )));
         }
         match &self.field {
             // 文法 text := 'text' '~' scalar 只允许 Contains。
@@ -391,6 +727,47 @@ impl Condition {
                     .iter()
                     .find(|s| &s.name == name)
                     .ok_or_else(|| AppError::InvalidQuery(format!("标签不存在: {name}")))?;
+                // 标签值历史变更：value 形状因 op 而异。
+                //  - Op::Changed      ：`{"during": Option<Interval>}`（during 可缺省）。
+                //  - Op::ChangedValue ：`{"from": Value, "to": Value, "during": Option<Interval>}`，
+                //                        from/to 都必填且类型须与标签 schema 兼容。
+                // 继承/覆盖是显示层概念，审计只看直接打标——`LabelInherited("X") changed` 仍合法。
+                if matches!(self.op, Op::Changed | Op::ChangedValue) {
+                    let obj = self
+                        .value
+                        .as_ref()
+                        .and_then(|v| v.as_object())
+                        .ok_or_else(|| {
+                            AppError::InvalidQuery(format!(
+                                "标签 {name} 的 changed 值必须是对象"
+                            ))
+                        })?;
+                    if self.op == Op::ChangedValue {
+                        // from / to 各自独立可缺省（`changed from V` / `changed to V`），
+                        // 缺省侧在 eval 时按通配处理。但显式写 `from null` / `to null` 也按通配。
+                        if let Some(from) = obj.get("from") {
+                            if !from.is_null() {
+                                validate_change_value_type(name, schema.value_type, "from", from)?;
+                            }
+                        }
+                        if let Some(to) = obj.get("to") {
+                            if !to.is_null() {
+                                validate_change_value_type(name, schema.value_type, "to", to)?;
+                            }
+                        }
+                    }
+                    if let Some(during) = obj.get("during") {
+                        if !during.is_null() {
+                            // Interval 的 serde 反序列化失败意味着结构损坏——直接拒。
+                            serde_json::from_value::<Interval>(during.clone()).map_err(|e| {
+                                AppError::InvalidQuery(format!(
+                                    "标签 {name} 的 during 区间格式无效: {e}"
+                                ))
+                            })?;
+                        }
+                    }
+                    return Ok(());
+                }
                 if !op_allowed(schema.value_type, self.op, schema.multi) {
                     return Err(AppError::InvalidQuery(format!(
                         "运算符 {} 不适用于标签 {name}（{}）",
@@ -450,6 +827,19 @@ impl Condition {
                             return Err(AppError::InvalidQuery("比较值须为字符串".to_string()));
                         }
                     }
+                    LabelValueType::String => {
+                        // 范围运算符必须按字典序解释，want 是数字会被当作字符串读出来，
+                        // 给出含混结果（例如 7 想跟 "10" 比哪边大）。提前报错更友好。
+                        // Eq/Ne/Contains/NotContains/In/NotIn 不在此约束下：
+                        // `cmp_value` 的 `as_f64` 快路径与 `elem_strings` 已能处理非字符串。
+                        if matches!(self.op, Op::Gt | Op::Ge | Op::Lt | Op::Le)
+                            && self.value.as_ref().is_some_and(|v| !v.is_string())
+                        {
+                            return Err(AppError::InvalidQuery(format!(
+                                "字符串标签 {name} 的范围运算符比较值必须是字符串"
+                            )));
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -462,7 +852,7 @@ impl Condition {
     fn evaluate(&self, entry: &Entry, labels: &[Labeling], env: &EvalEnv) -> bool {
         // 标签条件（含 `L4+`）在 match 之前处理，免得两个字段变体里抄一遍同样的逻辑。
         if let Some((name, inherited)) = self.field.label_of() {
-            return self.eval_label(name, inherited, labels, env);
+            return self.eval_label(name, inherited, entry, labels, env);
         }
         match &self.field {
             Field::Text => self
@@ -550,7 +940,55 @@ impl Condition {
     ///
     /// 值比较只在「本条件能拿到一个值」时才成立：`L4+` 遇到一个只继承了 key 的
     /// L4（值为 `None`）会返回假——key 继承本就只承诺存在性。
-    fn eval_label(&self, name: &str, inherited: bool, labels: &[Labeling], env: &EvalEnv) -> bool {
+    fn eval_label(
+        &self,
+        name: &str,
+        inherited: bool,
+        entry: &Entry,
+        labels: &[Labeling],
+        env: &EvalEnv,
+    ) -> bool {
+        // 标签值历史变更：不读当前打标，直接走 EvalEnv 注入的审计钩子。
+        // 没钩子（如前端 wasm、规则引擎事件评估）一律视为「没有审计数据」= 假。
+        match self.op {
+            Op::Changed => {
+                let Some(f) = env.changed_during else {
+                    return false;
+                };
+                let value = self.value.as_ref().unwrap_or(&serde_json::Value::Null);
+                let interval = interval_from_value(value).unwrap_or_else(Interval::unbounded);
+                return f(&entry.code, name, &interval);
+            }
+            Op::ChangedValue => {
+                let Some(f) = env.changed_value else {
+                    return false;
+                };
+                let value = match self.value.as_ref().and_then(|v| v.as_object()) {
+                    Some(obj) => obj,
+                    // validate 已强制为对象；理论上不可达，保守起见视为假。
+                    None => return false,
+                };
+                // from / to 各自可缺省：缺省侧在闭包里按通配处理（不比较 from/to）。
+                let from = value.get("from").and_then(|v| {
+                    if v.is_null() {
+                        None
+                    } else {
+                        Some(v)
+                    }
+                });
+                let to = value.get("to").and_then(|v| {
+                    if v.is_null() {
+                        None
+                    } else {
+                        Some(v)
+                    }
+                });
+                let interval = interval_from_value(&serde_json::Value::Object(value.clone()))
+                    .unwrap_or_else(Interval::unbounded);
+                return f(&entry.code, name, from, to, &interval);
+            }
+            _ => {}
+        }
         let direct = labels.iter().find(|l| &l.label_name == name);
         // 外层 `Option` = 有没有继承来，内层 = 继承来的那一份带没带值。两者不能混：
         // key 继承（`L5` 继承 `L3`，无关值）只承诺存在性，值仍是 `None`。
@@ -586,13 +1024,18 @@ impl Condition {
                             self.value.as_ref(),
                         );
                     }
-                    // 账号类型多值的 `has` / `is` 走 `acc_set_op`：存储的是 id 列表，
-                    // want 是名字或邮箱；裸 id 字符串比较会拿不到「邮箱命中」那种语义，
-                    // 所以要靠 `env.account_of` 把每个 id 翻成 (name, email) 再比。
+                    // 账号类型的所有值比较都走 `acc_set_op`：存储是 id（ULID），
+                    // want 是名字或邮箱；裸 id 字符串比较拿不到「邮箱命中」语义，
+                    // 一定要先靠 `env.account_of` 把每个 id 翻成 (name, email) 再比。
+                    // 单值（`Account`）与多值（`AccountList`）的 Eq/Ne/In/NotIn 也走同一条
+                    // 路径——`Eq` 在单值上退化为单元素集合的等值比较，语义与 SetEquals 一致。
                     // EnumList 的 `has` / `is` 两侧都是字符串数组，下面的通用 cmp_value
                     // 路径直接命中，不需要单独一条分支。
                     if vt == LabelValueType::Account
-                        && matches!(self.op, Op::SetContains | Op::SetEquals)
+                        && matches!(
+                            self.op,
+                            Op::Eq | Op::Ne | Op::In | Op::NotIn | Op::SetContains | Op::SetEquals
+                        )
                     {
                         return acc_set_op(
                             &value.account_ids(),
@@ -600,6 +1043,28 @@ impl Condition {
                             self.value.as_ref(),
                             env.account_of,
                         );
+                    }
+                    // 字符串标签的范围运算符按 UTF-8 code-point 序比较（Rust `&str`
+                    // 默认序，即字典序）。绕开下面 `cmp_value` 的 `as_f64` 快路径——
+                    // 数值字面量会污染字典序判断，例如「10」 > 「9」 按数值是真，按字典序
+                    // 是「10」 < 「9」（'1'(0x31) < '9'(0x39)）。want 是字符串、
+                    // 存储值也是字符串（schema 守门），两侧都直接走 `&str` 序。
+                    if vt == LabelValueType::String
+                        && matches!(self.op, Op::Gt | Op::Ge | Op::Lt | Op::Le)
+                    {
+                        let Some(b) = self.value.as_ref().and_then(|v| v.as_str()) else {
+                            return false;
+                        };
+                        let got_json = value.to_json();
+                        let Some(a) = got_json.as_str() else {
+                            return false;
+                        };
+                        return match self.op {
+                            Op::Gt => a > b,
+                            Op::Ge => a >= b,
+                            Op::Lt => a < b,
+                            _ => a <= b,
+                        };
                     }
                 }
                 cmp_value(&value.to_json(), self.op, self.value.as_ref())
@@ -638,6 +1103,9 @@ fn acc_in(name: &str, email: &str, want: Option<&serde_json::Value>) -> bool {
 ///
 ///  - `SetContains`（`has`）：want 的每一个元素都至少匹配到 stored 集合里的一个 (name, email)。
 ///  - `SetEquals`（`is`）：stored 与 want 一一对应（按 name/email 任一相等）。
+///  - `Eq` / `Ne`（`=` / `!=`）：单值上与 name/email 任一相等；多值上等价 SetEquals 集合相等，
+///    但保留 `Eq`/`Ne` 形态以兼容「Assignee = 王晓雁」这类最常见的单值写法。
+///  - `In` / `NotIn`（`in` / `not in`）：任一 stored (name|email) 落在 want 数组内。
 ///
 /// want 接受标量或数组；空 want 一律返回 false（与 `SetEquals` 的"集合相等"语义一致——
 /// 空 want 不应误命中空 stored）。
@@ -662,25 +1130,38 @@ fn acc_set_op(
     if wants.is_empty() {
         return false;
     }
-    match op {
-        Op::SetContains => wants
-            .iter()
-            .all(|w| stored.iter().any(|(n, e)| n.eq_ignore_ascii_case(w) || e.eq_ignore_ascii_case(w))),
-        Op::SetEquals => {
-            // 两边都按 (name|email) 集合比：每个 stored 至少有一个 want 命中，反之亦然。
-            // 同一个 stored 在两边集合里只能"占一个位"——`matched` 用来避免重复配对。
-            let mut used = vec![false; stored.len()];
-            for w in &wants {
-                let Some((idx, _)) = stored.iter().enumerate().find(|(i, (n, e))| {
-                    !used[*i] && (n.eq_ignore_ascii_case(w) || e.eq_ignore_ascii_case(w))
-                }) else {
-                    return false;
-                };
-                used[idx] = true;
-            }
-            // 还要保证每个 stored 都被 want 命中（防止 [A,B] is [A] 这种半边相等漏过）。
-            used.iter().all(|&u| u)
+    // 两侧按 (name|email) 集合做双向命中：每个 want 都能找到一个未占用的 stored，
+    // 反过来每个 stored 也都被某个 want 命中——单值时两侧各 1 元素，退化为等值比较。
+    let mut used = vec![false; stored.len()];
+    let all_paired = |used: &mut [bool]| -> bool {
+        for w in &wants {
+            let Some((idx, _)) = stored.iter().enumerate().find(|(i, (n, e))| {
+                !used[*i] && (n.eq_ignore_ascii_case(w) || e.eq_ignore_ascii_case(w))
+            }) else {
+                return false;
+            };
+            used[idx] = true;
         }
+        used.iter().all(|&u| u)
+    };
+    match op {
+        Op::SetContains => wants.iter().all(|w| {
+            stored
+                .iter()
+                .any(|(n, e)| n.eq_ignore_ascii_case(w) || e.eq_ignore_ascii_case(w))
+        }),
+        Op::SetEquals | Op::Eq => all_paired(&mut used),
+        Op::Ne => !all_paired(&mut used),
+        Op::In => stored.iter().any(|(n, e)| {
+            wants
+                .iter()
+                .any(|w| n.eq_ignore_ascii_case(w) || e.eq_ignore_ascii_case(w))
+        }),
+        Op::NotIn => !stored.iter().any(|(n, e)| {
+            wants
+                .iter()
+                .any(|w| n.eq_ignore_ascii_case(w) || e.eq_ignore_ascii_case(w))
+        }),
         _ => false,
     }
 }
@@ -732,6 +1213,7 @@ fn op_label(op: Op) -> &'static str {
         Op::NotContains => "!~",
         Op::SetContains => "has",
         Op::SetEquals => "is",
+        Op::Changed | Op::ChangedValue => "changed",
     }
 }
 
@@ -790,6 +1272,11 @@ fn collect_text_keywords(q: &Query, out: &mut HashSet<String>) {
 /// 单值与多值都允许 `Eq/Ne/In/NotIn`；只有多值 Account/Enum 才允许 `SetContains/SetEquals`。
 fn op_allowed(vt: LabelValueType, op: Op, multi: bool) -> bool {
     use LabelValueType::*;
+    // 标签值历史变更不依赖值的语义（只关心有没有变更事件），
+    // 任何值类型都放行；字段层会进一步拒绝 Label/Event 之外的字段。
+    if matches!(op, Op::Changed | Op::ChangedValue) {
+        return true;
+    }
     let existence = matches!(op, Op::Present | Op::Absent);
     let cmp = match vt {
         Null => false,
@@ -800,8 +1287,25 @@ fn op_allowed(vt: LabelValueType, op: Op, multi: bool) -> bool {
         Date | Time | DateTime => {
             matches!(op, Op::Eq | Op::Ne | Op::Gt | Op::Ge | Op::Lt | Op::Le)
         }
-        // 字符串 / 邮箱：精确 + 子串 + 列表匹配。
-        String | Email => matches!(
+        // 字符串：精确 + 子串 + 列表匹配 + 按字典序的范围比较。
+        // 范围比较在 `eval_label` 里走特殊分支，绕开 `cmp_value` 的 `as_f64` 快路径
+        // （数值字面量会污染字典序判断，比如「10」 > 「9」按数值是对的但字典序是反的）。
+        String => matches!(
+            op,
+            Op::Eq
+                | Op::Ne
+                | Op::Contains
+                | Op::NotContains
+                | Op::In
+                | Op::NotIn
+                | Op::Gt
+                | Op::Ge
+                | Op::Lt
+                | Op::Le
+        ),
+        // 邮箱：精确 + 子串 + 列表匹配。范围比较留白——
+        // 邮箱是语义标识符，字典序没有用户预期意义。
+        Email => matches!(
             op,
             Op::Eq | Op::Ne | Op::Contains | Op::NotContains | Op::In | Op::NotIn
         ),
@@ -940,7 +1444,57 @@ fn cmp_value(got: &serde_json::Value, op: Op, want: Option<&serde_json::Value>) 
             got_set == want_set
         }
         Op::Present | Op::Absent => false,
+        // 标签值历史变更在 `eval_label` 走专用分支，不进 cmp_value。
+        Op::Changed | Op::ChangedValue => false,
     }
+}
+
+/// 从 `Condition.value` 里的 `{"during": ...}` 字段反序列化出 `Interval`。
+/// 缺省 / Null → 返回 `None`（调用方按「任意时间」处理）。
+/// 解析失败 → 返回 `None`（容错；validate 已挡住非法输入，理论上不可达）。
+fn interval_from_value(v: &serde_json::Value) -> Option<Interval> {
+    let obj = v.as_object()?;
+    let during = obj.get("during")?;
+    if during.is_null() {
+        return None;
+    }
+    serde_json::from_value::<Interval>(during.clone()).ok()
+}
+
+/// `Interval` → JSON 写入 `Condition.value` 的 `"during"` 字段。
+/// 失败时退化为 Null（理论上 chrono + serde 不会失败）。
+fn interval_to_json(i: Interval) -> serde_json::Value {
+    serde_json::to_value(i).unwrap_or(serde_json::Value::Null)
+}
+
+/// `Interval` → 表达式字串，如 `(-, "2026-09-01"]` / `["2026-01-01", +)`。
+/// 仅供 `Condition::to_expr` 渲染用；`Unbounded`（全开）走全开字串。
+fn interval_to_expr(i: &Interval) -> String {
+    if matches!(i.start.0, IntervalBound::NegInfinity)
+        && matches!(i.end.0, IntervalBound::PosInfinity)
+    {
+        return "(-, +)".to_string();
+    }
+    let open = |k: BoundKind| match k {
+        BoundKind::Open => '(',
+        BoundKind::Closed => '[',
+    };
+    let close = |k: BoundKind| match k {
+        BoundKind::Open => ')',
+        BoundKind::Closed => ']',
+    };
+    let bound = |b: &IntervalBound| match b {
+        IntervalBound::Time(t) => quote(&t.to_rfc3339()),
+        IntervalBound::NegInfinity => "-".to_string(),
+        IntervalBound::PosInfinity => "+".to_string(),
+    };
+    format!(
+        "{}{}, {}{}",
+        open(i.start.1),
+        bound(&i.start.0),
+        bound(&i.end.0),
+        close(i.end.1),
+    )
 }
 
 /// 依次尝试 RFC3339、日期+时间、日期、纯时间；全部失败返回 None。
@@ -1001,6 +1555,8 @@ fn cmp_time(got: &DateTime<Utc>, op: Op, want: Option<&serde_json::Value>) -> bo
 enum Tok {
     LParen,
     RParen,
+    LBracket,
+    RBracket,
     Comma,
     Eq,
     Ne,
@@ -1022,6 +1578,7 @@ enum Tok {
     Str(String),
     Num(f64),
     Bool(bool),
+    Null,
     EventField(Field),
 }
 
@@ -1042,6 +1599,14 @@ fn lex(input: &str) -> Result<Vec<Tok>, AppError> {
             }
             ')' => {
                 out.push(Tok::RParen);
+                i += 1;
+            }
+            '[' => {
+                out.push(Tok::LBracket);
+                i += 1;
+            }
+            ']' => {
+                out.push(Tok::RBracket);
                 i += 1;
             }
             ',' => {
@@ -1171,6 +1736,8 @@ fn lex(input: &str) -> Result<Vec<Tok>, AppError> {
                         "updatedat" => out.push(Tok::Builtin(Field::UpdatedAt)),
                         "true" => out.push(Tok::Bool(true)),
                         "false" => out.push(Tok::Bool(false)),
+                        // 标签值历史变更的 `from null to "open"` / `from "open" to null` 走 JSON null。
+                        "null" => out.push(Tok::Null),
                         _ => out.push(Tok::Ident(word)),
                     }
                 } else {
@@ -1210,6 +1777,9 @@ fn tok_label(t: Option<&Tok>) -> String {
         Some(Tok::Str(s)) => s.clone(),
         Some(Tok::Num(n)) => n.to_string(),
         Some(Tok::Bool(b)) => b.to_string(),
+        Some(Tok::LBracket) => "[".to_string(),
+        Some(Tok::RBracket) => "]".to_string(),
+        Some(Tok::Null) => "null".to_string(),
     }
 }
 
@@ -1345,11 +1915,11 @@ impl Parser {
             Some(Tok::Ident(s)) => match s.to_ascii_lowercase().as_str() {
                 "has" => Op::SetContains,
                 "is" => Op::SetEquals,
-                _ => {
-                    return Err(AppError::InvalidQuery(format!(
-                        "期望运算符，实际 {s}"
-                    )))
-                }
+                // 标签值历史变更的入口关键字。`from V1 to V2 [during (...)]` 由
+                // `parse_condition` 在 op 是 Op::Changed 时延后处理；缺省 `from` 时
+                // 直接落成 Changed（任意变更），提供 `from/to` 时升级为 ChangedValue。
+                "changed" => Op::Changed,
+                _ => return Err(AppError::InvalidQuery(format!("期望运算符，实际 {s}"))),
             },
             other => {
                 return Err(AppError::InvalidQuery(format!(
@@ -1368,6 +1938,7 @@ impl Parser {
                 .map(serde_json::Value::Number)
                 .unwrap_or(serde_json::Value::Null)),
             Some(Tok::Bool(b)) => Ok(serde_json::Value::Bool(b)),
+            Some(Tok::Null) => Ok(serde_json::Value::Null),
             Some(Tok::Ident(s)) => Ok(serde_json::Value::String(s)),
             other => Err(AppError::InvalidQuery(format!(
                 "期望值，实际 {}",
@@ -1465,7 +2036,47 @@ impl Parser {
             }
         }
         let op = self.comparison_op()?;
-        let value = if self.peek() == Some(&Tok::LParen) {
+        let (op, value) = if op == Op::Changed {
+            // `changed [[from V1] to V2] [during (T1, T2)]`：from / to 各自独立可缺省。
+            // - 全缺省 → `Op::Changed`（任意变更）
+            // - 仅 to / 仅 from / 都有 → `Op::ChangedValue`，缺失侧在 eval 时按通配处理
+            // `from V1 to V2` 的两段强顺序不变；`to V2` 不需要先写 `from`。
+            let mut from: Option<serde_json::Value> = None;
+            let mut to: Option<serde_json::Value> = None;
+            let mut during: Option<Interval> = None;
+            let mut final_op = Op::Changed;
+            if self.peek_keyword("from") {
+                self.next();
+                from = Some(self.scalar()?);
+                // `from V1 to V2` 紧跟 to 是允许的；不写 to 视为「from V1 → 任意」。
+                if self.peek_keyword("to") {
+                    self.next();
+                    to = Some(self.scalar()?);
+                }
+                final_op = Op::ChangedValue;
+            } else if self.peek_keyword("to") {
+                // 仅 `to V2`：「任意 → V2」，不要求 from。
+                self.next();
+                to = Some(self.scalar()?);
+                final_op = Op::ChangedValue;
+            }
+            if self.peek_keyword("during") {
+                self.next();
+                during = Some(self.parse_interval()?);
+            }
+            let value = match final_op {
+                Op::ChangedValue => serde_json::json!({
+                    "from": from,
+                    "to": to,
+                    "during": during.map(interval_to_json).unwrap_or(serde_json::Value::Null),
+                }),
+                Op::Changed => serde_json::json!({
+                    "during": during.map(interval_to_json).unwrap_or(serde_json::Value::Null),
+                }),
+                _ => unreachable!(),
+            };
+            (final_op, value)
+        } else if self.peek() == Some(&Tok::LParen) {
             self.next();
             let mut items = vec![self.scalar()?];
             while self.peek() == Some(&Tok::Comma) {
@@ -1473,15 +2084,95 @@ impl Parser {
                 items.push(self.scalar()?);
             }
             self.eat(&Tok::RParen)?;
-            serde_json::Value::Array(items)
+            (op, serde_json::Value::Array(items))
         } else {
-            self.scalar()?
+            (op, self.scalar()?)
         };
         Ok(Query::Cond(Condition {
             field,
             op,
             value: Some(value),
         }))
+    }
+
+    /// 读取 `[from "X"] [to "Y"]` 的 keyword 形式（仅 Op::ChangedValue 路径需要）。
+    fn eat_keyword(&mut self, kw: &str) -> Result<(), AppError> {
+        let peeked = self.peek();
+        match peeked {
+            Some(Tok::Ident(s)) if s.eq_ignore_ascii_case(kw) => {
+                self.next();
+                Ok(())
+            }
+            _ => Err(AppError::InvalidQuery(format!(
+                "期望 {kw}，实际 {}",
+                tok_label(peeked)
+            ))),
+        }
+    }
+
+    /// 不消费：仅判断下一个 token 是不是该 keyword（大小写不敏感）。
+    fn peek_keyword(&self, kw: &str) -> bool {
+        matches!(self.peek(), Some(Tok::Ident(s)) if s.eq_ignore_ascii_case(kw))
+    }
+
+    /// 读取 `during (...)` 的区间参数：`(T1, T2)` / `[T1, T2]` / `(T1, T2]` / `[T1, T2)`。
+    /// 端点可以是 RFC3339 字符串、`-`（-∞）、`+`（+∞，与 `L4+` 后缀不冲突——
+    /// 此处已经在 `during` 关键字后，语法上下文已锁定）。
+    fn parse_interval(&mut self) -> Result<Interval, AppError> {
+        let start_kind = match self.next() {
+            Some(Tok::LParen) => BoundKind::Open,
+            Some(Tok::LBracket) => BoundKind::Closed,
+            other => {
+                return Err(AppError::InvalidQuery(format!(
+                    "期望区间起点 ( 或 [，实际 {}",
+                    tok_label(other.as_ref())
+                )))
+            }
+        };
+        let start_bound = self.parse_interval_bound()?;
+        self.eat(&Tok::Comma)?;
+        let end_bound = self.parse_interval_bound()?;
+        let end_kind = match self.next() {
+            Some(Tok::RParen) => BoundKind::Open,
+            Some(Tok::RBracket) => BoundKind::Closed,
+            other => {
+                return Err(AppError::InvalidQuery(format!(
+                    "期望区间终点 ) 或 ]，实际 {}",
+                    tok_label(other.as_ref())
+                )))
+            }
+        };
+        Ok(Interval {
+            start: (start_bound, start_kind),
+            end: (end_bound, end_kind),
+        })
+    }
+
+    fn parse_interval_bound(&mut self) -> Result<IntervalBound, AppError> {
+        match self.peek() {
+            Some(Tok::Ident(s)) if s == "-" => {
+                self.next();
+                Ok(IntervalBound::NegInfinity)
+            }
+            Some(Tok::Plus) => {
+                // 在 `during ( ... )` 内部 `+` 唯一含义就是正无穷；
+                // 字段名后的 `+`（继承后缀）在 `parse_condition` 字段位就处理掉了。
+                self.next();
+                Ok(IntervalBound::PosInfinity)
+            }
+            _ => {
+                let v = self.scalar()?;
+                let s = v.as_str().ok_or_else(|| {
+                    AppError::InvalidQuery(format!(
+                        "区间端点必须是字符串、- 或 +，实际 {v}"
+                    ))
+                })?;
+                let t = parse_time(s).ok_or_else(|| {
+                    AppError::InvalidQuery(format!("区间端点时间格式无效: {s}"))
+                })?;
+                Ok(IntervalBound::Time(t))
+            }
+        }
     }
 }
 
@@ -1504,6 +2195,8 @@ fn expr_op(op: Op) -> &'static str {
         // 多值集合语义在表达式里以 `has` / `is` 写出来（与 `comparison_op` 反向一致）。
         Op::SetContains => "has",
         Op::SetEquals => "is",
+        // 序列化时按 value 形状区分 from/to 与 during 段：实现放在 Condition::to_expr。
+        Op::Changed | Op::ChangedValue => "changed",
         Op::Present | Op::Absent => "",
     }
 }
@@ -1579,6 +2272,33 @@ impl Condition {
         match self.op {
             Op::Present => field,
             Op::Absent => format!("!{field}"),
+            Op::Changed | Op::ChangedValue => {
+                // 序列化时按 value 形状还原：from/to/during 三段都是可选。
+                // Op::ChangedValue 必有 from/to；Op::Changed 无 from/to；
+                // 两者都可挂 during。
+                let mut parts: Vec<String> = Vec::new();
+                if let Some(obj) = self.value.as_ref().and_then(|v| v.as_object()) {
+                    if self.op == Op::ChangedValue {
+                        let from = obj.get("from").unwrap_or(&serde_json::Value::Null);
+                        let to = obj.get("to").unwrap_or(&serde_json::Value::Null);
+                        parts.push(format!("from {}", expr_scalar(from)));
+                        parts.push(format!("to {}", expr_scalar(to)));
+                    }
+                    if let Some(d) = obj.get("during") {
+                        if !d.is_null() {
+                            // 走解析路径拿回 Interval，再渲染成 `(T1, T2]` 字串。
+                            if let Ok(iv) = serde_json::from_value::<Interval>(d.clone()) {
+                                parts.push(format!("during {}", interval_to_expr(&iv)));
+                            }
+                        }
+                    }
+                }
+                if parts.is_empty() {
+                    format!("{field} changed")
+                } else {
+                    format!("{field} changed {}", parts.join(" "))
+                }
+            }
             _ => {
                 let value = self.value.as_ref().map(expr_scalar).unwrap_or_default();
                 format!("{field} {} {value}", expr_op(self.op))
@@ -1665,6 +2385,8 @@ mod tests {
             label_of: &no_label,
             event: None,
             derived: &[],
+            changed_during: None,
+            changed_value: None,
         };
         assert!(Query::parse("Score = 7")
             .unwrap()
@@ -1709,6 +2431,8 @@ mod tests {
             label_of: &no_label,
             event: None,
             derived: &[],
+            changed_during: None,
+            changed_value: None,
         };
 
         let present = Query::parse("Task").unwrap();
@@ -1760,6 +2484,8 @@ mod tests {
             label_of: &no_label,
             event: None,
             derived: &[],
+            changed_during: None,
+            changed_value: None,
         };
 
         let present = Query::Cond(Condition {
@@ -1800,6 +2526,8 @@ mod tests {
             label_of: &no_label,
             event: None,
             derived: &[],
+            changed_during: None,
+            changed_value: None,
         };
         let cond = |name: &str, op: Op, v: serde_json::Value| {
             Query::Cond(Condition {
@@ -1830,6 +2558,8 @@ mod tests {
             label_of: &no_label,
             event: None,
             derived: &[],
+            changed_during: None,
+            changed_value: None,
         };
         let future = Query::Cond(Condition {
             field: Field::UpdatedAt,
@@ -1860,6 +2590,8 @@ mod tests {
             label_of: &no_label,
             event: None,
             derived: &[],
+            changed_during: None,
+            changed_value: None,
         };
         let miss_env = EvalEnv {
             text_hit: &miss,
@@ -1867,6 +2599,8 @@ mod tests {
             label_of: &no_label,
             event: None,
             derived: &[],
+            changed_during: None,
+            changed_value: None,
         };
         assert!(q.evaluate(&e, &[], &hit_env));
         assert!(!q.evaluate(&e, &[], &miss_env));

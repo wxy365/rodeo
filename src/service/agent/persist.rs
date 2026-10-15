@@ -190,12 +190,12 @@ impl AgentService {
     /// 反序列化失败的 row 视为「历史遗留 / bincode 旧版本不兼容」，跳过并
     /// 打 warn——以前 `filter_map(|..| .ok())` 静默吞掉，让用户看到的是
     /// 「消息写进去了但 agentMessages 永远空」这种鬼故事，至少留个信号。
-    fn collect_records(
-        &self,
-        session_id: Ulid,
-    ) -> Result<Vec<AgentMessageRecord>, AppError> {
+    fn collect_records(&self, session_id: Ulid) -> Result<Vec<AgentMessageRecord>, AppError> {
         let mut records = Vec::new();
-        for (k, v) in self.store.scan_prefix(cf::AGENT_MESSAGES, &session_id.to_bytes())? {
+        for (k, v) in self
+            .store
+            .scan_prefix(cf::AGENT_MESSAGES, &session_id.to_bytes())?
+        {
             match bincode::deserialize::<AgentMessageRecord>(&v) {
                 Ok(r) => records.push(r),
                 Err(e) => {
@@ -268,14 +268,10 @@ impl AgentService {
             self.store.write_batch(ops)?;
         }
         if converted > 0 {
-            tracing::info!(
-                "agent 消息修复：{converted} 条 OLD 形态转写为 NEW 形态（rig shim）"
-            );
+            tracing::info!("agent 消息修复：{converted} 条 OLD 形态转写为 NEW 形态（rig shim）");
         }
         if removed > 0 {
-            tracing::warn!(
-                "agent 消息修复：{removed} 条 rig 中间形态无法解码，已删除"
-            );
+            tracing::warn!("agent 消息修复：{removed} 条 rig 中间形态无法解码，已删除");
         }
         Ok((converted, removed))
     }
@@ -333,10 +329,7 @@ impl From<LegacyAgentMessage> for AgentMessageRecord {
                 for tc in legacy.tool_calls {
                     content.push(AssistantContent::tool_call(tc.id, tc.name, tc.args));
                 }
-                AgentMessage::Assistant {
-                    id: None,
-                    content,
-                }
+                AgentMessage::Assistant { id: None, content }
             }
             LegacyRole::Tool => AgentMessage::User {
                 content: vec![UserContent::ToolResult(rig::message::ToolResult {

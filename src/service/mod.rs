@@ -141,18 +141,14 @@ impl Services {
         }
         if let Some(cfg) = &config.auth.oauth.google {
             if !cfg.client_id.trim().is_empty() {
-                if let Some(p) =
-                    crate::service::oauth::google::GoogleProvider::from_config(cfg)?
-                {
+                if let Some(p) = crate::service::oauth::google::GoogleProvider::from_config(cfg)? {
                     oauth_providers.push(Arc::new(p));
                 }
             }
         }
         if let Some(cfg) = &config.auth.oauth.github {
             if !cfg.client_id.trim().is_empty() {
-                if let Some(p) =
-                    crate::service::oauth::github::GithubProvider::from_config(cfg)?
-                {
+                if let Some(p) = crate::service::oauth::github::GithubProvider::from_config(cfg)? {
                     oauth_providers.push(Arc::new(p));
                 }
             }

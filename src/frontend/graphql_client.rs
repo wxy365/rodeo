@@ -500,7 +500,11 @@ pub fn label_attrs(
 // ---------- 类型化查询/变更 ----------
 
 pub async fn me() -> Result<Option<User>, String> {
-    let data = graphql("query { me { id email name isAdmin hasPassword } }", json!({})).await?;
+    let data = graphql(
+        "query { me { id email name isAdmin hasPassword } }",
+        json!({}),
+    )
+    .await?;
     Ok(data
         .get("me")
         .cloned()
@@ -735,11 +739,20 @@ pub async fn entries(workspace_id: &str) -> Result<Vec<Entry>, String> {
         .map_err(|e| e.to_string())
 }
 
-pub async fn create_entry(workspace_id: &str, title: &str) -> Result<Entry, String> {
+/// 新建条目。`detail` 为 `Some(_)` 时服务端用 `create_with_detail` 一次性落标题与正文，
+/// 为 `None` 或空串时走原 `create`（向后兼容）。配合 `setLabelings` 可在 UI 里
+/// 实现「标题 + 正文 + 标签」一次提交。
+pub async fn create_entry(
+    workspace_id: &str,
+    title: &str,
+    detail: Option<&str>,
+) -> Result<Entry, String> {
+    // 服务端签名是 `detail: String`（可空）：传 None 时给空串，触发原 create 路径。
+    let d = detail.unwrap_or("");
     let q = format!(
-        "mutation($id: ID!, $t: String!) {{ createEntry(workspaceId: $id, title: $t) {{ {ENTRY_FIELDS} }} }}"
+        "mutation($id: ID!, $t: String!, $d: String) {{ createEntry(workspaceId: $id, title: $t, detail: $d) {{ {ENTRY_FIELDS} }} }}"
     );
-    let data = graphql(&q, json!({ "id": workspace_id, "t": title })).await?;
+    let data = graphql(&q, json!({ "id": workspace_id, "t": title, "d": d })).await?;
     serde_json::from_value(data.get("createEntry").cloned().unwrap_or(Value::Null))
         .map_err(|e| e.to_string())
 }
@@ -2058,8 +2071,7 @@ pub async fn set_password(new_password: &str) -> Result<(String, User), String> 
 
 // ---------- Entry 分享：公开解析 + Owner 端的 create/list/revoke ----------
 
-const ENTRY_SHARE_FIELDS: &str =
-    "id entryCode workspaceId createdAt createdBy revoked";
+const ENTRY_SHARE_FIELDS: &str = "id entryCode workspaceId createdAt createdBy revoked";
 
 const SHARED_ENTRY_FIELDS: &str = "code title detail createdAt updatedAt \
      createdByAccount { name } labels { labelName value }";
@@ -2083,7 +2095,10 @@ pub async fn entry_by_share_token(token: &str) -> Result<Option<SharedEntry>, St
         "query($t: String!) {{ entryByShareToken(token: $t) {{ {SHARED_ENTRY_FIELDS} }} }}"
     );
     let data = graphql(&q, json!({ "t": token })).await?;
-    let raw = data.get("entryByShareToken").cloned().unwrap_or(Value::Null);
+    let raw = data
+        .get("entryByShareToken")
+        .cloned()
+        .unwrap_or(Value::Null);
     if raw.is_null() {
         return Ok(None);
     }
@@ -2094,9 +2109,7 @@ pub async fn entry_by_share_token(token: &str) -> Result<Option<SharedEntry>, St
 /// 公开拉取分享页全量只读视图：`/share/{token}` 一次性拿到 entry / 评论 /
 /// 附件 / 标签定义 / 成员名，与 `entry_by_share_token` 同款安全策略——失败
 /// 形态统一 `None`，不分流。匿名访问、不传 Authorization。
-pub async fn entry_full_by_share_token(
-    token: &str,
-) -> Result<Option<EntryFullPublic>, String> {
+pub async fn entry_full_by_share_token(token: &str) -> Result<Option<EntryFullPublic>, String> {
     let q = format!(
         "query($t: String!) {{ entryFullByShareToken(token: $t) {{ {ENTRY_FULL_PUBLIC_FIELDS} }} }}"
     );

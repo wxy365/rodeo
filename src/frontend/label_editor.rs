@@ -6,7 +6,7 @@ use super::components::{
     chip_glyph, display_enum_value, from_native, is_native_time_layout, to_native, value_to_string,
     AccountPicker, GlyphPos,
 };
-use super::graphql_client::{remove_labeling, set_labeling, Labeling, LabelSchema, Member};
+use super::graphql_client::{remove_labeling, set_labeling, LabelSchema, Labeling, Member};
 use super::i18n::{use_i18n, I18nController};
 use super::icons::{ic_close, ic_tag};
 use super::query_eval::{derive_inherited, resolve_label_color};
@@ -265,8 +265,7 @@ fn LabelRow(
     members: Vec<Member>,
     on_set: Callback<Value>,
     on_remove: Callback<()>,
-    #[prop(default = false)]
-    read_only: bool,
+    #[prop(default = false)] read_only: bool,
 ) -> impl IntoView {
     let i18n: I18nController = use_i18n();
     let current = value.as_ref().map(value_to_string).unwrap_or_default();
@@ -287,10 +286,7 @@ fn LabelRow(
     // schema 仍然完整，未读到的字段（如 `color`、`value`）就可以直接借用。
     if read_only {
         let value_text = current.clone();
-        let vt = schema
-            .as_ref()
-            .map(|s| s.value_type.as_str())
-            .unwrap_or("");
+        let vt = schema.as_ref().map(|s| s.value_type.as_str()).unwrap_or("");
         // Boolean 的标点就是它的值；body 留空，与标签列的「title only」行为一致。
         let body = match (vt, value_text.is_empty()) {
             ("boolean", _) | (_, true) => title.clone(),

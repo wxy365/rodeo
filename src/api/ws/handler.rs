@@ -14,8 +14,8 @@ use axum::response::IntoResponse;
 use serde::Deserialize;
 use ulid::Ulid;
 
-use crate::api::AppState;
 use super::message::WsMessage;
+use crate::api::AppState;
 
 /// 心跳周期。客户端不需要回包；服务端判活靠「写 Pong 时是否 BrokenPipe」。
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
@@ -62,7 +62,11 @@ async fn connection_task(mut socket: WebSocket, state: Arc<AppState>, user_id: U
         server_time: chrono::Utc::now().timestamp(),
     })
     .unwrap_or_default();
-    if socket.send(AxumMsg::Text(Utf8Bytes::from(hello))).await.is_err() {
+    if socket
+        .send(AxumMsg::Text(Utf8Bytes::from(hello)))
+        .await
+        .is_err()
+    {
         state.services.ws_hub.unsubscribe(user_id).await;
         return;
     }

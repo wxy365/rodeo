@@ -8,7 +8,10 @@ use crate::frontend::graphql_client::{
     get_recent_colors, logout, push_recent_color, AuditLog, Member,
 };
 use crate::frontend::i18n::{use_i18n, I18nController};
-use crate::frontend::icons::{ic_add, ic_check, ic_close, ic_copy, ic_folder, ic_history, ic_logo, ic_logout, ic_profile, ic_setting, ic_timeline};
+use crate::frontend::icons::{
+    ic_add, ic_check, ic_close, ic_copy, ic_folder, ic_history, ic_logo, ic_logout, ic_profile,
+    ic_setting, ic_timeline,
+};
 use crate::frontend::language_button::LanguageButton;
 use crate::frontend::theme::ThemeButton;
 use crate::frontend::use_auth;
@@ -479,7 +482,8 @@ pub fn AvatarMenu() -> impl IntoView {
                 if ws.last_message.get().is_some() {
                     let u = unread;
                     spawn_local(async move {
-                        if let Ok(n) = crate::frontend::graphql_client::unread_message_count().await {
+                        if let Ok(n) = crate::frontend::graphql_client::unread_message_count().await
+                        {
                             u.set(n);
                         }
                     });
@@ -1003,17 +1007,13 @@ pub fn human_size(bytes: i64) -> String {
 /// 审计 action → 本地化标签。
 pub fn action_label(action: &str, i18n: &I18nController) -> String {
     let key = match action {
-        "EntryCreated" | "EntryUpdated" | "EntryDeleted"
-        | "LabelingSet" | "LabelingRemoved"
-        | "LabelSchemaCreated" | "LabelSchemaUpdated" | "LabelSchemaDeleted"
-        | "ViewCreated" | "ViewUpdated" | "ViewDeleted"
-        | "EntryArchived" | "EntryUnarchived"
-        | "MemberInvited" | "MemberJoined" | "InviteDeclined" | "InviteRevoked"
-        | "RoleChanged" | "MemberRemoved"
+        "EntryCreated" | "EntryUpdated" | "EntryDeleted" | "LabelingSet" | "LabelingRemoved"
+        | "LabelSchemaCreated" | "LabelSchemaUpdated" | "LabelSchemaDeleted" | "ViewCreated"
+        | "ViewUpdated" | "ViewDeleted" | "EntryArchived" | "EntryUnarchived" | "MemberInvited"
+        | "MemberJoined" | "InviteDeclined" | "InviteRevoked" | "RoleChanged" | "MemberRemoved"
         | "WorkspaceUpdated" | "WorkspaceDeleted" | "WorkspaceRestored" | "WorkspaceCreated"
-        | "RuleCreated" | "RuleUpdated" | "RuleDeleted" | "RuleApplied"
-        | "CommentCreated" | "CommentUpdated" | "CommentDeleted"
-        | "AttachmentUploaded" | "AttachmentDeleted" => {
+        | "RuleCreated" | "RuleUpdated" | "RuleDeleted" | "RuleApplied" | "CommentCreated"
+        | "CommentUpdated" | "CommentDeleted" | "AttachmentUploaded" | "AttachmentDeleted" => {
             return i18n.t(&format!("audit.action.{action}"));
         }
         _ => "audit.action.Other",
@@ -1063,7 +1063,11 @@ fn subject(o: &serde_json::Map<String, Value>, i18n: &I18nController) -> String 
     i18n.t("audit.no_title")
 }
 
-fn diff(b: &serde_json::Map<String, Value>, a: &serde_json::Map<String, Value>, i18n: &I18nController) -> String {
+fn diff(
+    b: &serde_json::Map<String, Value>,
+    a: &serde_json::Map<String, Value>,
+    i18n: &I18nController,
+) -> String {
     let null = Value::Null;
     // 先按 after 的字段顺序，再补上只存在于 before 的字段（被移除的字段）。
     let mut keys: Vec<&String> = a.keys().collect();
@@ -1079,11 +1083,14 @@ fn diff(b: &serde_json::Map<String, Value>, a: &serde_json::Map<String, Value>, 
         if bv == av {
             continue;
         }
-        parts.push(i18n.tf("audit.diff_field", &[
-            ("field", &field_label(k, i18n)),
-            ("before", &show(bv)),
-            ("after", &show(av)),
-        ]));
+        parts.push(i18n.tf(
+            "audit.diff_field",
+            &[
+                ("field", &field_label(k, i18n)),
+                ("before", &show(bv)),
+                ("after", &show(av)),
+            ],
+        ));
     }
     if parts.is_empty() {
         i18n.t("audit.no_changes")
@@ -1098,7 +1105,11 @@ fn field_label(k: &str, i18n: &I18nController) -> String {
     let translated = i18n.t(&key);
     // i18n.t() 在缺失时回落到 en，再回落到字面 key 本身。
     // 如果「key 原样返回」说明该字段没有翻译，用 name 原值更清晰。
-    if translated == key { k.to_string() } else { translated }
+    if translated == key {
+        k.to_string()
+    } else {
+        translated
+    }
 }
 
 /// 展示一个 JSON 值：字符串去掉引号，其余保持紧凑 JSON；过长则截断。
@@ -1146,7 +1157,11 @@ pub enum GlyphPos {
 /// 算一个标签 chip 该用什么标点（如 ✓ / ✗ / ¥ / 货币符号 / ⏰ / 📅 等），
 /// 画在标签名边上便于扫一列时一眼分辨类型。返回 `Some((char, pos))` 表示
 /// 有标点可画，`None` 表示该类型不带标点。
-pub fn chip_glyph(vt: &str, _value: &Value, currency_symbol: Option<&str>) -> Option<(String, GlyphPos)> {
+pub fn chip_glyph(
+    vt: &str,
+    _value: &Value,
+    currency_symbol: Option<&str>,
+) -> Option<(String, GlyphPos)> {
     match vt {
         "boolean" => Some(("✓".to_string(), GlyphPos::Left)),
         "currency" => Some((currency_symbol.unwrap_or("¥").to_string(), GlyphPos::Left)),
@@ -1202,10 +1217,7 @@ pub fn CodeCopy(#[prop(into)] code: Signal<String>) -> impl IntoView {
 /// 页签条：`tabs` 是 (键, 显示名) 列表，`active` 持有当前键。
 /// 只渲染与切换，显示什么内容由调用方按 `active` 自己分发。
 #[component]
-pub fn TabBar(
-    tabs: Vec<(String, String)>,
-    active: RwSignal<String>,
-) -> impl IntoView {
+pub fn TabBar(tabs: Vec<(String, String)>, active: RwSignal<String>) -> impl IntoView {
     view! {
         <div class="dtabs">
             {tabs
@@ -1403,7 +1415,9 @@ mod tests {
     use crate::frontend::i18n::Locale;
 
     fn zh() -> I18nController {
-        I18nController { locale: RwSignal::new(Locale::Zh) }
+        I18nController {
+            locale: RwSignal::new(Locale::Zh),
+        }
     }
 
     #[test]
@@ -1432,10 +1446,19 @@ mod tests {
         let i18n = zh();
         let b = r#"{"a":1}"#;
         let a = r#"{"b":2}"#;
-        let field_b = i18n.tf("audit.diff_field", &[("field", "b"), ("before", "—"), ("after", "2")]);
-        let field_a = i18n.tf("audit.diff_field", &[("field", "a"), ("before", "1"), ("after", "—")]);
+        let field_b = i18n.tf(
+            "audit.diff_field",
+            &[("field", "b"), ("before", "—"), ("after", "2")],
+        );
+        let field_a = i18n.tf(
+            "audit.diff_field",
+            &[("field", "a"), ("before", "1"), ("after", "—")],
+        );
         let sep = i18n.t("audit.diff_sep");
-        assert_eq!(audit_change(Some(b), Some(a), &i18n), format!("{field_b}{sep}{field_a}"));
+        assert_eq!(
+            audit_change(Some(b), Some(a), &i18n),
+            format!("{field_b}{sep}{field_a}")
+        );
     }
 
     #[test]

@@ -56,7 +56,15 @@ pub fn TinyEditor(
     let el: NodeRef<Div> = NodeRef::new();
     let delta = normalize_delta(&initial);
 
-    mount_when_ready(el, delta, entry_code, on_change, on_uploaded, members, readonly);
+    mount_when_ready(
+        el,
+        delta,
+        entry_code,
+        on_change,
+        on_uploaded,
+        members,
+        readonly,
+    );
 
     view! { <div node_ref=el class="tiny-editor"></div> }
 }
@@ -75,7 +83,15 @@ fn mount_when_ready(
 ) {
     #[cfg(target_arch = "wasm32")]
     el.on_load(move |node| {
-        mount_editor(node, delta, entry_code, on_change, on_uploaded, members, readonly);
+        mount_editor(
+            node,
+            delta,
+            entry_code,
+            on_change,
+            on_uploaded,
+            members,
+            readonly,
+        );
     });
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -175,7 +191,11 @@ fn mount_editor<N: wasm_bindgen::JsCast>(
                         .dyn_into::<web_sys::File>()
                         .map_err(|_| JsValue::from_str("粘贴的内容不是文件"))?;
                     // 编辑器里的图片是正文的一部分：不列进附件，随正文删除而回收。
-                    match crate::frontend::graphql_client::upload_attachment(&code, &file, true, None).await {
+                    match crate::frontend::graphql_client::upload_attachment(
+                        &code, &file, true, None,
+                    )
+                    .await
+                    {
                         Ok(a) => {
                             // 诊断日志：标记上传完成 → on_uploaded → 父级可能重渲染的时间点。
                             leptos::web_sys::console::log_1(

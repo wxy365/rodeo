@@ -242,10 +242,16 @@ pub async fn run_turn(services: Arc<Services>, auth: AuthContext, session_id: Ul
                     match piece {
                         ThinkPiece::Text(s) => {
                             accumulated_text.push_str(&s);
-                            let _ = tx.send(AgentEvent::Delta { turn_id, content: s });
+                            let _ = tx.send(AgentEvent::Delta {
+                                turn_id,
+                                content: s,
+                            });
                         }
                         ThinkPiece::Reasoning(s) => {
-                            let _ = tx.send(AgentEvent::Reasoning { turn_id, content: s });
+                            let _ = tx.send(AgentEvent::Reasoning {
+                                turn_id,
+                                content: s,
+                            });
                         }
                     }
                 }
@@ -330,10 +336,7 @@ pub async fn run_turn(services: Arc<Services>, auth: AuthContext, session_id: Ul
                 if content.is_empty() {
                     content.push(AssistantContent::text(String::new()));
                 }
-                let assistant_msg = AgentMessage::Assistant {
-                    id: None,
-                    content,
-                };
+                let assistant_msg = AgentMessage::Assistant { id: None, content };
                 let record = AgentMessageRecord {
                     id: assistant_id,
                     session_id,

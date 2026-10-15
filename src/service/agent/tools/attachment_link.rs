@@ -56,7 +56,9 @@ impl Tool for AttachmentLinkTool {
 
     fn description(&self) -> String {
         // TODO: 由后续 task 按 spec §5 替换为正式 description
-        format!("attachment_link (not yet implemented — hallucinated calls will return a tool error)")
+        format!(
+            "attachment_link (not yet implemented — hallucinated calls will return a tool error)"
+        )
     }
 
     fn parameters(&self) -> serde_json::Value {

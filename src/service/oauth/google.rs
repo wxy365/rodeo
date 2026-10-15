@@ -98,9 +98,7 @@ impl OAuthProviderTrait for GoogleProvider {
                 AppError::OAuthWechat("google".to_string(), format!("token request failed: {e}"))
             })?
             .error_for_status()
-            .map_err(|e| {
-                AppError::OAuthWechat("google".to_string(), format!("token status: {e}"))
-            })?
+            .map_err(|e| AppError::OAuthWechat("google".to_string(), format!("token status: {e}")))?
             .json()
             .await
             .map_err(|e| {

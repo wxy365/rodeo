@@ -209,10 +209,7 @@ impl AuthService {
     /// 一致（auth.rs:122 的 `Deactivated` 注释明示「不要变成探测口」）。
     /// 含 `@` 的输入跳过前缀步——邮箱本身已经完整，不该再模糊。
     /// 登录与 OAuth 关联既有账号两条路径都走这里。
-    pub(crate) fn find_by_login_id(
-        &self,
-        normalized: &str,
-    ) -> Result<Option<Account>, AppError> {
+    pub(crate) fn find_by_login_id(&self, normalized: &str) -> Result<Option<Account>, AppError> {
         if let Some(account) = self.find_by_email(normalized)? {
             return Ok(Some(account));
         }
@@ -470,7 +467,8 @@ mod tests {
         let store = Arc::new(DocStore::open(&dir).unwrap());
         let auth = AuthService::new(store, Arc::new(Config::default()));
         // 自助注册路径已删，测试账号走管理员建号。
-        auth.create_by_admin("u@x.io", "U", "Passw0rd!", false).unwrap();
+        auth.create_by_admin("u@x.io", "U", "Passw0rd!", false)
+            .unwrap();
         let id = auth.find_by_email("u@x.io").unwrap().unwrap().id;
 
         let (_, token) = auth.login("u@x.io", "Passw0rd!").unwrap();

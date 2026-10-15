@@ -176,7 +176,9 @@ fn resolve_initial_locale() -> Locale {
     #[cfg(target_arch = "wasm32")]
     {
         if let Some(s) = read_html_lang() {
-            if let Some(loc) = Locale::from_browser(&s) { return loc; }
+            if let Some(loc) = Locale::from_browser(&s) {
+                return loc;
+            }
         }
     }
     Locale::En
@@ -203,7 +205,9 @@ fn resolve_from_parts(parts: &axum::http::request::Parts) -> Locale {
     use axum::http::header::{ACCEPT_LANGUAGE, COOKIE};
     if let Some(q) = parts.uri.query() {
         if let Some(lang) = parse_query_lang(q) {
-            if let Some(loc) = Locale::from_browser(lang) { return loc; }
+            if let Some(loc) = Locale::from_browser(lang) {
+                return loc;
+            }
         }
     }
     if let Some(cookie) = parts.headers.get(COOKIE).and_then(|v| v.to_str().ok()) {
@@ -211,13 +215,21 @@ fn resolve_from_parts(parts: &axum::http::request::Parts) -> Locale {
             let mut kv = pair.trim().splitn(2, '=');
             if let (Some(k), Some(v)) = (kv.next(), kv.next()) {
                 if k.trim() == "rodeo_lang" {
-                    if let Some(loc) = Locale::from_browser(v.trim()) { return loc; }
+                    if let Some(loc) = Locale::from_browser(v.trim()) {
+                        return loc;
+                    }
                 }
             }
         }
     }
-    if let Some(al) = parts.headers.get(ACCEPT_LANGUAGE).and_then(|v| v.to_str().ok()) {
-        if let Some(loc) = Locale::from_accept_language(al) { return loc; }
+    if let Some(al) = parts
+        .headers
+        .get(ACCEPT_LANGUAGE)
+        .and_then(|v| v.to_str().ok())
+    {
+        if let Some(loc) = Locale::from_accept_language(al) {
+            return loc;
+        }
     }
     Locale::En
 }
@@ -228,7 +240,9 @@ fn parse_query_lang(qs: &str) -> Option<&str> {
     for pair in qs.split('&') {
         let mut kv = pair.splitn(2, '=');
         if let (Some(k), Some(v)) = (kv.next(), kv.next()) {
-            if k == "lang" { return Some(v); }
+            if k == "lang" {
+                return Some(v);
+            }
         }
     }
     None

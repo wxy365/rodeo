@@ -27,7 +27,10 @@ use web_sys::{CloseEvent, ErrorEvent, MessageEvent, WebSocket};
 pub enum WsStatus {
     Connecting,
     Connected,
-    Disconnected { reason: &'static str, next_retry_ms: u64 },
+    Disconnected {
+        reason: &'static str,
+        next_retry_ms: u64,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -56,7 +59,10 @@ pub fn spawn_ws_connected_root() {
     {
         let status: RwSignal<WsStatus> = RwSignal::new(WsStatus::Connecting);
         let last_message: RwSignal<Option<Ulid>> = RwSignal::new(None);
-        provide_context(WsContext { status, last_message });
+        provide_context(WsContext {
+            status,
+            last_message,
+        });
 
         leptos::task::spawn_local(async move {
             const BACKOFF_MS: [u64; 7] = [500, 1_000, 2_000, 4_000, 8_000, 16_000, 30_000];

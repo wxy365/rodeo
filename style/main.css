@@ -615,6 +615,16 @@ select:focus {
     align-items: center;
     cursor: pointer;
 }
+/* pick 列的复选框默认隐藏——非多选态下整列只有「行号」可见，让视觉集中在 Entry 本身。
+   进入持久多选模式（`<table>` 加 `.multi-mode`）后复选框显示，让用户看清勾选状态并直接点击切换。
+   光标变化同理：默认 context-menu 提示「右键行号进入多选」，进入后回到 pointer。 */
+.tbl:not(.multi-mode) th.pick input,
+.tbl:not(.multi-mode) td.pick input {
+    display: none;
+}
+.tbl:not(.multi-mode) td.pick .pick-cell {
+    cursor: context-menu;
+}
 .tbl td.pick .row-no {
     margin-left: 4px;
     font-size: 11px;
@@ -622,6 +632,12 @@ select:focus {
     font-variant-numeric: tabular-nums;
     user-select: none;
     pointer-events: none;
+}
+/* 持久多选模式开启后：行序号加粗、用主色着色，让「现在点行就只切多选」的状态显形。
+   与「右键进入多选」的非多选态互斥——同时只会命中其中一个 class。 */
+.tbl td.pick .row-no.multi-mode {
+    color: var(--blue);
+    font-weight: 600;
 }
 
 /* 选中若干条目后出现的批量操作条。 */
@@ -922,6 +938,14 @@ select:focus {
     gap: 8px;
     font-size: 13px;
     color: var(--ink2);
+    /* 父级 .dmbox 是 flex column；这里用 min-height: 0 让该区域允许收缩，
+       配合 max-height 触发纵向滚动，避免弹窗内容过高把标题 / 按钮顶出视口。 */
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+.exprdoc table.tbl {
+    flex-shrink: 0;
 }
 .exprdoc p {
     margin: 0;
@@ -1102,6 +1126,16 @@ select:focus {
 /* 新建 Entry 表单里的标签草稿：占满整行，避免与标题/按钮挤在同一行。 */
 .filters .lbledit {
     width: 100%;
+}
+/* 新建 Entry 表单里的内容编辑器：与标签草稿一致占满整行；
+   高度给个上限，长正文靠编辑器自身滚动，避免一行高把整页撑高。 */
+.filters .new-content {
+    width: 100%;
+}
+.filters .new-content .tiny-editor {
+    min-height: 120px;
+    max-height: 240px;
+    overflow: auto;
 }
 /* 标签编辑器：一行排多个带边框的标签块（原先「一标签一行」的栅格太占竖向空间）。 */
 .lbledit {
@@ -2033,6 +2067,10 @@ input[type="color"].sw:disabled {
 }
 .dmbox {
     width: 420px;
+    max-width: 90vw;
+    /* 弹窗过高时上下裁切，露出最顶端标题与最底端按钮；这里把整盒高度
+       限制在视口 80% 以内，由 .exprdoc 内部滚动。 */
+    max-height: 80vh;
     padding: 16px;
     display: flex;
     flex-direction: column;
@@ -3180,6 +3218,61 @@ input[type="color"].sw:disabled {
 .vmenu button:disabled {
     color: var(--ink3);
     cursor: not-allowed;
+}
+
+/* 表格标题列右键菜单：「删除条目」。样式与 .vmenu 共享，但拆成独立
+   选择器：将来如果要给标题菜单换外观（更小、更靠近内容区），只动
+   .emenu 即可，视图行菜单不会跟着翻。 */
+.emenu {
+    position: fixed;
+    z-index: 50;
+    min-width: 140px;
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: var(--r-m);
+    box-shadow: 0 6px 20px rgb(0 0 0 / 14%);
+    padding: 4px;
+}
+.emenu button {
+    display: block;
+    width: 100%;
+    text-align: left;
+    border: 0;
+    background: none;
+    padding: 8px 10px;
+    border-radius: var(--r-s);
+    cursor: pointer;
+    color: var(--ink);
+    font-size: 13px;
+}
+.emenu button:hover {
+    background: var(--bg2);
+}
+.emenu button.danger {
+    color: var(--dgr);
+}
+/* 第二步：点过 Delete 后原地切到这条确认条——保留坐标，浮层不漂。
+   文案与按钮分两行：横向挤一排会让长文案被压成多行把整条浮层撑高，
+   改成竖向 + 按钮右对齐后，单行文案仅一行高度，浮层整体紧凑。 */
+.emenu-confirm {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    padding: 8px 10px;
+    min-width: 220px;
+    max-width: 280px;
+}
+.emenu-confirm .mut {
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--ink2);
+    word-break: break-word;
+}
+.emenu-confirm .actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 6px;
 }
 
 /* 语言按钮：与 .theme-btn 同视觉重量（32px 几何 + 圆角 + 透明底），下拉

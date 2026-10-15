@@ -4,8 +4,8 @@ use leptos::task::spawn_local;
 use crate::frontend::agent_side_effects::AgentSideEffects;
 use crate::frontend::components::{logged_out, role_at_least, short_time, Avatar};
 use crate::frontend::graphql_client::{
-    comments, create_comment, delete_comment, me, members as fetch_members, my_role, update_comment,
-    Comment, Member,
+    comments, create_comment, delete_comment, me, members as fetch_members, my_role,
+    update_comment, Comment, Member,
 };
 use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::icons::ic_comment;

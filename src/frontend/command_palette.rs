@@ -216,8 +216,7 @@ pub fn CommandPalette() -> impl IntoView {
 
         if !q.is_empty() {
             items.retain(|it| {
-                it.title.to_lowercase().contains(&q)
-                    || it.subtitle.to_lowercase().contains(&q)
+                it.title.to_lowercase().contains(&q) || it.subtitle.to_lowercase().contains(&q)
             });
         }
         items.truncate(40);
@@ -398,10 +397,7 @@ fn do_invoke(
                     // 把当前视图 id 透传：用户从工作空间主页面板里打开设置，
                     // 再点返回时能回到原视图。`use_query_map` 仅在 Router 内可用，
                     // 这里的 command_palette 已经在 Router 内（见 AppBar 挂载位）。
-                    let view = use_query_map()
-                        .get()
-                        .get("view")
-                        .filter(|s| !s.is_empty());
+                    let view = use_query_map().get().get("view").filter(|s| !s.is_empty());
                     let href = match view.as_deref() {
                         Some(v) => format!("/{slug}/settings?view={v}"),
                         None => format!("/{slug}/settings"),

@@ -36,8 +36,10 @@ fn spawn_upload(
     // 不行（FileList 不是 Array）——agent_panel.rs 的多文件循环踩过这两个坑。
     // 最稳的路是 `Array.from(files)`：FileList 自带 Symbol.iterator，转成
     // 普通 Array 后 `Array.prototype[0]` / `.item(0)` 都拿到真正的 File。
-    let Ok(files) = Reflect::get(AsRef::<JsValue>::as_ref(&input), &JsValue::from_str("files"))
-    else {
+    let Ok(files) = Reflect::get(
+        AsRef::<JsValue>::as_ref(&input),
+        &JsValue::from_str("files"),
+    ) else {
         return;
     };
     let Ok(array_from_js) = js_sys::eval("Array.from") else {

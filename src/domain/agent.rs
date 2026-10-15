@@ -10,13 +10,13 @@
 //! - `User { content: Vec<UserContent> }` — 用户消息 / 工具回执（`UserContent::tool_result`）
 //! - `Assistant { id: Option<String>, content: Vec<AssistantContent> }` — 助手回复（`Text`/`ToolCall`/`Reasoning`）
 
+use chrono::{DateTime, Utc};
 pub use rig::message::{
     AssistantContent, Message as AgentMessage, ToolResult as AgentToolResult, ToolResultContent,
     UserContent,
 };
-pub use ulid::Ulid;
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+pub use ulid::Ulid;
 
 /// DocStore 落库一行：Rig Message + Rodeo 元数据。
 ///
@@ -59,8 +59,7 @@ impl From<AgentMessageRecord> for AgentMessageRecordShim {
         Self {
             id: r.id,
             session_id: r.session_id,
-            message_json: serde_json::to_vec(&r.message)
-                .expect("rig::Message 应当能 JSON 编码"),
+            message_json: serde_json::to_vec(&r.message).expect("rig::Message 应当能 JSON 编码"),
             created_at: r.created_at,
         }
     }
@@ -105,13 +104,24 @@ pub struct AgentSession {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "domain", rename_all = "snake_case")]
 pub enum SideEffect {
-    Entry { action: EntryAction, id: String },
-    Labeling { code: String },
-    Comment { code: String },
+    Entry {
+        action: EntryAction,
+        id: String,
+    },
+    Labeling {
+        code: String,
+    },
+    Comment {
+        code: String,
+    },
     /// queryEntries 命中：前端把表达式写回 query_ast + expr_text
-    ViewQueryReplace { query_expr: String },
+    ViewQueryReplace {
+        query_expr: String,
+    },
     /// searchEntries 命中：前端把关键词写回 ad_hoc_text
-    ViewSearchReplace { keyword: String },
+    ViewSearchReplace {
+        keyword: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

@@ -55,15 +55,35 @@ fn builtin_fields(i18n: &I18nController) -> [(String, String); 7] {
     ]
 }
 
-/// 「创建人」列在 `View.columns` 里的 sentinel。`@@` 前缀既能在视觉上与标签名清晰
+/// Entry 元信息列在 `View.columns` 里的 sentinel。`@@` 前缀既能在视觉上与标签名清晰
 /// 区分，也不会与合法的 label name 冲突（label name 由 `domain/label.rs` 校验）。
-/// `EntryTable` 看到这个名字就改去渲染创建人单元格，而不是去 schemas 里找同名标签。
+/// `EntryTable` 看到这几个名字就改去渲染对应的元信息单元格，而不是去 schemas 里
+/// 找同名标签。`service/view.rs::is_metadata_column` 是同份名单的服务端镜像。
 const COLUMN_CREATED_BY: &str = "@@createdBy";
+const COLUMN_CREATED_AT: &str = "@@createdAt";
+const COLUMN_UPDATED_BY: &str = "@@updatedBy";
+const COLUMN_UPDATED_AT: &str = "@@updatedAt";
 
-/// 「创建人」列是否在视图里展示。仅看 sentinel 是否在 `columns` 列表里即可——
-/// 与标签名查找完全独立，所以挪到 `EntryTable` 渲染前后两端的逻辑不会失同步。
-fn show_created_by(columns: &[String]) -> bool {
-    columns.iter().any(|c| c == COLUMN_CREATED_BY)
+/// 全部 4 个元信息 sentinel 的本地化展示名 / 排序字段名。表头与单元格渲染、
+/// 「配置视图」弹窗里的复选框都从这里取，避免四处散落的字符串。
+fn metadata_columns(i18n: &I18nController) -> [(&'static str, &'static str, String); 4] {
+    [
+        (COLUMN_CREATED_BY, "createdBy", i18n.t("entry.col_created_by")),
+        (COLUMN_CREATED_AT, "createdAt", i18n.t("entry.col_created_at")),
+        (COLUMN_UPDATED_BY, "updatedBy", i18n.t("entry.col_updated_by")),
+        (COLUMN_UPDATED_AT, "updatedAt", i18n.t("entry.col_updated_at")),
+    ]
+}
+
+/// 给定列名是否为元信息 sentinel；返回 `Some(sort_field)` 供 `sortable_th` 用。
+fn metadata_sort_field(name: &str) -> Option<&'static str> {
+    match name {
+        COLUMN_CREATED_BY => Some("createdBy"),
+        COLUMN_CREATED_AT => Some("createdAt"),
+        COLUMN_UPDATED_BY => Some("updatedBy"),
+        COLUMN_UPDATED_AT => Some("updatedAt"),
+        _ => None,
+    }
 }
 
 /// 视图「标题颜色规则」编辑行状态。`RwSignal` 便于逐字段就地更新；
@@ -284,7 +304,11 @@ pub fn WorkspaceMain() -> impl IntoView {
             .unwrap_or_default()
     });
     let ws_name = RwSignal::new(String::new());
+    // 行高亮信号：点击标题或其他列都会设它，仅控制表格行的 `.sel` 背景。
     let selected = RwSignal::new(String::new());
+    // 右侧详情面板信号：只有点击标题（或键盘上下移动 / 新建条目成功）才设它，
+    // 控制 `<EntryPanel code=...>` 显示哪一条。点其他列不应该打开面板。
+    let panel_code = RwSignal::new(String::new());
     let show_new = RwSignal::new(false);
     let new_title = RwSignal::new(String::new());
     // 「新建 Entry」表单里的标题输入框引用：表单从关到开那一刻把焦点交过去，
@@ -298,6 +322,10 @@ pub fn WorkspaceMain() -> impl IntoView {
     // 表格里勾选的条目 code。数据重载（翻页/换视图/刷新）时清空，避免选中的行
     // 已经不在当前列表里却仍被写入。
     let batch_selected = RwSignal::new(Vec::<String>::new());
+    // 持久多选模式：右键 Entry 表格行序号（`row-no`）开启。
+    // 模式下点击行只切 batch_selected、不开面板；ESC 或点表格外区域退出。
+    // 退出时批量操作按钮栏也跟着隐藏，避免「没有入口却看见按钮」的怪态。
+    let multi_select_mode = RwSignal::new(false);
     let show_batch = RwSignal::new(false);
     // 复用 batch_selected 作为 AgentPanel「选中条目列表」上下文（同一份 RwSignal,
     // 与批量设置标签 / AI 总结 / 归档按钮保持一致）。视图 id 的 authoritative 信号
@@ -594,32 +622,23 @@ pub fn WorkspaceMain() -> impl IntoView {
 
     // 视图导航栏右键菜单：点菜单以外的位置即关闭。
     //
-    // 必须存 handle 并在 on_cleanup 里 remove：闭包捕获了 `vmenu`（组件本体的
-    // 信号），若 WorkspaceMain 因路由切换 / hydrate 重建 Owner，信号会被 dispose，
-    // 但挂到 window 上的监听器不会自动撤——下一次 mousedown 一旦命中别处点了别
-    // 的按钮（比如语言菜单的 English），`vmenu.get_untracked()` 抛
-    // "reactive value … already been disposed"，wasm 走 unreachable，把后续 click
-    // 事件吞掉，表现为"点了没反应"。同文件 L937/L1033 的 keydown 监听器正是
-    // 这么处理的，照搬。
+    // `.vmenu` div 自己 `on:mousedown=stop_propagation()`——菜单内的 mousedown
+    // 不会冒到这里。能冒到这里的就是「点了菜单外」，闭包里直接清掉 vmenu 即可，
+    // 不要再做任何"是否在菜单里"的推断：之前用 `target().closest(".vmenu")`
+    // / `composed_path()` 走冒泡链判断，每个浏览器 quirk（Chrome 把 button 的
+    // mousedown target 设成 Text 节点、shadow DOM 边界截断 path、闭包捕获已 dispose
+    // 的信号导致 wasm unreachable …）都会让菜单被误关、按钮 click 链被拆断；
+    // c7c9bcb / d8f6e81 / 5dbc7f3 三次提交都在围着这段判断修，仍然每次都复发。
+    // 改架构：让菜单自己声明边界，窗口层只承担"菜单外 = 关"。
     //
-    // 用 `composed_path()` 走完整冒泡路径而不是 `target().dyn_into::<Element>()
-   // .closest(".vmenu")`：Chrome 在 `<button>text</button>` 上的 mousedown 偶发把
-    // target 设成 Text 节点（Text 不是 Element，dyn_into 失败），旧实现会误判成
-    // "在菜单外"，提前 vmenu.set(None) 把按钮移出 DOM——后续 click 事件的
-    // mouseup hit-test 命中别处，整条 click 链断在按钮上，配置视图 / 删除视图
-    // 就一点没反应。composed_path 包含 target 及其所有祖先（无论是不是 Element），
-    // 任意一环带 `vmenu` 类就算"在菜单里"。
+    // `handle` 仍要存进 on_cleanup 里 remove：闭包捕获 `vmenu`，路由切换 / hydrate
+    // 重建 Owner 时信号会 dispose，未撤的 window 监听器会在某次 mousedown 里抛
+    // "reactive value … already been disposed"，wasm unreachable 吞掉后续 click，
+    // 表现为"点了没反应"。
     #[cfg(target_arch = "wasm32")]
     {
-        let close_vmenu = move |ev: leptos::ev::MouseEvent| {
-            if vmenu.get_untracked().is_none() {
-                return;
-            }
-            let in_menu = ev.composed_path().iter().any(|node| {
-                node.dyn_ref::<leptos::web_sys::Element>()
-                    .is_some_and(|el| el.class_list().contains("vmenu"))
-            });
-            if !in_menu {
+        let close_vmenu = move |_ev: leptos::ev::MouseEvent| {
+            if vmenu.get_untracked().is_some() {
                 vmenu.set(None);
             }
         };
@@ -778,7 +797,15 @@ pub fn WorkspaceMain() -> impl IntoView {
             return;
         };
         config_name_input.set(v.name.clone());
-        config_columns_input.set(v.columns.clone());
+        // 「更新时间」在弹窗里默认勾选——配置视图打开时如果原 columns 没有它，
+        // 就把它追加到勾选态。用户保存即落库；不保存只代表「看了一下默认是开的」，
+        // 原 columns 一行不动。基础视图 columns 恒空，这条路径负责把弹窗预填成
+        // 「默认勾选更新时间」，与「表格初始只有标题列」的需求配套。
+        let mut cols = v.columns.clone();
+        if !cols.iter().any(|c| c == COLUMN_UPDATED_AT) {
+            cols.push(COLUMN_UPDATED_AT.to_string());
+        }
+        config_columns_input.set(cols);
         config_shared_input.set(v.is_shared);
         config_tl_start.set(
             v.timeline
@@ -979,7 +1006,7 @@ pub fn WorkspaceMain() -> impl IntoView {
             return;
         };
         spawn_local(async move {
-            match create_entry(&id, &t).await {
+            match create_entry(&id, &t, None).await {
                 Err(e) => error.set(Some(e)),
                 Ok(created) => {
                     // 服务端 createEntry 只接收标题，标签需在条目存在后逐个 upsert。
@@ -996,8 +1023,10 @@ pub fn WorkspaceMain() -> impl IntoView {
                     refresh.update(|n| *n += 1);
                     // 新建后在表格里选中该行：分页位置不可预测时，由「选中 N 项」徽标
                     // 显式表达选中状态，不强行进入全屏页打断用户的上下文。AI 生成
-                    // 路径仍走 open_entry.run（见 apply_ai）。
-                    selected.set(created.code);
+                    // 路径仍走 open_entry.run（见 apply_ai）。同时打开右侧详情——
+                    // 这是「点标题」的等价路径，创建完应该让用户立刻看到内容。
+                    selected.set(created.code.clone());
+                    panel_code.set(created.code);
                 }
             }
         });
@@ -1115,7 +1144,16 @@ pub fn WorkspaceMain() -> impl IntoView {
                 _ => return,
             };
             if let Some(code) = codes.get(new_idx) {
+                // 键盘上下移动：行高亮永远跟随新行；详情面板按当前状态决定——
+                // 若 panel_code 当前已打开（同一行），就跟随到新行；
+                // 若用户已关掉（panel_code 为空），保持关闭。
+                // 这样用户在导航开始时面板的开关态是 sticky 的，按 X 中途关掉
+                // 之后下一次 ↓ 也不会再把它撬开。
+                // 与点击标题后的解耦语义一致：selected 与 panel_code 不再绑死。
                 selected.set(code.clone());
+                if !panel_code.get_untracked().is_empty() {
+                    panel_code.set(code.clone());
+                }
             }
         });
         on_cleanup(move || handle.remove());
@@ -1348,7 +1386,8 @@ pub fn WorkspaceMain() -> impl IntoView {
             view_query_input.set(serde_json::json!({ "and": [] }));
             view_sort_input.set(Vec::new());
             view_name_input.set(String::new());
-            view_columns_input.set(Vec::new());
+            // 「新建视图」默认勾选更新时间——与「配置视图」弹窗的行为对齐。
+            view_columns_input.set(vec![COLUMN_UPDATED_AT.to_string()]);
             view_shared_input.set(false);
             dialog_error.set(None);
             show_view_dialog.set(true);
@@ -1671,7 +1710,9 @@ pub fn WorkspaceMain() -> impl IntoView {
                     {move || error.get().map(|e| view! { <p class="error" style="padding:8px 16px">{e}</p> })}
 
                     <div class=move || {
-                        if selected.get().is_empty() {
+                        // 是否腾出右侧面板的宽度取决于 `panel_code`，而不是 `selected`：
+                        // 只点亮高亮但没打开面板时，表格继续占满整行。
+                        if panel_code.get().is_empty() {
                             "view-body full".to_string()
                         } else {
                             "view-body".to_string()
@@ -1679,8 +1720,14 @@ pub fn WorkspaceMain() -> impl IntoView {
                     }>
                         <div>
                             {move || {
+                                // 批量按钮栏只在持久多选模式下显示。
+                                // 多选模式由右键行序号开启；ESC / 点表格外区域退出，
+                                // 退出后即便 batch_selected 还有残留也不显示按钮——
+                                // 没有入口就藏起来，避免「按钮在但点了什么都不发生」的怪态。
+                                // 用户再右键任意行序号即可重入模式。
                                 let n = batch_selected.get().len();
-                                (n > 0).then(|| view! {
+                                let in_mode = multi_select_mode.get();
+                                (n > 0 && in_mode).then(|| view! {
                                     <div class="batchbar">
                                         <span class="mut">{i18n.tf("entry.selected_n", &[("n", &n.to_string())])}</span>
                                         <button class="btn pri sm" on:click=open_batch>{i18n.t("entry.batch_set_labels")}</button>
@@ -1704,6 +1751,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                             active_view.get().and_then(|v| v.timeline)
                                         })
                                         selected
+                                        panel_code
                                         on_open=open_entry
                                     />
                                 }
@@ -1714,7 +1762,9 @@ pub fn WorkspaceMain() -> impl IntoView {
                                         data
                                         schemas
                                         selected
+                                        panel_code
                                         batch_selected
+                                        multi_select_mode
                                         on_open=open_entry
                                         members=ws_members
                                         columns=Signal::derive(move || {
@@ -1798,7 +1848,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 </div>
                             })}
                         </div>
-                        <EntryPanel code=selected slug=slug().to_string() workspace_id=ws_id schemas members=ws_members refresh />
+                        <EntryPanel code=panel_code slug=slug().to_string() workspace_id=ws_id schemas members=ws_members refresh />
                     </div>
                 </div>
             </div>
@@ -2059,8 +2109,8 @@ pub fn WorkspaceMain() -> impl IntoView {
 
             {move || if show_config_dialog.get() {
                 view! {
-                    <div class="dmodal">
-                        <div class="panel dmbox">
+                    <div class="dmodal" on:click=move |_| show_config_dialog.set(false)>
+                        <div class="panel dmbox" on:click=|ev| ev.stop_propagation()>
                             <h3>{i18n.t("entry.config_view")}</h3>
                             {move || (!active_view.get().is_some_and(|v| v.is_default)).then(|| view! {
                                 // 基础视图的名字是固定概念，不提供改名；服务端也会挡下。
@@ -2283,6 +2333,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                 view! {
                     <div class="vmenu"
                         style=format!("left:{x}px;top:{y}px")
+                        on:mousedown=move |ev| ev.stop_propagation()
                         on:contextmenu=move |ev| ev.prevent_default()>
                         <button on:click=move |_| {
                             vmenu.set(None);
@@ -2515,9 +2566,20 @@ fn WorkspaceSidebar(
 fn EntryTable(
     data: RwSignal<Option<Result<(Workspace, Vec<Entry>, Vec<LabelSchema>), String>>>,
     schemas: RwSignal<Vec<LabelSchema>>,
+    /// 行高亮（`.sel`）：点标题永远置为该行（再点同一行也不取消），
+    /// 点其他列走 `<tr>` 的 on:click 翻手/取消——「标题想再点无反应」
+    /// 是有意的。
     selected: RwSignal<String>,
+    /// 右侧详情面板当前条目：仅由标题点击（或键盘上下移动 / 新建完成）控制；
+    /// 点其他列不动它。标题点击会切换该行详情面板的开 / 关——行高亮与
+    /// 面板已解耦，允许「行高亮但侧栏空白」（关闭详情时）：点同一行标题
+    /// 重新打开面板即可。
+    panel_code: RwSignal<String>,
     /// 批量操作勾选的条目 code。与 `selected`（详情面板当前条目）互相独立。
     batch_selected: RwSignal<Vec<String>>,
+    /// 持久多选模式：右键行序号开启；模式下点击行只切 batch_selected、不开面板；
+    /// ESC 或点表格外区域退出（由外层窗口监听实现，这里只是读写开关）。
+    multi_select_mode: RwSignal<bool>,
     /// 双击行时带上条目编码，由外层跳转到条目全屏页。
     on_open: Callback<String>,
     columns: Signal<Vec<String>>,
@@ -2569,6 +2631,44 @@ fn EntryTable(
             }
         });
         on_cleanup(move || exit_handle.remove());
+    }
+    // 持久多选模式的两条退出路径：
+    // 1) ESC 键退出。
+    // 2) 点表格外区域退出——`.tbl-scroll` 是表格滚动容器（含表格本体 + 分页器之外的列头），
+    //    命中它就不退出；其它位置（视图导航栏 / 过滤器 / 已归档弹窗 / 详情面板 / 窗口边缘）都退出。
+    //    仅挂在 wasm 目标下——SSR 编译时闭包不生成。
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mode_for_esc = multi_select_mode;
+        let esc_handle = window_event_listener(leptos::ev::keydown, move |ev: leptos::ev::KeyboardEvent| {
+            if !mode_for_esc.get_untracked() {
+                return;
+            }
+            if ev.key() == "Escape" {
+                mode_for_esc.set(false);
+            }
+        });
+        on_cleanup(move || esc_handle.remove());
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let mode_for_outside = multi_select_mode;
+        let outside_handle = window_event_listener(leptos::ev::mousedown, move |ev| {
+            if !mode_for_outside.get_untracked() {
+                return;
+            }
+            // 只要点击目标在 `.tbl-scroll` 之内就保留模式；表格之外一律退出。
+            // 用 composed_path 走完整冒泡路径，跟 editing_cell 那条监听同款——
+            // 避免 Chrome 在 `<span>text</span>` 上偶发把 target 设成 Text 节点。
+            let in_scroll = ev.composed_path().iter().any(|node| {
+                node.dyn_ref::<leptos::web_sys::Element>()
+                    .is_some_and(|el| el.class_list().contains("tbl-scroll"))
+            });
+            if !in_scroll {
+                mode_for_outside.set(false);
+            }
+        });
+        on_cleanup(move || outside_handle.remove());
     }
     // 可排序表头：内置三列恒可排；标签列只在其属于本视图 `columns` 时可排——
     // 列不展示的标签排序，用户看不见结果。
@@ -2638,7 +2738,7 @@ fn EntryTable(
                 }
             }
         >
-        <table class="tbl">
+        <table class=move || if multi_select_mode.get() { "tbl multi-mode" } else { "tbl" }>
             <thead>
                 <tr>
                     <th class="pick">
@@ -2668,9 +2768,17 @@ fn EntryTable(
                     </th>
                     {sortable_th("title".to_string(), i18n.t("entry.col_title"))}
                     {move || cols().iter().map(|name| {
-                        if name.as_str() == COLUMN_CREATED_BY {
-                            // 创建人作为内置列：表头一直可排序，单元格只在视图显式勾选时出现。
-                            sortable_th("createdBy".to_string(), i18n.t("entry.col_created_by"))
+                        // 4 个元信息列走 sentinel：表头按 builtin 排序字段渲染（与
+                        // `domain::view::SortField::from_str` 对齐）；元信息单元格只在视图
+                        // 显式勾选时才出现——默认视图不带它们，避免「更新时间是表格的常驻列」。
+                        if let Some(field) = metadata_sort_field(name) {
+                            let label = match field {
+                                "createdBy" => i18n.t("entry.col_created_by"),
+                                "createdAt" => i18n.t("entry.col_created_at"),
+                                "updatedBy" => i18n.t("entry.col_updated_by"),
+                                _ => i18n.t("entry.col_updated_at"),
+                            };
+                            sortable_th(field.to_string(), label)
                         } else {
                             let title = schemas.get().into_iter()
                                 .find(|s| &s.name == name)
@@ -2679,7 +2787,6 @@ fn EntryTable(
                             sortable_th(name.clone(), title)
                         }
                     }).collect::<Vec<_>>()}
-                    {sortable_th("updatedAt".to_string(), i18n.t("entry.col_updated_at"))}
                 </tr>
             </thead>
             <tbody>
@@ -2702,6 +2809,9 @@ fn EntryTable(
                             // 行号随翻页变化——不持久化进批量勾选，与「勾选状态属于哪些条目」分离。
                             let row_no = row_idx + 1;
                             let code_for_class = e.code.clone();
+                            // 给 `<tr>` 上的 on:click 单独一份：class 闭包已经把 code_for_class
+                            // move 走了，这里的非 move 闭包拿不到原值，会编译失败。
+                            let code_for_row_click = e.code.clone();
                             let code_for_click = e.code.clone();
                             let code_for_dbl = e.code.clone();
                             let code_for_check = e.code.clone();
@@ -2738,9 +2848,67 @@ fn EntryTable(
                             view! {
                                 <tr
                                     class=move || if selected.get() == code_for_class { "sel".to_string() } else { String::new() }
+                                    // 点行上除标题 / 复选框 / 编辑态单元格以外的任何位置都
+                                    // 等价于「只想选中，不开详情」：翻转行的 `.sel` 背景。
+                                    // 标题单元格与复选框各自 stop_propagation 阻止冒泡到这里，
+                                    // 编辑态单元格同理（见下面 `<td class="lblcell editing">`）。
+                                    // 不动 `panel_code`——只有标题点击才会打开右侧详情面板。
+                                    //
+                                    // 多选模式下：点行只切 batch_selected，不动 selected /
+                                    // panel_code——避免「点了反而把右侧面板撬开 / 行高亮跳走」。
+                                    on:click=move |_| {
+                                        if multi_select_mode.get_untracked() {
+                                            let c = code_for_row_click.clone();
+                                            batch_selected.update(|s| {
+                                                if let Some(pos) = s.iter().position(|x| x == &c) {
+                                                    s.remove(pos);
+                                                } else {
+                                                    s.push(c);
+                                                }
+                                            });
+                                            return;
+                                        }
+                                        if selected.get_untracked() == code_for_row_click {
+                                            selected.set(String::new());
+                                        } else {
+                                            selected.set(code_for_row_click.clone());
+                                        }
+                                    }
                                 >
                                     <td class="pick">
-                                        <label class="pick-cell" title=i18n.tf("entry.page_row_n", &[("n", &row_no.to_string())])>
+                                        // 右键行序号 → 切 batch_selected + 进入持久多选模式。
+                                        // handler 挂在 `<label>` 而不是 `<span class="row-no">` 上：
+                                        // CSS 把 row-no 设为 `pointer-events: none`（让行号不挡复选框点击），
+                                        // 右键事件会冒泡到 label。整格右键都触发同样动作——用户视觉锚点在「行号」，
+                                        // 但事件落地在外层 label，更稳。
+                                        // 光标与复选框的可见性由 `<table class="tbl multi-mode?">` 统一切换，
+                                        // 这里不再需要 `pick-hint`。
+                                        <label class="pick-cell"
+                                            title=i18n.tf("entry.page_row_n", &[("n", &row_no.to_string())])
+                                            // 多选模式下拦截 label 自身的 click 冒泡：label 是 checkbox 的关联控件，
+                                            // 点 label 会触发两路 click——label 自身的 click 冒泡到 `<tr>`，
+                                            // 以及浏览器合成的 checkbox click（带 stop_propagation）。
+                                            // 不拦的话两路都会切 batch_selected，叠加后净效果为 0。
+                                            // 非多选态不拦：保留「点 label 区域也能翻 selected 行高亮」的旧行为。
+                                            on:click=move |ev| {
+                                                if multi_select_mode.get_untracked() {
+                                                    ev.stop_propagation();
+                                                }
+                                            }
+                                            on:contextmenu=move |ev: leptos::ev::MouseEvent| {
+                                                ev.prevent_default();
+                                                ev.stop_propagation();
+                                                let c = code_for_check_change.clone();
+                                                batch_selected.update(|s| {
+                                                    if let Some(pos) = s.iter().position(|x| x == &c) {
+                                                        s.remove(pos);
+                                                    } else {
+                                                        s.push(c);
+                                                    }
+                                                });
+                                                multi_select_mode.set(true);
+                                            }
+                                        >
                                             <input type="checkbox"
                                                 prop:checked={
                                             let c = code_for_check.clone();
@@ -2749,18 +2917,30 @@ fn EntryTable(
                                                 // 勾选不应触发「打开详情」（单击）或「全屏页」（双击）。
                                                 on:click=|ev| ev.stop_propagation()
                                                 on:dblclick=|ev| ev.stop_propagation()
-                                                on:change=move |ev| {
-                                                    let c = code_for_check_change.clone();
-                                                    if event_target_checked(&ev) {
-                                                        batch_selected.update(|s| if !s.contains(&c) { s.push(c.clone()) });
-                                                    } else {
-                                                        batch_selected.update(|s| s.retain(|x| x != &c));
+                                                on:change={
+                                                    // `on:contextmenu` 上面那个 `move` 闭包已经把
+                                                    // `code_for_check_change` move 走了一次；这里要再
+                                                    // 用就得分一份独立的 owned 副本——在块表达式里
+                                                    // 提前 clone，move 闭包只拿这份副本，原变量留在外面
+                                                    // 给后续渲染继续用。
+                                                    let v = code_for_check_change.clone();
+                                                    move |ev| {
+                                                        let c = v.clone();
+                                                        if event_target_checked(&ev) {
+                                                            batch_selected.update(|s| if !s.contains(&c) { s.push(c.clone()) });
+                                                        } else {
+                                                            batch_selected.update(|s| s.retain(|x| x != &c));
+                                                        }
                                                     }
                                                 }
                                             />
                                             // 行号：用 <span> 而不是 input 自身的 attribute，避免被读屏器念成
                                             // 「第 1 行 可勾选 复选框 1」这种多余组合。
-                                            <span class="row-no">{row_no.to_string()}</span>
+                                            // 右键 handler 挂在外层 `<label>` 上（CSS 给 row-no 设了
+                                            // `pointer-events: none`，事件不会落到这里，落到 label）。
+                                            // 多选模式时 class 加 `multi-mode`，CSS 把它换成主色加粗——给用户
+                                            // 一眼可辨的「现在点行就只切多选」的视觉提示。
+                                            <span class=move || if multi_select_mode.get() { "row-no multi-mode" } else { "row-no" }>{row_no.to_string()}</span>
                                         </label>
                                     </td>
                                     <td class="title-cell"
@@ -2775,10 +2955,35 @@ fn EntryTable(
                                         // 双击的第二次 click（detail==2）交给 dblclick 处理，
                                         // 避免单击开合与双击互斥冲突。
                                         if ev.detail() > 1 { return; }
-                                        if selected.get_untracked() == code_for_click {
-                                            selected.set(String::new());
+                                        // 多选模式下：点标题也只切 batch_selected，不开面板。
+                                        // stop_propagation 避免点完标题又被 `<tr>` 的 on:click 翻一次——
+                                        // 两边逻辑对称，但叠加会把这次勾选再撤销掉。
+                                        if multi_select_mode.get_untracked() {
+                                            ev.stop_propagation();
+                                            let c = code_for_click.clone();
+                                            batch_selected.update(|s| {
+                                                if let Some(pos) = s.iter().position(|x| x == &c) {
+                                                    s.remove(pos);
+                                                } else {
+                                                    s.push(c);
+                                                }
+                                            });
+                                            return;
+                                        }
+                                        // 标题点击：行高亮永远置为该行，**不再翻手取消**——
+                                        // 无论点击多少次，同一行的 `.sel` 高亮都得保持（与
+                                        // 「该 Entry 始终处于选中状态」的需求对齐）。
+                                        // `panel_code` 单独切换开关：点同一行标题开 / 关
+                                        // 详情面板，让用户关掉面板时高亮仍在。
+                                        // 其他列点击走 `<tr>` 上的 on:click，只翻 `selected`，
+                                        // 不动 `panel_code`。
+                                        // stop_propagation 避免 `<tr>` 的 on:click 再翻一次。
+                                        ev.stop_propagation();
+                                        selected.set(code_for_click.clone());
+                                        if panel_code.get_untracked() == code_for_click {
+                                            panel_code.set(String::new());
                                         } else {
-                                            selected.set(code_for_click.clone());
+                                            panel_code.set(code_for_click.clone());
                                         }
                                     }
                                     on:dblclick=move |_| {
@@ -2795,9 +3000,38 @@ fn EntryTable(
                                             </span>
                                         })}</td>
                                     {names.iter().map(|name| {
-                                        if name.as_str() == COLUMN_CREATED_BY {
-                                            // 内置列：创建人单元格固定一行一格，与下面 `<td>` 的 tbody 表格一致。
-                                            return view! { <td class="mut">{creator.clone()}</td> }.into_any();
+                                        if let Some(field) = metadata_sort_field(name) {
+                                            // 4 个元信息列的单元格：账号型（创建人 / 更新人）展示姓名
+                                            // （账号已删时退回 id，避免空字符串），时间型走与详情面板
+                                            // 同源的 `short_time`；元信息列不参与内联编辑，纯净展示。
+                                            match field {
+                                                "createdBy" => {
+                                                    return view! { <td class="mut">{creator.clone()}</td> }.into_any();
+                                                }
+                                                "createdAt" => {
+                                                    let at = e.created_at.clone();
+                                                    return view! { <td class="mut">{short_time(&at)}</td> }.into_any();
+                                                }
+                                                "updatedBy" => {
+                                                    // 与创建人同一份查找逻辑：服务端回填优先，成员表兜底。
+                                                    let name = e
+                                                        .updated_by_account
+                                                        .as_ref()
+                                                        .map(|a| a.name.clone())
+                                                        .or_else(|| {
+                                                            members
+                                                                .iter()
+                                                                .find(|m| m.account_id == e.updated_by)
+                                                                .map(member_label)
+                                                        })
+                                                        .unwrap_or_else(|| "—".to_string());
+                                                    return view! { <td class="mut">{name}</td> }.into_any();
+                                                }
+                                                _ => {
+                                                    let at = e.updated_at.clone();
+                                                    return view! { <td class="mut">{short_time(&at)}</td> }.into_any();
+                                                }
+                                            }
                                         }
                                         // 优先直接打标；没有再看继承 / 覆盖推导来的（`source` 非空即为推导所得）。
                                         let direct = labels.iter()
@@ -2841,7 +3075,8 @@ fn EntryTable(
                                             });
                                             return match schema_for_edit {
                                                 Some(s) => view! {
-                                                    <td class="lblcell editing">
+                                                    <td class="lblcell editing"
+                                                        on:click=|ev| ev.stop_propagation()>
                                                         <LabelCellEditor
                                                             code=code_for_edit
                                                             name=name_for_edit
@@ -2852,7 +3087,8 @@ fn EntryTable(
                                                     </td>
                                                 }.into_any(),
                                                 None => view! {
-                                                    <td class="lblcell editing">
+                                                    <td class="lblcell editing"
+                                                        on:click=|ev| ev.stop_propagation()>
                                                         <div class="mut">"label removed"</div>
                                                     </td>
                                                 }.into_any(),
@@ -3014,7 +3250,6 @@ fn EntryTable(
                                             }
                                         }
                                     }).collect::<Vec<_>>()}
-                                    <td class="mut">{short_time(&e.updated_at)}</td>
                                 </tr>
                             }
                         }).collect::<Vec<_>>().into_any()
@@ -3897,8 +4132,8 @@ fn LabelDraft(rows: RwSignal<Vec<DraftLabel>>, members: RwSignal<Vec<Member>>) -
 /// 用选择代替自由文本输入——用户手写的展示名与服务端要求的 name 不一致会被拒绝，
 /// 让新建/配置视图在无声中失败。
 ///
-/// 顶部第一枚是「创建人」内置列：默认不勾选，勾上后在表格里固定插在标签列与更新时间列之间。
-/// 这里独立成一个 chip，不与 schema 行交错——内置列与标签列语义不同，混排会让勾选状态难追。
+/// 顶部先摆 4 枚元信息 chip（创建人 / 创建时间 / 更新人 / 更新时间），再摆工作空间的
+/// 全部标签 chip。元信息与标签语义不同，混排会让勾选状态难追——两类各成一段。
 #[component]
 fn ColumnPicker(
     schemas: RwSignal<Vec<LabelSchema>>,
@@ -3907,25 +4142,36 @@ fn ColumnPicker(
     let i18n: I18nController = use_i18n();
     view! {
         <div class="colpick">
-            // 内置列：「创建人」默认不显示，由用户在视图配置里勾上。
-            <label class=move || {
-                if show_created_by(&selected.get()) { "colchip on" } else { "colchip" }
-            }>
-                <input
-                    type="checkbox"
-                    prop:checked=move || show_created_by(&selected.get())
-                    on:change=move |_| {
-                        selected.update(|v| {
-                            if show_created_by(v) {
-                                v.retain(|x| x != COLUMN_CREATED_BY);
-                            } else {
-                                v.push(COLUMN_CREATED_BY.to_string());
+            {metadata_columns(&i18n).into_iter().map(|(col, _field, label)| {
+                // 三个闭包（class / checked / on:change）各自搬一份 `col` 字符串。
+                // 三个闭包都要查 `selected` 里有没有这个 sentinel；原值进 update 闭包后
+                // 还要再被 position/push 用一次，所以 on:change 那一份还得再 clone 一次。
+                let col_for_class = col.to_string();
+                let col_for_check = col.to_string();
+                let col_for_change = col.to_string();
+                let col_for_change_clone = col.to_string();
+                view! {
+                    <label class=move || {
+                        if selected.get().iter().any(|n| n == &col_for_class) { "colchip on" } else { "colchip" }
+                    }>
+                        <input
+                            type="checkbox"
+                            prop:checked=move || selected.get().iter().any(|n| n == &col_for_check)
+                            on:change=move |_| {
+                                let me = col_for_change_clone.clone();
+                                selected.update(|v| {
+                                    if let Some(i) = v.iter().position(|x| *x == me) {
+                                        v.remove(i);
+                                    } else {
+                                        v.push(col_for_change.clone());
+                                    }
+                                });
                             }
-                        });
-                    }
-                />
-                {move || i18n.t("entry.col_created_by")}
-            </label>
+                        />
+                        {label}
+                    </label>
+                }
+            }).collect::<Vec<_>>()}
             {move || {
                 let list = schemas.get();
                 if list.is_empty() {

@@ -600,6 +600,9 @@ impl RuleEngine {
             label_of: &|n| schemas.label_of(n),
             event: Some(ev),
             derived: &derived,
+            // 规则引擎事件评估没有审计钩子——`Label changed` 也只在视图查询里生效。
+            changed_during: None,
+            changed_value: None,
         };
         Ok(rule.trigger.evaluate(&entry, &labels, &env))
     }
@@ -627,6 +630,8 @@ impl RuleEngine {
                     label_of: &|n| schemas.label_of(n),
                     event: None,
                     derived: &derived,
+                    changed_during: None,
+                    changed_value: None,
                 };
                 q.evaluate(e, &labels, &env)
             })
@@ -896,6 +901,8 @@ mod tests {
             label_of: &label_of,
             event: Some(ev),
             derived: &[],
+            changed_during: None,
+            changed_value: None,
         };
         q.evaluate(&e, labels, &env)
     }

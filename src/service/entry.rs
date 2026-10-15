@@ -6,7 +6,7 @@ use chrono::Utc;
 use ulid::Ulid;
 
 use crate::domain::label::{encode_label_value_for_index, explode_label_value_for_index};
-use crate::domain::query::{extract_index_hints, IndexHint};
+use crate::domain::query::{extract_index_hints, IndexHint, Interval};
 use crate::domain::view::{SortField, SortKey, SortSpec};
 use crate::domain::{
     generate_entry_code, AuditAction, AuditLog, DerivedLabel, Entry, EvalEnv, InheritanceGraph,
@@ -274,12 +274,7 @@ impl EntryService {
     /// 软删除：仅置 deleted_at，不物理移除。重复删除幂等（第二次直接 Ok）。
     ///
     /// `actor_name` 必传：删除消息里要冗余展示发起人姓名（`Message.actor_name`）。
-    pub fn soft_delete(
-        &self,
-        actor: Ulid,
-        actor_name: &str,
-        code: &str,
-    ) -> Result<(), AppError> {
+    pub fn soft_delete(&self, actor: Ulid, actor_name: &str, code: &str) -> Result<(), AppError> {
         let mut entry = self.get(code)?.ok_or(AppError::NotFound)?;
         if entry.is_deleted() {
             return Ok(());
@@ -841,6 +836,49 @@ impl EntryService {
             } else {
                 std::collections::HashMap::new()
             };
+        // 标签值历史变更：仅在表达式用到 Changed/ChangedValue 时才扫审计。
+        // 单 workspace 内 labeling 审计量级小（每条 entry 几十到几百条），
+        // 全量入内存按 entry_code 索引，与 `labels_map` 同构。
+        let audit_map: std::collections::HashMap<String, Vec<AuditLog>> =
+            if query.contains_label_change() {
+                let codes: HashSet<String> = rows.iter().map(|e| e.code.clone()).collect();
+                load_label_change_audits(&self.store, ws, &codes)?
+            } else {
+                std::collections::HashMap::new()
+            };
+        let empty_audit: Vec<AuditLog> = Vec::new();
+        let audit_of = |code: &str| {
+            audit_map
+                .get(code)
+                .map(Vec::as_slice)
+                .unwrap_or(&empty_audit)
+        };
+        // Changed：区间 `interval` 内至少一条 `LabelingSet` / `LabelingRemoved` 事件，
+        // 且日志涉及的标签名 == name。区间判定由 `Interval::contains` 负责（开闭端点语义）。
+        let changed_during = |code: &str, name: &str, interval: &Interval| -> bool {
+            let logs = audit_of(code);
+            logs.iter().any(|l| {
+                audit_label_name(l).as_deref() == Some(name) && interval.contains(l.at)
+            })
+        };
+        // ChangedValue：区间 `interval` 内至少一条事件，其 before.value == from
+        // 且 after.value == to。`from` / `to` 任一为 `None` 表示该侧通配（任意值匹配）。
+        // `audit_label_before_value` / `audit_label_value` 已处理 LabelingSet /
+        // LabelingRemoved 两种 action。
+        let changed_value = |code: &str,
+                             name: &str,
+                             from: Option<&serde_json::Value>,
+                             to: Option<&serde_json::Value>,
+                             interval: &Interval|
+         -> bool {
+            let logs = audit_of(code);
+            logs.iter().any(|l| {
+                audit_label_name(l).as_deref() == Some(name)
+                    && interval.contains(l.at)
+                    && from.is_none_or(|f| audit_label_before_value(l) == *f)
+                    && to.is_none_or(|t| audit_label_value(l) == *t)
+            })
+        };
         let mut matched: Vec<Entry> = rows
             .into_iter()
             .filter(|e| {
@@ -859,6 +897,8 @@ impl EntryService {
                     label_of: &label_of,
                     event: None,
                     derived,
+                    changed_during: Some(&changed_during),
+                    changed_value: Some(&changed_value),
                 };
                 query.evaluate(e, labels, &env)
             })
@@ -920,6 +960,112 @@ pub fn list_entries(store: &DocStore, workspace_id: Ulid) -> Result<Vec<Entry>, 
     }
     entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(entries)
+}
+
+/// 一次性按工作空间加载所有 `LabelingSet` / `LabelingRemoved` 审计，
+/// 按 entry_code（= resource_id）索引成 `HashMap<entry_code, Vec<AuditLog>>`。
+///
+/// 索引键 `cf::AUDIT_LOGS_BY_RESOURCE` 的形状是 `(resource_type \0 resource_id \0 desc8 \0 id16)`；
+/// 这里前缀用 `"labeling\0"` 把同一 type 的所有条目一次性扫出来，再按 workspace 过滤——
+/// 单 workspace 内的 labeling 审计量级小（与 `labels_map` 同构），全量入内存足够。
+fn load_label_change_audits(
+    store: &DocStore,
+    workspace_id: Ulid,
+    entry_codes: &HashSet<String>,
+) -> Result<std::collections::HashMap<String, Vec<AuditLog>>, AppError> {
+    let prefix = b"labeling\0".to_vec();
+    let rows = store.scan_prefix(cf::AUDIT_LOGS_BY_RESOURCE, &prefix)?;
+    let mut by_code: std::collections::HashMap<String, Vec<AuditLog>> =
+        std::collections::HashMap::new();
+    for (key, _) in rows {
+        // 主键 tail = desc8 + id16，从索引键末尾截取。
+        if key.len() < 24 {
+            continue;
+        }
+        let log_key = &key[key.len() - 24..];
+        let Some(log) = store.get::<AuditLog>(cf::AUDIT_LOGS, log_key)? else {
+            continue;
+        };
+        if log.workspace_id != Some(workspace_id) {
+            continue;
+        }
+        if !matches!(
+            log.action,
+            AuditAction::LabelingSet | AuditAction::LabelingRemoved
+        ) {
+            continue;
+        }
+        if !entry_codes.contains(&log.resource_id) {
+            continue;
+        }
+        by_code
+            .entry(log.resource_id.clone())
+            .or_default()
+            .push(log);
+    }
+    Ok(by_code)
+}
+
+/// 从 audit 的 before/after JSON 快照里提取被变更标签的 `label_name`。
+/// 审计快照是 `Labeling` 的 serde_json 序列化结果——字段是 snake_case
+///（`label_name` / `entry_code` / `value` / `set_by` / `set_at`）。
+/// 解析失败（理论上不会发生，审计与打标同事务写入）→ 返回 None，调用方跳过该条。
+///
+/// 返回的是 owned `String`——`serde_json::Value` 是局部变量，引用它会撞 borrow checker；
+/// 单 workspace 内每次 evaluate 调用的次数与 audit 条数同量级（通常几十），String 分配可接受。
+fn audit_label_name(log: &AuditLog) -> Option<String> {
+    let s = log.after.as_deref().or(log.before.as_deref())?;
+    let v: serde_json::Value = serde_json::from_str(s).ok()?;
+    v.get("label_name")
+        .and_then(|x| x.as_str())
+        .map(str::to_string)
+}
+
+/// 从 audit 快照的 JSON 里反序列化 `Labeling`，取其 `value` 并走
+/// `LabelValue::to_json()` 还原成与表达式里 `from` / `to` 同形状的 `serde_json::Value`。
+///
+/// `LabelingSet` 的 before 可能是 None（首次打标）：返回 `Value::Null`。
+/// `LabelingRemoved` 的 after 必然 None：返回 `Value::Null`，与「值变为缺失」对齐。
+///
+/// 用于 Op::ChangedValue 的「前值匹配」：用户写 `from "open" to "closed"` 时，
+/// 要在审计里找出 before.value == "open" 且 after.value == "closed" 的事件。
+fn audit_label_value_from(s: &str) -> Option<serde_json::Value> {
+    let labeling: Labeling = serde_json::from_str(s).ok()?;
+    Some(labeling.value.to_json())
+}
+
+/// `audit_label_before_value` / `audit_label_value` 的薄包装：分别按
+/// `log.before` / `log.after` 抽取 LabelValue 并归一化为 JSON。
+/// 任一侧缺失（LabelingSet 首次打标 / LabelingRemoved 移除）→ 视为 `Value::Null`。
+fn audit_label_before_value(log: &AuditLog) -> serde_json::Value {
+    if log.action == AuditAction::LabelingRemoved {
+        // 移除操作没有 after；before 仍是旧值。
+        return log
+            .before
+            .as_deref()
+            .and_then(audit_label_value_from)
+            .unwrap_or(serde_json::Value::Null);
+    }
+    // LabelingSet：before 可能为 None（首次打标）。
+    log.before
+        .as_deref()
+        .and_then(audit_label_value_from)
+        .unwrap_or(serde_json::Value::Null)
+}
+
+/// 用于 Op::ChangedValue 的「后值匹配」：与 `audit_label_before_value` 配对。
+fn audit_label_value(log: &AuditLog) -> serde_json::Value {
+    if log.action == AuditAction::LabelingRemoved {
+        return serde_json::Value::Null;
+    }
+    if let Some(v) = log.after.as_deref().and_then(audit_label_value_from) {
+        return v;
+    }
+    // 兜底：理论上 LabelingSet 一定有 after。
+    log.before
+        .as_deref()
+        .and_then(audit_label_value_from)
+        .unwrap_or(serde_json::Value::Null)
 }
 
 /// 把 `IndexHint` 列表转成 entry_code 候选集合：多个 hint 取交集。

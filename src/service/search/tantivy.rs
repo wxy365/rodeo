@@ -263,12 +263,7 @@ impl SearchBackend for TantivyBackend {
     fn remove_entry(&self, code: &str) -> Result<(), AppError> {
         TantivyBackend::remove_entry(self, code)
     }
-    fn search(
-        &self,
-        ws: Ulid,
-        keyword: &str,
-        limit: usize,
-    ) -> Result<Vec<String>, AppError> {
+    fn search(&self, ws: Ulid, keyword: &str, limit: usize) -> Result<Vec<String>, AppError> {
         TantivyBackend::search(self, ws, keyword, limit)
     }
     fn backfill(&self, store: &DocStore) -> Result<usize, AppError> {

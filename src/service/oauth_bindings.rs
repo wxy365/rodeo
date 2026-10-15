@@ -55,10 +55,7 @@ impl OAuthBindingsService {
 
     /// 列出该账号所有 OAuth 绑定（跨所有 provider）。O(N) —— 扫全 CF + 过滤。
     /// 用法：`/account` 面板渲染已绑第三方列表、`myOAuthBindings` GraphQL resolver。
-    pub fn find_all_by_account(
-        &self,
-        account_id: Ulid,
-    ) -> Result<Vec<IdentityBinding>, AppError> {
+    pub fn find_all_by_account(&self, account_id: Ulid) -> Result<Vec<IdentityBinding>, AppError> {
         let mut out = Vec::new();
         for (_k, v) in self.store.scan_prefix(cf::OAUTH_BINDINGS, b"")? {
             let b: IdentityBinding = bincode::deserialize(&v)?;

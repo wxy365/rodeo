@@ -476,9 +476,7 @@ impl LabelService {
         if name.is_empty() {
             return Err(AppError::Internal("标签名称不能为空".to_string()));
         }
-        let schema = self
-            .get_schema(ws_id, name)?
-            .ok_or(AppError::NotFound)?;
+        let schema = self.get_schema(ws_id, name)?.ok_or(AppError::NotFound)?;
         let before = serde_json::to_string(&schema).unwrap_or_default();
         let audit = AuditLog::new(
             AuditAction::LabelSchemaDeleted,
@@ -508,11 +506,7 @@ impl LabelService {
     /// 之所以在这里不复用 service/entry.rs::extract_entry_code_from_key（私有）：
     /// 拷贝 6 行比跨 crate 改可见性干净；语义完全一致（entry_code 由 generate_entry_code
     /// 锁死为 16 字符 base62，末 16 字节即 code 的 utf-8）。
-    pub fn cascade_delete(
-        &self,
-        ws_id: Ulid,
-        name: &str,
-    ) -> Result<Vec<String>, AppError> {
+    pub fn cascade_delete(&self, ws_id: Ulid, name: &str) -> Result<Vec<String>, AppError> {
         let name = name.trim();
         let label_prefix = keys::labeling_by_label_prefix(ws_id, name);
         let mut ops = Vec::new();

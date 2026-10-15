@@ -111,11 +111,15 @@ impl Tool for SetLabelsTool {
         let labeling = self
             .services
             .entry
-            .set_labeling(self.auth.account_id, &args.entry_code, &args.label_name, &value)
+            .set_labeling(
+                self.auth.account_id,
+                &args.entry_code,
+                &args.label_name,
+                &value,
+            )
             .map_err(|e| SetLabelsError::Server(e.to_string()))?;
         // 回写后把 LabelValue 转回 JSON 形态；server 内部校验过 = 一定能反序列化。
-        let value_json =
-            serde_json::to_value(&labeling.value).unwrap_or(Value::Null);
+        let value_json = serde_json::to_value(&labeling.value).unwrap_or(Value::Null);
         Ok(SetLabelsOutput {
             entry_code: labeling.entry_code,
             label_name: labeling.label_name,

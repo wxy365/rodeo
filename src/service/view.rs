@@ -41,6 +41,19 @@ fn time_family(value_type: &str) -> Option<TimeFamily> {
     }
 }
 
+/// 列名是否为 Entry 元信息的 sentinel。返回非 `None` 时为 `sortable_th` 用的
+/// 排序字段名（与 `domain::view::SortField::from_str` 的内置分支对齐）。
+/// 与 `frontend/pages/workspace_main.rs` 的 `COLUMN_*` 常量同步。
+pub(crate) fn is_metadata_column(name: &str) -> Option<&'static str> {
+    match name {
+        "@@createdBy" => Some("createdBy"),
+        "@@createdAt" => Some("createdAt"),
+        "@@updatedBy" => Some("updatedBy"),
+        "@@updatedAt" => Some("updatedAt"),
+        _ => None,
+    }
+}
+
 impl ViewService {
     pub fn new(
         store: Arc<DocStore>,
@@ -75,6 +88,12 @@ impl ViewService {
         }
         let schemas = self.schemas(ws)?;
         for c in columns {
+            // Entry 的 4 条元信息（创建人 / 创建时间 / 更新人 / 更新时间）走 sentinel
+            // 字符串（`@@createdBy` 之类），并非 label schema；详见 `frontend/pages/workspace_main.rs`
+            // 的 `COLUMN_*` 常量。这里把它们视作合法列引用，其它任何不存在的列都拒。
+            if is_metadata_column(c).is_some() {
+                continue;
+            }
             if !schemas.iter().any(|s| &s.name == c) {
                 return Err(AppError::InvalidQuery(format!("列引用了不存在的标签: {c}")));
             }
@@ -433,8 +452,7 @@ impl ViewService {
             let mut id_bytes = [0u8; 16];
             id_bytes.copy_from_slice(&k[16..32]);
             let view_id = Ulid::from_bytes(id_bytes);
-            let Some(bytes) = self.store.get_raw(cf::VIEWS, &keys::view_key(view_id))?
-            else {
+            let Some(bytes) = self.store.get_raw(cf::VIEWS, &keys::view_key(view_id))? else {
                 continue;
             };
             let mut view: View = bincode::deserialize(&bytes)?;
@@ -596,7 +614,7 @@ impl ViewService {
             }
             if let Err(e) = self.messages.send(
                 actor,
-                "",  // actor_name 在 service 层拿不到——保留空串，UI 显示时回退
+                "", // actor_name 在 service 层拿不到——保留空串，UI 显示时回退
                 view.workspace_id,
                 "",
                 "view_deleted",
@@ -676,11 +694,8 @@ mod tests {
         // 测试用空 hub——ViewService.delete 在 actor != workspace owner 的路径上不会真发，
         // 而 Owner 的视图删除场景触发时 hub 是 Some 但 push_to 在测试里走空 sender，
         // 不影响断言。
-        let msg_svc = crate::service::message::MessageService::new(
-            store.clone(),
-            ws_svc.clone(),
-            None,
-        );
+        let msg_svc =
+            crate::service::message::MessageService::new(store.clone(), ws_svc.clone(), None);
         let svc = ViewService::new(store.clone(), ws_svc, msg_svc);
         (dir, store, svc, ws.id, actor)
     }

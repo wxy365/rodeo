@@ -92,8 +92,7 @@ fn build_sort_spec(sorts: Option<Vec<SortInput>>) -> SortSpec {
             let desc_json = s.desc;
             let field = match field_json {
                 None => SortField::UpdatedAt,
-                Some(f) => SortField::from_str(&f)
-                    .unwrap_or_else(|| SortField::Label(f)),
+                Some(f) => SortField::from_str(&f).unwrap_or_else(|| SortField::Label(f)),
             };
             SortKey {
                 field,
