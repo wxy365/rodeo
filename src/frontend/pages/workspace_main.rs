@@ -283,6 +283,14 @@ fn label_options(schemas: Vec<LabelSchema>, time: bool) -> Vec<impl IntoView> {
         .collect()
 }
 
+/// 右键菜单承载哪类目标。视图导航栏行写 `View`，Entry 表格标题列写 `Entry`。
+/// 渲染时按 tag 分派——同一份浮层 CSS、同一套点外关闭逻辑。
+#[derive(Clone)]
+enum VMenuTarget {
+    View(String),
+    Entry(String),
+}
+
 #[component]
 pub fn WorkspaceMain() -> impl IntoView {
     let params = use_params_map();
@@ -512,7 +520,7 @@ pub fn WorkspaceMain() -> impl IntoView {
     // 复用 batch_selected（与批量按钮同读同一份信号，行为一致）。
     let _ = provide_agent_context(active_id, batch_selected);
     // 视图导航栏右键菜单：(client_x, client_y, view_id)。None 表示关闭。
-    let vmenu: RwSignal<Option<(i32, i32, String)>> = RwSignal::new(None);
+    let vmenu: RwSignal<Option<(i32, i32, VMenuTarget)>> = RwSignal::new(None);
     // ---- 时间轴视图 ----
     // 是否切到时间轴渲染。切换视图时归零（见 `set_active`）；配置被清掉时
     // `tl_active` 会自行变假，不必再额外同步。
@@ -617,7 +625,11 @@ pub fn WorkspaceMain() -> impl IntoView {
     // 坐标塞进 `vmenu` 让浮层定位。基础视图 (`is_default`) 跳过该行为，已在
     // 叶子行的 contextmenu 闭包里就地过滤，避免每次右键都回查 view_list。
     let on_context_view = Callback::new(move |(id, x, y): (String, i32, i32)| {
-        vmenu.set(Some((x, y, id)));
+        vmenu.set(Some((x, y, VMenuTarget::View(id))));
+    });
+    // 标题列右键：弹 Entry 行菜单（复制 code / 删除）。
+    let on_context_entry: Callback<(String, i32, i32)> = Callback::new(move |(code, x, y)| {
+        vmenu.set(Some((x, y, VMenuTarget::Entry(code))));
     });
 
     // 视图导航栏右键菜单：点菜单以外的位置即关闭。
@@ -1823,6 +1835,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                             // 也让 EntryPanel（依赖同一份刷新节拍）同步刷新其 labels 缓存。
                                             refresh.update(|n| *n += 1);
                                         })
+                                        on_context_title=on_context_entry
                                     />
                                 }
                                 .into_any()
@@ -2324,37 +2337,91 @@ pub fn WorkspaceMain() -> impl IntoView {
                 }.into_any()
             } else { view! { <div></div> }.into_any() }}
 
-            {move || vmenu.get().map(|(x, y, vid)| {
-                let cur = view_list.get_untracked().into_iter()
-                    .find(|v| v.id == vid);
-                let is_default = cur.as_ref().is_some_and(|v| v.is_default);
-                let vid_cfg = vid.clone();
-                let vid_del = vid.clone();
-                view! {
-                    <div class="vmenu"
-                        style=format!("left:{x}px;top:{y}px")
-                        on:mousedown=move |ev| ev.stop_propagation()
-                        on:contextmenu=move |ev| ev.prevent_default()>
-                        <button on:click=move |_| {
-                            vmenu.set(None);
-                            // 复用现有 show_config_dialog 打开逻辑。
-                            open_config_for.run(vid_cfg.clone());
-                        }>{i18n.t("entry.config_view")}</button>
-                        // 删除只对非基础视图开放——基础视图固定存在、不可删。
-                        {move || if is_default {
-                            ().into_any()
-                        } else {
-                            let vid_del_btn = vid_del.clone();
-                            view! {
+            {move || vmenu.get().map(|(x, y, target)| {
+                match target {
+                    VMenuTarget::View(vid) => {
+                        let cur = view_list.get_untracked().into_iter()
+                            .find(|v| v.id == vid);
+                        let is_default = cur.as_ref().is_some_and(|v| v.is_default);
+                        let vid_cfg = vid.clone();
+                        let vid_del = vid.clone();
+                        view! {
+                            <div class="vmenu"
+                                style=format!("left:{x}px;top:{y}px")
+                                on:mousedown=move |ev| ev.stop_propagation()
+                                on:contextmenu=move |ev| ev.prevent_default()>
+                                <button on:click=move |_| {
+                                    vmenu.set(None);
+                                    // 复用现有 show_config_dialog 打开逻辑。
+                                    open_config_for.run(vid_cfg.clone());
+                                }>{i18n.t("entry.config_view")}</button>
+                                // 删除只对非基础视图开放——基础视图固定存在、不可删。
+                                {move || if is_default {
+                                    ().into_any()
+                                } else {
+                                    let vid_del_btn = vid_del.clone();
+                                    view! {
+                                        <button class="danger"
+                                            on:click=move |_| {
+                                                vmenu.set(None);
+                                                delete_view_cb.run(vid_del_btn.clone());
+                                            }>{i18n.t("entry.delete_view")}</button>
+                                    }.into_any()
+                                }}
+                            </div>
+                        }.into_any()
+                    }
+                    VMenuTarget::Entry(code) => {
+                        let code_copy = code.clone();
+                        let code_del = code.clone();
+                        let copy_code: Callback<()> = Callback::new(move |_| {
+                            let c = code_copy.clone();
+                            #[cfg(target_arch = "wasm32")]
+                            {
+                                if let Some(window) = web_sys::window() {
+                                    let nav = window.navigator();
+                                    let _ = nav.clipboard().write_text(&c);
+                                }
+                            }
+                        });
+                        let delete_entry_cb: Callback<()> = Callback::new(move |_| {
+                            let c = code_del.clone();
+                            spawn_local(async move {
+                                match delete_entry(&c).await {
+                                    Ok(true) => {
+                                        // 删除后清掉选中态与详情面板，并触发表格刷新。
+                                        if selected.get_untracked() == c {
+                                            selected.set(String::new());
+                                        }
+                                        if panel_code.get_untracked() == c {
+                                            panel_code.set(String::new());
+                                        }
+                                        batch_selected.update(|s| s.retain(|x| x != &c));
+                                        refresh.update(|n| *n += 1);
+                                    }
+                                    Ok(false) => error.set(Some(i18n.t("entry.errors.delete_failed"))),
+                                    Err(e) => error.set(Some(e)),
+                                }
+                            });
+                        });
+                        view! {
+                            <div class="vmenu"
+                                style=format!("left:{x}px;top:{y}px")
+                                on:mousedown=move |ev| ev.stop_propagation()
+                                on:contextmenu=move |ev| ev.prevent_default()>
+                                <button on:click=move |_| {
+                                    vmenu.set(None);
+                                    copy_code.run(());
+                                }>{i18n.t("entry.copy_code")}</button>
                                 <button class="danger"
                                     on:click=move |_| {
                                         vmenu.set(None);
-                                        delete_view_cb.run(vid_del_btn.clone());
-                                    }>{i18n.t("entry.delete_view")}</button>
-                            }.into_any()
-                        }}
-                    </div>
-                }.into_any()
+                                        delete_entry_cb.run(());
+                                    }>{i18n.t("entry.delete_entry")}</button>
+                            </div>
+                        }.into_any()
+                    }
+                }
             })}
         </div>
     }
@@ -2593,6 +2660,9 @@ fn EntryTable(
     on_sort: Callback<SortRequest>,
     /// 表格内联标签编辑成功后通知：让外层重新拉一次条目表，让新值立刻反映在表格。
     on_label_changed: Callback<()>,
+    /// 标题列右键：参数 `(entry_code, client_x, client_y)`，外层把它写进 vmenu
+    /// 弹「复制 code / 删除」菜单。点其他列不动这个 handler。
+    on_context_title: Callback<(String, i32, i32)>,
 ) -> impl IntoView {
     let i18n: I18nController = use_i18n();
     let cols = move || columns.get();
@@ -2813,6 +2883,10 @@ fn EntryTable(
                             // move 走了，这里的非 move 闭包拿不到原值，会编译失败。
                             let code_for_row_click = e.code.clone();
                             let code_for_click = e.code.clone();
+                            // 给标题列右键闭包一份独立变量：on:click 已是 `move` 闭包
+                            // 把 code_for_click capture 走，第二个 `move` 闭包
+                            // on:contextmenu 再 capture 同名变量会触发 E0382。
+                            let code_for_ctx_menu = e.code.clone();
                             let code_for_dbl = e.code.clone();
                             let code_for_check = e.code.clone();
                             let code_for_check_change = e.code.clone();
@@ -2988,6 +3062,17 @@ fn EntryTable(
                                     }
                                     on:dblclick=move |_| {
                                         on_open.run(code_for_dbl.clone());
+                                    }
+                                    on:contextmenu=move |ev: leptos::ev::MouseEvent| {
+                                        // 标题列右键：阻止浏览器默认菜单、把坐标交给外层
+                                        // 写 vmenu，按 client_x/client_y 定位浮层。
+                                        // 行高亮与详情面板不受这次点击影响——只弹菜单。
+                                        ev.prevent_default();
+                                        on_context_title.run((
+                                            code_for_ctx_menu.clone(),
+                                            ev.client_x(),
+                                            ev.client_y(),
+                                        ));
                                     }
                                 >{title_text.clone()}{counts
                                         .get()
