@@ -134,3 +134,10 @@ pre_segment = true
 # prefix = "rodeo"
 # 启动时删除超过 N 天的同前缀日志文件。0 = 不自动清理（由外部 logrotate 处理）。
 # keep_days = 7
+
+# ── query ──────────────────────────────────────────────────────────────
+# 视图查询相关开关。
+[query]
+# 强制走 Legacy 路径（load-all + in-memory filter）。cursor 索引出问题时
+# 临时回滚用；走此模式 20M workspace 下会慢。
+# force_legacy_path = false

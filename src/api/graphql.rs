@@ -1089,6 +1089,17 @@ pub struct PageInput {
     limit: Option<i32>,
 }
 
+impl Default for PageInput {
+    fn default() -> Self {
+        Self {
+            page: None,
+            page_size: None,
+            cursor: None,
+            limit: None,
+        }
+    }
+}
+
 impl PageInput {
     fn to_page(&self) -> EntryPageInput {
         EntryPageInput {
@@ -1932,15 +1943,18 @@ impl Query {
         let schemas = gql.services.label.list_schemas(ws)?;
 
         let page = page.unwrap_or_default();
-        let use_cursor_path = page.cursor.is_some()
-            || (gql.services.entry_index.sort_is_indexed(ws, &sort, &schemas)
-                && (page.cursor.is_some() || page.page.unwrap_or(1) <= 1));
+        // [query] force_legacy_path = true → 强制 Legacy 路径，便于 cursor 索引
+        // 出问题时的紧急回滚。
+        let use_cursor_path = !gql.services.config.query.force_legacy_path
+            && (page.cursor.is_some()
+                || (gql.services.entry_index.sort_is_indexed(ws, &sort, &schemas)
+                    && (page.cursor.is_some() || page.page.unwrap_or(1) <= 1)));
 
         let (result, page_for_response, page_size_for_response) = if use_cursor_path {
             if page.cursor.is_some() && !gql.services.entry_index.sort_is_indexed(ws, &sort, &schemas) {
                 return Err(AppError::InvalidQuery("当前排序不支持 cursor 分页".to_string()).into());
             }
-            let input = EntryQueryInput {
+            let input = crate::service::entry::QueryInput {
                 page: page.page.map(|p| p as u32),
                 page_size: page.page_size.map(|p| p as u32),
                 cursor: page.cursor,
@@ -1999,6 +2013,7 @@ impl Query {
                 page: 1,
                 page_size: limit as i32,
                 label_names: Vec::new(),
+                next_cursor: None,
             });
         }
         let codes = search.search(ws, &keyword, limit)?;
@@ -2021,6 +2036,7 @@ impl Query {
             page: 1,
             page_size: limit as i32,
             label_names: Vec::new(),
+            next_cursor: None,
         })
     }
 

@@ -176,7 +176,7 @@ impl Services {
             entry,
             comment,
             attachment,
-            label: LabelService::new(store.clone(), entry_index.clone()),
+            label: LabelService::new(store.clone()).with_index(entry_index.clone()),
             audit: AuditService::new(store.clone()),
             view,
             ai: AiService::new(store.clone()),

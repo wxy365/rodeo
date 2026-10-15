@@ -19,6 +19,8 @@ pub struct Config {
     pub search: SearchConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
+    #[serde(default)]
+    pub query: QueryConfig,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -186,6 +188,23 @@ impl Default for LoggingConfig {
             dir: default_log_dir(),
             prefix: default_log_prefix(),
             keep_days: default_log_keep_days(),
+        }
+    }
+}
+
+/// 视图查询相关开关（plan 2026-10-15）。
+#[derive(Debug, Clone, Deserialize)]
+pub struct QueryConfig {
+    /// 强制走 Legacy 路径（load-all + in-memory filter）。cursor 索引出问题时
+    /// 临时回滚用；走此模式 20M workspace 下会慢。
+    #[serde(default)]
+    pub force_legacy_path: bool,
+}
+
+impl Default for QueryConfig {
+    fn default() -> Self {
+        Self {
+            force_legacy_path: false,
         }
     }
 }

@@ -4,8 +4,8 @@ use std::sync::Arc;
 use ulid::Ulid;
 
 use crate::domain::{
-    AuditAction, AuditLog, InheritanceGraph, LabelLink, LabelSchema, LabelValue, LabelValueType,
-    LinkKind, ValueColor, RESERVED_FIELDS,
+    AuditAction, AuditLog, Entry, InheritanceGraph, Labeling, LabelLink, LabelSchema, LabelValue,
+    LabelValueType, LinkKind, ValueColor, RESERVED_FIELDS,
 };
 use crate::error::AppError;
 use crate::service::audit::audit_ops;
@@ -274,15 +274,24 @@ fn resolve_default(
 /// list_schemas 天然返回内置 + 自定义。
 pub struct LabelService {
     store: Arc<DocStore>,
-    index: Arc<crate::service::entry_index::EntryIndexService>,
+    /// 启动期由 `Services::new` 注入；测试里是 None（不调 enable_sortable）。
+    index: Option<Arc<crate::service::entry_index::EntryIndexService>>,
 }
 
 impl LabelService {
-    pub fn new(
-        store: Arc<DocStore>,
+    pub fn new(store: Arc<DocStore>) -> Self {
+        Self {
+            store,
+            index: None,
+        }
+    }
+
+    pub fn with_index(
+        mut self,
         index: Arc<crate::service::entry_index::EntryIndexService>,
     ) -> Self {
-        Self { store, index }
+        self.index = Some(index);
+        self
     }
 
     /// 修复末尾新增字段之前落库的标签定义。bincode 按位置编码，末尾新增的字段会让
@@ -602,7 +611,9 @@ impl LabelService {
             self.store.write_batch(ops)?;
         }
         // 标记 (ws, cf) 已覆盖 —— 启动期灌库也会再覆盖一次。
-        self.index.mark_covered(ws_id, cf_name_static);
+        if let Some(idx) = &self.index {
+            idx.mark_covered(ws_id, cf_name_static);
+        }
         Ok(count)
     }
 }

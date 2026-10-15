@@ -16,7 +16,8 @@ use ulid::Ulid;
 
 use crate::domain::label::LabelSchema;
 use crate::domain::view::{SortField, SortSpec};
-use crate::storage::{cf, DocStore};
+use crate::error::AppError;
+use crate::storage::{cf, BatchOp, DocStore};
 
 pub struct EntryIndexService {
     #[allow(dead_code)]
@@ -91,7 +92,6 @@ impl EntryIndexService {
         use crate::storage::keys::{
             idx_created_key, idx_label_key, idx_title_key, idx_updated_key, label_bucket_cf,
         };
-        use crate::storage::doc::BatchOp;
 
         // 列所有 workspaces
         let workspaces: Vec<Ulid> = {
