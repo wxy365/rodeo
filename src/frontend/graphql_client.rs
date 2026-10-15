@@ -1477,6 +1477,9 @@ pub struct EntryPage {
     pub page_size: i64,
     #[serde(default)]
     pub label_names: Vec<String>,
+    /// 服务端走 cursor 路径且后面还有匹配时返回。
+    #[serde(default)]
+    pub next_cursor: Option<String>,
 }
 
 const VIEW_FIELDS: &str = "id name query queryExpr sorts { field desc } columns isShared ownerId \
@@ -1505,11 +1508,13 @@ pub async fn query_entries(
     sorts: &[ViewSort],
     page: i64,
     page_size: i64,
+    cursor: Option<&str>,
+    limit: Option<i64>,
 ) -> Result<EntryPage, String> {
     let q = format!(
         "query($id: ID!, $q: JSON, $s: [SortInput!], $p: PageInput) {{ \
          queryEntries(workspaceId: $id, query: $q, sorts: $s, page: $p) {{ \
-         items {{ {ENTRY_FIELDS} }} total page pageSize labelNames }} }}"
+         items {{ {ENTRY_FIELDS} }} total page pageSize labelNames nextCursor }} }}"
     );
     let data = graphql(
         &q,
@@ -1517,7 +1522,12 @@ pub async fn query_entries(
             "id": workspace_id,
             "q": query,
             "s": sorts_var(sorts),
-            "p": { "page": page, "pageSize": page_size },
+            "p": {
+                "page": page,
+                "pageSize": page_size,
+                "cursor": cursor,
+                "limit": limit,
+            },
         }),
     )
     .await?;
@@ -1537,7 +1547,7 @@ pub async fn search_entries(
     let q = format!(
         "query($id: ID!, $k: String!, $l: Int) {{ \
          searchEntries(workspaceId: $id, keyword: $k, limit: $l) {{ \
-         items {{ {ENTRY_FIELDS} }} total page pageSize labelNames }} }}"
+         items {{ {ENTRY_FIELDS} }} total page pageSize labelNames nextCursor }} }}"
     );
     let data = graphql(
         &q,

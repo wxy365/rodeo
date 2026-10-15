@@ -926,7 +926,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                 let ep = if all {
                     query_all_entries(&ws.id, &ast, &sorts).await?
                 } else {
-                    query_entries(&ws.id, &ast, &sorts, page_now, page_size).await?
+                    query_entries(&ws.id, &ast, &sorts, page_now, page_size, None, None).await?
                 };
                 let schema_list = label_schemas(&ws.id).await?;
                 // 成员表只在 Account 型标签或账号列出现时才用得上，但那是加载后的才知道的
