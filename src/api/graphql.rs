@@ -1950,6 +1950,14 @@ impl Query {
                 || (gql.services.entry_index.sort_is_indexed(ws, &sort, &schemas)
                     && (page.cursor.is_some() || page.page.unwrap_or(1) <= 1)));
 
+        // 回滚开关下 client 仍发 cursor：必须显式拒绝，不能静默吃掉 cursor 走 Legacy。
+        if gql.services.config.query.force_legacy_path && page.cursor.is_some() {
+            return Err(AppError::InvalidQuery(
+                "force_legacy_path 开启时不支持 cursor 分页，请改用 page".to_string(),
+            )
+            .into());
+        }
+
         let (result, page_for_response, page_size_for_response) = if use_cursor_path {
             if page.cursor.is_some() && !gql.services.entry_index.sort_is_indexed(ws, &sort, &schemas) {
                 return Err(AppError::InvalidQuery("当前排序不支持 cursor 分页".to_string()).into());

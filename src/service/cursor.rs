@@ -12,9 +12,14 @@ use crate::domain::cursor::{Cursor, CursorValue};
 use crate::domain::view::{SortField, SortSpec};
 use crate::error::AppError;
 
-/// 把 SortSpec 规范成 JSON 字符串，再 fnv1a 64。键序保持原样。
+/// 把 SortSpec 规范化后 fnv1a 64。规范化：keys 按 field 名字典序排序后再序列化，
+/// 这样 `{a, b}` 与 `{b, a}` 命中同一 hash —— 避免 UI 拖动列顺序就重置 cursor。
+/// keys 的相对顺序不保留（与 spec §3.4 "SortKey 按 field 名字典序排序" 一致）。
 pub fn sort_spec_hash(spec: &SortSpec) -> u64 {
-    let canon = serde_json::to_string(spec).unwrap_or_default();
+    let mut keys = spec.keys.clone();
+    keys.sort_by(|a, b| a.field.as_str().cmp(b.field.as_str()));
+    let canon_spec = SortSpec { keys };
+    let canon = serde_json::to_string(&canon_spec).unwrap_or_default();
     let mut h: u64 = 0xcbf29ce484222325;
     for b in canon.as_bytes() {
         h ^= *b as u64;
