@@ -656,6 +656,7 @@
     "title_ph": "表示名",
     "enum_ph": "列挙値（カンマ区切り）",
     "multi": "複数選択",
+    "sortable": "TODO",
     "symbol_ph": "記号（例：¥）",
     "unit_ph": "単位（例：万）",
     "label_delete": "削除",

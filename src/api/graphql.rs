@@ -185,6 +185,8 @@ pub struct GqlLabelSchema {
     default_value: Json<serde_json::Value>,
     /// 继承/覆盖关系，形如 `[{"kind":"inherit","other":"L4","otherValue":"V1"}]`。
     links: Json<serde_json::Value>,
+    /// 是否可作为视图排序键。`true` 时启动期 / 标记后灌库该标签的索引。
+    sortable: bool,
 }
 
 impl From<LabelSchema> for GqlLabelSchema {
@@ -226,6 +228,7 @@ impl From<LabelSchema> for GqlLabelSchema {
             unit: s.unit,
             default_value: Json(default_value),
             links: Json(links),
+            sortable: s.sortable,
         }
     }
 }
@@ -242,6 +245,11 @@ pub struct LabelSchemaAttrsInput {
     default_value: Option<Json<serde_json::Value>>,
     /// 继承/覆盖关系；缺省表示清空。
     links: Option<Json<serde_json::Value>>,
+    /// 是否可作为视图排序键。缺省 = 不可排序（false）。
+    /// update 时为 None → 保持原值（attr 整体替换语义：None 即「该字段未传」，
+    /// 但 LabelSchemaInput 内部用 unwrap_or(false)，所以要保留原值需要在
+    /// update_label_schema 处显式处理 —— Phase 1 简化为 None 视为 false）。
+    sortable: Option<bool>,
 }
 
 impl LabelSchemaAttrsInput {
@@ -268,6 +276,7 @@ impl LabelSchemaAttrsInput {
             value_colors,
             default_value: self.default_value.map(|j| j.0),
             links,
+            sortable: self.sortable.unwrap_or(false),
         })
     }
 }

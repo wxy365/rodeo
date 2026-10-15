@@ -656,6 +656,7 @@
     "title_ph": "Nombre mostrado",
     "enum_ph": "Valores enum (separados por coma)",
     "multi": "Selección múltiple",
+    "sortable": "TODO",
     "symbol_ph": "Símbolo (ej.: ¥)",
     "unit_ph": "Unidad (ej.: 万)",
     "label_delete": "Eliminar",

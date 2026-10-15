@@ -656,6 +656,7 @@
     "title_ph": "显示名称",
     "enum_ph": "枚举值（逗号分隔）",
     "multi": "多选",
+    "sortable": "可作为视图排序键",
     "symbol_ph": "符号（如 ¥）",
     "unit_ph": "单位（如 万）",
     "label_delete": "删除",

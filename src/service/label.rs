@@ -27,6 +27,9 @@ pub struct LabelSchemaInput {
     pub value_colors: Vec<ValueColor>,
     /// 默认值（原始 JSON）。`None` / `null` 表示没有默认值。
     pub default_value: Option<serde_json::Value>,
+    /// 是否可作为视图排序键。`true` → 启动期 / 标记为 sortable 时灌库该标签的索引。
+    /// Phase 1 写但不读（cursor 路径暂拒 SortField::Label，Phase 2 解码后启用）。
+    pub sortable: bool,
     /// 继承 / 覆盖关系。两侧的值都是原始 JSON，由 `resolve_links` 按对应 schema 解析。
     pub links: Vec<LabelLinkInput>,
 }
@@ -383,6 +386,7 @@ impl LabelService {
             check_account_member(&self.store, ws_id, dv)?;
         }
         schema.links = resolve_links(&self.store, ws_id, &schema, input.links)?;
+        schema.sortable = input.sortable;
         check_no_cycle(&self.store, ws_id, &schema)?;
         let audit = AuditLog::new(
             AuditAction::LabelSchemaCreated,
@@ -426,6 +430,7 @@ impl LabelService {
             value_colors: input.value_colors,
             default_value: input.default_value,
             links: input.links,
+            sortable: input.sortable,
         };
         validate_attrs(&check)?;
         validate_colors(
@@ -648,6 +653,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
+                sortable: false,
                     links: vec![],
                 },
             )
@@ -672,6 +678,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
+                sortable: false,
                     links: vec![],
                 },
             )
@@ -695,6 +702,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
+                sortable: false,
                     links: vec![],
                 },
             )
@@ -718,6 +726,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
+                sortable: false,
                     links: vec![],
                 },
             )
@@ -745,6 +754,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
+                sortable: false,
                     links: vec![],
                 },
             )
@@ -787,6 +797,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
+                sortable: false,
                     links: vec![],
                 },
             )
@@ -807,6 +818,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
+                sortable: false,
                     links: vec![],
                 },
             )
@@ -828,6 +840,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
+                sortable: false,
                     links: vec![],
                 },
             )
@@ -867,6 +880,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
+                sortable: false,
                     links: vec![],
                 },
             )
@@ -914,6 +928,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
+                sortable: false,
                     links: vec![],
                 },
             )
@@ -940,6 +955,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
+                sortable: false,
                     links: vec![],
                 },
             )

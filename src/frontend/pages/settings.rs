@@ -243,6 +243,8 @@ pub fn WorkspaceSettings() -> impl IntoView {
                 &new_default.get(),
                 // 新建时没有关系可建：对方标签要先存在，故只能在建好之后于行内补。
                 &serde_json::json!([]),
+                // 新建默认不可排序；如需可排序，建好后到列表行内勾选触发 enable_sortable。
+                false,
             )
         };
         spawn_local(async move {
@@ -1286,6 +1288,7 @@ fn schema_row(
     // 新类型属性表单状态，初值取自库中已有属性；保存时一并回写。
     // 服务端 update 是整体替换，必须传齐四键，否则会清空已有属性。
     let multi_input = RwSignal::new(s.multi);
+    let sortable_input = RwSignal::new(s.sortable);
     let format_input = RwSignal::new(s.format.clone().unwrap_or_default());
     let symbol_input = RwSignal::new(s.currency_symbol.clone().unwrap_or_default());
     let unit_input = RwSignal::new(s.unit.clone().unwrap_or_default());
@@ -1505,6 +1508,7 @@ fn schema_row(
                     (!u.is_empty()).then_some(u),
                     &default_input.get(),
                     &build_links(link_rows.get_untracked(), &metas_save, Some(&own_save)),
+                    sortable_input.get(),
                 )
             };
             let ws = ws_save.clone();
@@ -1575,6 +1579,15 @@ fn schema_row(
                                     } />
                                 {move || i18n.t("settings.multi")}
                             </label>
+                            <label style="display:flex;align-items:center;gap:6px;white-space:nowrap"
+                                title=move || i18n.t("settings.sortable")>
+                                <input type="checkbox" disabled=!editable prop:checked=move || sortable_input.get()
+                                    on:change=move |ev| {
+                                        sortable_input.set(event_target_checked(&ev));
+                                        dirty.set(true);
+                                    } />
+                                {move || i18n.t("settings.sortable")}
+                            </label>
                             // 可选值边改边影响默认值的候选，故跟着 enum_input 重渲染。
                             {move || view! {
                                 <DefaultValueInput value_type="enum".to_string()
@@ -1600,6 +1613,15 @@ fn schema_row(
                                         dirty.set(true);
                                     } />
                                 {move || i18n.t("settings.multi")}
+                            </label>
+                            <label style="display:flex;align-items:center;gap:6px;white-space:nowrap"
+                                title=move || i18n.t("settings.sortable")>
+                                <input type="checkbox" disabled=!editable prop:checked=move || sortable_input.get()
+                                    on:change=move |ev| {
+                                        sortable_input.set(event_target_checked(&ev));
+                                        dirty.set(true);
+                                    } />
+                                {move || i18n.t("settings.sortable")}
                             </label>
                             {move || view! {
                                 <DefaultValueInput value_type=vt.clone() multi=multi_input.get()

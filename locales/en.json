@@ -656,6 +656,7 @@
     "title_ph": "Display name",
     "enum_ph": "Enum values (comma-separated)",
     "multi": "Multi-select",
+    "sortable": "Usable as view sort key",
     "symbol_ph": "Symbol (e.g. ¥)",
     "unit_ph": "Unit (e.g. 万)",
     "label_delete": "Delete",

@@ -476,7 +476,7 @@ const RELATION_FIELDS: &str =
      semantic { kind display value }";
 
 const LABEL_SCHEMA_FIELDS: &str =
-    "name title valueType enumValues color valueColors multi format currencySymbol unit defaultValue links";
+    "name title valueType enumValues color valueColors multi format currencySymbol unit defaultValue links sortable";
 
 /// 组装 `LabelSchemaAttrsInput`（camelCase）。
 ///
@@ -489,6 +489,7 @@ pub fn label_attrs(
     unit: Option<&str>,
     default_value: &Value,
     links: &Value,
+    sortable: bool,
 ) -> Value {
     json!({
         "multi": multi,
@@ -497,6 +498,7 @@ pub fn label_attrs(
         "unit": unit,
         "defaultValue": default_value,
         "links": links,
+        "sortable": sortable,
     })
 }
 
