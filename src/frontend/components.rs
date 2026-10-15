@@ -66,7 +66,14 @@ pub fn AccountPicker(
     /// 候选成员（当前工作空间成员表）。
     members: Vec<Member>,
     /// 已选账号 id 集合（单选时长度为 0 / 1）。
-    selected: Vec<String>,
+    ///
+    /// 必须是响应式的——内部 pick/remove 闭包每次都从信号读最新值，否则多选场景
+    /// 第二次点选会在「初始快照」上叠加、丢掉之前的勾选；chip 渲染走 `move ||`
+    /// 重读信号，外部清空才会同步刷新。调用方传 `RwSignal<Vec<String>>` 直传即
+    /// 可；若是「字符串 / 切片 → Vec」的派生值，用 `Signal::derive(move || ...)`
+    /// 包一层。
+    #[prop(into)]
+    selected: Signal<Vec<String>>,
     /// 多选模式：开启时多个候选可并存；关闭时点选替换原值。
     #[prop(optional)]
     multi: bool,
@@ -79,7 +86,6 @@ pub fn AccountPicker(
     // 多个闭包共享的输入数据先克隆一份——Callback 用 move 捕获，每个闭包都要拿到独立副本。
     let members_owned = members.clone();
     let members_for_label = members_owned.clone();
-    let selected_owned = selected.clone();
     // 当前已选 → 标签展示名。已不在工作空间成员表的 id 也要显示出来，不要静默吞。
     let label_of = move |id: &str| -> String {
         members_for_label
@@ -90,12 +96,17 @@ pub fn AccountPicker(
     };
     // 触发选区变更的统一入口。Closure 是 Send + 可多次调用，且不需要 Rc 包。
     // 包装成 Callback 后 leptos 的视图引擎能正确把它分发到多个事件处理函数上。
+    //
+    // 每次都从 `selected` 信号读最新值：多选模式下，第二次及以后的勾选若从某个
+    // 初始快照出发，会把之前的勾选「覆盖」掉——传入的 `Vec<String>` 在 pick 之
+    // 间是只读的，无法累计。`get_untracked` 是因为 pick 自己就是写事件，不需要
+    // 再触发 AccountPicker 内部的重渲；选区更新由 on_change 之后的 `selected`
+    // 信号变化驱动。
     let pick: Callback<String> = {
-        let selected = selected.clone();
         let on_change = on_change.clone();
         let query = query.clone();
         Callback::new(move |id: String| {
-            let mut cur: Vec<String> = selected.clone();
+            let mut cur: Vec<String> = selected.get_untracked();
             if multi {
                 if !cur.iter().any(|x| x == &id) {
                     cur.push(id);
@@ -108,10 +119,14 @@ pub fn AccountPicker(
         })
     };
     let remove: Callback<String> = {
-        let selected = selected.clone();
         let on_change = on_change.clone();
         Callback::new(move |id: String| {
-            let cur: Vec<String> = selected.iter().filter(|x| **x != id).cloned().collect();
+            let cur: Vec<String> = selected
+                .get_untracked()
+                .iter()
+                .filter(|x| **x != id)
+                .cloned()
+                .collect();
             on_change.run(cur);
         })
     };
@@ -167,23 +182,28 @@ pub fn AccountPicker(
                 .into_any()
             }}
             // 已选 chip：单选只展示一个；多选每个都能 × 掉。
+            // 整个块包在 `move ||` 里，外部 `selected` 信号变化时整组 chip 重新
+            // 渲染——这是 AccountPicker 单选场景 chip 不再卡在「未设置」的关键。
             <div style="display:flex;flex-wrap:wrap;gap:4px;font-size:12px">
-                {if selected_owned.is_empty() {
-                    view! { <span class="mut">{i18n.t("common.unset")}</span> }.into_any()
-                } else {
-                    selected_owned.iter().map(|id| {
-                        let text = label_of(id);
-                        let rm_id = id.clone();
-                        view! {
-                            <span class="chip">
-                                {text.clone()}
-                                {multi.then(|| view! {
-                                    <button class="ibtn" title=i18n.t("common.remove")
-                                        on:click=move |_| remove.run(rm_id.clone())>{ic_close()}</button>
-                                })}
-                            </span>
-                        }
-                    }).collect::<Vec<_>>().into_any()
+                {move || {
+                    let cur = selected.get();
+                    if cur.is_empty() {
+                        view! { <span class="mut">{i18n.t("common.unset")}</span> }.into_any()
+                    } else {
+                        cur.iter().map(|id| {
+                            let text = label_of(id);
+                            let rm_id = id.clone();
+                            view! {
+                                <span class="chip">
+                                    {text.clone()}
+                                    {multi.then(|| view! {
+                                        <button class="ibtn" title=i18n.t("common.remove")
+                                            on:click=move |_| remove.run(rm_id.clone())>{ic_close()}</button>
+                                    })}
+                                </span>
+                            }
+                        }).collect::<Vec<_>>().into_any()
+                    }
                 }}
             </div>
         </div>
@@ -412,9 +432,18 @@ pub fn DefaultValueInput(
                 value.set(v);
             });
             let current = move || value_to_string(&value.get());
+            // AccountPicker 现在按信号读 `selected`——把派生逻辑放进 Signal::derive，
+            // value 一变 chip 立刻刷新（单选场景里不再卡在「未设置」）。
+            let selected = Signal::derive(move || {
+                current()
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            });
             view! {
                 <AccountPicker members=members.clone()
-                    selected=current().split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+                    selected=selected
                     on_change=picked />
             }
                 .into_any()

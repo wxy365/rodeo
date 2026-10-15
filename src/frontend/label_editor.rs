@@ -489,18 +489,23 @@ fn LabelRow(
                     }
                 }
             });
-            let selected: Vec<String> = if s.multi {
-                // 多选：值是字符串数组；按元素拆开。
-                current
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect()
-            } else if current.is_empty() {
-                Vec::new()
-            } else {
-                vec![current.clone()]
-            };
+            // AccountPicker 现在要 Signal<Vec<String>>；这里 `current` 是上层传下来的
+            // 字符串（编辑 LabelRow 时已是序列化好的逗号串 / 单 id），外面再变也不会
+            // 自动反映——Signal::derive 把派生时机延后到 AccountPicker 实际 get() 时，
+            // 配合外面 on_set 触发本组件重渲，整体行为保持正确。
+            let selected = Signal::derive(move || {
+                if s.multi {
+                    current
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                } else if current.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![current.clone()]
+                }
+            });
             view! {
                 <AccountPicker members=members.clone() selected=selected multi=s.multi
                     on_change=picked />

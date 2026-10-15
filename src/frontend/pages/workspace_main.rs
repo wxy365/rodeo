@@ -3521,17 +3521,22 @@ fn LabelCellEditor(
                             }
                         })
                     };
-                    let selected: Vec<String> = if s.multi {
-                        current_text
-                            .split(',')
-                            .map(|s| s.trim().to_string())
-                            .filter(|s| !s.is_empty())
-                            .collect()
-                    } else if current_text.is_empty() {
-                        Vec::new()
-                    } else {
-                        vec![current_text.clone()]
-                    };
+                    // AccountPicker 现在按 Signal<Vec<String>> 读 selected；外面 on_set
+                    // 触发本组件重渲时 current_text 不变（仍是上次读到的字符串），但
+                    // Signal::derive 让 AccountPicker 内部 chip 随 selected 变化刷新。
+                    let selected = Signal::derive(move || {
+                        if s.multi {
+                            current_text
+                                .split(',')
+                                .map(|s| s.trim().to_string())
+                                .filter(|s| !s.is_empty())
+                                .collect()
+                        } else if current_text.is_empty() {
+                            Vec::new()
+                        } else {
+                            vec![current_text.clone()]
+                        }
+                    });
                     view! {
                         <AccountPicker members=members.clone() selected=selected multi=s.multi
                             on_change=picked />
@@ -4067,28 +4072,45 @@ fn LabelDraft(rows: RwSignal<Vec<DraftLabel>>, members: RwSignal<Vec<Member>>) -
                                     </select>
                                 </div>
                             }.into_any()
-                        } else if r.value_type == "account" {
-                            let sel = r.text;
-                            // AccountPicker 现在要的是 Vec<String>，这里把单串双向映射——
-                            // 多选时塞逗号分隔，单选时仅取首个。
+                        } else if r.value_type == "account" && r.multi {
+                            // 多选 Account：勾选集合整体写成一个数组值，与多选 Enum 同款。
+                            // 之前 `to_value` 从 `self.many` 读、`LabelDraft` 却写到
+                            // `self.text`（逗号分隔串），提交时空集被当作「未设置」而整条
+                            // 标签被跳过——账号多选因此静默失败。
+                            let sel = r.many;
                             let picked = Callback::new(move |ids: Vec<String>| {
-                                if r.multi {
-                                    sel.set(ids.join(","));
-                                } else {
-                                    sel.set(ids.into_iter().next().unwrap_or_default());
-                                }
+                                sel.set(ids);
                             });
-                            let selected: Vec<String> = if r.multi {
-                                sel.get().split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
-                            } else if sel.get().is_empty() {
-                                Vec::new()
-                            } else {
-                                vec![sel.get()]
-                            };
+                            // `sel` 是 RwSignal<Vec<String>>，AccountPicker 按 Signal
+                            // 读：内部 pick 闭包每次 get_untracked 拿最新值，多选不会
+                            // 把之前的勾选「覆盖」掉；chip 渲染随 sel 变化刷新。
                             view! {
                                 <div class="lblrow">
                                     <span class="k">{ic_tag()}{title}</span>
-                                    <AccountPicker members=members.get() selected=selected multi=r.multi
+                                    <AccountPicker members=members.get() selected=sel
+                                        on_change=picked />
+                                </div>
+                            }.into_any()
+                        } else if r.value_type == "account" {
+                            let sel = r.text;
+                            // 单选 Account：新建 Entry 草稿没有原值可保留——
+                            // 清空选择时 picked 写入空串，to_value 把空串视为「本次不写」，
+                            // 行为与同文件 `label_row`（编辑既有标签）一致，
+                            // 与 `LabelEditor::LabelRow` 的「清空即移除」语义不同。
+                            let picked = Callback::new(move |ids: Vec<String>| {
+                                sel.set(ids.into_iter().next().unwrap_or_default());
+                            });
+                            // AccountPicker 现在按 Signal<Vec<String>> 读 selected；
+                            // 把 sel.get() 的派生包进 Signal::derive，sel 变化时
+                            // chip 立刻刷新（单选场景不再卡在「未设置」）。
+                            let selected = Signal::derive(move || {
+                                let v = sel.get();
+                                if v.is_empty() { Vec::new() } else { vec![v] }
+                            });
+                            view! {
+                                <div class="lblrow">
+                                    <span class="k">{ic_tag()}{title}</span>
+                                    <AccountPicker members=members.get() selected=selected
                                         on_change=picked />
                                 </div>
                             }.into_any()
