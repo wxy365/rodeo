@@ -1255,6 +1255,7 @@ impl EntryService {
                 // text_ok 闭包要求 keyword 参数；这里把它包成「无视 kw 都用 set 命中」的版本
                 let text_hit_for_entry = |_kw: &str| -> bool {
                     text_kw
+                        .as_ref()
                         .map(|kw| text_ok(kw))
                         .unwrap_or(false)
                 };

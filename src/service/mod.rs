@@ -6,6 +6,7 @@ pub mod auth;
 pub mod comment;
 pub mod cursor;
 pub mod entry;
+pub mod entry_index;
 pub mod label;
 pub mod mention;
 pub mod message;
@@ -71,6 +72,8 @@ pub struct Services {
     /// 实时推送中枢。`/api/ws` 路由在 handshake 时 subscribe；`MessageService::send`
     /// 写库成功后 best-effort 推送 `NewMessage`。
     pub ws_hub: Arc<crate::api::ws::WsHub>,
+    /// 视图查询索引覆盖率 + 路径选择。启动期灌库后通过 `mark_covered` 缓存。
+    pub entry_index: EntryIndexService,
 }
 
 impl Services {
@@ -118,6 +121,8 @@ impl Services {
             message.clone(),
             relation.clone(),
         );
+        // 索引覆盖率服务：路径选择 + 启动期灌库标记。Phase 1 给 cursor 分页用。
+        let entry_index = EntryIndexService::new(store.clone());
         // 评论服务要与 EntryService 共用同一份实例：评论变更后要触发它的重索引。
         let comment = CommentService::new(store.clone(), entry.clone(), message.clone());
         // 附件服务同样要与 EntryService 共用同一份实例：上传后要推进条目更新时间并重索引。
@@ -181,6 +186,7 @@ impl Services {
             agent: AgentService::new(store.clone()),
             share,
             search,
+            entry_index,
             store,
             config,
             schema,
