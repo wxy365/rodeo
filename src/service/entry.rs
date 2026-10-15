@@ -1139,8 +1139,6 @@ impl EntryService {
         let sort_hash = crate::service::cursor::sort_spec_hash(sort);
         let ws_end = ws_end_exclusive(ws); // None 表示 ws 是全 0xFF，扫到 CF 末尾
         let ws_end_vec = ws_end.clone().unwrap_or_default();
-        let scan_start = ws_start(ws);
-        let mut cursor_code: Option<String> = None;
         // 上轮 emit 的最后一条 entry 的完整索引 key：作为 desc 排序 cursor 续扫的
         // 终点（含），并在循环里跳过（已 emit）。空 vec = 没有 cursor / 第一页。
         let mut cursor_last_key: Option<Vec<u8>> = None;
@@ -1159,7 +1157,6 @@ impl EntryService {
                     "cursor 格式错误：缺少 last_key".to_string(),
                 ));
             }
-            cursor_code = Some(decoded.last_code.clone());
             cursor_last_key = Some(decoded.last_key.clone());
         }
 
@@ -1233,7 +1230,7 @@ impl EntryService {
         let mut last_emitted_code: Option<String> = None;
         let mut last_emitted_field: Option<SortField> = None;
         let mut last_emitted_key: Option<Vec<u8>> = None;
-        let mut has_more_in_index = true;
+        let mut has_more_in_index = false;
 
         loop {
             // 反向：scan_range_reverse(start=ws_start, end=...) 端点都含
@@ -1802,13 +1799,6 @@ pub fn labeling_ops(
             Ok(ops)
         }
     }
-}
-
-/// cursor 路径续扫时跳过 cursor_code 自身及之前的 key：scan_range_reverse 的上界
-/// 就是当前 batch 末尾的 key —— cursor_code 不必参与 end key 计算。
-fn cursor_key_set_state(start: &[u8], _cursor_code: &Option<String>) -> Vec<u8> {
-    // Phase 1 简化：start 就是 ws_start；cursor_code 在外层逐 key 跳过。
-    start.to_vec()
 }
 
 /// 从索引 key 的尾部解出 entry_code。Phase 1 仅内建三字段索引：
