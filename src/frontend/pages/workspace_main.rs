@@ -319,6 +319,11 @@ pub fn WorkspaceMain() -> impl IntoView {
     let panel_code = RwSignal::new(String::new());
     let show_new = RwSignal::new(false);
     let new_title = RwSignal::new(String::new());
+    // 「新建 Entry」表单里 tiny-editor 的内容：Delta JSON 字符串，与 Entry 详情
+    // 页同一个 round-trip——落库是 Delta 串、加载时 normalize_delta 识别 ops key 后
+    // 原样回编辑器。entry_code 在新建时还为空串，粘贴图片会失败（这条路径下
+    // 用户极少这么做，保留编辑能力优先）。
+    let new_detail = RwSignal::new(String::new());
     // 「新建 Entry」表单里的标题输入框引用：表单从关到开那一刻把焦点交过去，
     // 用户不再需要再点一次输入框。
     let new_title_ref: NodeRef<Input> = NodeRef::new();
@@ -1018,7 +1023,16 @@ pub fn WorkspaceMain() -> impl IntoView {
             return;
         };
         spawn_local(async move {
-            match create_entry(&id, &t, None).await {
+            // trim 后空串等价 None：仍走原 create 路径（保持 Agent 工具等只传标题
+            // 调用方的行为，向后兼容）。非空 detail 走 create_with_detail 一次性
+            // 落标题与正文（与 summarizeEntries 同一路径，省一次乐观并发往返）。
+            let detail = new_detail.get_untracked();
+            let detail_opt: Option<&str> = if detail.trim().is_empty() {
+                None
+            } else {
+                Some(&detail)
+            };
+            match create_entry(&id, &t, detail_opt).await {
                 Err(e) => error.set(Some(e)),
                 Ok(created) => {
                     // 服务端 createEntry 只接收标题，标签需在条目存在后逐个 upsert。
@@ -1031,6 +1045,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                     }
                     new_title.set(String::new());
                     new_labels.set(Vec::new());
+                    new_detail.set(String::new());
                     show_new.set(false);
                     refresh.update(|n| *n += 1);
                     // 新建后在表格里选中该行：分页位置不可预测时，由「选中 N 项」徽标
@@ -1710,9 +1725,29 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 <button class="btn pri" type="submit">{i18n.t("common.create")}</button>
                                 <button class="btn" type="button" on:click=move |_| {
                                     new_labels.set(Vec::new());
+                                    new_detail.set(String::new());
                                     show_new.set(false);
                                 }>{i18n.t("common.cancel")}</button>
                                 <LabelDraft rows=new_labels members=ws_members />
+                                // 新建 Entry 时的正文编辑器：和详情页同款 tiny-editor，
+                                // 内容落进 new_detail；提交时由 create_entry 一次性带去
+                                // 服务端（create_with_detail）。entry_code 留空——
+                                // 粘贴图片会上传失败（新建路径下未绑条目），其它编辑
+                                // 能力照常工作。
+                                {
+                                    let ms = ws_members.get_untracked();
+                                    let on_change = Callback::new(move |delta: String| {
+                                        new_detail.set(delta);
+                                    });
+                                    // 新建路径下条目还不存在，entry_code 留空——粘贴图片
+                                    // 这条路径无意义；on_uploaded 是必填参数，留空。
+                                    let on_uploaded = Callback::new(move |_: ()| {});
+                                    let empty_code = Signal::derive(|| String::new());
+                                    view! {
+                                        <TinyEditor initial=String::new() entry_code=empty_code
+                                            on_change=on_change on_uploaded=on_uploaded members=ms />
+                                    }
+                                }
                             </form>
                         }.into_any()
                     } else {
@@ -2382,6 +2417,10 @@ pub fn WorkspaceMain() -> impl IntoView {
                                     let nav = window.navigator();
                                     let _ = nav.clipboard().write_text(&c);
                                 }
+                            }
+                            #[cfg(not(target_arch = "wasm32"))]
+                            {
+                                let _ = &c;
                             }
                         });
                         let delete_entry_cb: Callback<()> = Callback::new(move |_| {
