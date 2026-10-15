@@ -1233,15 +1233,29 @@ impl EntryService {
         let has_more_in_index: bool;
 
         loop {
-            // 反向：scan_range_reverse(start=ws_start, end=...) 端点都含
-            // 正向：第一版未实现（desc 默认排序覆盖了 Phase 1 全部 sort.keys.first）
+            // 编码：desc_ms = i64::MAX - ms，使较新的 entry 拥有较小的索引 key 字节。
+            //   小字节 = 新 → 大字节 = 旧。
+            // 排序（desc = newest first）：
+            //   · 无 cursor：scan_range(ws_start, ws_end) 正向扫，从小到大 = 从新到旧
+            //   · 有 cursor：scan_range(cursor_last_key, ws_end) 正向续扫，
+            //                 从 cursor 位置（已经 emit 过）之后的下一个 key 开始；
+            //                 跳过 cursor 自身（k == cursor_last_key）。
+            // asc 排序 Phase 1 未实现。
             let batch = if descending {
-                let end_key: Vec<u8> = match &cursor_last_key {
-                    Some(k) => k.clone(),
-                    None => ws_end_vec.clone(),
-                };
-                self.store
-                    .scan_range_reverse(primary_cf, &ws_start(ws), &end_key, 500)?
+                match &cursor_last_key {
+                    Some(clk) => self.store.scan_range(
+                        primary_cf,
+                        clk,  // start = cursor_last_key（不含）
+                        &ws_end_vec,
+                        500,
+                    )?,
+                    None => self.store.scan_range(
+                        primary_cf,
+                        &ws_start(ws),
+                        &ws_end_vec,
+                        500,
+                    )?,
+                }
             } else {
                 return Err(AppError::InvalidQuery(
                     "Phase 1 仅支持 desc 排序的 cursor 路径".to_string(),
@@ -1251,22 +1265,18 @@ impl EntryService {
                 has_more_in_index = false;
                 break;
             }
-            let mut passed_cursor = cursor_last_key.is_none();
             for (k, _) in &batch {
-                // 跳过 cursor_last_key 自身（已在上页 emit 过）
-                if !passed_cursor {
-                    if let Some(clk) = &cursor_last_key {
-                        if k.as_slice() <= clk.as_slice() {
-                            continue;
-                        } else {
-                            passed_cursor = true;
-                        }
+                // 跳过 cursor_last_key 自身（已在上页 emit 过）。scan_range 的 [start, end) 半开区间
+                // 不含 end，但 start 位置本身是包含的，所以需要显式跳过。
+                if let Some(clk) = &cursor_last_key {
+                    if k.as_slice() == clk.as_slice() {
+                        continue;
                     }
                 }
                 let code = decode_code_from_idx_key(&primary_field, &ws.to_bytes(), k);
                 let entry = match self.store.get::<Entry>(cf::ENTRIES, code.as_bytes())? {
                     Some(e) => e,
-                    None => continue, // 主表已删但索引还在 —— 跳过
+                    None => continue,
                 };
                 let labels = self.labels_for_entry(ws, &code)?;
                 let text_kw = query.first_text_keyword();
@@ -1295,23 +1305,16 @@ impl EntryService {
                     }
                 }
             }
-            // 满了之后 peek 一轮确认还有
+            // 满了 → 可能还有（fill page heuristic：填满了就假设有下一页）
             if matched.len() >= limit {
-                has_more_in_index = !batch.is_empty(); // 粗略；下面细化
+                has_more_in_index = true;
                 break;
             }
-            // batch 装不满说明已经到了 ws 边界（end_key 之外没有更多 key）
+            // batch 没满 500 说明已经扫到 ws 边界，没有更多
             if batch.len() < 500 {
                 has_more_in_index = false;
                 break;
             }
-            // 否则需要把 end_key 缩小到 batch 最后一条，避免下一轮从 ws_start 重扫
-            // —— 把 end_key 替换为 batch 最后一条的 key，本轮结束；下一轮用 end_key
-            // 起点继续。
-            // 这里采用「单轮扫描到 end_key 边界」策略：每轮 end_key 都从 cursor_last_key
-            // 出发，但 batch 不到 500 时说明 end_key 已是 ws 实际末位。简化处理：单轮扫描
-            // 直接拿 5000（page_size 上限）键，命中 limit 后退出。
-            let _ = ws_end_vec;
         }
 
         // 5. 多键排序：内存里对 limit 条做 tiebreaker 排序
