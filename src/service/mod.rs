@@ -73,7 +73,7 @@ pub struct Services {
     /// 写库成功后 best-effort 推送 `NewMessage`。
     pub ws_hub: Arc<crate::api::ws::WsHub>,
     /// 视图查询索引覆盖率 + 路径选择。启动期灌库后通过 `mark_covered` 缓存。
-    pub entry_index: EntryIndexService,
+    pub entry_index: Arc<EntryIndexService>,
 }
 
 impl Services {
@@ -176,7 +176,7 @@ impl Services {
             entry,
             comment,
             attachment,
-            label: LabelService::new(store.clone()),
+            label: LabelService::new(store.clone(), entry_index.clone()),
             audit: AuditService::new(store.clone()),
             view,
             ai: AiService::new(store.clone()),

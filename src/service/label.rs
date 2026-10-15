@@ -274,11 +274,15 @@ fn resolve_default(
 /// list_schemas 天然返回内置 + 自定义。
 pub struct LabelService {
     store: Arc<DocStore>,
+    index: Arc<crate::service::entry_index::EntryIndexService>,
 }
 
 impl LabelService {
-    pub fn new(store: Arc<DocStore>) -> Self {
-        Self { store }
+    pub fn new(
+        store: Arc<DocStore>,
+        index: Arc<crate::service::entry_index::EntryIndexService>,
+    ) -> Self {
+        Self { store, index }
     }
 
     /// 修复末尾新增字段之前落库的标签定义。bincode 按位置编码，末尾新增的字段会让
@@ -422,6 +426,7 @@ impl LabelService {
             &check.value_colors,
         )?;
         let before = serde_json::to_string(&schema).unwrap_or_default();
+        let old_sortable = schema.sortable;
         schema.title = check.title.trim().to_string();
         schema.enum_values = check.enum_values;
         schema.color = check.color;
@@ -453,6 +458,10 @@ impl LabelService {
             &schema,
         )?);
         self.store.write_batch(ops)?;
+        // sortable: false → true 触发 label 索引灌库。
+        if !old_sortable && schema.sortable {
+            let _ = self.enable_sortable(ws_id, &schema);
+        }
         Ok(schema)
     }
 
@@ -543,9 +552,60 @@ impl LabelService {
         }
         Ok(affected.into_iter().collect())
     }
-}
 
-#[cfg(test)]
+    /// 把该 sortable 标签的全部 `(ws, label, encoded_value, code)` 索引条目灌库。
+    /// `update_schema` 检测 `sortable: false → true` 时调用。Phase 1 写但不读；
+    /// cursor 路径目前拒 SortField::Label（见 Task 6 R2 / Task 7）。
+    pub fn enable_sortable(
+        &self,
+        ws_id: Ulid,
+        schema: &LabelSchema,
+    ) -> Result<usize, AppError> {
+        use crate::storage::keys::{idx_label_key, label_bucket_cf};
+        let cf_name_static: &'static str = label_bucket_cf(&schema.name);
+        let mut ops = Vec::new();
+        let mut count = 0usize;
+
+        let prefix = format!("{ws_id}/{}", schema.name);
+        for (_k, v) in self
+            .store
+            .scan_prefix(cf::LABELINGS_BY_LABEL, prefix.as_bytes())?
+        {
+            let labeling: Labeling = bincode::deserialize(&v)?;
+            // 跳 soft-deleted 的 entry（labels 留下但 entry 主表删了）。
+            if self
+                .store
+                .get::<Entry>(
+                    cf::ENTRIES,
+                    &keys::entry_by_workspace_key(ws_id, &labeling.entry_code),
+                )?
+                .is_none()
+            {
+                continue;
+            }
+            if let Ok(encoded) = crate::domain::label::encode_label_value_for_index(
+                &labeling.value,
+                schema.value_type,
+            ) {
+                ops.push(BatchOp::put_raw(
+                    cf_name_static.to_string(),
+                    idx_label_key(ws_id, &schema.name, &encoded, &labeling.entry_code),
+                    Vec::new(),
+                ));
+                count += 1;
+                if ops.len() >= 1000 {
+                    self.store.write_batch(std::mem::take(&mut ops))?;
+                }
+            }
+        }
+        if !ops.is_empty() {
+            self.store.write_batch(ops)?;
+        }
+        // 标记 (ws, cf) 已覆盖 —— 启动期灌库也会再覆盖一次。
+        self.index.mark_covered(ws_id, cf_name_static);
+        Ok(count)
+    }
+}
 mod tests {
     use super::*;
     use crate::service::workspace::WorkspaceService;
