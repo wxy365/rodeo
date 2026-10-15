@@ -202,6 +202,33 @@ impl PgDoc {
             Ok(())
         })
     }
+
+    /// 范围扫描。本轮 Phase 1 不实现 —— cursor 路径只走 RocksDB 后端。
+    /// 留待 Phase 2 PR 跟进。
+    pub fn scan_range(
+        &self,
+        _cf: &str,
+        _start: &[u8],
+        _end: &[u8],
+        _limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, AppError> {
+        Err(AppError::Storage(
+            "scan_range 暂不支持 Postgres 后端；请改用 RocksDB 或等待 Phase 2 跟进".to_string(),
+        ))
+    }
+
+    pub fn scan_range_reverse(
+        &self,
+        _cf: &str,
+        _start: &[u8],
+        _end: &[u8],
+        _limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, AppError> {
+        Err(AppError::Storage(
+            "scan_range_reverse 暂不支持 Postgres 后端；请改用 RocksDB 或等待 Phase 2 跟进"
+                .to_string(),
+        ))
+    }
 }
 
 /// 前缀扫描的上界：把最后一个非 `0xFF` 字节 +1，其后截断。

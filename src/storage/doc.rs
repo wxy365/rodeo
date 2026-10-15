@@ -247,6 +247,34 @@ impl DocStore {
         }
     }
 
+    /// 范围扫描：[start, end)，按 key 升序，最多返回 `limit` 条。
+    pub fn scan_range(
+        &self,
+        cf: &str,
+        start: &[u8],
+        end: &[u8],
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, AppError> {
+        match &self.backend {
+            Backend::Rocks(s) => s.scan_range(cf, start, end, limit),
+            Backend::Pg(s) => s.scan_range(cf, start, end, limit),
+        }
+    }
+
+    /// 反向：(start, end]，按 key 降序，最多返回 `limit` 条。
+    pub fn scan_range_reverse(
+        &self,
+        cf: &str,
+        start: &[u8],
+        end: &[u8],
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, AppError> {
+        match &self.backend {
+            Backend::Rocks(s) => s.scan_range_reverse(cf, start, end, limit),
+            Backend::Pg(s) => s.scan_range_reverse(cf, start, end, limit),
+        }
+    }
+
     pub fn delete(&self, cf: &str, key: &[u8]) -> Result<(), AppError> {
         match &self.backend {
             Backend::Rocks(s) => s.delete(cf, key),
