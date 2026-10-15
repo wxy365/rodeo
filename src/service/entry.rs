@@ -53,11 +53,35 @@ impl PageInput {
     }
 }
 
+/// 新版分页入参 —— 同时兼容老的 page/pageSize 与新加的 cursor/limit。
+/// GraphQL resolver 按 sort 是否在索引内选择走 query() (PageInput) 还是
+/// query_indexed() (QueryInput)。
+#[derive(Debug, Clone, Default)]
+pub struct QueryInput {
+    pub page: Option<u32>,
+    pub page_size: Option<u32>,
+    /// 走 cursor 路径时传；与 page 二选一；同传时 cursor 优先。
+    pub cursor: Option<String>,
+    /// cursor 模式下的返回上限。默认 50，上限 200。
+    pub limit: Option<u32>,
+}
+
+impl QueryInput {
+    pub fn limit(&self) -> usize {
+        self.limit
+            .or(self.page_size)
+            .unwrap_or(50)
+            .min(200) as usize
+    }
+}
+
 pub struct QueryResult {
     pub items: Vec<(Entry, Vec<Labeling>)>,
     pub total: usize,
     /// 命中的条目实际带有的标签名（去重排序），供前端提示可用标签。
     pub label_names: Vec<String>,
+    /// 当前 sort 在索引内且后面还有匹配时返回；GraphQL 投影为 nextCursor。
+    pub next_cursor: Option<String>,
 }
 
 impl EntryService {
@@ -1033,6 +1057,316 @@ impl EntryService {
             items,
             total,
             label_names,
+            next_cursor: None,
+        })
+    }
+
+    /// 走复合索引的 cursor 查询路径。仅当 sort 命中索引（`EntryIndexService::sort_is_indexed`
+    /// 返回 true）时由 resolver 调用；否则走 `query()`。
+    ///
+    /// 实现概要：
+    /// 1. 根据 SortField 选主索引 CF；
+    /// 2. 解码 cursor（若有）+ hash 校验；
+    /// 3. 从 cursor 位置起反向/正向扫 limit 条 key，每条 key 解码出 entry_code；
+    /// 4. 对每条命中的 entry 反查 ENTRIES 主表 + 该 entry 的 labels；
+    /// 5. 走 `query.evaluate(...)` 过滤；命中且未到 limit 就 append 到 results；
+    /// 6. limit 满后再扫一轮「是否还有匹配」以决定 next_cursor 的有无。
+    ///
+    /// 索引覆盖范围内不再做 workspace 维度的全量预加载 —— labels / accounts /
+    /// audit 只为匹配到的 entry 按需加载。复用了 `query()` 中的 EvalEnv 构造逻辑
+    /// （TODO Phase 2：把 EvalEnv 构造抽成共享 helper，避免 query / query_indexed 双
+    /// 份维护的字段漂移风险）。
+    #[allow(clippy::too_many_lines)]
+    pub fn query_indexed(
+        &self,
+        ws: Ulid,
+        query: &Query,
+        sort: &SortSpec,
+        input: &QueryInput,
+    ) -> Result<QueryResult, AppError> {
+        use crate::domain::view::SortField;
+        use crate::storage::keys::{ws_end_exclusive, ws_start};
+
+        // 1. 主索引 CF + 方向
+        let primary_field = sort
+            .keys
+            .first()
+            .map(|k| k.field.clone())
+            .unwrap_or(SortField::UpdatedAt);
+        let descending = sort.keys.first().map(|k| k.desc).unwrap_or(true);
+        let primary_cf: &'static str = match &primary_field {
+            SortField::UpdatedAt => cf::ENTRIES_IDX_UPDATED,
+            SortField::CreatedAt => cf::ENTRIES_IDX_CREATED,
+            SortField::Title => cf::ENTRIES_IDX_TITLE,
+            // Phase 1 暂不支持 sortable 标签的索引：key 布局里 tag_name 变长、
+            // 解析 entry_code 需要反向匹配，跟 ENTRIES 主表的全量反查成本几乎
+            // 等价于「退化到 Legacy 路径」。Phase 2 加 u16 tag_name_len 前缀解决。
+            SortField::Label(_) => {
+                return Err(AppError::InvalidQuery(
+                    "排序字段不在 cursor 路径索引范围内（Phase 1 仅内建字段）".to_string(),
+                ));
+            }
+            _ => {
+                return Err(AppError::InvalidQuery(
+                    "排序字段不在 cursor 路径索引范围内".to_string(),
+                ))
+            }
+        };
+
+        // 2. cursor 解码 + 起点 key 构造
+        let sort_hash = crate::service::cursor::sort_spec_hash(sort);
+        let ws_end = ws_end_exclusive(ws); // None 表示 ws 是全 0xFF，扫到 CF 末尾
+        let ws_end_vec = ws_end.clone().unwrap_or_default();
+        let mut scan_start = ws_start(ws);
+        let mut cursor_code: Option<String> = None;
+        if let Some(c) = &input.cursor {
+            let decoded = crate::service::cursor::decode_cursor(c)?;
+            if decoded.ws != ws {
+                return Err(AppError::InvalidQuery("cursor workspace 不匹配".to_string()));
+            }
+            if decoded.sort_hash != sort_hash {
+                return Err(AppError::InvalidQuery(
+                    "排序已变更，请从头分页".to_string(),
+                ));
+            }
+            // resume key = 上次 emit 的 code 之后的字节。本轮第一版：从 cursor_code 起续扫，
+            // 跳过所有 < cursor_code 的 entry_code（自身已在上页 emit）。
+            // 多键排序的二级排序条件本轮先按 cursor_code tiebreak 处理（精确 resume 需要
+            // 把 last_values 折回 sort_value bytes 再构造复合 key，超出 Phase 1 范围）。
+            cursor_code = Some(decoded.last_code.clone());
+        }
+
+        // 3. EvalEnv 构造（标签定义 / accounts / 文本命中 / 审计 等）
+        let all_schemas: Vec<LabelSchema> = self
+            .store
+            .scan_prefix(cf::LABEL_SCHEMAS, &ws.to_bytes())?
+            .into_iter()
+            .filter_map(|(_, v)| bincode::deserialize::<LabelSchema>(&v).ok())
+            .collect();
+        let sort_needs_account = sort
+            .keys
+            .iter()
+            .any(|k| matches!(k.field, SortField::CreatedBy | SortField::UpdatedBy));
+        let accounts: std::collections::HashMap<Ulid, (String, String)> =
+            if query.contains_account_field() || sort_needs_account {
+                let mut m = std::collections::HashMap::new();
+                for (_, v) in self.store.scan_prefix(cf::ACCOUNTS, b"")? {
+                    let a: crate::domain::Account = bincode::deserialize(&v)?;
+                    m.insert(a.id, (a.name, a.email));
+                }
+                m
+            } else {
+                std::collections::HashMap::new()
+            };
+        let schemas: std::collections::HashMap<
+            String,
+            (crate::domain::LabelValueType, Option<String>),
+        > = all_schemas
+            .iter()
+            .map(|s| (s.name.clone(), (s.value_type, s.format.clone())))
+            .collect();
+        let account_of = |id: Ulid| accounts.get(&id).cloned();
+        let label_of = |name: &str| schemas.get(name).cloned();
+        let text_hits: Option<std::collections::HashSet<String>> =
+            match query.first_text_keyword() {
+                Some(keyword) => {
+                    let search = self
+                        .search
+                        .as_ref()
+                        .ok_or_else(|| AppError::Internal("全文检索不可用".to_string()))?;
+                    Some(
+                        search
+                            .search(ws, &keyword, TEXT_CANDIDATE_LIMIT)
+                            .or_else(|_| search.search(ws, &keyword, 10_000))?
+                            .into_iter()
+                            .collect(),
+                    )
+                }
+                None => None,
+            };
+        let text_ok = |kw: &str| -> bool {
+            match &text_hits {
+                Some(set) => set.contains(kw),
+                None => false,
+            }
+        };
+        // audit / 继承 / Changed-闭包：本轮 query_indexed 仅支持 cursor 路径下
+        // 的「简单」filter（不依赖 Changed / ChangedValue / 继承标签）。复杂 filter
+        // 仍走 Legacy path。判定：contains_inherited_label / contains_label_change。
+        if query.contains_inherited_label() || query.contains_label_change() {
+            return Err(AppError::InvalidQuery(
+                "当前 cursor 路径暂不支持 Changed / 继承标签条件，请改用 page 分页".to_string(),
+            ));
+        }
+
+        // 4. 流式扫描
+        let limit = input.limit();
+        let mut matched: Vec<(Entry, Vec<Labeling>)> = Vec::with_capacity(limit);
+        let mut total: usize = 0;
+        let mut last_emitted_code: Option<String> = None;
+        let mut last_emitted_field: Option<SortField> = None;
+        let mut has_more_in_index = true;
+        let mut cursor_key_set = false;
+
+        loop {
+            // 反向扫描：[ws_start, cursor_key) —— desc 排序下从最新的往前
+            // 正向扫描：[cursor_key, ws_end) —— asc 排序下从最老的往后
+            let batch = if descending {
+                self.store
+                    .scan_range_reverse(primary_cf, &scan_start, &cursor_key_set_state(
+                        &scan_start,
+                        &cursor_code,
+                    ), 500)?
+            } else {
+                let end_key = ws_end_vec.clone();
+                self.store.scan_range(primary_cf, &scan_start, &end_key, 500)?
+            };
+            if batch.is_empty() {
+                has_more_in_index = false;
+                break;
+            }
+            for (k, _) in &batch {
+                let code = decode_code_from_idx_key(&primary_field, &ws.to_bytes(), k);
+                if let Some(prev) = &cursor_code {
+                    if !cursor_key_set && code.as_str() <= prev.as_str() {
+                        // 跳过 cursor_code 自身及之前的条目
+                        continue;
+                    }
+                }
+                cursor_key_set = true;
+                let entry = match self
+                    .store
+                    .get::<Entry>(cf::ENTRIES, &keys::entry_by_workspace_key(ws, &code))?
+                {
+                    Some(e) => e,
+                    None => continue, // 主表已删但索引还在 —— 跳过
+                };
+                let labels = self.labels_for_entry(ws, &code)?;
+                let text_kw = query.first_text_keyword();
+                let env = EvalEnv {
+                    text_hit: &text_ok,
+                    account_of: &account_of,
+                    label_of: &label_of,
+                    event: None,
+                    derived: &[],
+                    changed_during: None,
+                    changed_value: None,
+                };
+                // text_ok 闭包要求 keyword 参数；这里把它包成「无视 kw 都用 set 命中」的版本
+                let text_hit_for_entry = |_kw: &str| -> bool {
+                    text_kw
+                        .map(|kw| text_ok(kw))
+                        .unwrap_or(false)
+                };
+                let env_for_entry = EvalEnv {
+                    text_hit: &text_hit_for_entry,
+                    account_of: &account_of,
+                    label_of: &label_of,
+                    event: None,
+                    derived: &[],
+                    changed_during: None,
+                    changed_value: None,
+                };
+                if query.evaluate(&entry, &labels, &env_for_entry) {
+                    total += 1;
+                    if matched.len() < limit {
+                        matched.push((entry, labels));
+                        last_emitted_code = Some(code);
+                        last_emitted_field = Some(primary_field.clone());
+                    }
+                }
+            }
+            // 推进 cursor 到 batch 最后一条之后
+            if let Some((last_k, _)) = batch.last() {
+                scan_start = last_k.clone();
+            }
+            if matched.len() >= limit {
+                // 多扫一轮确认还有匹配
+                let peek = if descending {
+                    self.store.scan_range_reverse(
+                        primary_cf,
+                        &ws_start(ws),
+                        &scan_start,
+                        1,
+                    )?
+                } else {
+                    self.store.scan_range(
+                        primary_cf,
+                        &scan_start,
+                        &ws_end_vec,
+                        1,
+                    )?
+                };
+                has_more_in_index = !peek.is_empty();
+                break;
+            }
+            if batch.len() < 500 {
+                has_more_in_index = false;
+                break;
+            }
+        }
+
+        // 5. 多键排序：内存里对 limit 条做 tiebreaker 排序
+        if sort.keys.len() > 1 {
+            let mut to_sort: Vec<&mut (Entry, Vec<Labeling>)> = matched.iter_mut().collect();
+            // 第二级排序键按 labels_of 闭包 + sort_spec.keys[1..]
+            // 这里 Phase 1 简化：只对 limit 条做稳定 in-place 排序（按 entry 的
+            // updated_at 二级键；多标签二级排序是 Phase 2）。
+            to_sort.sort_by(|a, b| {
+                let av = match &sort.keys.get(1).map(|k| &k.field) {
+                    Some(SortField::UpdatedAt) | None => a.0.updated_at.timestamp_millis(),
+                    _ => 0,
+                };
+                let bv = match &sort.keys.get(1).map(|k| &k.field) {
+                    Some(SortField::UpdatedAt) | None => b.0.updated_at.timestamp_millis(),
+                    _ => 0,
+                };
+                if sort.keys.get(1).map(|k| k.desc).unwrap_or(true) {
+                    bv.cmp(&av)
+                } else {
+                    av.cmp(&bv)
+                }
+            });
+        }
+
+        // 6. next_cursor
+        let next_cursor = if has_more_in_index {
+            if let (Some(code), Some(field)) = (last_emitted_code, last_emitted_field) {
+                let entry = &matched
+                    .last()
+                    .map(|(e, _)| e.clone())
+                    .unwrap_or_else(|| unreachable!());
+                let labels = &matched.last().map(|(_, l)| l.clone()).unwrap_or_default();
+                let value = crate::service::cursor::cursor_value_for_entry(&field, entry, labels);
+                let c = crate::domain::cursor::Cursor {
+                    ws,
+                    sort_hash,
+                    last_values: vec![value],
+                    last_code: code,
+                    backward: false,
+                };
+                Some(crate::service::cursor::encode_cursor(&c))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // 7. label_names 汇总
+        let mut label_names: Vec<String> = matched
+            .iter()
+            .flat_map(|(_, labels)| labels.iter().map(|l| l.label_name.clone()))
+            .collect();
+        label_names.extend(query.inherited_label_names());
+        label_names.sort();
+        label_names.dedup();
+
+        Ok(QueryResult {
+            items: matched,
+            total,
+            label_names,
+            next_cursor,
         })
     }
 
@@ -1453,6 +1787,32 @@ pub fn labeling_ops(
             }
             Ok(ops)
         }
+    }
+}
+
+/// cursor 路径续扫时跳过 cursor_code 自身及之前的 key：scan_range_reverse 的上界
+/// 就是当前 batch 末尾的 key —— cursor_code 不必参与 end key 计算。
+fn cursor_key_set_state(start: &[u8], _cursor_code: &Option<String>) -> Vec<u8> {
+    // Phase 1 简化：start 就是 ws_start；cursor_code 在外层逐 key 跳过。
+    start.to_vec()
+}
+
+/// 从索引 key 的尾部解出 entry_code。Phase 1 仅内建三字段索引：
+/// - UpdatedAt/CreatedAt：key = (ws_id, desc_ms[8B], code)
+/// - Title：key = (ws_id, title_utf8, code)
+fn decode_code_from_idx_key(
+    primary_field: &crate::domain::view::SortField,
+    ws_bytes: &[u8],
+    key: &[u8],
+) -> String {
+    use crate::domain::view::SortField;
+    let after_ws = &key[ws_bytes.len()..];
+    match primary_field {
+        SortField::UpdatedAt | SortField::CreatedAt => {
+            String::from_utf8_lossy(&after_ws[8..]).into_owned()
+        }
+        SortField::Title => String::from_utf8_lossy(after_ws).into_owned(),
+        _ => String::new(),
     }
 }
 
