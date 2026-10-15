@@ -161,6 +161,8 @@ impl EntryService {
             keys::entry_by_workspace_key(workspace_id, &entry.code),
             Vec::new(),
         ));
+        // 新条目：仅插入索引，无旧条目可删。labels 为空（label 在 set_labelings 时再建索引）。
+        ops.extend(self.idx_puts_for(workspace_id, &entry, &[]));
         self.store.write_batch(ops)?;
         self.reindex(&entry);
         Ok(entry)
@@ -203,7 +205,10 @@ impl EntryService {
         if entry.updated_at != expected {
             return Err(AppError::ConflictDetected);
         }
+        // updated_at / title 是索引键的一部分；写前删旧、写后插新。
+        let old_labels = self.labels_for_entry(entry.workspace_id, code)?;
         let before = serde_json::to_string(&entry).unwrap_or_default();
+        let old_entry = entry.clone();
         entry.title = title.to_string();
         entry.detail = detail.to_string();
         entry.updated_by = actor;
@@ -220,6 +225,8 @@ impl EntryService {
         );
         let mut ops = audit_ops(&audit)?;
         ops.push(BatchOp::put(cf::ENTRIES, code.as_bytes().to_vec(), &entry)?);
+        ops.extend(self.idx_deletes_for(entry.workspace_id, &old_entry, &old_labels));
+        ops.extend(self.idx_puts_for(entry.workspace_id, &entry, &old_labels));
         self.store.write_batch(ops)?;
         // 详情里新增的 @姓名 才发消息：上次已通知过的人直接跳过，避免重复打扰。
         let previous =
@@ -279,6 +286,8 @@ impl EntryService {
         if entry.is_deleted() {
             return Ok(());
         }
+        // 软删除后该 entry 不应再出现在视图里：从所有索引中抹除。
+        let old_labels = self.labels_for_entry(entry.workspace_id, code)?;
         let before = serde_json::to_string(&entry).unwrap_or_default();
         entry.deleted_at = Some(Utc::now());
         entry.updated_by = actor;
@@ -300,6 +309,8 @@ impl EntryService {
             self.relations
                 .purge_for_entry_ops(actor, entry.workspace_id, code)?;
         ops.extend(rel_purge);
+        // 删除索引：不再插入新条目索引。
+        ops.extend(self.idx_deletes_for(entry.workspace_id, &entry, &old_labels));
         self.store.write_batch(ops)?;
         self.reindex(&entry);
         // 通知创建人：删除发起人 != 创建人。
@@ -341,6 +352,10 @@ impl EntryService {
         if self.is_archived(code)? {
             return Ok(());
         }
+        // 归档后条目仍在索引里（evaluate 时按 archived_at 过滤），但 updated_at 变化 →
+        // 索引键变了，必须先删旧再写新。
+        let old_labels = self.labels_for_entry(entry.workspace_id, code)?;
+        let old_entry = entry.clone();
         let stamp = Utc::now().to_rfc3339();
         let audit = AuditLog::new(
             AuditAction::EntryArchived,
@@ -357,6 +372,8 @@ impl EntryService {
             code.as_bytes().to_vec(),
             stamp.into_bytes(),
         ));
+        ops.extend(self.idx_deletes_for(entry.workspace_id, &old_entry, &old_labels));
+        ops.extend(self.idx_puts_for(entry.workspace_id, &entry, &old_labels));
         self.store.write_batch(ops)?;
         self.reindex(&entry);
         Ok(())
@@ -368,6 +385,9 @@ impl EntryService {
         let Some(stamp) = self.archived_at(code)? else {
             return Ok(());
         };
+        // 取消归档同样 updated_at 不一定变，但保持 delete+put 对称以免漏 case。
+        let old_labels = self.labels_for_entry(entry.workspace_id, code)?;
+        let old_entry = entry.clone();
         let audit = AuditLog::new(
             AuditAction::EntryUnarchived,
             actor,
@@ -382,6 +402,8 @@ impl EntryService {
             cf::ENTRIES_ARCHIVED,
             code.as_bytes().to_vec(),
         ));
+        ops.extend(self.idx_deletes_for(entry.workspace_id, &old_entry, &old_labels));
+        ops.extend(self.idx_puts_for(entry.workspace_id, &entry, &old_labels));
         self.store.write_batch(ops)?;
         self.reindex(&entry);
         Ok(())
@@ -534,6 +556,24 @@ impl EntryService {
             }
         }
         let written = entries.len() * resolved.len();
+        // 索引：标签值是标签索引键的一部分，旧条目要删、新条目要写。
+        // 一次性在 write_batch 前把每个 entry 的 idx delete + idx put 拼进去。
+        for entry in &entries {
+            let old_labels = self.labels_for_entry(ws_id, &entry.code)?;
+            ops.extend(self.idx_deletes_for(ws_id, entry, &old_labels));
+            // 新 labels = 旧 labels 中匹配 resolved 的条目替换
+            let new_labels: Vec<Labeling> = old_labels
+                .iter()
+                .map(|l| {
+                    if let Some((_, lv)) = resolved.iter().find(|(n, _)| n == &l.label_name) {
+                        Labeling::new(l.entry_code.clone(), l.label_name.clone(), lv.clone(), actor)
+                    } else {
+                        l.clone()
+                    }
+                })
+                .collect();
+            ops.extend(self.idx_puts_for(ws_id, entry, &new_labels));
+        }
         let staged: Vec<StagedWrite> = entries
             .iter()
             .flat_map(|e| {
@@ -589,6 +629,15 @@ impl EntryService {
             actor,
             before.as_ref(),
         )?;
+        // 索引：标签被移除后该标签索引条目要删；其他标签索引保持不变。
+        let old_labels = self.labels_for_entry(entry.workspace_id, entry_code)?;
+        ops.extend(self.idx_deletes_for(entry.workspace_id, &entry, &old_labels));
+        let new_labels: Vec<Labeling> = old_labels
+            .iter()
+            .filter(|l| l.label_name != label_name)
+            .cloned()
+            .collect();
+        ops.extend(self.idx_puts_for(entry.workspace_id, &entry, &new_labels));
         let staged = StagedWrite {
             entry_code: entry_code.to_string(),
             label_name: label_name.to_string(),
@@ -720,6 +769,57 @@ impl EntryService {
             store.write_batch(ops)?;
         }
         Ok(count)
+    }
+
+    /// 该 workspace 内 sortable=true 的 LabelSchema 列表。每个写路径灌索引时取一次，
+    /// 缓存不必要：写路径每写一次就扫一次的成本相对 ENTRIES 主写入可忽略。
+    fn sortable_schemas(&self, ws: Ulid) -> Vec<LabelSchema> {
+        self.store
+            .scan_prefix(cf::LABEL_SCHEMAS, &ws.to_bytes())
+            .ok()
+            .map(|rows| {
+                rows.into_iter()
+                    .filter_map(|(_, v)| bincode::deserialize::<LabelSchema>(&v).ok())
+                    .filter(|s| s.sortable)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// 单个 entry 的 idx BatchOp 列表（写完后插入）。给定 entry 当前状态 + 该 entry 的
+    /// 打标列表，生成 3 个内建字段 + 每个 sortable 标签的索引条目。
+    fn idx_puts_for(
+        &self,
+        ws: Ulid,
+        entry: &Entry,
+        labels: &[Labeling],
+    ) -> Vec<BatchOp> {
+        let schemas = self.sortable_schemas(ws);
+        self.idx_batch_puts(ws, entry, labels, &schemas)
+    }
+
+    /// 单个 entry 的 idx BatchOp 列表（写完前删除旧条目）。与 idx_puts_for 配对；
+    /// updated_at / title / label 值变化时必须先删旧再写新。
+    fn idx_deletes_for(
+        &self,
+        ws: Ulid,
+        entry: &Entry,
+        labels: &[Labeling],
+    ) -> Vec<BatchOp> {
+        let schemas = self.sortable_schemas(ws);
+        self.idx_batch_deletes(ws, entry, labels, &schemas)
+    }
+
+    /// 按 entry_code 取该 entry 的所有打标。用于 idx_deletes_for 在写前捕获旧 label 状态。
+    fn labels_for_entry(&self, ws: Ulid, code: &str) -> Result<Vec<Labeling>, AppError> {
+        let mut out = Vec::new();
+        for (_, v) in self.store.scan_prefix(cf::LABELINGS_BY_WORKSPACE, &ws.to_bytes())? {
+            let l: Labeling = bincode::deserialize(&v)?;
+            if l.entry_code == code {
+                out.push(l);
+            }
+        }
+        Ok(out)
     }
 
     /// 侧栏计数：复用 `query` 的 total（只取一页一条，避免重复过滤逻辑）。
@@ -934,6 +1034,91 @@ impl EntryService {
             total,
             label_names,
         })
+    }
+
+    /// 给定 entry 当前状态 + 该 entry 的打标，生成「插入/更新索引」的 BatchOp 列表。
+    /// 调用方把返回值 `extend` 进自己的 BatchOp vec，与主写入走同一事务。
+    pub fn idx_batch_puts(
+        &self,
+        ws: Ulid,
+        entry: &Entry,
+        labels: &[Labeling],
+        schemas: &[LabelSchema],
+    ) -> Vec<BatchOp> {
+        use crate::storage::keys::{
+            idx_created_key, idx_label_key, idx_title_key, idx_updated_key, label_bucket_cf,
+        };
+        let mut ops = Vec::with_capacity(3 + labels.len());
+        ops.push(BatchOp::put_raw(
+            cf::ENTRIES_IDX_UPDATED,
+            idx_updated_key(ws, entry.updated_at.timestamp_millis(), &entry.code),
+            Vec::new(),
+        ));
+        ops.push(BatchOp::put_raw(
+            cf::ENTRIES_IDX_CREATED,
+            idx_created_key(ws, entry.created_at.timestamp_millis(), &entry.code),
+            Vec::new(),
+        ));
+        ops.push(BatchOp::put_raw(
+            cf::ENTRIES_IDX_TITLE,
+            idx_title_key(ws, &entry.title, &entry.code),
+            Vec::new(),
+        ));
+        for schema in schemas.iter().filter(|s| s.sortable) {
+            if let Some(l) = labels.iter().find(|l| l.label_name == schema.name) {
+                if let Ok(encoded) = crate::domain::label::encode_label_value_for_index(
+                    &l.value, schema.value_type,
+                ) {
+                    ops.push(BatchOp::put_raw(
+                        label_bucket_cf(&schema.name),
+                        idx_label_key(ws, &schema.name, &encoded, &entry.code),
+                        Vec::new(),
+                    ));
+                }
+            }
+        }
+        ops
+    }
+
+    /// 与 `idx_batch_puts` 对称：删除该 entry 的所有索引条目。
+    /// updated_at / title / label 值变化时必须先调用此方法再调用 idx_batch_puts，
+    /// 否则旧索引条目留在库里指向已经不存在的位置。
+    pub fn idx_batch_deletes(
+        &self,
+        ws: Ulid,
+        entry: &Entry,
+        labels: &[Labeling],
+        schemas: &[LabelSchema],
+    ) -> Vec<BatchOp> {
+        use crate::storage::keys::{
+            idx_created_key, idx_label_key, idx_title_key, idx_updated_key, label_bucket_cf,
+        };
+        let mut ops = Vec::with_capacity(3 + labels.len());
+        ops.push(BatchOp::delete(
+            cf::ENTRIES_IDX_UPDATED,
+            idx_updated_key(ws, entry.updated_at.timestamp_millis(), &entry.code),
+        ));
+        ops.push(BatchOp::delete(
+            cf::ENTRIES_IDX_CREATED,
+            idx_created_key(ws, entry.created_at.timestamp_millis(), &entry.code),
+        ));
+        ops.push(BatchOp::delete(
+            cf::ENTRIES_IDX_TITLE,
+            idx_title_key(ws, &entry.title, &entry.code),
+        ));
+        for schema in schemas.iter().filter(|s| s.sortable) {
+            if let Some(l) = labels.iter().find(|l| l.label_name == schema.name) {
+                if let Ok(encoded) = crate::domain::label::encode_label_value_for_index(
+                    &l.value, schema.value_type,
+                ) {
+                    ops.push(BatchOp::delete(
+                        label_bucket_cf(&schema.name),
+                        idx_label_key(ws, &schema.name, &encoded, &entry.code),
+                    ));
+                }
+            }
+        }
+        ops
     }
 }
 
