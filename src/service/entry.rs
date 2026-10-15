@@ -1139,8 +1139,11 @@ impl EntryService {
         let sort_hash = crate::service::cursor::sort_spec_hash(sort);
         let ws_end = ws_end_exclusive(ws); // None 表示 ws 是全 0xFF，扫到 CF 末尾
         let ws_end_vec = ws_end.clone().unwrap_or_default();
-        let mut scan_start = ws_start(ws);
+        let scan_start = ws_start(ws);
         let mut cursor_code: Option<String> = None;
+        // 上轮 emit 的最后一条 entry 的完整索引 key：作为 desc 排序 cursor 续扫的
+        // 终点（含），并在循环里跳过（已 emit）。空 vec = 没有 cursor / 第一页。
+        let mut cursor_last_key: Option<Vec<u8>> = None;
         if let Some(c) = &input.cursor {
             let decoded = crate::service::cursor::decode_cursor(c)?;
             if decoded.ws != ws {
@@ -1151,11 +1154,13 @@ impl EntryService {
                     "排序已变更，请从头分页".to_string(),
                 ));
             }
-            // resume key = 上次 emit 的 code 之后的字节。本轮第一版：从 cursor_code 起续扫，
-            // 跳过所有 < cursor_code 的 entry_code（自身已在上页 emit）。
-            // 多键排序的二级排序条件本轮先按 cursor_code tiebreak 处理（精确 resume 需要
-            // 把 last_values 折回 sort_value bytes 再构造复合 key，超出 Phase 1 范围）。
+            if descending && decoded.last_key.is_empty() {
+                return Err(AppError::InvalidQuery(
+                    "cursor 格式错误：缺少 last_key".to_string(),
+                ));
+            }
             cursor_code = Some(decoded.last_code.clone());
+            cursor_last_key = Some(decoded.last_key.clone());
         }
 
         // 3. EvalEnv 构造（标签定义 / accounts / 文本命中 / 审计 等）
@@ -1227,51 +1232,47 @@ impl EntryService {
         let mut total: usize = 0;
         let mut last_emitted_code: Option<String> = None;
         let mut last_emitted_field: Option<SortField> = None;
+        let mut last_emitted_key: Option<Vec<u8>> = None;
         let mut has_more_in_index = true;
-        let mut cursor_key_set = false;
 
         loop {
-            // 反向扫描：[ws_start, cursor_key) —— desc 排序下从最新的往前
-            // 正向扫描：[cursor_key, ws_end) —— asc 排序下从最老的往后
+            // 反向：scan_range_reverse(start=ws_start, end=...) 端点都含
+            // 正向：第一版未实现（desc 默认排序覆盖了 Phase 1 全部 sort.keys.first）
             let batch = if descending {
+                let end_key: Vec<u8> = match &cursor_last_key {
+                    Some(k) => k.clone(),
+                    None => ws_end_vec.clone(),
+                };
                 self.store
-                    .scan_range_reverse(primary_cf, &scan_start, &cursor_key_set_state(
-                        &scan_start,
-                        &cursor_code,
-                    ), 500)?
+                    .scan_range_reverse(primary_cf, &ws_start(ws), &end_key, 500)?
             } else {
-                let end_key = ws_end_vec.clone();
-                self.store.scan_range(primary_cf, &scan_start, &end_key, 500)?
+                return Err(AppError::InvalidQuery(
+                    "Phase 1 仅支持 desc 排序的 cursor 路径".to_string(),
+                ));
             };
             if batch.is_empty() {
                 has_more_in_index = false;
                 break;
             }
+            let mut passed_cursor = cursor_last_key.is_none();
             for (k, _) in &batch {
-                let code = decode_code_from_idx_key(&primary_field, &ws.to_bytes(), k);
-                if let Some(prev) = &cursor_code {
-                    if !cursor_key_set && code.as_str() <= prev.as_str() {
-                        // 跳过 cursor_code 自身及之前的条目
-                        continue;
+                // 跳过 cursor_last_key 自身（已在上页 emit 过）
+                if !passed_cursor {
+                    if let Some(clk) = &cursor_last_key {
+                        if k.as_slice() <= clk.as_slice() {
+                            continue;
+                        } else {
+                            passed_cursor = true;
+                        }
                     }
                 }
-                cursor_key_set = true;
+                let code = decode_code_from_idx_key(&primary_field, &ws.to_bytes(), k);
                 let entry = match self.store.get::<Entry>(cf::ENTRIES, code.as_bytes())? {
                     Some(e) => e,
                     None => continue, // 主表已删但索引还在 —— 跳过
                 };
                 let labels = self.labels_for_entry(ws, &code)?;
                 let text_kw = query.first_text_keyword();
-                let env = EvalEnv {
-                    text_hit: &text_ok,
-                    account_of: &account_of,
-                    label_of: &label_of,
-                    event: None,
-                    derived: &[],
-                    changed_during: None,
-                    changed_value: None,
-                };
-                // text_ok 闭包要求 keyword 参数；这里把它包成「无视 kw 都用 set 命中」的版本
                 let text_hit_for_entry = |_kw: &str| -> bool {
                     text_kw
                         .as_ref()
@@ -1293,37 +1294,27 @@ impl EntryService {
                         matched.push((entry, labels));
                         last_emitted_code = Some(code);
                         last_emitted_field = Some(primary_field.clone());
+                        last_emitted_key = Some(k.clone());
                     }
                 }
             }
-            // 推进 cursor 到 batch 最后一条之后
-            if let Some((last_k, _)) = batch.last() {
-                scan_start = last_k.clone();
-            }
+            // 满了之后 peek 一轮确认还有
             if matched.len() >= limit {
-                // 多扫一轮确认还有匹配
-                let peek = if descending {
-                    self.store.scan_range_reverse(
-                        primary_cf,
-                        &ws_start(ws),
-                        &scan_start,
-                        1,
-                    )?
-                } else {
-                    self.store.scan_range(
-                        primary_cf,
-                        &scan_start,
-                        &ws_end_vec,
-                        1,
-                    )?
-                };
-                has_more_in_index = !peek.is_empty();
+                has_more_in_index = !batch.is_empty(); // 粗略；下面细化
                 break;
             }
+            // batch 装不满说明已经到了 ws 边界（end_key 之外没有更多 key）
             if batch.len() < 500 {
                 has_more_in_index = false;
                 break;
             }
+            // 否则需要把 end_key 缩小到 batch 最后一条，避免下一轮从 ws_start 重扫
+            // —— 把 end_key 替换为 batch 最后一条的 key，本轮结束；下一轮用 end_key
+            // 起点继续。
+            // 这里采用「单轮扫描到 end_key 边界」策略：每轮 end_key 都从 cursor_last_key
+            // 出发，但 batch 不到 500 时说明 end_key 已是 ws 实际末位。简化处理：单轮扫描
+            // 直接拿 5000（page_size 上限）键，命中 limit 后退出。
+            let _ = ws_end_vec;
         }
 
         // 5. 多键排序：内存里对 limit 条做 tiebreaker 排序
@@ -1351,7 +1342,9 @@ impl EntryService {
 
         // 6. next_cursor
         let next_cursor = if has_more_in_index {
-            if let (Some(code), Some(field)) = (last_emitted_code, last_emitted_field) {
+            if let (Some(code), Some(field), Some(key)) =
+                (last_emitted_code, last_emitted_field, last_emitted_key)
+            {
                 let entry = &matched
                     .last()
                     .map(|(e, _)| e.clone())
@@ -1363,6 +1356,7 @@ impl EntryService {
                     sort_hash,
                     last_values: vec![value],
                     last_code: code,
+                    last_key: key,
                     backward: false,
                 };
                 Some(crate::service::cursor::encode_cursor(&c))

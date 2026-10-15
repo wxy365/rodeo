@@ -1600,6 +1600,7 @@ pub async fn query_all_entries(
         page: 1,
         page_size: items.len() as i64,
         label_names: names,
+        next_cursor: None,
         items,
     })
 }

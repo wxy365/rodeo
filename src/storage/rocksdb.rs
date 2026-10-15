@@ -150,7 +150,7 @@ impl RocksDoc {
         Ok(out)
     }
 
-    /// 反向范围扫描：(start, end]（start 不含、end 含），按 key 降序，最多返回 `limit` 条。
+    /// 反向范围扫描：[start, end]（两端都含），按 key 降序，最多返回 `limit` 条。
     /// 用作 desc 排序的 cursor 续扫（plan §4）。
     pub fn scan_range_reverse(
         &self,
@@ -161,6 +161,8 @@ impl RocksDoc {
     ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, AppError> {
         let h = self.handle(cf)?;
         // Reverse iterator: 从 end 起反向走，第一个 < start 时停。
+        // end 含：cursor 续扫时调用方传 cursor_code 对应的全 key，期望它出现在结果里
+        // 然后自己在 loop 里 skip（已经 emit 过）。
         let iter = self
             .db
             .iterator_cf(h, IteratorMode::From(end, Direction::Reverse));
@@ -172,10 +174,6 @@ impl RocksDoc {
             let (k, v) = item.map_err(|e| AppError::Storage(e.to_string()))?;
             if k.as_ref() < start {
                 break;
-            }
-            // 跳过 end 自身（seek 到 end 时第一次会命中 end）
-            if k.as_ref() == end {
-                continue;
             }
             out.push((k.to_vec(), v.to_vec()));
         }
