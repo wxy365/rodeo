@@ -3525,7 +3525,7 @@ fn LabelCellEditor(
                     // 触发本组件重渲时 current_text 不变（仍是上次读到的字符串），但
                     // Signal::derive 让 AccountPicker 内部 chip 随 selected 变化刷新。
                     let selected = Signal::derive(move || {
-                        if s.multi {
+                        if s_multi {
                             current_text
                                 .split(',')
                                 .map(|s| s.trim().to_string())
@@ -3538,7 +3538,7 @@ fn LabelCellEditor(
                         }
                     });
                     view! {
-                        <AccountPicker members=members.clone() selected=selected multi=s.multi
+                        <AccountPicker members=members.clone() selected=selected multi=s_multi
                             on_change=picked />
                     }.into_any()
                 }
