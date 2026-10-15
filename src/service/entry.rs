@@ -1230,7 +1230,7 @@ impl EntryService {
         let mut last_emitted_code: Option<String> = None;
         let mut last_emitted_field: Option<SortField> = None;
         let mut last_emitted_key: Option<Vec<u8>> = None;
-        let mut has_more_in_index = false;
+        let mut has_more_in_index: bool;
 
         loop {
             // 反向：scan_range_reverse(start=ws_start, end=...) 端点都含
