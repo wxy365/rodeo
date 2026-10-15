@@ -442,6 +442,9 @@ pub struct LabelSchema {
     /// 继承/覆盖关系：`[{ kind, other, otherValue, ownValue }]`，`kind` 为 inherit|override。
     #[serde(default)]
     pub links: Value,
+    /// 是否可作为视图排序键。`true` 时 EntryIndexService 启动期灌库标签索引。
+    #[serde(default)]
+    pub sortable: bool,
 }
 
 #[derive(Clone, serde::Deserialize)]

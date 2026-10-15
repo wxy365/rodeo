@@ -710,6 +710,7 @@ mod tests {
             currency_symbol: None,
             unit: None,
             links: json!(null),
+            sortable: false,
         }
     }
 

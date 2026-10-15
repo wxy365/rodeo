@@ -853,6 +853,7 @@ mod tests {
             unit: None,
             default_value: None,
             links: Vec::new(),
+            sortable: false,
         }
     }
 

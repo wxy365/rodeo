@@ -4,6 +4,7 @@ pub mod attachment;
 pub mod audit;
 pub mod auth;
 pub mod comment;
+pub mod cursor;
 pub mod entry;
 pub mod label;
 pub mod mention;
