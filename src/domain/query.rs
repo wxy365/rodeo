@@ -184,6 +184,18 @@ pub enum Field {
     LabelInherited(String),
 }
 
+impl Query {
+    /// 仅当查询为空（`Query::And(vec![])`）时返回 true —— 直接走
+    /// ENTRIES_BY_WORKSPACE 的前缀扫描计数。其余情况均返回 false，
+    /// 让 `count()` 走 `query_indexed` 的 total 路径。
+    ///
+    /// 第一版保守实现：把任何非空查询都视作「需要 evaluate」，因为归档 / 标签 /
+    /// 文本等过滤目前没有「与存储层已索引状态一一对应」的等价快速计数路径。
+    pub fn is_simple_countable(&self) -> bool {
+        matches!(self, Query::And(parts) if parts.is_empty())
+    }
+}
+
 impl Field {
     /// 标签字段 → (标签名, 是否连继承关联一起算)。非标签字段返回 `None`。
     pub fn label_of(&self) -> Option<(&str, bool)> {

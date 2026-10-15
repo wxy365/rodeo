@@ -846,17 +846,25 @@ impl EntryService {
         Ok(out)
     }
 
-    /// 侧栏计数：复用 `query` 的 total（只取一页一条，避免重复过滤逻辑）。
+    /// 侧栏计数。简单查询（空 AND）走 ENTRIES_BY_WORKSPACE 字节长度；
+    /// 复杂查询走 query_indexed 的 total —— 它本来就要扫完整索引。
     pub fn count(&self, ws: Ulid, query: &Query) -> Result<usize, AppError> {
-        let r = self.query(
-            ws,
-            query,
-            &SortSpec::default(),
-            PageInput {
-                page: 1,
-                page_size: 1,
-            },
-        )?;
+        if query.is_simple_countable() {
+            // ENTRIES_BY_WORKSPACE 的 key 是 (ws_id, code)，bincode 长度的代价
+            // 比反序列化每个 Entry 小一个数量级。Phase 2 可加 ENTRIES_COUNT_BY_WORKSPACE
+            // 维护精确计数。
+            let rows = self
+                .store
+                .scan_prefix(cf::ENTRIES_BY_WORKSPACE, &ws.to_bytes())?;
+            return Ok(rows.len());
+        }
+        let input = QueryInput {
+            page: Some(1),
+            page_size: Some(1),
+            cursor: None,
+            limit: Some(1),
+        };
+        let r = self.query_indexed(ws, query, &SortSpec::default(), &input)?;
         Ok(r.total)
     }
 
