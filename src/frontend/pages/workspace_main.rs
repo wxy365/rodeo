@@ -639,14 +639,17 @@ pub fn WorkspaceMain() -> impl IntoView {
 
     // 视图导航栏右键菜单：点菜单以外的位置即关闭。
     //
-    // `.vmenu` div 自己 `on:mousedown=stop_propagation()`——菜单内的 mousedown
-    // 不会冒到这里。能冒到这里的就是「点了菜单外」，闭包里直接清掉 vmenu 即可，
-    // 不要再做任何"是否在菜单里"的推断：之前用 `target().closest(".vmenu")`
-    // / `composed_path()` 走冒泡链判断，每个浏览器 quirk（Chrome 把 button 的
-    // mousedown target 设成 Text 节点、shadow DOM 边界截断 path、闭包捕获已 dispose
-    // 的信号导致 wasm unreachable …）都会让菜单被误关、按钮 click 链被拆断；
-    // c7c9bcb / d8f6e81 / 5dbc7f3 三次提交都在围着这段判断修，仍然每次都复发。
-    // 改架构：让菜单自己声明边界，窗口层只承担"菜单外 = 关"。
+    // 闭包里用 `composed_path()` 自检点中位置——而不是依赖 `.vmenu` div 上的
+    // `on:mousedown=stop_propagation()`。原因：Leptos 0.8 对所有 bubble 类事件
+    // 走 window 级事件委托（见 `tachys::renderer::dom::add_event_listener_delegated`），
+    // 而 `window_event_listener` 同样把 handler 挂在 `window` 上，两个 listener
+    // 同 element；按 DOM 规范 `stop_propagation()` **不阻止同一 element 上的 sibling
+    // listener 触发**，所以 `.vmenu` 上的 stop_propagation 拦不住下面这个
+    // `close_vmenu`，用户点菜单按钮时它照样把菜单关掉、再触发 dmodal 背景的 click
+    // 关掉刚打开的弹窗——表现为"配置视图点击没反应 / 对话框闪现后消失"。这正是
+    // `c7c9bcb / d8f6e81 / 5dbc7f3` 三个提交反复围着 `.closest / composed_path`
+    // 修、却改用 stop_propagation 后依旧复发的根因（`editing_cell` 那条 mousedown
+    // 监听 L2723 就是这个 composed_path 模式在用，已经稳定工作）。
     //
     // `handle` 仍要存进 on_cleanup 里 remove：闭包捕获 `vmenu`，路由切换 / hydrate
     // 重建 Owner 时信号会 dispose，未撤的 window 监听器会在某次 mousedown 里抛
@@ -654,9 +657,17 @@ pub fn WorkspaceMain() -> impl IntoView {
     // 表现为"点了没反应"。
     #[cfg(target_arch = "wasm32")]
     {
-        let close_vmenu = move |_ev: leptos::ev::MouseEvent| {
+        let close_vmenu = move |ev: leptos::ev::MouseEvent| {
             if vmenu.get_untracked().is_some() {
-                vmenu.set(None);
+                // composed_path 走完整冒泡链（Chrome `<button>text</button>` 上偶发
+                // 把 target 设成 Text 节点，composed_path 不受这个 quirk 影响）。
+                let in_menu = ev.composed_path().iter().any(|node| {
+                    node.dyn_ref::<leptos::web_sys::Element>()
+                        .is_some_and(|el| el.class_list().contains("vmenu"))
+                });
+                if !in_menu {
+                    vmenu.set(None);
+                }
             }
         };
         let handle = window_event_listener(leptos::ev::mousedown, close_vmenu);
