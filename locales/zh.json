@@ -200,6 +200,9 @@
   },
   "entry": {
     "back_to_view": "返回视图",
+    "next": "下一个",
+    "next_hint": "下一个：{title}",
+    "next_none": "本视图已无更多条目",
     "save": "保存",
     "delete": "删除",
     "unsaved": "未保存",
@@ -323,6 +326,8 @@
     "errors.entry_not_found": "条目不存在",
     "errors.delete_failed": "删除失败",
     "errors.unsaved_block": "有未保存的改动，先保存再关闭",
+    "errors.unsaved_block_new": "当前右侧详情面板有未保存的改动，请先保存或关闭后再新建 Entry",
+    "errors.create_failed": "新建 Entry 失败: {err}",
     "errors.archive_failed": "归档失败",
     "errors.workspace_not_loaded": "工作空间尚未加载完成",
     "errors.sort_save_failed": "排序未能保存：{err}",

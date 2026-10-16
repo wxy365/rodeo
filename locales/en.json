@@ -200,6 +200,9 @@
   },
   "entry": {
     "back_to_view": "Back to view",
+    "next": "Next",
+    "next_hint": "Next: {title}",
+    "next_none": "No more entries in this view",
     "save": "Save",
     "delete": "Delete",
     "unsaved": "Unsaved",
@@ -323,6 +326,8 @@
     "errors.entry_not_found": "Entry not found",
     "errors.delete_failed": "Delete failed",
     "errors.unsaved_block": "You have unsaved changes; save before closing",
+    "errors.unsaved_block_new": "The right panel has unsaved changes; save or close it before creating a new Entry",
+    "errors.create_failed": "Failed to create Entry: {err}",
     "errors.archive_failed": "Archive failed",
     "errors.workspace_not_loaded": "Workspace not loaded yet",
     "errors.sort_save_failed": "Sort not saved: {err}",

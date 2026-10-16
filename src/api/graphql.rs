@@ -1591,6 +1591,38 @@ impl Query {
         Ok(Some(gql_entry(gql, entry, labels)?))
     }
 
+    /// 全屏详情页「下一个」按钮专用：定位来源视图排序里 `current_code` 之后的那一条。
+    /// 视图权限校验与 `view()` 一致——非 owner 必须视图已共享；`current_code` 不在视图命中集
+    /// 合内（含已删除 / 不满足视图查询）→ 返回 `null`，详情页据此判定禁用按钮。
+    async fn entry_next_in_view(
+        &self,
+        ctx: &Context<'_>,
+        view_id: ID,
+        current_code: String,
+    ) -> GqlResult<Option<GqlEntry>> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let view_id = parse_ulid(view_id.as_str())?;
+        let Some(v) = gql.services.view.get(view_id)? else {
+            return Ok(None);
+        };
+        gql.require_member(v.workspace_id)?;
+        if !v.is_shared && v.owner_id != auth.account_id {
+            return Err(AppError::Forbidden.into());
+        }
+        let Some(next) = gql.services.entry.next_in_view(
+            v.workspace_id,
+            &v.query,
+            &v.sort,
+            &current_code,
+        )?
+        else {
+            return Ok(None);
+        };
+        let labels = gql.services.entry.labelings(&next.code)?;
+        Ok(Some(gql_entry(gql, next, labels)?))
+    }
+
     /// 当前用户的未读消息数。
     async fn unread_message_count(&self, ctx: &Context<'_>) -> GqlResult<i32> {
         let gql = ctx.data::<GraphqlContext>()?;
@@ -2386,6 +2418,7 @@ impl Mutation {
     /// 新建条目（Worker+）。`detail` 可选：传非空就走 `create_with_detail` 一次性
     /// 落标题与正文（与 summarizeEntries 同一路径，省一次乐观并发往返），
     /// 省略或空串则走 `create`（保持原行为，向后兼容 agent 工具等只传标题的调用方）。
+    /// 空标题走 `create_blank` 落草稿，配合前端「新建 Entry」按钮的草稿面板态使用。
     async fn create_entry(
         &self,
         ctx: &Context<'_>,
@@ -2397,12 +2430,18 @@ impl Mutation {
         let auth = gql.require_auth()?;
         let ws_id = parse_ulid(workspace_id.as_str())?;
         gql.require_role(ws_id, WorkspaceRole::Worker)?;
-        let entry = match detail.filter(|d| !d.is_empty()) {
-            Some(d) => gql
-                .services
+        let entry = if title.trim().is_empty() {
+            gql.services
                 .entry
-                .create_with_detail(auth.account_id, ws_id, &title, &d)?,
-            None => gql.services.entry.create(auth.account_id, ws_id, &title)?,
+                .create_blank(auth.account_id, ws_id)?
+        } else {
+            match detail.filter(|d| !d.is_empty()) {
+                Some(d) => gql
+                    .services
+                    .entry
+                    .create_with_detail(auth.account_id, ws_id, &title, &d)?,
+                None => gql.services.entry.create(auth.account_id, ws_id, &title)?,
+            }
         };
         gql_entry(gql, entry, vec![])
     }
@@ -2583,6 +2622,8 @@ impl Mutation {
 
     /// 编辑条目（Worker+）。`expectedUpdatedAt` 用于乐观并发：
     /// 与服务端最新 `updatedAt` 不一致时报「内容已被他人修改」。
+    /// 草稿态保存时与标题 / 正文同批落库的标签集合。
+    /// 已有 entry 的常规更新路径不传——那些标签走 `setLabeling` 单独落。
     async fn update_entry(
         &self,
         ctx: &Context<'_>,
@@ -2590,6 +2631,7 @@ impl Mutation {
         expected_updated_at: String,
         title: String,
         detail: String,
+        labelings: Option<Vec<LabelingInput>>,
     ) -> GqlResult<GqlEntry> {
         let gql = ctx.data::<GraphqlContext>()?;
         let auth = gql.require_auth()?;
@@ -2614,6 +2656,23 @@ impl Mutation {
             &title,
             &detail,
         )?;
+        // 草稿标签在 entry 更新之后写入：以新 updated_at 为后续乐观并发令牌。
+        // `set_labelings` 内部一次 write_batch 原子写入多标签、单次校验。
+        // 校验前置：parse / account-member 失败→返回 GraphQL 错，entry 改动不回滚，
+        // 但 updated_at 已经推前，用户重试时必须刷新 expected_updated_at——前端
+        // 拿到错误就重取 entry 重新走保存路径。
+        if let Some(ls) = labelings.filter(|l| !l.is_empty()) {
+            let pairs: Vec<(String, serde_json::Value)> = ls
+                .into_iter()
+                .map(|li| {
+                    let v = li.value.map(|j| j.0).unwrap_or(serde_json::Value::Null);
+                    (li.name, v)
+                })
+                .collect();
+            gql.services
+                .entry
+                .set_labelings(auth.account_id, &[code.clone()], &pairs)?;
+        }
         // 回收放在更新成功之后：冲突或条目不存在时不该动任何附件。
         gql.services
             .attachment

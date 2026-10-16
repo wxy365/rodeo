@@ -200,6 +200,9 @@
   },
   "entry": {
     "back_to_view": "Volver a la vista",
+    "next": "Siguiente",
+    "next_hint": "Siguiente: {title}",
+    "next_none": "No hay más entradas en esta vista",
     "save": "Guardar",
     "delete": "Eliminar",
     "unsaved": "Sin guardar",

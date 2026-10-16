@@ -1,4 +1,3 @@
-use leptos::ev::SubmitEvent;
 use leptos::html::Input;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -317,18 +316,17 @@ pub fn WorkspaceMain() -> impl IntoView {
     // 右侧详情面板信号：只有点击标题（或键盘上下移动 / 新建条目成功）才设它，
     // 控制 `<EntryPanel code=...>` 显示哪一条。点其他列不应该打开面板。
     let panel_code = RwSignal::new(String::new());
-    let show_new = RwSignal::new(false);
-    let new_title = RwSignal::new(String::new());
-    // 「新建 Entry」表单里 tiny-editor 的内容：Delta JSON 字符串，与 Entry 详情
-    // 页同一个 round-trip——落库是 Delta 串、加载时 normalize_delta 识别 ops key 后
-    // 原样回编辑器。entry_code 在新建时还为空串，粘贴图片会失败（这条路径下
-    // 用户极少这么做，保留编辑能力优先）。
-    let new_detail = RwSignal::new(String::new());
-    // 「新建 Entry」表单里的标题输入框引用：表单从关到开那一刻把焦点交过去，
-    // 用户不再需要再点一次输入框。
-    let new_title_ref: NodeRef<Input> = NodeRef::new();
-    // 新建表单里待写入的标签值；打开表单时按当前 workspace 的标签 schema 重建。
-    let new_labels = RwSignal::new(Vec::<DraftLabel>::new());
+    // 「新建 Entry」按钮的草稿态——面板里那条条目由本工作流的 `createEntry("")
+    // + 设 panel_code + 切 is_draft` 一套动作创建：标题允许空、标签先本地缓冲。
+    // `panel_is_draft` 与 EntryPanel 的同一份数据共享，EntryPanel 渲染时用它决定
+    // 出 LabelEditor 还是 LabelDraft；保存成功后由 `on_saved` 翻 false。
+    let panel_is_draft = RwSignal::new(false);
+    // 草稿标签缓冲区：保存时随 title/detail 一次提交（`updateEntry.labelings`）。
+    let panel_save_labels = RwSignal::new(Vec::<DraftLabel>::new());
+    // 草稿态下还想新建一个时拦截的提示横幅——避免覆盖未保存改动。
+    let panel_create_prompt = RwSignal::new(None::<String>);
+    // EntryPanel 上报自身 dirty 状态；`on_new_entry` 拦截用。
+    let panel_dirty = RwSignal::new(false);
     let error = RwSignal::new(None::<String>);
 
     // ---- 批量设置标签 ----
@@ -382,6 +380,35 @@ pub fn WorkspaceMain() -> impl IntoView {
             }
         });
     }
+
+    // 「新建 Entry」拦截提示横幅：4s 自消失。再触发会刷新计时器。
+    #[cfg(target_arch = "wasm32")]
+    {
+        let prompt_for_timer = panel_create_prompt;
+        Effect::new(move |_| {
+            if prompt_for_timer.get().is_some() {
+                let target = prompt_for_timer;
+                spawn_local(async move {
+                    gloo_timers::future::TimeoutFuture::new(4_000).await;
+                    if target.get_untracked().is_some() {
+                        target.set(None);
+                    }
+                });
+            }
+        });
+    }
+
+    // EntryPanel 上报 dirty：转写到 workspace_main 自己的 `panel_dirty` 信号，
+    // 供 `on_new_entry` 拦截使用。
+    let on_dirty_callback = Callback::new(move |d: bool| {
+        panel_dirty.set(d);
+    });
+    // EntryPanel 完成保存（草稿或普通）：翻 `is_draft` 回 false 并清空标签缓冲，
+    // 面板下一次渲染走 LabelEditor 而非 LabelDraft。
+    let on_saved_callback = Callback::new(move |_: ()| {
+        panel_is_draft.set(false);
+        panel_save_labels.set(Vec::new());
+    });
 
     // ---- 归档 ----
     // 已归档条目：打开「已归档」弹窗时拉取，恢复一条后就地移除，不整表重拉。
@@ -1017,73 +1044,6 @@ pub fn WorkspaceMain() -> impl IntoView {
         nav_entry(&url, Default::default());
     });
 
-    let create_submit = move |ev: SubmitEvent| {
-        ev.prevent_default();
-        let t = new_title.get();
-        // 表单里已填的标签值先取快照；空输入不进列表。
-        let planned: Vec<(String, Value)> = new_labels
-            .get_untracked()
-            .iter()
-            .filter_map(|r| r.to_value().map(|v| (r.name.clone(), v)))
-            .collect();
-        let Some(id) = data
-            .get()
-            .and_then(|r| r.ok())
-            .map(|(ws, _, _)| ws.id.clone())
-        else {
-            return;
-        };
-        spawn_local(async move {
-            // trim 后空串等价 None：仍走原 create 路径（保持 Agent 工具等只传标题
-            // 调用方的行为，向后兼容）。非空 detail 走 create_with_detail 一次性
-            // 落标题与正文（与 summarizeEntries 同一路径，省一次乐观并发往返）。
-            let detail = new_detail.get_untracked();
-            let detail_opt: Option<&str> = if detail.trim().is_empty() {
-                None
-            } else {
-                Some(&detail)
-            };
-            match create_entry(&id, &t, detail_opt).await {
-                Err(e) => error.set(Some(e)),
-                Ok(created) => {
-                    // 服务端 createEntry 只接收标题，标签需在条目存在后逐个 upsert。
-                    // 单个标签失败不丢弃已创建的条目，但要如实报出来。
-                    for (name, value) in &planned {
-                        if let Err(e) = set_labeling(&created.code, name, value).await {
-                            error.set(Some(i18n.tf("entry.errors.label_write_failed", &[("name", &name), ("err", &e.to_string())])));
-                            break;
-                        }
-                    }
-                    new_title.set(String::new());
-                    new_labels.set(Vec::new());
-                    new_detail.set(String::new());
-                    show_new.set(false);
-                    refresh.update(|n| *n += 1);
-                    // 新建后在表格里选中该行：分页位置不可预测时，由「选中 N 项」徽标
-                    // 显式表达选中状态，不强行进入全屏页打断用户的上下文。AI 生成
-                    // 路径仍走 open_entry.run（见 apply_ai）。同时打开右侧详情——
-                    // 这是「点标题」的等价路径，创建完应该让用户立刻看到内容。
-                    selected.set(created.code.clone());
-                    panel_code.set(created.code);
-                }
-            }
-        });
-    };
-
-    // 「新建 Entry」表单打开（show_new 由 false 变 true）那一刻把焦点交给标题输入框。
-    // Effect 只在表单渲染完成后才有可用的 NodeRef——以 false → true 的边沿为信号，
-    // 而不是依赖 show_new 的当前值；避免「表单已经渲染了再打开页面」这种首挂载态抢焦点。
-    #[cfg(target_arch = "wasm32")]
-    Effect::new(move |prev: Option<bool>| {
-        let now = show_new.get();
-        if prev == Some(false) && now {
-            if let Some(el) = new_title_ref.get() {
-                let _ = el.focus();
-            }
-        }
-        now
-    });
-
     // 上下键在 Entry 表格里切换选中条目。
     // 跳过规则：光标在输入框 / 富文本 / 下拉里时不抢，按 Enter 走的就是这些控件的语义。
     // 越界处理：到页首向上再翻上一页（停在末位）；到页末向下再翻下一页（停在首位）。
@@ -1390,33 +1350,64 @@ pub fn WorkspaceMain() -> impl IntoView {
     // 「新建」按钮的两个回调：原先由侧栏传入，现在顶栏 AppBar 通过共享槽
     // 读走——其它页面不在 WorkspaceMain 这个 slot 里就不会渲染这个按钮。
     // 提到 `view!` 之外是为了既能写槽、也能本地复用。
+    //
+    // 流程：服务端先 `createEntry("")` 拿一条空草稿的 code → 设 panel_code +
+    // panel_is_draft + 预填 draft_labels。前置条件：当前面板打开着其它条目且
+    // dirty 时拒绝，给出提示横幅，避免替用户丢掉没保存的标题 / 正文 / 标签。
     let on_new_entry = Callback::new(move |_| {
-        // 打开时按当前标签 schema 重建待填行（新建与取消都重置）。
-        // 视图列与视图表达式里用到的标签预填默认值：这两类标签
-        // 是当前视图关心的，新条目本来就该带着它们。
-        if !show_new.get_untracked() {
-            let auto = auto_label_names(
-                active_view
-                    .get_untracked()
-                    .map(|v| v.columns)
-                    .unwrap_or_default(),
-                &query_ast.get_untracked(),
-            );
-            new_labels.set(
-                schemas
-                    .get_untracked()
-                    .into_iter()
-                    .map(|s| {
-                        if auto.iter().any(|n| n == &s.name) {
-                            DraftLabel::from_schema_preset(s)
-                        } else {
-                            DraftLabel::from_schema(s)
-                        }
-                    })
-                    .collect(),
-            );
+        // 拦截：当前面板已打开且 dirty → 提示并直接返回，不动服务端。
+        if !panel_code.get_untracked().is_empty() && panel_dirty.get_untracked() {
+            panel_create_prompt.set(Some(i18n.t("entry.errors.unsaved_block_new")));
+            return;
         }
-        show_new.set(!show_new.get_untracked());
+        panel_create_prompt.set(None);
+        let Some(ws_id_str) = data
+            .get_untracked()
+            .and_then(|r| r.ok())
+            .map(|(ws, _, _)| ws.id.clone())
+        else {
+            return;
+        };
+        // 提前把要预填的标签计算好：视图列 / 视图表达式里出现的标签用 `from_schema_preset`
+        // 预填默认值，其余用 `from_schema` 留空。等同于旧 `show_new` 打开那一刻的逻辑。
+        let auto = auto_label_names(
+            active_view
+                .get_untracked()
+                .map(|v| v.columns)
+                .unwrap_or_default(),
+            &query_ast.get_untracked(),
+        );
+        let preset: Vec<DraftLabel> = schemas
+            .get_untracked()
+            .into_iter()
+            .map(|s| {
+                if auto.iter().any(|n| n == &s.name) {
+                    DraftLabel::from_schema_preset(s)
+                } else {
+                    DraftLabel::from_schema(s)
+                }
+            })
+            .collect();
+        let i18n_err = i18n.clone();
+        spawn_local(async move {
+            // 标题/正文都空，由 `entry.create_blank` 落草稿；返回的 code 当作 panel_code。
+            // 草稿态的标签等用户填好后在面板「保存」走 updateEntry.labelings 一起提交——
+            // 这是 spec 里「一个请求内批量提交」的语义，create 侧始终是空 draft。
+            match create_entry(&ws_id_str, "", None).await {
+                Ok(created) => {
+                    panel_save_labels.set(preset);
+                    panel_is_draft.set(true);
+                    selected.set(created.code.clone());
+                    panel_code.set(created.code);
+                }
+                Err(e) => {
+                    error.set(Some(i18n_err.tf(
+                        "entry.errors.create_failed",
+                        &[("err", &e.to_string())],
+                    )));
+                }
+            }
+        });
     });
     let on_new_view = Callback::new(move |_| {
         batch(move || {
@@ -1728,44 +1719,14 @@ pub fn WorkspaceMain() -> impl IntoView {
                         }}
                     </div>
 
-                    {move || if show_new.get() {
-                        view! {
-                            <form class="filters" on:submit=create_submit>
-                                <input class="inp" style="flex:1" placeholder=i18n.t("entry.new_entry_title_ph") node_ref=new_title_ref
-                                    prop:value=new_title on:input=move |ev| new_title.set(event_target_value(&ev)) />
-                                <button class="btn pri" type="submit">{i18n.t("common.create")}</button>
-                                <button class="btn" type="button" on:click=move |_| {
-                                    new_labels.set(Vec::new());
-                                    new_detail.set(String::new());
-                                    show_new.set(false);
-                                }>{i18n.t("common.cancel")}</button>
-                                <LabelDraft rows=new_labels members=ws_members />
-                                // 新建 Entry 时的正文编辑器：和详情页同款 tiny-editor，
-                                // 内容落进 new_detail；提交时由 create_entry 一次性带去
-                                // 服务端（create_with_detail）。entry_code 留空——
-                                // 粘贴图片会上传失败（新建路径下未绑条目），其它编辑
-                                // 能力照常工作。
-                                {
-                                    let ms = ws_members.get_untracked();
-                                    let on_change = Callback::new(move |delta: String| {
-                                        new_detail.set(delta);
-                                    });
-                                    // 新建路径下条目还不存在，entry_code 留空——粘贴图片
-                                    // 这条路径无意义；on_uploaded 是必填参数，留空。
-                                    let on_uploaded = Callback::new(move |_: ()| {});
-                                    let empty_code = Signal::derive(|| String::new());
-                                    view! {
-                                        <TinyEditor initial=String::new() entry_code=empty_code
-                                            on_change=on_change on_uploaded=on_uploaded members=ms />
-                                    }
-                                }
-                            </form>
-                        }.into_any()
-                    } else {
-                        view! { <div></div> }.into_any()
-                    }}
-
                     {move || error.get().map(|e| view! { <p class="error" style="padding:8px 16px">{e}</p> })}
+                    {move || panel_create_prompt.get().map(|m| view! {
+                        <div class="hint" role="status"
+                            style="background:var(--c-warn-bg);color:var(--c-warn-fg);
+                                   padding:8px 16px;border-radius:6px;margin:4px 16px">
+                            {"⚠ "}{m}
+                        </div>
+                    })}
 
                     <div class=move || {
                         // 是否腾出右侧面板的宽度取决于 `panel_code`，而不是 `selected`：
@@ -1907,7 +1868,11 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 </div>
                             })}
                         </div>
-                        <EntryPanel code=panel_code slug=slug().to_string() workspace_id=ws_id schemas members=ws_members refresh />
+                        <EntryPanel code=panel_code slug=slug().to_string() workspace_id=ws_id schemas members=ws_members refresh
+                            is_draft=Signal::derive(move || panel_is_draft.get())
+                            draft_labels=panel_save_labels
+                            on_dirty_change=on_dirty_callback
+                            on_saved=on_saved_callback />
                     </div>
                 </div>
             </div>
@@ -3751,6 +3716,21 @@ fn detail_tab_labels(i18n: &I18nController) -> [(String, String); 4] {
 }
 
 /// 右侧详情面板：标题、详情与标签都可编辑，保存走乐观并发。
+///
+/// 「新建 Entry」按钮的草稿态路径下，外部在 createEntry 完成后把 `is_draft`
+/// 翻 true 并预填 `draft_labels`：面板自动进入标题编辑、把 LabelEditor 切到
+/// LabelDraft（保留手动点击切回），保存走 `updateEntry` + `labelings` 一次请求。
+/// `is_draft` 由 false→true 翻转那一刻触发一次「自动进标题编辑态」，与之前
+/// `show_new` 表单打开时聚焦标题的写法一致——保持单一焦点来源。
+///
+/// 入参：
+/// - `is_draft` 当前面板是否处于草稿态（条目由「新建」按钮刚创建、还没正式保存过）；
+///   用于切换 LabelEditor ↔ LabelDraft、保存时发 `labelings`。
+/// - `draft_labels` 草稿态下收集标签值，`from_schema_preset(s)` 把 schema 的默认值
+///   预填进去，用户可改；保存时把非空项打包进 updateEntry.labelings。
+/// - `on_dirty_change` dirty 状态变化时通知父级，供 `on_new_entry` 判断是否拦截新建流程。
+/// - `on_saved` 保存成功时通知父级：父级把 `is_draft` 切回 false、清空 `draft_labels`，
+///   面板下次渲染 LabelEditor 而非 LabelDraft。
 #[component]
 fn EntryPanel(
     code: RwSignal<String>,
@@ -3759,6 +3739,10 @@ fn EntryPanel(
     schemas: RwSignal<Vec<LabelSchema>>,
     members: RwSignal<Vec<Member>>,
     refresh: RwSignal<u32>,
+    is_draft: Signal<bool>,
+    draft_labels: RwSignal<Vec<DraftLabel>>,
+    on_dirty_change: Callback<bool>,
+    on_saved: Callback<()>,
 ) -> impl IntoView {
     let i18n: I18nController = use_i18n();
     let navigate = use_navigate();
@@ -3779,10 +3763,18 @@ fn EntryPanel(
     // 标题比较必须带 trim：服务端存/返回前会 trim（service/entry.rs），若不加，
     // 用户输入 "abc " 存回 "abc"，两者永不相等，dirty 卡在 true、按钮再也不置灰。
     // 别「简化」掉这个 trim，也别改成回头 set 缓冲——那会动到用户正在打的字。
+    // 草稿态下还要算上 draft_labels：保存时一并提交，所以批量保存按钮必须反映出来。
     let dirty = Signal::derive(move || {
-        data.get()
-            .and_then(|r| r.ok())
-            .is_some_and(|e| e.title != title.get().trim() || e.detail != detail.get())
+        let base = data.get().and_then(|r| r.ok()).is_some_and(|e| {
+            e.title != title.get().trim() || e.detail != detail.get()
+        });
+        if base {
+            return true;
+        }
+        if is_draft.get() {
+            return draft_labels.get().iter().any(|r| r.to_value().is_some());
+        }
+        false
     });
 
     // 当前页签：detail | attachments | history。
@@ -3885,6 +3877,22 @@ fn EntryPanel(
         }
     });
 
+    // dirty 变化时上报父级：`on_new_entry` 拿这个值决定是否拦截「新建」流程。
+    // 这里取现在的 dirty 而不是 prev：父级只关心「当前是否 dirty」，翻转都触发。
+    Effect::new(move |_| {
+        on_dirty_change.run(dirty.get());
+    });
+
+    // 草稿态首次进入（is_draft 由 false → true）那一刻把标题切到编辑态并补焦点，
+    // 让用户不需要再点一次输入框。与旧 `show_new` 切表单打开那一刻的写法一致。
+    Effect::new(move |prev: Option<bool>| {
+        let now = is_draft.get();
+        if !prev.unwrap_or(false) && now {
+            editing_title.set(true);
+        }
+        now
+    });
+
     let do_save: Callback<()> = Callback::new(move |_| {
         // 无改动就不写：服务端即便 title/detail 未变也会 bump updated_at 并追加一条审计，
         // 而 updated_at 是乐观并发比的令牌。按钮那边由 disabled 挡住，快捷键这条路径得自己挡。
@@ -3898,11 +3906,29 @@ fn EntryPanel(
         let expected = entry_now.updated_at.clone();
         let t = title.get();
         let d = detail.get();
+        // 草稿态保存：把 `draft_labels` 里用户填了值的标签连同 title/detail 一起发——
+        // 服务端走 updateEntry + set_labelings，标题 / 正文 / 标签一次提交。
+        // 非草稿态保存：标签已有 LabelEditor 即时落库，这里不发，避免重复写。
+        let planned: Vec<(String, Value)> = if is_draft.get() {
+            draft_labels
+                .get_untracked()
+                .iter()
+                .filter_map(|r| r.to_value().map(|v| (r.name.clone(), v)))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let labelings_ref = if planned.is_empty() {
+            None
+        } else {
+            Some(planned.as_slice())
+        };
         spawn_local(async move {
-            match update_entry(&c, &expected, &t, &d).await {
+            match update_entry(&c, &expected, &t, &d, labelings_ref).await {
                 Ok(updated) => {
                     labels.set(updated.labels.clone());
                     data.set(Some(Ok(updated)));
+                    on_saved.run(());
                     error.set(None);
                     refresh.update(|n| *n += 1);
                 }
@@ -3966,9 +3992,47 @@ fn EntryPanel(
         });
     };
 
+    // 「全屏」切换：有未保存改动时先保存，再导航到全屏页。
+    // 草稿态保存会一并提交标签（draft_labels），保证全屏页拿到最新数据，
+    // 标题/正文/标签三样都不丢。
     let open_full = move |_| {
         let c = code.get();
-        if !c.is_empty() {
+        if c.is_empty() {
+            return;
+        }
+        // 拿到当前 dirty 看是否需要先保存。
+        let need_save = dirty.get_untracked();
+        if need_save {
+            let expected = data
+                .get_untracked()
+                .and_then(|r| r.ok())
+                .map(|e| e.updated_at.clone())
+                .unwrap_or_default();
+            let t = title.get_untracked();
+            let d = detail.get_untracked();
+            let planned: Vec<(String, Value)> = if is_draft.get_untracked() {
+                draft_labels
+                    .get_untracked()
+                    .iter()
+                    .filter_map(|r| r.to_value().map(|v| (r.name.clone(), v)))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let labelings_ref = if planned.is_empty() {
+                None
+            } else {
+                Some(planned.as_slice())
+            };
+            let nav = navigate.clone();
+            let code_for_later = c.clone();
+            spawn_local(async move {
+                if !expected.is_empty() {
+                    let _ = update_entry(&c, &expected, &t, &d, labelings_ref).await;
+                }
+                nav(&format!("/{}/entry/{}", slug, code_for_later), Default::default());
+            });
+        } else {
             navigate(&format!("/{}/entry/{}", slug, c), Default::default());
         }
     };
@@ -4086,7 +4150,19 @@ fn EntryPanel(
                                         }.into_any(),
                                     }}
                                 </div>
-                                <LabelEditor code=code schemas labels members on_changed />
+                                // 草稿态下不渲染 LabelEditor：那时标签是「用户先填缓冲、保存一次提交」
+                                // 的语义，得用 LabelDraft。saved 后由父级把 is_draft 翻 false，
+                                // 这里自动切回 LabelEditor。
+                                {
+                                    view! {
+                                        <Show
+                                            when=move || is_draft.get()
+                                            fallback=move || view! { <LabelEditor code=code schemas labels members on_changed /> }
+                                        >
+                                            <LabelDraft rows=draft_labels members=members />
+                                        </Show>
+                                    }
+                                }
                             }.into_any(),
                         }}
                         // 评论列表放在 tab 之外：之前塞在 `_ =>` 分支的 view! 里时，

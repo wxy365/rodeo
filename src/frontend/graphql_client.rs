@@ -1124,19 +1124,35 @@ pub async fn upload_attachment(
     .map_err(|e| e.to_string())
 }
 
+/// 草稿态保存时与 title/detail 一起发的标签列表。
+/// 走「标签即时落库」的常规编辑传 `None`——那些标签由 LabelEditor 各自落。
 pub async fn update_entry(
     code: &str,
     expected_updated_at: &str,
     title: &str,
     detail: &str,
+    labelings: Option<&[(String, Value)]>,
 ) -> Result<Entry, String> {
+    // 空数组也得发空变量（`labelings: []`），否则 GraphQL 的「无值参数」会触发
+    // 服务端默认值而不是空数组。我们用「空数组等价 None」的客户端约定来对齐。
+    let ls_json = labelings
+        .map(|ls| {
+            Value::Array(
+                ls.iter()
+                    .map(|(name, value)| {
+                        json!({ "name": name, "value": value })
+                    })
+                    .collect(),
+            )
+        })
+        .unwrap_or(Value::Null);
     let q = format!(
-        "mutation($c: String!, $e: String!, $t: String!, $d: String!) {{ \
-         updateEntry(code: $c, expectedUpdatedAt: $e, title: $t, detail: $d) {{ {ENTRY_FIELDS} }} }}"
+        "mutation($c: String!, $e: String!, $t: String!, $d: String!, $l: [LabelingInput!]) {{ \
+         updateEntry(code: $c, expectedUpdatedAt: $e, title: $t, detail: $d, labelings: $l) {{ {ENTRY_FIELDS} }} }}"
     );
     let data = graphql(
         &q,
-        json!({ "c": code, "e": expected_updated_at, "t": title, "d": detail }),
+        json!({ "c": code, "e": expected_updated_at, "t": title, "d": detail, "l": ls_json }),
     )
     .await?;
     serde_json::from_value(data.get("updateEntry").cloned().unwrap_or(Value::Null))

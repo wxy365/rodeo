@@ -145,7 +145,11 @@ impl EntryService {
     }
 
     pub fn create(&self, actor: Ulid, workspace_id: Ulid, title: &str) -> Result<Entry, AppError> {
-        self.create_with_detail(actor, workspace_id, title, "")
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(AppError::Internal("标题不能为空".to_string()));
+        }
+        self.create_blank_impl(actor, workspace_id, title, "")
     }
 
     /// 建条目并一次性写入正文。与 `create` 分开是因为 AI 总结要带着正文落库：
@@ -161,6 +165,24 @@ impl EntryService {
         if title.is_empty() {
             return Err(AppError::Internal("标题不能为空".to_string()));
         }
+        self.create_blank_impl(actor, workspace_id, title, detail)
+    }
+
+    /// 「新建 Entry」按钮的草稿态：标题与正文都允许为空。
+    ///
+    /// 与 `create`/`create_with_detail` 唯一的差别就是不放行空标题。
+    /// 共享私有落库路径，保证审计 / 索引写入行为一致。
+    pub fn create_blank(&self, actor: Ulid, workspace_id: Ulid) -> Result<Entry, AppError> {
+        self.create_blank_impl(actor, workspace_id, "", "")
+    }
+
+    fn create_blank_impl(
+        &self,
+        actor: Ulid,
+        workspace_id: Ulid,
+        title: &str,
+        detail: &str,
+    ) -> Result<Entry, AppError> {
         let mut entry = Entry::new(workspace_id, title.to_string(), actor);
         entry.detail = detail.to_string();
         while self
@@ -882,14 +904,15 @@ impl EntryService {
         Ok(r.total)
     }
 
-    /// 单次求值的查询编排：一次性取回候选行、按需取回打标与全文命中，再过滤/排序/分页。
-    pub fn query(
+    /// 评估视图查询+排序，返回全量排序后的命中条目 + 命中标签名清单。
+    /// 不分页：`query()` 在此基础上切片；`next_in_view()` 在此基础上定位下一条。
+    /// 复用同一套筛选+排序管线，避免「下一个」按钮与表格视图走两条不一致的代码路径。
+    fn evaluate_view(
         &self,
         ws: Ulid,
         query: &Query,
         sort: &SortSpec,
-        page: PageInput,
-    ) -> Result<QueryResult, AppError> {
+    ) -> Result<(Vec<Entry>, Vec<String>), AppError> {
         // 标签定义必须先于 hint 提取加载：Account 类型据此跳过索引，
         // 否则 `Assignee has "<email>"` 这种 want 走 ULID 校验会失败，
         // 候选全集空、整批条目被错杀在 hint 层。
@@ -1062,17 +1085,31 @@ impl EntryService {
         label_names.dedup();
 
         sort_rows(&mut matched, sort, &labels_map, &schemas, &accounts);
+        Ok((matched, label_names))
+    }
+
+    /// 单次求值的查询编排：`evaluate_view` 拿到全量排序结果，再分页+装上 labels。
+    pub fn query(
+        &self,
+        ws: Ulid,
+        query: &Query,
+        sort: &SortSpec,
+        page: PageInput,
+    ) -> Result<QueryResult, AppError> {
+        let (matched, label_names) = self.evaluate_view(ws, query, sort)?;
         let total = matched.len();
-        let (page, page_size) = page.normalized();
+        let (page_no, page_size) = page.normalized();
         let slice: Vec<Entry> = matched
             .into_iter()
-            .skip((page - 1) * page_size)
+            .skip((page_no - 1) * page_size)
             .take(page_size)
             .collect();
-
+        // 切片后再取一次 labels——`evaluate_view` 内的 labels_map 在 return 时被消费，
+        // 重扫一次 LABELINGS_BY_WORKSPACE 列族换「装到当前页 items 上」的标签。
+        let labels_map = self.labelings_by_workspace(ws)?;
         let mut items = Vec::with_capacity(slice.len());
         for e in slice {
-            let labels = labels_of(&e.code).to_vec();
+            let labels = labels_map.get(&e.code).cloned().unwrap_or_default();
             items.push((e, labels));
         }
         Ok(QueryResult {
@@ -1081,6 +1118,21 @@ impl EntryService {
             label_names,
             next_cursor: None,
         })
+    }
+
+    /// 全屏详情页「下一个」按钮专用：定位视图排序中 `current_code` 的下一条。
+    /// 返回 None 表示「视图排序中 `current_code` 已是最后一条」或「条目不在该视图命中集合内」
+    /// （含已删除 / 不满足视图查询）。共用 `evaluate_view` 的同一套筛选+排序管线。
+    pub fn next_in_view(
+        &self,
+        ws: Ulid,
+        query: &Query,
+        sort: &SortSpec,
+        current_code: &str,
+    ) -> Result<Option<Entry>, AppError> {
+        let (matched, _label_names) = self.evaluate_view(ws, query, sort)?;
+        let pos = matched.iter().position(|e| e.code == current_code);
+        Ok(pos.and_then(|idx| matched.get(idx + 1).cloned()))
     }
 
     /// 走复合索引的 cursor 查询路径。仅当 sort 命中索引（`EntryIndexService::sort_is_indexed`
@@ -2765,3 +2817,4 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 }
+fn _test_garbage() { let x = "broken

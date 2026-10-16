@@ -200,6 +200,9 @@
   },
   "entry": {
     "back_to_view": "ビューに戻る",
+    "next": "次へ",
+    "next_hint": "次へ：{title}",
+    "next_none": "このビューにはこれ以上のエントリはありません",
     "save": "保存",
     "delete": "削除",
     "unsaved": "未保存",
