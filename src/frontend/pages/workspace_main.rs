@@ -2031,8 +2031,14 @@ pub fn WorkspaceMain() -> impl IntoView {
                                         <tr><td><code>"L4+"</code></td><td>{i18n.t("entry.expr_help_row_lplus_eq")}</td></tr>
                                         <tr><td><code>"!L4+"</code></td><td>{i18n.t("entry.expr_help_row_lplus_ne")}</td></tr>
                                         <tr><td><code>"L4+ = \"V1\""</code></td><td>{i18n.t("entry.expr_help_row_lplus_eq")}</td></tr>
+                                        <tr><td><code>"Status changed"</code></td><td>{i18n.t("entry.expr_help_row_changed")}</td></tr>
+                                        <tr><td><code>"Status changed from \"Open\""</code></td><td>{i18n.t("entry.expr_help_row_changed_from")}</td></tr>
+                                        <tr><td><code>"Status changed to \"Done\""</code></td><td>{i18n.t("entry.expr_help_row_changed_to")}</td></tr>
+                                        <tr><td><code>"Status changed during (-, \"2026-10-17\")"</code></td><td>{i18n.t("entry.expr_help_row_changed_during")}</td></tr>
+                                        <tr><td><code>"Status changed from \"Open\" to \"Done\" during (\"2026-10-15\", \"2026-10-17\"]"</code></td><td>{i18n.t("entry.expr_help_row_changed_full")}</td></tr>
                                     </tbody>
                                 </table>
+                                <p class="mut">{i18n.t("entry.expr_help_changed_intro")}</p>
                                 <p class="mut">{i18n.t("entry.expr_help_inherit_intro")}
                                     {i18n.t("entry.expr_help_inherit_body")}</p>
                                 <p class="mut">{i18n.t("entry.expr_help_keyonly_intro")}</p>
@@ -2682,6 +2688,8 @@ fn EntryTable(
     /// 点其他列不动它。标题点击会切换该行详情面板的开 / 关——行高亮与
     /// 面板已解耦，允许「行高亮但侧栏空白」（关闭详情时）：点同一行标题
     /// 重新打开面板即可。
+    #[allow(unused)] // 重构后 dirty 拦截搬出 EntryTable，本参数暂时无人读；
+    // 保留签名以备后续扩展（如详情面板多开、悬浮对比等）又要再读它。
     panel_code: RwSignal<String>,
     /// 批量操作勾选的条目 code。与 `selected`（详情面板当前条目）互相独立。
     batch_selected: RwSignal<Vec<String>>,
