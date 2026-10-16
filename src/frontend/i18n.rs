@@ -125,7 +125,8 @@ fn build_flat(json: &str) -> FlatMap {
     // 走 `serde_json::Value` 自己手剥：`_meta` 与其它顶层 section 平级，
     // 不能同时用 `#[serde(flatten)]`（rust 派生会在两个 flatten 字段间
     // 产生冲突，要么一个也起不到作用，要么在某个非 string 值上报
-    // "invalid type: map, expected a string"）。手剥只取 string leaf。
+    // "invalid type: map, expected a string"）。手剥只取 string leaf，
+    // 嵌套对象递归展开成点号路径（例如 `relation.kind.contains`）。
     let parsed: serde_json::Value =
         serde_json::from_str(json).unwrap_or_else(|e| panic!("locale JSON malformed: {e}"));
     let mut out = FlatMap::with_capacity(64);
@@ -139,14 +140,31 @@ fn build_flat(json: &str) -> FlatMap {
         let Some(kvs) = kvs.as_object() else {
             continue;
         };
-        for (k, v) in kvs {
-            let Some(s) = v.as_str() else {
-                continue;
-            };
-            out.insert(format!("{section}.{k}"), s.to_string());
-        }
+        flatten_into(&mut out, section, kvs);
     }
     out
+}
+
+/// 把嵌套对象递归展开成 `section.subkey.subsubkey -> value` 的扁平表。
+/// 非字符串标量（数字 / 布尔 / null / 数组）在任何深度都跳过——历史 2 层
+/// 版本就只收 string leaf，行为上保持一致即可。
+fn flatten_into(
+    out: &mut FlatMap,
+    prefix: &str,
+    obj: &serde_json::Map<String, serde_json::Value>,
+) {
+    for (k, v) in obj {
+        let path = format!("{prefix}.{k}");
+        match v {
+            serde_json::Value::String(s) => {
+                out.insert(path, s.clone());
+            }
+            serde_json::Value::Object(sub) => {
+                flatten_into(out, &path, sub);
+            }
+            _ => {}
+        }
+    }
 }
 
 fn map_for(loc: Locale) -> &'static FlatMap {
