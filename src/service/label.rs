@@ -619,6 +619,7 @@ impl LabelService {
         Ok(count)
     }
 }
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::service::workspace::WorkspaceService;

@@ -2107,21 +2107,6 @@ impl Parser {
         }))
     }
 
-    /// 读取 `[from "X"] [to "Y"]` 的 keyword 形式（仅 Op::ChangedValue 路径需要）。
-    fn eat_keyword(&mut self, kw: &str) -> Result<(), AppError> {
-        let peeked = self.peek();
-        match peeked {
-            Some(Tok::Ident(s)) if s.eq_ignore_ascii_case(kw) => {
-                self.next();
-                Ok(())
-            }
-            _ => Err(AppError::InvalidQuery(format!(
-                "期望 {kw}，实际 {}",
-                tok_label(peeked)
-            ))),
-        }
-    }
-
     /// 不消费：仅判断下一个 token 是不是该 keyword（大小写不敏感）。
     fn peek_keyword(&self, kw: &str) -> bool {
         matches!(self.peek(), Some(Tok::Ident(s)) if s.eq_ignore_ascii_case(kw))
