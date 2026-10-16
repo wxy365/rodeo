@@ -867,6 +867,23 @@ pub async fn entry(code: &str) -> Result<Option<Entry>, String> {
         .and_then(|v| serde_json::from_value(v).ok()))
 }
 
+/// 全屏详情页「下一个」按钮专用：定位来源视图排序里 `current_code` 之后的那一条。
+/// `view_id` 与 `current_code` 都要求在路由里能取到——前者来自 `?view=<id>`，
+/// 后者来自路径段 `:code`。返回 `None` 表示「已是视图最后一项」或「条目已不在视图内」。
+pub async fn entry_next_in_view(
+    view_id: &str,
+    current_code: &str,
+) -> Result<Option<Entry>, String> {
+    let q = format!(
+        "query($v: ID!, $c: String!) {{ entryNextInView(viewId: $v, currentCode: $c) {{ {ENTRY_FIELDS} }} }}"
+    );
+    let data = graphql(&q, json!({ "v": view_id, "c": current_code })).await?;
+    Ok(data
+        .get("entryNextInView")
+        .cloned()
+        .and_then(|v| serde_json::from_value(v).ok()))
+}
+
 pub async fn comments(entry_code: &str) -> Result<Vec<Comment>, String> {
     let q = format!("query($c: String!) {{ comments(entryCode: $c) {{ {COMMENT_FIELDS} }} }}");
     let data = graphql(&q, json!({ "c": entry_code })).await?;

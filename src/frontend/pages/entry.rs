@@ -7,9 +7,9 @@ use crate::frontend::attachment_list::AttachmentList;
 use crate::frontend::comment_list::CommentList;
 use crate::frontend::components::{fmt_datetime, logged_out, AuditTimeline, CodeCopy, TabBar};
 use crate::frontend::graphql_client::{
-    audit_logs, build_share_url, create_entry_share, delete_entry, entry, entry_shares,
-    label_schemas, members, revoke_entry_share, update_entry, workspace_by_slug, AccountBrief,
-    AuditLog, Entry, EntryShare, LabelSchema, Labeling, Member, Workspace,
+    audit_logs, build_share_url, create_entry_share, delete_entry, entry, entry_next_in_view,
+    entry_shares, label_schemas, members, revoke_entry_share, update_entry, workspace_by_slug,
+    AccountBrief, AuditLog, Entry, EntryShare, LabelSchema, Labeling, Member, Workspace,
 };
 use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::icons::{ic_back, ic_check, ic_close, ic_share, ic_tag};
@@ -213,6 +213,32 @@ pub fn EntryFullScreen() -> impl IntoView {
     // 之前选中的视图，而不是默认视图。
     let nav_back = navigate.clone();
     let view_on_back: Option<String> = use_query_map().get().get("view").filter(|s| !s.is_empty());
+    // 「下一个」按钮的状态：外层 Option = 已尝试取数；内层 Option = 视图排序中是否还有下一条。
+    // `None` 涵盖「来自默认视图（按钮根本不渲染）」与「正在加载」两种语义——前者由 view_on_back
+    // 在 view! 里挡住，后者由 disabled 态承担。一律用 `is_some()` 但应 `Some(Some(_))` 才可用。
+    let next_entry: RwSignal<Option<Option<Entry>>> = RwSignal::new(None);
+    // 仅当来自非默认视图（URL 携带 `?view=<id>`）时才追下一条。视图 id 与当前条目 code 都进
+    // 依赖：code 变更（保存后 data 被替换）触发重拉；view_on_back 在组件生命周期内不变。
+    if let Some(view_id_for_next) = view_on_back.clone() {
+        Effect::new(move |_| {
+            let Some(current) = data
+                .get()
+                .and_then(|r| r.ok())
+                .map(|(_, e, _, _, _)| e)
+            else {
+                return;
+            };
+            if cfg!(target_arch = "wasm32") {
+                let vid = view_id_for_next.clone();
+                let cc = current.code.clone();
+                spawn_local(async move {
+                    let r = entry_next_in_view(&vid, &cc).await;
+                    // 失败按「无下一项」处理——按钮回到禁用态，不会卡在加载。
+                    next_entry.set(Some(r.unwrap_or(None)));
+                });
+            }
+        });
+    }
     let go_back: Callback<()> = Callback::new(move |_| {
         let href = match view_on_back.as_deref() {
             Some(id) => format!("/{}?view={}", slug(), id),
@@ -243,6 +269,38 @@ pub fn EntryFullScreen() -> impl IntoView {
         <div class="page page-wide">
             <div class="panel entry-top">
                 <button class="btn" on:click=move |_| go_back.run(())>{ic_back()}{move || i18n.t("entry.back_to_view")}</button>
+                // 「下一个」按钮：仅当 URL 携带 `?view=<id>`（来自非默认视图）时渲染。
+                // 数据未就绪或视图已无下一条 → 禁用并切换 tooltip。点击后携带同样的
+                // `?view=<id>` 跳到下一条的全屏页，让「下一个」链路不被打断。
+                {
+                    let nav = navigate.clone();
+                    let slug_fn = slug.clone();
+                    let on_next = move |_| {
+                        let Some(Some(n)) = next_entry.get_untracked() else {
+                            return;
+                        };
+                        let vid = view_on_back.clone().unwrap_or_default();
+                        let url = format!("/{}/entry/{}?view={}", slug_fn(), n.code, vid);
+                        nav(&url, Default::default());
+                    };
+                    let next_disabled = move || !matches!(next_entry.get(), Some(Some(_)));
+                    let next_tip = move || match next_entry.get() {
+                        Some(Some(e)) => {
+                            i18n.tf("entry.next_hint", &[("title", &e.title)])
+                        }
+                        _ => i18n.t("entry.next_none"),
+                    };
+                    let show_next = view_on_back.is_some();
+                    move || if show_next {
+                        view! {
+                            <button class="btn" disabled=next_disabled title=next_tip on:click=on_next>
+                                {move || i18n.t("entry.next")}
+                            </button>
+                        }.into_any()
+                    } else {
+                        view! { <span></span> }.into_any()
+                    }
+                }
                 <CodeCopy code=Signal::derive(code) />
                 {move || if editing_title.get() {
                     view! {
