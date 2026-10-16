@@ -338,6 +338,11 @@ impl EntryService {
             return Ok(());
         }
         // 软删除后该 entry 不应再出现在视图里：从所有索引中抹除。
+        // 索引键里的 updated_at / title 来自原始 entry，删旧索引必须用旧值——
+        // 否则键不对、索引行依然在 cf::ENTRIES_IDX_UPDATED / _CREATED / _TITLE
+        // 里，下次 queryEntries 走 query_indexed 就会把这条「已软删除」条目
+        // 当作活跃条目继续吐出来（user 看到的「删除没反应」就是这个症状）。
+        let old_entry = entry.clone();
         let old_labels = self.labels_for_entry(entry.workspace_id, code)?;
         let before = serde_json::to_string(&entry).unwrap_or_default();
         entry.deleted_at = Some(Utc::now());
@@ -361,7 +366,9 @@ impl EntryService {
                 .purge_for_entry_ops(actor, entry.workspace_id, code)?;
         ops.extend(rel_purge);
         // 删除索引：不再插入新条目索引。
-        ops.extend(self.idx_deletes_for(entry.workspace_id, &entry, &old_labels));
+        // 必须传 `old_entry`，否则 idx_batch_deletes 用更新后的 updated_at /
+        // title 拼出来的键和当初 create 时写入的索引键对不上，旧索引行清不掉。
+        ops.extend(self.idx_deletes_for(entry.workspace_id, &old_entry, &old_labels));
         self.store.write_batch(ops)?;
         self.reindex(&entry);
         // 通知创建人：删除发起人 != 创建人。
