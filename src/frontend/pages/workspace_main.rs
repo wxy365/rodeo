@@ -2451,7 +2451,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 <button on:click=move |_| {
                                     vmenu.set(None);
                                     copy_code.run(());
-                                }>{i18n.t("entry.copy_code")}</button>
+                                }>{i18n.t("audit.copy_code")}</button>
                                 <button class="danger"
                                     on:click=move |_| {
                                         vmenu.set(None);
