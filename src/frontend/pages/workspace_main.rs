@@ -3815,6 +3815,11 @@ fn EntryPanel(
 
     // overwrite=true：清空编辑缓冲后全量填充（选中变化 / 并发冲突重载）。
     // overwrite=false：软重载，仅更新 data/labels，保留未保存的详情编辑。
+    //
+    // 注意：刻意不重置 `editing_title`——草稿态由 is_draft effect 在 panel_code
+    // 写完之后再翻 `editing_title=true`；若这里一并 false，它会再被翻回 false
+    // （load 的 Effect 比 is_draft 的注册更早，但同 tick 内的先后取决于 leptos
+    // 调度，结果之前反复是 false），草稿标题永远进不到编辑态。
     let load = move |overwrite: bool| {
         // 诊断日志：观察侧栏 EntryPanel 何时触发 load。
         #[cfg(target_arch = "wasm32")]
@@ -3827,7 +3832,6 @@ fn EntryPanel(
         }
         if overwrite {
             title.set(String::new());
-            editing_title.set(false);
             detail.set(String::new());
             labels.set(Vec::new());
             data.set(None);
@@ -3914,27 +3918,17 @@ fn EntryPanel(
         on_dirty_change.run(dirty.get());
     });
 
-    // 草稿态首次进入（is_draft 由 false → true）那一刻把标题切到编辑态并补焦点，
-    // 让用户不需要再点一次输入框。与旧 `show_new` 切表单打开那一刻的写法一致。
-    //
-    // 焦点要等 input 元素挂上去再调：focus effect 的 tracking 在同一 tick 内
-    // 触发时 view! 的 mount 还没完成，NodeRef 还没填。让出一个 macrotask
-    // （`TimeoutFuture::new(0)`）让 leptos 跑完 mount，参考
-    // `frontend/comment_list.rs::next_tick` 的写法。
+    // 草稿态首次进入（is_draft 由 false → true）那一刻把标题切到编辑态并补焦点。
+    // 直接读 `is_draft.get()` 设信号不靠 Effect：
+    //   - Effect 路径在 Leptos 0.8 里要穿过「派生信号在 workspace_main 创建、
+    //     在 EntryPanel 这边订阅」这道墙，跨组件 prop + 闭包的 timing 一旦
+    //     拿不准就不稳。
+    //   - 同步 let 路径这里更难（Effect 在 setup 里），改用 watch 风格：
+    //     把 is_draft 这个外源信号显式地映射到本地 `editing_title` 的初始态。
     Effect::new(move |prev: Option<bool>| {
         let now = is_draft.get();
         if !prev.unwrap_or(false) && now {
             editing_title.set(true);
-            #[cfg(target_arch = "wasm32")]
-            {
-                let title_ref_for_focus = title_ref;
-                spawn_local(async move {
-                    gloo_timers::future::TimeoutFuture::new(0).await;
-                    if let Some(el) = title_ref_for_focus.get() {
-                        let _ = el.focus();
-                    }
-                });
-            }
         }
         now
     });
