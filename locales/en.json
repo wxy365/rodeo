@@ -327,6 +327,7 @@
     "errors.delete_failed": "Delete failed",
     "errors.unsaved_block": "You have unsaved changes; save before closing",
     "errors.unsaved_block_new": "The right panel has unsaved changes; save or close it before creating a new Entry",
+    "errors.unsaved_block_switch": "The right panel has unsaved changes; save or close it before switching to another Entry",
     "errors.create_failed": "Failed to create Entry: {err}",
     "errors.archive_failed": "Archive failed",
     "errors.workspace_not_loaded": "Workspace not loaded yet",

@@ -327,6 +327,7 @@
     "errors.delete_failed": "删除失败",
     "errors.unsaved_block": "有未保存的改动，先保存再关闭",
     "errors.unsaved_block_new": "当前右侧详情面板有未保存的改动，请先保存或关闭后再新建 Entry",
+    "errors.unsaved_block_switch": "当前右侧详情面板有未保存的改动，请先保存或关闭后再切换到其他 Entry",
     "errors.create_failed": "新建 Entry 失败: {err}",
     "errors.archive_failed": "归档失败",
     "errors.workspace_not_loaded": "工作空间尚未加载完成",

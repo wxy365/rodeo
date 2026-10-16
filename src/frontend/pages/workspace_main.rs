@@ -410,6 +410,24 @@ pub fn WorkspaceMain() -> impl IntoView {
         panel_save_labels.set(Vec::new());
     });
 
+    // 标题点击的处理（含 dirty 拦截）：放在 workspace_main 而不是 EntryTable 里，
+    // 是因为拦截要读写 panel_dirty / panel_create_prompt（这两条信号不出现在
+    // EntryTable 的参数表里）。EntryTable 把 click 透传到此回调。
+    let on_title_click = Callback::new(move |code_for_click: String| {
+        selected.set(code_for_click.clone());
+        let cur = panel_code.get_untracked();
+        if !cur.is_empty() && panel_dirty.get_untracked() {
+            // 当前面板有未保存改动 → 任何 panel_code 切换都丢；提示横幅 4s 自消。
+            // toggle-close 与切至不同 code 都走这一支。
+            panel_create_prompt
+                .set(Some(i18n.t("entry.errors.unsaved_block_switch")));
+        } else if cur == code_for_click {
+            panel_code.set(String::new());
+        } else {
+            panel_code.set(code_for_click);
+        }
+    });
+
     // ---- 归档 ----
     // 已归档条目：打开「已归档」弹窗时拉取，恢复一条后就地移除，不整表重拉。
     let archived_open = RwSignal::new(false);
@@ -1148,8 +1166,17 @@ pub fn WorkspaceMain() -> impl IntoView {
                 // 这样用户在导航开始时面板的开关态是 sticky 的，按 X 中途关掉
                 // 之后下一次 ↓ 也不会再把它撬开。
                 // 与点击标题后的解耦语义一致：selected 与 panel_code 不再绑死。
+                //
+                // 同样要在面板 dirty 时拦截——键盘导航是「无意识的浏览」路径，
+                // 没要求用户先确认放弃当前编辑。spec §1 暗含：任何会丢未保存
+                // 标题 / 正文 / 标签的入口都要挡；面板切换亦应如此。
                 selected.set(code.clone());
-                if !panel_code.get_untracked().is_empty() {
+                let cur = panel_code.get_untracked();
+                if !cur.is_empty() && cur != *code && panel_dirty.get_untracked() {
+                    panel_create_prompt.set(Some(
+                        i18n.t("entry.errors.unsaved_block_switch"),
+                    ));
+                } else if !cur.is_empty() {
                     panel_code.set(code.clone());
                 }
             }
@@ -1785,6 +1812,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                         batch_selected
                                         multi_select_mode
                                         on_open=open_entry
+                                        on_title_click=on_title_click
                                         members=ws_members
                                         columns=Signal::derive(move || {
                                             active_view.get().map(|v| v.columns).unwrap_or_default()
@@ -2664,6 +2692,9 @@ fn EntryTable(
     multi_select_mode: RwSignal<bool>,
     /// 双击行时带上条目编码，由外层跳转到条目全屏页。
     on_open: Callback<String>,
+    /// 单击行标题：在外层做「dirty 拦截 + 切 panel」决策，
+    /// 这里只透传——handler 跑出 dirty 保护需要的 workspace_main 信号。
+    on_title_click: Callback<String>,
     columns: Signal<Vec<String>>,
     /// 当前视图的排序键链，按优先级从高到低。
     sorts: Signal<Vec<ViewSort>>,
@@ -3067,13 +3098,13 @@ fn EntryTable(
                                         // 其他列点击走 `<tr>` 上的 on:click，只翻 `selected`，
                                         // 不动 `panel_code`。
                                         // stop_propagation 避免 `<tr>` 的 on:click 再翻一次。
+                                        //
+                                        // dirty 拦截（关面板 / 换至其它 code 都被该拦截）
+                                        // 移到 workspace_main 里：`on_title_click` 闭包里
+                                        // 能读写 `panel_dirty` / `panel_create_prompt`，
+                                        // EntryTable 这边拿不到那两条信号。
                                         ev.stop_propagation();
-                                        selected.set(code_for_click.clone());
-                                        if panel_code.get_untracked() == code_for_click {
-                                            panel_code.set(String::new());
-                                        } else {
-                                            panel_code.set(code_for_click.clone());
-                                        }
+                                        on_title_click.run(code_for_click.clone());
                                     }
                                     on:dblclick=move |_| {
                                         on_open.run(code_for_dbl.clone());
@@ -3885,10 +3916,25 @@ fn EntryPanel(
 
     // 草稿态首次进入（is_draft 由 false → true）那一刻把标题切到编辑态并补焦点，
     // 让用户不需要再点一次输入框。与旧 `show_new` 切表单打开那一刻的写法一致。
+    //
+    // 焦点要等 input 元素挂上去再调：focus effect 的 tracking 在同一 tick 内
+    // 触发时 view! 的 mount 还没完成，NodeRef 还没填。让出一个 macrotask
+    // （`TimeoutFuture::new(0)`）让 leptos 跑完 mount，参考
+    // `frontend/comment_list.rs::next_tick` 的写法。
     Effect::new(move |prev: Option<bool>| {
         let now = is_draft.get();
         if !prev.unwrap_or(false) && now {
             editing_title.set(true);
+            #[cfg(target_arch = "wasm32")]
+            {
+                let title_ref_for_focus = title_ref;
+                spawn_local(async move {
+                    gloo_timers::future::TimeoutFuture::new(0).await;
+                    if let Some(el) = title_ref_for_focus.get() {
+                        let _ = el.focus();
+                    }
+                });
+            }
         }
         now
     });
