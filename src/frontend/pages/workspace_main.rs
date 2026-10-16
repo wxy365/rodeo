@@ -474,8 +474,6 @@ pub fn WorkspaceMain() -> impl IntoView {
     let time_pick = RwSignal::new(None::<(TimeKind, usize)>);
     // 表达式语法帮助弹窗开关。
     let expr_help = RwSignal::new(false);
-    // 本视图命中的条目实际带过的标签名（跨分页去重），即 `/` 的候选集。
-    let view_label_names = RwSignal::new(Vec::<String>::new());
     let ad_hoc_text = RwSignal::new(String::new());
     let refresh_view = RwSignal::new(0u32);
 
@@ -1022,12 +1020,11 @@ pub fn WorkspaceMain() -> impl IntoView {
             match fetched {
                 // 工作空间不存在：整页留着只会让每个操作都报「尚未加载完成」，回列表重选。
                 Ok(None) => nav_missing("/workspaces", Default::default()),
-                Ok(Some((w, items, list, total, names, member_list))) => {
+                Ok(Some((w, items, list, total, _names, member_list))) => {
                     ws_name.set(w.name.clone());
                     schemas.set(list.clone());
                     ws_members.set(member_list);
                     total_signal.set(total);
-                    view_label_names.set(names);
                     load_views(w.id.clone(), initial_for_load.clone());
                     data.set(Some(Ok((w, items, list))));
                 }
@@ -1586,22 +1583,23 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 // 插进表达式的仍是标签 key（如 Task）。key 以淡色跟在后面，说明落进输入框的是什么。
                                 let schemas_now = schemas.get();
                                 // 先摆 7 个内置元数据名（用户不用先给视图打上这些标签才能引用），
-                                // 再摆本视图已有标签；同名（大小写无关，老 schema 可能留着小写 code）只留内置。
+                                // 再摆工作空间全部已定义标签——这样新建出来还没在任何条目上打过的标签
+                                // 也能立刻在 `/` 候选里出现，不必先打一次才能引用。
+                                // 同名（大小写无关，老 schema 可能留着小写 code）只留内置。
                                 let mut items: Vec<(String, String)> = builtin_fields(&i18n)
                                     .into_iter()
                                     .map(|(k, t)| (k, t))
                                     .collect();
-                                for name in view_label_names.get() {
-                                    if items.iter().any(|(n, _)| n.eq_ignore_ascii_case(&name)) {
+                                for s in &schemas_now {
+                                    if items.iter().any(|(n, _)| n.eq_ignore_ascii_case(&s.name)) {
                                         continue;
                                     }
-                                    let title = schemas_now
-                                        .iter()
-                                        .find(|s| s.name == name)
-                                        .map(|s| s.title.trim().to_string())
-                                        .filter(|t| !t.is_empty())
-                                        .unwrap_or_else(|| name.clone());
-                                    items.push((name, title));
+                                    let title = if s.title.trim().is_empty() {
+                                        s.name.clone()
+                                    } else {
+                                        s.title.trim().to_string()
+                                    };
+                                    items.push((s.name.clone(), title));
                                 }
                                 let items: Vec<(String, String)> = items
                                     .into_iter()
