@@ -3918,13 +3918,17 @@ fn EntryPanel(
         } else {
             Vec::new()
         };
-        let labelings_ref = if planned.is_empty() {
+        // labelings 必须 'static 才能进 spawn_local 的 future；原版 `planned.as_slice()`
+        // 是借用、随闭包返回 drop，wasm check 会报 E0597。把整个 Vec 移进 future，
+        // 未来在用时 owned、drop 时机由 future 自己决定。
+        let labelings_owned: Option<Vec<(String, Value)>> = if planned.is_empty() {
             None
         } else {
-            Some(planned.as_slice())
+            Some(planned)
         };
         spawn_local(async move {
-            match update_entry(&c, &expected, &t, &d, labelings_ref).await {
+            let labelings_slice = labelings_owned.as_deref();
+            match update_entry(&c, &expected, &t, &d, labelings_slice).await {
                 Ok(updated) => {
                     labels.set(updated.labels.clone());
                     data.set(Some(Ok(updated)));
@@ -3995,6 +3999,10 @@ fn EntryPanel(
     // 「全屏」切换：有未保存改动时先保存，再导航到全屏页。
     // 草稿态保存会一并提交标签（draft_labels），保证全屏页拿到最新数据，
     // 标题/正文/标签三样都不丢。
+    // 闭包带 `move`：`code`/`data`/`title`/`detail`/`navigate`/`slug` 都是本地变量，
+    // `view!` 把闭包当 'static 用，必须 move 进来。原实现里 `slug: String` 被整个
+    // 移进 async 块，导致闭包只能 FnOnce；改为每次调用都 `slug.clone()` 拿一份给
+    // async 块，闭包本身保持可重复调用。
     let open_full = move |_| {
         let c = code.get();
         if c.is_empty() {
@@ -4019,21 +4027,26 @@ fn EntryPanel(
             } else {
                 Vec::new()
             };
-            let labelings_ref = if planned.is_empty() {
+            // planned 需 'static 才能进 spawn_local 的 future；labelings 是 Vec 不能
+            // 走 &slice（slice 的生命周期绑在 planned 上、闭包返回时被 drop）。
+            // 把整个 Vec 移进 future，未来在用时 owned、drop 时机由 future 自己决定。
+            let labelings_owned: Option<Vec<(String, Value)>> = if planned.is_empty() {
                 None
             } else {
-                Some(planned.as_slice())
+                Some(planned)
             };
             let nav = navigate.clone();
             let code_for_later = c.clone();
+            let slug_for_async = slug.clone();
             spawn_local(async move {
+                let labelings_slice = labelings_owned.as_deref();
                 if !expected.is_empty() {
-                    let _ = update_entry(&c, &expected, &t, &d, labelings_ref).await;
+                    let _ = update_entry(&c, &expected, &t, &d, labelings_slice).await;
                 }
-                nav(&format!("/{}/entry/{}", slug, code_for_later), Default::default());
+                nav(&format!("/{}/entry/{}", slug_for_async, code_for_later), Default::default());
             });
         } else {
-            navigate(&format!("/{}/entry/{}", slug, c), Default::default());
+            navigate(&format!("/{}/entry/{}", &slug, c), Default::default());
         }
     };
 

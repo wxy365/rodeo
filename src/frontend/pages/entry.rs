@@ -170,7 +170,9 @@ pub fn EntryFullScreen() -> impl IntoView {
         let t = title.get();
         let d = detail.get();
         spawn_local(async move {
-            match update_entry(&c, &expected, &t, &d).await {
+            // 全屏页是常规编辑路径，标签由 LabelEditor 即时落库；保存时不再带 labelings，
+            // 避免和 LabelEditor 的写入重复。草稿态路径（仅 EntryPanel）才传。
+            match update_entry(&c, &expected, &t, &d, None).await {
                 Ok(updated) => {
                     labels.set(updated.labels.clone());
                     data.update(|r| {
@@ -213,6 +215,9 @@ pub fn EntryFullScreen() -> impl IntoView {
     // 之前选中的视图，而不是默认视图。
     let nav_back = navigate.clone();
     let view_on_back: Option<String> = use_query_map().get().get("view").filter(|s| !s.is_empty());
+    // 「下一个」按钮也要用同一份 view id：clone 一次给 `go_back`（move 进自己的
+    // 闭包后没法再借出来），原值留给我这里的 on_next / show_next 后续使用。
+    let view_id_for_go_back = view_on_back.clone();
     // 「下一个」按钮的状态：外层 Option = 已尝试取数；内层 Option = 视图排序中是否还有下一条。
     // `None` 涵盖「来自默认视图（按钮根本不渲染）」与「正在加载」两种语义——前者由 view_on_back
     // 在 view! 里挡住，后者由 disabled 态承担。一律用 `is_some()` 但应 `Some(Some(_))` 才可用。
@@ -240,7 +245,7 @@ pub fn EntryFullScreen() -> impl IntoView {
         });
     }
     let go_back: Callback<()> = Callback::new(move |_| {
-        let href = match view_on_back.as_deref() {
+        let href = match view_id_for_go_back.as_deref() {
             Some(id) => format!("/{}?view={}", slug(), id),
             None => format!("/{}", slug()),
         };
@@ -272,17 +277,24 @@ pub fn EntryFullScreen() -> impl IntoView {
                 // 「下一个」按钮：仅当 URL 携带 `?view=<id>`（来自非默认视图）时渲染。
                 // 数据未就绪或视图已无下一条 → 禁用并切换 tooltip。点击后携带同样的
                 // `?view=<id>` 跳到下一条的全屏页，让「下一个」链路不被打断。
+                // 用 `Callback<()>` 包装 on_next（与同文件 go_back/do_save/del 同款），
+                // 避免 on:click 闭包把 navigate/slug_fn move 进 view! 后只剩 FnOnce。
                 {
                     let nav = navigate.clone();
                     let slug_fn = slug.clone();
-                    let on_next = move |_| {
+                    // go_back 之前已经把 view_on_back 整个 move 走了，这里 clone
+                    // 一份给 on_next 用；show_next 在 move 进 on_next 之前先把 bool
+                    // 抓出来，避免后续借不到 `view_id_for_next`。
+                    let view_id_for_next = view_on_back.clone();
+                    let show_next = view_id_for_next.is_some();
+                    let on_next: Callback<()> = Callback::new(move |_| {
                         let Some(Some(n)) = next_entry.get_untracked() else {
                             return;
                         };
-                        let vid = view_on_back.clone().unwrap_or_default();
+                        let vid = view_id_for_next.clone().unwrap_or_default();
                         let url = format!("/{}/entry/{}?view={}", slug_fn(), n.code, vid);
                         nav(&url, Default::default());
-                    };
+                    });
                     let next_disabled = move || !matches!(next_entry.get(), Some(Some(_)));
                     let next_tip = move || match next_entry.get() {
                         Some(Some(e)) => {
@@ -290,10 +302,9 @@ pub fn EntryFullScreen() -> impl IntoView {
                         }
                         _ => i18n.t("entry.next_none"),
                     };
-                    let show_next = view_on_back.is_some();
                     move || if show_next {
                         view! {
-                            <button class="btn" disabled=next_disabled title=next_tip on:click=on_next>
+                            <button class="btn" disabled=next_disabled title=next_tip on:click=move |_| on_next.run(())>
                                 {move || i18n.t("entry.next")}
                             </button>
                         }.into_any()

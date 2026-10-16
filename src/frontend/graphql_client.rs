@@ -1141,8 +1141,8 @@ pub async fn upload_attachment(
     .map_err(|e| e.to_string())
 }
 
-/// 草稿态保存时与 title/detail 一起发的标签列表。
-/// 走「标签即时落库」的常规编辑传 `None`——那些标签由 LabelEditor 各自落。
+// 草稿态保存时与 title/detail 一起发的标签列表。
+// 走「标签即时落库」的常规编辑传 `None`——那些标签由 LabelEditor 各自落。
 pub async fn update_entry(
     code: &str,
     expected_updated_at: &str,

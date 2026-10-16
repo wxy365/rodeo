@@ -2622,8 +2622,6 @@ impl Mutation {
 
     /// 编辑条目（Worker+）。`expectedUpdatedAt` 用于乐观并发：
     /// 与服务端最新 `updatedAt` 不一致时报「内容已被他人修改」。
-    /// 草稿态保存时与标题 / 正文同批落库的标签集合。
-    /// 已有 entry 的常规更新路径不传——那些标签走 `setLabeling` 单独落。
     async fn update_entry(
         &self,
         ctx: &Context<'_>,
@@ -2631,6 +2629,8 @@ impl Mutation {
         expected_updated_at: String,
         title: String,
         detail: String,
+        // 草稿态保存时与标题 / 正文同批落库的标签集合；已有 entry 的常规更新路径
+        // 不传——那些标签走 `setLabeling` 单独落。
         labelings: Option<Vec<LabelingInput>>,
     ) -> GqlResult<GqlEntry> {
         let gql = ctx.data::<GraphqlContext>()?;
