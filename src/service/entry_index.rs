@@ -105,12 +105,36 @@ impl EntryIndexService {
         };
 
         for ws in workspaces {
-            let entry_count = store
-                .scan_prefix(crate::storage::cf::ENTRIES_BY_WORKSPACE, &ws.to_bytes())?
-                .len();
-            if entry_count == 0 {
+            // 该 ws 内全部活跃 entry：扫 `cf::ENTRIES`（含完整数据），按 workspace 过滤、
+            // 跳过已软删 / 已归档。`ENTRIES_BY_WORKSPACE` 是「存在性索引」，value 为空，
+            // 从它上面 deserialize 会撞上 bincode `unexpected end of file`。
+            let active_entries: Vec<Entry> = {
+                let mut out = Vec::new();
+                for (_ek, ev) in store.scan_prefix(crate::storage::cf::ENTRIES, b"")? {
+                    let Ok(entry) = bincode::deserialize::<Entry>(&ev) else {
+                        continue;
+                    };
+                    if entry.workspace_id != ws {
+                        continue;
+                    }
+                    if entry.is_deleted() {
+                        continue;
+                    }
+                    if store.exists(
+                        crate::storage::cf::ENTRIES_ARCHIVED,
+                        entry.code.as_bytes(),
+                    )? {
+                        continue;
+                    }
+                    out.push(entry);
+                }
+                out
+            };
+            if active_entries.is_empty() {
                 continue;
             }
+            let entry_count = active_entries.len();
+
             // 列该 ws 的 schemas
             let schemas: Vec<crate::domain::label::LabelSchema> = {
                 let mut out = Vec::new();
@@ -149,13 +173,8 @@ impl EntryIndexService {
                     continue;
                 }
                 let mut ops = Vec::new();
-                for (_ek, ev) in store.scan_prefix(crate::storage::cf::ENTRIES_BY_WORKSPACE, &ws.to_bytes())? {
-                    let entry: Entry = bincode::deserialize(&ev)?;
-                    ops.push(BatchOp::put_raw(
-                        cf_name,
-                        key_fn(&entry),
-                        Vec::new(),
-                    ));
+                for entry in &active_entries {
+                    ops.push(BatchOp::put_raw(cf_name, key_fn(entry), Vec::new()));
                     if ops.len() >= 1000 {
                         store.write_batch(std::mem::take(&mut ops))?;
                     }
@@ -170,23 +189,38 @@ impl EntryIndexService {
             for schema in schemas.iter().filter(|s| s.sortable) {
                 let cf_name = label_bucket_cf(&schema.name);
                 let prefix = format!("{ws}/{}", schema.name);
+                // 索引行数上限：从 `LABELINGS_BY_LABEL` 取（与既有短路一致；
+                // 该 CF 含历史已删条目的悬空行，但用作「是否有必要灌库」的探测
+                // 信号已经足够）。
                 let labeling_count = store
                     .scan_prefix(crate::storage::cf::LABELINGS_BY_LABEL, prefix.as_bytes())?
                     .len();
                 if labeling_count == 0 {
                     continue;
                 }
+                // 收集该 ws + schema.name 的活跃打标：从 `cf::LABELINGS`（含完整
+                // Labeling）按 entry.code 前缀扫；外层 active_entries 已经把已删
+                // / 已归档 entry 滤掉，所以这里只看活跃 entry 的 LABELINGS。
+                let mut active_labelings: Vec<crate::domain::Labeling> = Vec::new();
+                for entry in &active_entries {
+                    for (_lk, lv) in
+                        store.scan_prefix(crate::storage::cf::LABELINGS, entry.code.as_bytes())?
+                    {
+                        let Ok(l) = bincode::deserialize::<crate::domain::Labeling>(&lv) else {
+                            continue;
+                        };
+                        if l.label_name == schema.name {
+                            active_labelings.push(l);
+                        }
+                    }
+                }
                 let existing = store.scan_prefix(cf_name, &ws.to_bytes())?.len();
-                if existing >= labeling_count {
+                if existing >= active_labelings.len() {
                     self.mark_covered(ws, cf_name);
                     continue;
                 }
                 let mut ops = Vec::new();
-                for (_lk, lv) in store.scan_prefix(
-                    crate::storage::cf::LABELINGS_BY_LABEL,
-                    prefix.as_bytes(),
-                )? {
-                    let labeling: crate::domain::Labeling = bincode::deserialize(&lv)?;
+                for labeling in &active_labelings {
                     if let Ok(encoded) = crate::domain::label::encode_label_value_for_index(
                         &labeling.value,
                         schema.value_type,
