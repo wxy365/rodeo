@@ -1986,7 +1986,14 @@ impl Query {
         let page = page.unwrap_or_default();
         // [query] force_legacy_path = true → 强制 Legacy 路径，便于 cursor 索引
         // 出问题时的紧急回滚。
+        // Changed / 继承标签条件在 cursor path 暂未支持：本轮 cursor 索引只覆盖
+        // 内建字段的标签值等值，若 query 含 changed / changedValue / 继承标签
+        // （L4+）就直接退回 legacy 路径，不让前端撞上 service::entry::query_indexed
+        // 里那条「请改用 page 分页」错误——基础视图的「Status changed」「L4+」
+        // 之类筛选应当直接走 legacy 走完。
+        let legacy_for_changed = q.contains_label_change() || q.contains_inherited_label();
         let use_cursor_path = !gql.services.config.query.force_legacy_path
+            && !legacy_for_changed
             && (page.cursor.is_some()
                 || (gql.services.entry_index.sort_is_indexed(ws, &sort, &schemas)
                     && (page.cursor.is_some() || page.page.unwrap_or(1) <= 1)));
