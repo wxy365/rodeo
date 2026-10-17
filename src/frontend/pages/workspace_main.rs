@@ -476,6 +476,9 @@ pub fn WorkspaceMain() -> impl IntoView {
     let expr_help = RwSignal::new(false);
     let ad_hoc_text = RwSignal::new(String::new());
     let refresh_view = RwSignal::new(0u32);
+    // 用户预输入的表达式，工作空间尚未到达 Some(Ok(..)) 时排队；数据到位后再
+    // 自动重放一次——取代首屏「按 Enter 立即报『工作空间尚未加载完成』」的瑕疵。
+    let pending_expr = RwSignal::new(None::<String>);
 
     // 视图查询反射：AI 调 queryEntries / searchEntries 命中后，把表达式 / 关键词
     // 回填到当前的表达式输入框 / 全文输入框。走 server-side parseViewQuery
@@ -726,7 +729,10 @@ pub fn WorkspaceMain() -> impl IntoView {
             .and_then(|r| r.ok())
             .map(|(w, _, _)| w.id.clone())
         else {
-            error.set(Some(i18n.t("entry.errors.workspace_not_loaded")));
+            // 工作空间还在加载：把当前表达式排队，加载完成后再 apply。
+            // 不再静默吞掉输入——按 Enter 后做的事会在数据到位后立刻兑现，
+            // 替代「首页加载赛跑时按 Enter 报错『尚未加载完成』」的瑕疵。
+            pending_expr.set(Some(expr));
             return;
         };
         spawn_local(async move {
@@ -740,6 +746,33 @@ pub fn WorkspaceMain() -> impl IntoView {
             }
         });
     };
+
+    // 数据第一次到位（None → Some(Ok(..))）+ 已排队表达式 → 自动重放。
+    // 没有这个 Effect 的话，pending_expr 就只能等用户下一次按 Enter 触发。
+    Effect::new(move |_| {
+        let _ = pending_expr.get();
+        let Some(ws_id) = data
+            .get()
+            .and_then(|r| r.ok())
+            .map(|(w, _, _)| w.id.clone())
+        else {
+            return;
+        };
+        let Some(expr) = pending_expr.get_untracked() else {
+            return;
+        };
+        pending_expr.set(None);
+        spawn_local(async move {
+            match parse_view_query(&ws_id, &expr).await {
+                Ok(ast) => {
+                    query_ast.set(ast);
+                    page_signal.set(1);
+                    error.set(None);
+                }
+                Err(e) => error.set(Some(e)),
+            }
+        });
+    });
     // 选中候选标签：把最后一个 `/` 连同其后已输入的前缀替换成标签名，
     // 并补一个空格，方便紧接着输入运算符或下一个标签。
     let pick_label = move |name: String| {
