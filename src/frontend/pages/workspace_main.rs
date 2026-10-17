@@ -901,6 +901,14 @@ pub fn WorkspaceMain() -> impl IntoView {
     // ---- 标题颜色规则编辑（视图配置弹窗内）----
     let config_rules = RwSignal::new(Vec::<TitleRule>::new());
     let next_rule_id = RwSignal::new(0u32);
+    // 每条 TitleRule 内部有 4 个 `RwSignal`（expr / color / cached_expr / cached_ast）。
+    // `open_config_for` / `add_rule` 都在 click handler 里被调用；click handler 的
+    // owner 每次回调结束就被 dispose，挂在它身上的 RwSignal 也跟着废——后续
+    // `<For>` 重渲读 `exc.get()`、`spawn_local` 的 `format_view_query` 回调读
+    // `r.cached_ast.get_untracked()` 都会 `unreachable` panic。预存组件级 Owner，
+    // 把 TitleRule 的构造闭到 `owner.with(build)` 里跑，新信号就挂在组件 owner
+    // 上，跨过 click 边界也不被 dispose。
+    let title_rule_owner = Owner::current();
     // 打开弹窗时逐个把已有规则的 AST 反格式化为表达式文本（服务端串行请求），
     // 期间禁用保存，避免把尚未回填、看似为空的条件误删。
     let rules_loading = RwSignal::new(false);
@@ -955,22 +963,28 @@ pub fn WorkspaceMain() -> impl IntoView {
         );
         dialog_error.set(None);
         let raw = v.title_colors.as_array().cloned().unwrap_or_default();
-        let rows: Vec<TitleRule> = raw
-            .iter()
-            .enumerate()
-            .map(|(i, r)| TitleRule {
-                id: i as u32,
-                expr: RwSignal::new(String::new()),
-                color: RwSignal::new(
-                    r.get("color")
-                        .and_then(|c| c.as_str())
-                        .unwrap_or("#3b82f6")
-                        .to_string(),
-                ),
-                cached_expr: RwSignal::new(String::new()),
-                cached_ast: RwSignal::new(r.get("query").cloned().unwrap_or(Value::Null)),
-            })
-            .collect();
+        // 同样要在组件 owner 里构造 TitleRule：见 `title_rule_owner` 注释。
+        let build = || -> Vec<TitleRule> {
+            raw.iter()
+                .enumerate()
+                .map(|(i, r)| TitleRule {
+                    id: i as u32,
+                    expr: RwSignal::new(String::new()),
+                    color: RwSignal::new(
+                        r.get("color")
+                            .and_then(|c| c.as_str())
+                            .unwrap_or("#3b82f6")
+                            .to_string(),
+                    ),
+                    cached_expr: RwSignal::new(String::new()),
+                    cached_ast: RwSignal::new(r.get("query").cloned().unwrap_or(Value::Null)),
+                })
+                .collect()
+        };
+        let rows: Vec<TitleRule> = match &title_rule_owner {
+            Some(o) => o.with(build),
+            None => build(),
+        };
         next_rule_id.set(rows.len() as u32);
         config_rules.set(rows);
         show_config_dialog.set(true);
