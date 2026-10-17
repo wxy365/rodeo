@@ -117,14 +117,16 @@ async function bootstrap(token) {
   try {
     await page.goto(`${SERVER}/${bs.slug}`, { waitUntil: 'commit', timeout: 15000 });
   } catch (e) { console.warn('[goto] timeout, continuing'); }
-  await page.waitForTimeout(15000);
+  // WebKit 起步比 chromium 慢（首次冷启动 wasm 编译要 ~10s+），
+  // 等 25s 再开始等视图行；然后再等 60s 容许 hydration 慢的情况。
+  await page.waitForTimeout(25000);
   await page.waitForFunction(
     (n) => Array.from(document.querySelectorAll('.wside .it')).filter(el => {
       const s = el.getAttribute('style');
       return s && s.includes('padding-left');
     }).length >= n,
     VIEW_COUNT,
-    { timeout: 60000, polling: 200 },
+    { timeout: 120000, polling: 500 },
   ).catch(async (e) => {
     const debug = await page.evaluate(() => {
       const aside = document.querySelector('.wside');
