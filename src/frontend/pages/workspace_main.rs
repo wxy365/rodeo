@@ -705,12 +705,32 @@ pub fn WorkspaceMain() -> impl IntoView {
     {
         let close_vmenu = move |ev: leptos::ev::MouseEvent| {
             if vmenu.get_untracked().is_some() {
-                // composed_path 走完整冒泡链（Chrome `<button>text</button>` 上偶发
-                // 把 target 设成 Text 节点，composed_path 不受这个 quirk 影响）。
-                let in_menu = ev.composed_path().iter().any(|node| {
+                // 主检查：composed_path 走完整冒泡链。
+                // Chrome `<button>text</button>` 上偶发把 target 设成 Text 节点，
+                // composed_path 不受这个 quirk 影响——它会从 Text 节点起、走到
+                // button，再到 div.vmenu。绝大多数浏览器都正确返回完整祖先链。
+                let mut in_menu = ev.composed_path().iter().any(|node| {
                     node.dyn_ref::<leptos::web_sys::Element>()
                         .is_some_and(|el| el.class_list().contains("vmenu"))
                 });
+                // 兜底：Safari / WebKit 偶发 `composed_path` 在 mousedown 上返回
+                // 不完整路径（只到 target 自身、不到 button→div.vmenu 的链），
+                // 主检查会漏；改走 target.parentNode 链手爬一遍 DOM 找 `.vmenu`。
+                // 代价：只在 composed_path 失败的极少数情况下才爬，
+                // 不会拖慢常见路径。
+                if !in_menu {
+                    let mut cur: Option<web_sys::Node> =
+                        ev.target().unchecked_into::<web_sys::Node>();
+                    while let Some(node) = cur {
+                        if let Some(el) = node.dyn_ref::<web_sys::Element>() {
+                            if el.class_list().contains("vmenu") {
+                                in_menu = true;
+                                break;
+                            }
+                        }
+                        cur = node.parent_node();
+                    }
+                }
                 if !in_menu {
                     vmenu.set(None);
                 }

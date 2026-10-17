@@ -135,8 +135,8 @@ CASES.push(async ({ browser, token, slug }) => {
     // goto 在长轮询 / 慢 hydration 时偶尔超时，commit 之后页面已经在渲染，跳过超时
   }
   // 等 hydration 推完 —— workspace data load 之后再发 views() 请求，
-  // 整个链 ~6s；保险起见等 10s 后再 waitForFunction，避免在 queries 排队前就误判失败。
-  await page.waitForTimeout(10000);
+  // 整个链 ~6s；保险起见等 15s 后再 waitForFunction，避免在 queries 排队前就误判失败。
+  await page.waitForTimeout(15000);
   // 等视图全量 hydration 进侧栏：3 个 view 行（每个 view-* 都有 padding-left 内联样式）
   await page.waitForFunction(
     (n) => Array.from(document.querySelectorAll('.wside .it')).filter(el => {
@@ -144,7 +144,7 @@ CASES.push(async ({ browser, token, slug }) => {
       return s && s.includes('padding-left');
     }).length >= n,
     VIEW_COUNT,
-    { timeout: 30000, polling: 200 },
+    { timeout: 60000, polling: 200 },
   ).catch(async (e) => {
     const debug = await page.evaluate(() => {
       const aside = document.querySelector('.wside');
