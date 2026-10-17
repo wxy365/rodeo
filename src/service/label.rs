@@ -449,6 +449,7 @@ impl LabelService {
         schema.format = check.format;
         schema.currency_symbol = check.currency_symbol;
         schema.unit = check.unit;
+        schema.sortable = check.sortable;
         schema.default_value = resolve_default(check.default_value, &schema)?;
         if let Some(dv) = &schema.default_value {
             check_account_member(&self.store, ws_id, dv)?;
