@@ -719,8 +719,12 @@ pub fn WorkspaceMain() -> impl IntoView {
                 // 代价：只在 composed_path 失败的极少数情况下才爬，
                 // 不会拖慢常见路径。
                 if !in_menu {
-                    let mut cur: Option<web_sys::Node> =
-                        ev.target().unchecked_into::<web_sys::Node>();
+                    // ev.target() 返回 Option<EventTarget>，不是 Option<Node>；
+                    // unchecked_into 只对 T: JsCast 直接有效，不能包在 Option 上。
+                    // 改成 dyn_ref + cloned 走 JS cast：返回 EventTarget 的 Node 视图。
+                    let mut cur: Option<web_sys::Node> = ev
+                        .target()
+                        .and_then(|t| t.dyn_ref::<web_sys::Node>().cloned());
                     while let Some(node) = cur {
                         if let Some(el) = node.dyn_ref::<web_sys::Element>() {
                             if el.class_list().contains("vmenu") {
