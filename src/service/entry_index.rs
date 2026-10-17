@@ -243,4 +243,129 @@ impl EntryIndexService {
         }
         Ok(())
     }
+
+    /// 启动期 orphan-index 清理：把索引行还指向「已软删 / 已归档」entry 的那些行删掉。
+    ///
+    /// 背景：`5f03940 fix(service): soft_delete 用 old_entry 拼索引删除键` 修了新写
+    /// 路径——之后删除的 entry 一定会把索引行一起撤掉。但在那次 commit 之前已被软删的
+    /// entry 仍带着孤儿索引行，对应的键当时是按「删除前 updated_at / title」写入的；
+    /// 现在的 entry 行里 `updated_at` 已经被刷新成删除时刻、`deleted_at` 已置位，两
+    /// 边对不上，重做 idx_delete 也拼不出原键。
+    ///
+    /// 这层 repair 不重建键，而是直接正向扫三个 builtin CF + 所有 sortable 标签桶，
+    /// 对每条索引行反查 `cf::ENTRIES`，遇到 `is_deleted || archived` 就把这条 delete
+    /// 掉；和记不记得旧键无关、idempotent、只对确实死掉的 entry 下手。
+    pub fn repair_orphan_index_rows(&self, store: &Arc<DocStore>) -> Result<(), AppError> {
+        use crate::domain::Entry;
+        use std::collections::{HashMap, HashSet};
+
+        // 一次性把所有 entry（含已删）抓进内存：后续判断「这条索引行有没有死人指着」
+        // 就是 O(1) HashMap 查表。entry 体小（9 个字段），ws 上千条也是 MB 量级以下。
+        let entries_by_code: HashMap<String, Entry> = {
+            let mut m = HashMap::new();
+            for (_ek, ev) in store.scan_prefix(cf::ENTRIES, b"")? {
+                if let Ok(e) = bincode::deserialize::<Entry>(&ev) {
+                    m.insert(e.code.clone(), e);
+                }
+            }
+            m
+        };
+
+        // 「code 是否已死」闭包：entry 已经软删、或对应的 ENTRIES_ARCHIVED 行存在、
+        // 或 entry 根本不存在（外力清掉了，索引行留着更没用）都算死。
+        let archived_codes: HashSet<String> = {
+            let mut s = HashSet::new();
+            for (k, _) in store.scan_prefix(cf::ENTRIES_ARCHIVED, b"")? {
+                if let Ok(code) = std::str::from_utf8(&k) {
+                    s.insert(code.to_string());
+                }
+            }
+            s
+        };
+        let is_dead = |code: &str| -> bool {
+            match entries_by_code.get(code) {
+                Some(e) => e.is_deleted() || archived_codes.contains(code),
+                None => true,
+            }
+        };
+
+        // helper: 从索引键尾部取 16 字节当 entry code（base62 16 字符恒定）。
+        // 长度 < 16 + 1 + 16 的视为无效键（防误删：scan 时偶尔扫到边界外的前缀）。
+        let code_from_tail = |k: &[u8]| -> Option<String> {
+            if k.len() < 16 + 1 + 16 {
+                return None;
+            }
+            std::str::from_utf8(&k[k.len() - 16..])
+                .ok()
+                .map(str::to_string)
+        };
+
+        // 三个 builtin 索引 CF：键格式 (ws[16B], sort_field..., code[16B])。
+        let mut cleared_builtin = 0usize;
+        for cf_name in [
+            cf::ENTRIES_IDX_UPDATED,
+            cf::ENTRIES_IDX_CREATED,
+            cf::ENTRIES_IDX_TITLE,
+        ] {
+            let mut ops = Vec::new();
+            for (k, _) in store.scan_prefix(cf_name, b"")? {
+                let Some(code) = code_from_tail(&k) else {
+                    continue;
+                };
+                if is_dead(&code) {
+                    ops.push(BatchOp::delete(cf_name, k.to_vec()));
+                    cleared_builtin += 1;
+                    if ops.len() >= 1000 {
+                        store.write_batch(std::mem::take(&mut ops))?;
+                    }
+                }
+            }
+            if !ops.is_empty() {
+                store.write_batch(ops)?;
+            }
+        }
+
+        // Label bucket CF：每个 sortable label 一个，键 (ws[16B], tag[N], encoded[M], code[16B])。
+        // 跨 ws 共享同一个 CF（按 schema.name 经 FNV-1a 哈希映射到 16 个桶）；
+        // 找出所有 sortable schema 名，按桶去重后只扫一次。
+        // `label_bucket_cf` 返回 `&'static str`，正好喂给 `BatchOp::delete (&'static str)`。
+        let mut cleared_label = 0usize;
+        let mut scanned: std::collections::HashSet<&'static str> = std::collections::HashSet::new();
+        for (_k, v) in store.scan_prefix(cf::LABEL_SCHEMAS, b"")? {
+            let Ok(schema) = bincode::deserialize::<crate::domain::label::LabelSchema>(&v) else {
+                continue;
+            };
+            if !schema.sortable {
+                continue;
+            }
+            let cf_name: &'static str = crate::storage::keys::label_bucket_cf(&schema.name);
+            if !scanned.insert(cf_name) {
+                continue;
+            }
+            let mut ops = Vec::new();
+            for (k, _) in store.scan_prefix(cf_name, b"")? {
+                let Some(code) = code_from_tail(&k) else {
+                    continue;
+                };
+                if is_dead(&code) {
+                    ops.push(BatchOp::delete(cf_name, k.to_vec()));
+                    cleared_label += 1;
+                    if ops.len() >= 1000 {
+                        store.write_batch(std::mem::take(&mut ops))?;
+                    }
+                }
+            }
+            if !ops.is_empty() {
+                store.write_batch(ops)?;
+            }
+        }
+        if cleared_builtin + cleared_label > 0 {
+            tracing::info!(
+                builtin = cleared_builtin,
+                label_buckets = cleared_label,
+                "orphan-index repair: 已清理悬空索引行"
+            );
+        }
+        Ok(())
+    }
 }

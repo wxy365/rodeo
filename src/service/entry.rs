@@ -1337,6 +1337,13 @@ impl EntryService {
                     Some(e) => e,
                     None => continue,
                 };
+                // cursor 路径不经过 list_entries 的 is_deleted / archived 过滤，
+                // 旧数据上漏到这一步的「已死」entry 仍然走 default view 命中——把它
+                // 当作看不见。配合启动期 repair_orphan_index_rows，存量数据也能
+                // 立刻从视图消失；这里只是兜底，防未来再漂。
+                if entry.is_deleted() || self.is_archived(&code)? {
+                    continue;
+                }
                 let labels = self.labels_for_entry(ws, &code)?;
                 let text_kw = query.first_text_keyword();
                 let text_hit_for_entry = |_kw: &str| -> bool {
