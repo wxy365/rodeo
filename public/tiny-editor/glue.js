@@ -34,10 +34,23 @@ function cleanupAux(el) {
     });
     el.__rodeo_aux = [];
   }
-  // 浮层（ql-tooltip）可能被挂到 body 上，只扫 body 的直接子节点，
-  // 不会碰到其他编辑器容器内部的东西。
-  document.querySelectorAll('body > .ql-tooltip').forEach((n) => n.remove());
+  closeStrayTooltips();
 }
+
+// 强清 body 上残留下来的 ql-tooltip 浮层（含 .ql-editing 状态）：
+// 之前只 remove()，但如果浮层在 mount 之后被父级 re-render「钉死」保留
+// `.ql-editing`，input[type=text] 仍保持 display:inline-block 可见。
+// 先撤销 editing 态再 remove，对 link tooltip 类 浮层通用。
+// 暴露成 `window.__rodeo_close_tooltips__` 给 Rust 侧在
+// `LabelEditor.on_changed` 等「数据更新、可能让父组件重渲染」
+// 的钩子里调用，把组件重挂清不到的浮层一并关掉。
+function closeStrayTooltips() {
+  document.querySelectorAll('body > .ql-tooltip').forEach((n) => {
+    n.classList.remove('ql-editing');
+    n.remove();
+  });
+}
+window.__rodeo_close_tooltips__ = closeStrayTooltips;
 
 // 正文支持图片：不再是「拦截」，而是接手上传。粘贴/拖入的图片文件经 opts.upload
 // 上传后以 /api/attachments/<id> 的 URL 插入，而不是 Quill 默认的 base64 data URI
