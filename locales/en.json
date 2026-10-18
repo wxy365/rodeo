@@ -364,7 +364,7 @@
     "expr_help_row_set_equals": "Set label equals exactly this set",
     "expr_help_row_text": "Full-text search finds «login» in title/description",
     "expr_help_row_account": "Created by the given account",
-    "expr_help_row_changed": "A label changed from «Open» to «Done» (per audit log)"
+    "expr_help_row_changed_audit": "A label changed from «Open» to «Done» (per audit log)"
   },
   "comment": {
     "section_title": "Comments",

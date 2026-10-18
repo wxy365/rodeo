@@ -361,7 +361,7 @@
     "expr_help_row_set_equals": "集合ラベルはこのセットと完全に等しい",
     "expr_help_row_text": "全文検索でタイトル/説明に「ログイン」を含む",
     "expr_help_row_account": "指定アカウントが作成",
-    "expr_help_row_changed": "あるラベルが「Open」から「Done」に変更された（監査ログより）"
+    "expr_help_row_changed_audit": "あるラベルが「Open」から「Done」に変更された（監査ログより）"
   },
   "comment": {
     "section_title": "コメント",

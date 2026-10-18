@@ -364,7 +364,7 @@
     "expr_help_row_set_equals": "集合标签恰好等于该集合",
     "expr_help_row_text": "全文搜索标题/描述包含「登录」",
     "expr_help_row_account": "创建者是指定账号",
-    "expr_help_row_changed": "某条标签从「Open」改成了「Done」（按审计日志）"
+    "expr_help_row_changed_audit": "某条标签从「Open」改成了「Done」（按审计日志）"
   },
   "comment": {
     "section_title": "评论",

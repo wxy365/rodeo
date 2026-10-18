@@ -361,7 +361,7 @@
     "expr_help_row_set_equals": "Etiqueta de conjunto es exactamente este conjunto",
     "expr_help_row_text": "La búsqueda de texto completo encuentra «login» en título/descripción",
     "expr_help_row_account": "Creado por la cuenta indicada",
-    "expr_help_row_changed": "Una etiqueta cambió de «Open» a «Done» (según el registro de auditoría)"
+    "expr_help_row_changed_audit": "Una etiqueta cambió de «Open» a «Done» (según el registro de auditoría)"
   },
   "comment": {
     "section_title": "Comentarios",

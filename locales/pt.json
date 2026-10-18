@@ -361,7 +361,7 @@
     "expr_help_row_set_equals": "Rótulo de conjunto é exatamente este conjunto",
     "expr_help_row_text": "A busca de texto completo encontra «login» em título/descrição",
     "expr_help_row_account": "Criado pela conta indicada",
-    "expr_help_row_changed": "Um rótulo mudou de «Open» para «Done» (pelo log de auditoria)"
+    "expr_help_row_changed_audit": "Um rótulo mudou de «Open» para «Done» (pelo log de auditoria)"
   },
   "comment": {
     "section_title": "Comentários",

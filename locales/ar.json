@@ -361,7 +361,7 @@
     "expr_help_row_set_equals": "تسمية المجموعة تساوي هذه المجموعة بالضبط",
     "expr_help_row_text": "البحث النصي الكامل يعثر على «login» في العنوان/الوصف",
     "expr_help_row_account": "أنشأه الحساب المحدد",
-    "expr_help_row_changed": "تغيرت تسمية من «Open» إلى «Done» (وفقًا لسجل التدقيق)"
+    "expr_help_row_changed_audit": "تغيرت تسمية من «Open» إلى «Done» (وفقًا لسجل التدقيق)"
   },
   "comment": {
     "section_title": "التعليقات",
