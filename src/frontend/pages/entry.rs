@@ -31,8 +31,11 @@ fn side_tab_labels(i18n: &I18nController) -> [(String, String); 3] {
 #[component]
 pub fn EntryFullScreen() -> impl IntoView {
     let params = use_params_map();
-    let slug = move || params.get_untracked().get("slug").unwrap_or_default();
-    let code = move || params.get_untracked().get("code").unwrap_or_default();
+    // 用 `params.get()`（非 get_untracked）让 slug/code 跟着 :slug/:code 路由变化；
+    // Effect::new_sync(load) 通过 load → slug/code 这条链建立依赖，
+    // 路由参数变（比如点「下一个」跳到新条目）就会重新跑 load(true)，data/title/next_entry 才不会留在旧条目上。
+    let slug = move || params.get().get("slug").unwrap_or_default();
+    let code = move || params.get().get("code").unwrap_or_default();
     let navigate = use_navigate();
     let auth = use_auth();
     let i18n: I18nController = use_i18n();
