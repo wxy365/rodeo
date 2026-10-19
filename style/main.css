@@ -254,6 +254,15 @@
     color: var(--ink2);
 }
 
+/* fluent-editor（Quill 2.0 snow 主题）把 `.ql-tooltip` 挂到 `body`，但 `public/
+   tiny-editor/style.css:523` 的 `.ql-snow .ql-hidden { display:none }` 是个后代
+   选择器，要求隐藏元素必须是 `.ql-snow` 的后代——body 上的 tooltip 解链后
+   这条规则不再匹配，初始挂载就在可视区露出一个带 225px 链接输入框的
+   `<div class="ql-tooltip ql-hidden">`（即 `glue.js:39`「浮层可能被挂到
+   body 上」那段注释所描述的情况）。把隐藏规则提一个 selector + `!important`，
+   让 tooltip 不管挂在 body 还是 ql-snow 内，只要标了 `.ql-hidden` 就消失。 */
+.ql-tooltip.ql-hidden { display: none !important; }
+
 /* 列表缩进：fluent-editor 给 ol/ul `padding-left: 1.5em`，每多一层
    `.ql-indent-X` 再加 1.5em（li 上 1.5em 的倍数），三层列表能往右
    推 4.5em+。改成「基础列表无缩进、嵌套每层 2ch ≈ 2 个空格」——比
