@@ -4077,6 +4077,15 @@ fn EntryPanel(
             match delete_entry(&c).await {
                 Ok(true) => {
                     code.set(String::new());
+                    // 把面板本地缓冲 flush 到「无选中状态」：title/detail/labels/draft_labels
+                    // 留着会被 EntryPanel 继续渲染出「这条 entry 还在」的假象，脏数据
+                    // 还可能让用户误以为侧栏视图计数和它对得上。`load(overwrite=true)` 走同样
+                    // 的清理，本地 flush 与服务端状态对齐。
+                    title.set(String::new());
+                    detail.set(String::new());
+                    labels.set(Vec::new());
+                    draft_labels.set(Vec::new());
+                    editing_title.set(false);
                     refresh.update(|n| *n += 1);
                 }
                 Ok(false) => error.set(Some(i18n.t("entry.errors.delete_failed"))),
