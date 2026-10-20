@@ -1047,7 +1047,19 @@ select:focus {
     cursor: text;
     overflow-wrap: anywhere;
 }
+/* 空标题的 h3 在视觉上是不可见的小方块，但点击热区还是要保留——补一段
+   `::before` 占位提示「点击编辑标题」(workspace_main.rs:4005 仅在 is_draft
+   false→true 时把 editing_title 翻 true；空标题下 h3 没有视觉锚点，用户找不到
+   再激活 input 的入口)。颜色走 --ink2 跟 placeholder 同档。*/
+.dhead h3.dtitle:empty::before {
+    content: "点击编辑标题";
+    color: var(--ink2);
+    cursor: text;
+}
 .dhead h3.dtitle:hover {
+    color: var(--blue);
+}
+.dhead h3.dtitle:empty:hover::before {
     color: var(--blue);
 }
 .dhead input.dtitle {
@@ -1255,7 +1267,17 @@ select:focus {
     cursor: text;
     overflow-wrap: anywhere;
 }
+/* 空标题的 h1 没有可见锚点：补一段占位，用户能看出来「这里能点」并再进入
+   input 编辑（entry.rs:editing_title 也是 is_draft false→true 才翻 true）。*/
+.entry-top .entry-title:empty::before {
+    content: "点击编辑标题";
+    color: var(--ink2);
+    cursor: text;
+}
 .entry-top .entry-title:hover {
+    color: var(--blue);
+}
+.entry-top .entry-title:empty:hover::before {
     color: var(--blue);
 }
 .entry-layout {
