@@ -1456,6 +1456,13 @@ pub fn WorkspaceMain() -> impl IntoView {
             return;
         }
         panel_create_prompt.set(None);
+        // 提前把 is_draft 翻 false 一次：第二次点「新建」时 panel_is_draft 已是 true，
+        // 后面再 set(true) 是「同值再写」，但 EntryPanel 的 Effect 走的是
+        // 「prev=false → now=true」边的写入（prev.unwrap_or(false) && now），
+        // 同值重写不命中 → 不翻 editing_title=true → 用户回不到标题输入。翻一次
+        // false 再翻 true 让 prev 经过 false→true，沿用同一段「draft 刚进入」的
+        // Effect 路径。空标题阶段的标题输入二次激活问题也走这条路径兜底。
+        panel_is_draft.set(false);
         let Some(ws_id_str) = data
             .get_untracked()
             .and_then(|r| r.ok())
