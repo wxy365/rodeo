@@ -891,6 +891,10 @@ impl EntryService {
 
     /// 侧栏计数。简单查询（空 AND）走 ENTRIES_BY_WORKSPACE 字节长度；
     /// 复杂查询走 query_indexed 的 total —— 它本来就要扫完整索引。
+    /// Changed / 继承标签条件（`contains_label_change` / `contains_inherited_label`）
+    /// 在 cursor 路径暂未支持，必须退回 legacy 全量评估——否则撞 query_indexed 里
+    /// 「请改用 page 分页」错误，会让 graphql::views() 整个查询失败，**包含基础视图
+    /// 在内**的所有视图都不显示（前端 `load_views` 静默吞掉 Err）。
     pub fn count(&self, ws: Ulid, query: &Query) -> Result<usize, AppError> {
         if query.is_simple_countable() {
             // ENTRIES_BY_WORKSPACE 的 key 是 (ws_id, code)，bincode 长度的代价
@@ -900,6 +904,12 @@ impl EntryService {
                 .store
                 .scan_prefix(cf::ENTRIES_BY_WORKSPACE, &ws.to_bytes())?;
             return Ok(rows.len());
+        }
+        // Changed / 继承标签：query_indexed 不支持，legacy 全量评估拿到准确 total。
+        // 比给 query_indexed 加这套支持要简单、且侧栏只在 views() 调用，频次低。
+        if query.contains_label_change() || query.contains_inherited_label() {
+            let r = self.query(ws, query, &SortSpec::default(), PageInput::default())?;
+            return Ok(r.total);
         }
         let input = QueryInput {
             page: Some(1),
