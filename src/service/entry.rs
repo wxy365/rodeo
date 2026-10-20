@@ -897,13 +897,17 @@ impl EntryService {
     /// 在内**的所有视图都不显示（前端 `load_views` 静默吞掉 Err）。
     pub fn count(&self, ws: Ulid, query: &Query) -> Result<usize, AppError> {
         if query.is_simple_countable() {
-            // ENTRIES_BY_WORKSPACE 的 key 是 (ws_id, code)，bincode 长度的代价
-            // 比反序列化每个 Entry 小一个数量级。Phase 2 可加 ENTRIES_COUNT_BY_WORKSPACE
-            // 维护精确计数。
-            let rows = self
-                .store
-                .scan_prefix(cf::ENTRIES_BY_WORKSPACE, &ws.to_bytes())?;
-            return Ok(rows.len());
+            // 基础视图（query = `{"and": []}`）的快路径过去直接走
+            // `cf::ENTRIES_BY_WORKSPACE` 的 scan_prefix 行数，但 soft_delete
+            // (`src/service/entry.rs:335`) 只抹 `_IDX_*` 五个 CF，墓碑行
+            // 仍在 ENTRIES_BY_WORKSPACE 里——返回的 count 把已删条目也算进去，
+            // 「新建 + 不保存直接删」会让侧栏基础视图 entryCount 比实际活跃
+            // 条目多 1，刷新过来回不去。`list_entries` (1552) 本来就有
+            // `!is_deleted() && !archived` 过滤，借同模块自由函数复用：
+            // 反序列化代价比 ENTRIES_BY_WORKSPACE 行数多一档，但只在 views()
+            // 启动期 / 标签变更后跑，频次低；Phase 2 再单独维护 ENTRIES_LIVE_COUNT
+            // 把这条降到 O(1)。
+            return Ok(list_entries(&self.store, ws)?.len());
         }
         // Changed / 继承标签：query_indexed 不支持，legacy 全量评估拿到准确 total。
         // 比给 query_indexed 加这套支持要简单、且侧栏只在 views() 调用，频次低。
