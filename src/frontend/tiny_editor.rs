@@ -66,7 +66,11 @@ pub fn TinyEditor(
         readonly,
     );
 
-    view! { <div node_ref=el class="tiny-editor"></div> }
+    // 不要在这里写 class="tiny-editor"：Leptos 重渲染会把节点的 class 属性
+    // 整体重写成模板里的值，把 Quill 挂上来的 `ql-container ql-snow` 一并
+    // 抹掉（评论一次之后正文编辑器边框消失、暗色下背景变黑就是这么来的）。
+    // `.tiny-editor` 改由 glue.js 的 create() 添加，Quill 的类没人再动。
+    view! { <div node_ref=el></div> }
 }
 
 /// 在节点挂载后初始化编辑器（仅 wasm；SSR 下为空操作）。
@@ -259,6 +263,19 @@ fn mount_editor<N: wasm_bindgen::JsCast>(
                 .ok()
                 .and_then(|j| j.as_string())
                 .unwrap_or_default();
+            // fluent-editor 的列表 blot 会把属性写成 `{"list":{"value":"ordered"}}`，
+            // 落库前压回 Quill 标准的 `{"list":"ordered"}`。不清洗的话，评论列表
+            // 的 getSemanticHTML() 会把有序列表导成无序、每项各拆一个列表。
+            let json = Reflect::get(&bridge, &JsValue::from_str("normalizeDeltaJson"))
+                .ok()
+                .and_then(|f| f.dyn_into::<Function>().ok())
+                .and_then(|f| {
+                    let a = Array::new();
+                    a.push(&JsValue::from_str(&json));
+                    Reflect::apply(&f, &bridge, a.as_ref()).ok()
+                })
+                .and_then(|v| v.as_string())
+                .unwrap_or(json);
             on_change.run(json);
         }) as Box<dyn FnMut(JsValue, JsValue, JsValue)>,
     );

@@ -7,6 +7,48 @@
 //   - style.css         ← https://unpkg.com/@opentiny/fluent-editor@<ver>/style.css
 import FluentEditor from './fluent-editor.mjs';
 
+// ── 列表 Delta 兼容层 ────────────────────────────────────────────────
+// fluent-editor 3.x 自带的 "formats/list" blot（内部类，注册在
+// FluentEditor.imports）跟 Quill 标准的 List 不一样：
+//   - DOM 用 `<ol class="ordered"><li class="ordered">`，不是 data-list；
+//   - `formats()` 返回 `{value: "ordered"}` 对象，Delta 里就写成
+//     `{"list":{"value":"ordered"}}`。
+// 而它的 `getSemanticHTML()`（从 Quill 搬来的 HTML 导出器）只认字符串
+// `{"list":"ordered"}`：
+//   - `kl()` 里 `r === "ordered"` 比较不上 → 有序列表被导成 <ul>；
+//   - `Vr()` 里相邻项的 `l === d` 比较不上（每次 formats() 都新建对象）
+//     → 每个 <li> 各包一层 <ul>/<ol>，有序列表每项都从 1 重新编号。
+// 这里两件事：
+//   1) `normalizeListAttributes` 把对象形式压回字符串，读写两侧统一成
+//      Quill 标准形状（te.create / te.format 都接受字符串）；
+//   2) 导出期间让静态 formats() 返回字符串，导出器才能按类型分组。
+// 只在导出窗口内改返回值，编辑器自身的 optimize/checkbox 逻辑仍拿到对象。
+const ListBlot = FluentEditor.imports && FluentEditor.imports['formats/list'];
+const origListFormats = ListBlot && ListBlot.formats;
+let exportingSemantic = false;
+if (origListFormats) {
+  ListBlot.formats = function (domNode, scroll) {
+    const v = origListFormats.call(this, domNode, scroll);
+    if (exportingSemantic && v && typeof v === 'object') {
+      return v.value;
+    }
+    return v;
+  };
+}
+
+// 把 `{"list":{"value":"ordered"}}` 压成 `{"list":"ordered"}`（原地修改并返回）。
+// 兼容两种输入：字符串（标准 Quill / 修复后的数据）与对象（历史数据）。
+function normalizeListAttributes(delta) {
+  if (!delta || !Array.isArray(delta.ops)) return delta;
+  for (const op of delta.ops) {
+    const list = op.attributes && op.attributes.list;
+    if (list && typeof list === 'object' && typeof list.value === 'string') {
+      op.attributes.list = list.value;
+    }
+  }
+  return delta;
+}
+
 // 附属节点（工具栏/浮层）→ 宿主编辑器容器。
 // 只按容器清理是不够的：Leptos 重挂载会换一个新容器，旧容器上的工具栏就成了
 // 孤儿——它留在仍然存活的父节点里层层堆叠，并挡住下面的按钮（评论「保存」按钮
@@ -104,6 +146,41 @@ async function uploadIntoEditor(editor, upload, files) {
   }
 }
 
+// 输入法（Safari/部分中文 IME）在列表项里有时会把组合文本塞进
+// `<span class="ql-ui" contenteditable="false">` 这个标记节点。Quill 的
+// mutation diff 只认已注册的 blot，`ql-ui` 不是 blot——文本留在 DOM 里，
+// 但既进不了 Delta，又会被下一次 optimize 抹掉，表现为「列表里输入中文，
+// 字消失」。compositionend 后把这类孤儿文本移回 li：Quill 的 LI optimize
+// 会把它排到 ql-ui 之后并重新建立 text blot，再 update() 一次让模型追上。
+function salvageCompositionText(el, editor) {
+  // 每个容器只绑一次；节点被复用、create 再来一遍时不叠加监听。
+  if (el.__rodeo_salvage) return;
+  el.__rodeo_salvage = true;
+  el.addEventListener('compositionend', () => {
+    // fluent-editor 自己的 compositionend 处理走 queueMicrotask，
+    // setTimeout 排在其后，避免和它的 batchEnd 抢时序。
+    setTimeout(() => {
+      const root = el.querySelector('.ql-editor');
+      if (!root) return;
+      let moved = false;
+      root.querySelectorAll('li > .ql-ui').forEach((ui) => {
+        const text = ui.textContent;
+        if (!text) return;
+        ui.textContent = '';
+        ui.parentNode.appendChild(document.createTextNode(text));
+        moved = true;
+      });
+      if (moved) {
+        try {
+          editor.update();
+        } catch (e) {
+          // 更新失败也别把已挪出来的文本再塞回去。
+        }
+      }
+    }, 0);
+  });
+}
+
 // 只读渲染复用同一个离屏实例；整页评论共用一个，与评论条数无关。
 let renderHost = null;
 let renderEditor = null;
@@ -115,6 +192,11 @@ window.__rodeo_tiny_editor__ = {
   create(el, deltaJson, opts) {
     cleanupAux(el);
     sweepOrphans();
+    // `.tiny-editor` 由这里加，而不是写在 Rust 的 view! 里：Leptos 重渲染
+    // 时会把节点上它管理的 class 属性整体重写为模板里的值，Quill 挂上的
+    // `ql-container ql-snow` 会被一并抹掉——表现为评论一次之后正文编辑器
+    // 边框消失、暗色下背景变黑。class 交给 JS 管，Quill 的类就没人动了。
+    el.classList.add('tiny-editor');
     // 再清空容器，避免复用节点时叠加旧内容。
     el.innerHTML = '';
     // 只读模式：跳过会产生工具栏/上传监听/绑定 on_change 的全部支路。
@@ -129,7 +211,7 @@ window.__rodeo_tiny_editor__ = {
       });
       if (deltaJson) {
         try {
-          readOnlyEditor.setContents(JSON.parse(deltaJson), 'silent');
+          readOnlyEditor.setContents(normalizeListAttributes(JSON.parse(deltaJson)), 'silent');
         } catch (e) {
           // 非法 Delta 走纯文本回退——只读场景里允许「展示成段落文本」。
           try {
@@ -206,10 +288,11 @@ window.__rodeo_tiny_editor__ = {
     el.__rodeo_aux = Array.from(el.parentNode.children).filter((n) => !before.has(n));
     el.__rodeo_aux.forEach((n) => auxOwners.set(n, el));
     attachImageUpload(el, editor, opts);
+    salvageCompositionText(el, editor);
 
     if (deltaJson) {
       try {
-        editor.setContents(JSON.parse(deltaJson), 'silent');
+        editor.setContents(normalizeListAttributes(JSON.parse(deltaJson)), 'silent');
       } catch (e) {
         // 非法 Delta 时忽略，编辑器保持空内容。
       }
@@ -220,6 +303,16 @@ window.__rodeo_tiny_editor__ = {
     setTimeout(sweepOrphans, 0);
 
     return editor;
+  },
+
+  // 落库前把列表属性统一成 Quill 标准字符串形状。解析失败就原样返回，
+  // 不因为一次归一化失败把用户刚敲的内容吞掉。
+  normalizeDeltaJson(deltaJson) {
+    try {
+      return JSON.stringify(normalizeListAttributes(JSON.parse(deltaJson)));
+    } catch (e) {
+      return deltaJson;
+    }
   },
 
   // 把 Delta JSON 渲染成 HTML，供评论列表这类只读场景使用。
@@ -237,8 +330,16 @@ window.__rodeo_tiny_editor__ = {
       });
     }
     try {
-      renderEditor.setContents(JSON.parse(deltaJson), 'silent');
-      return renderEditor.getSemanticHTML();
+      const parsed = normalizeListAttributes(JSON.parse(deltaJson));
+      renderEditor.setContents(parsed, 'silent');
+      // 导出窗口：只在这段同步调用里让 ListBlot.formats() 返回字符串，
+      // 导出器才能把相邻列表项归进同一个 <ol>/<ul>。
+      exportingSemantic = true;
+      try {
+        return renderEditor.getSemanticHTML();
+      } finally {
+        exportingSemantic = false;
+      }
     } catch (e) {
       return '';
     }
