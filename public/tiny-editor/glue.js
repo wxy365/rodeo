@@ -146,16 +146,26 @@ async function uploadIntoEditor(editor, upload, files) {
   }
 }
 
-// 输入法（Safari/部分中文 IME）在列表项里有时会把组合文本塞进
-// `<span class="ql-ui" contenteditable="false">` 这个标记节点。Quill 的
-// mutation diff 只认已注册的 blot，`ql-ui` 不是 blot——文本留在 DOM 里，
-// 但既进不了 Delta，又会被下一次 optimize 抹掉，表现为「列表里输入中文，
-// 字消失」。compositionend 后把这类孤儿文本移回 li：Quill 的 LI optimize
-// 会把它排到 ql-ui 之后并重新建立 text blot，再 update() 一次让模型追上。
-function salvageCompositionText(el, editor) {
+// 输入法组合文本兜底（Safari / 部分中文 IME）。
+//
+// 两个已知的丢字路径，都会让「DOM 里有中文、Quill 的模型里没有」：
+//   1) 组合文本被塞进 `<span class="ql-ui" contenteditable="false">` 这个
+//      标记节点（有序/无序列表每项的第一个子节点）。它不是一个 blot，
+//      Quill 的 mutation diff 完全看不见它，下一次按模型重写 DOM 就没了。
+//   2) 浏览器在组合输入期间丢 MutationRecord（slab/quill#3837、#3969）：
+//      文本节点已经插进 li，但 Quill 的 MutationObserver 没收到记录，
+//      blot 树/Delta 里没有这段文字，下一次 update 就会把它删掉。
+//
+// compositionend 后统一修：
+//   - 把 ql-ui 里的孤儿文本挪回 li；
+//   - 扫一遍编辑器的文本节点：未注册成 blot 的、以及 text blot 的 text
+//     与 DOM 不一致的，合成 MutationRecord 交给 scroll.update()——让
+//     Quill 走它本来该走的 mutation 处理路径，把文字收进模型。
+// 正常输入时两者都无事可做（DOM 与模型一致），不会产生额外改动。
+function repairCompositionText(el, editor) {
   // 每个容器只绑一次；节点被复用、create 再来一遍时不叠加监听。
-  if (el.__rodeo_salvage) return;
-  el.__rodeo_salvage = true;
+  if (el.__rodeo_composition_repair) return;
+  el.__rodeo_composition_repair = true;
   el.addEventListener('compositionend', () => {
     // fluent-editor 自己的 compositionend 处理走 queueMicrotask，
     // setTimeout 排在其后，避免和它的 batchEnd 抢时序。
@@ -170,12 +180,39 @@ function salvageCompositionText(el, editor) {
         ui.parentNode.appendChild(document.createTextNode(text));
         moved = true;
       });
-      if (moved) {
-        try {
-          editor.update();
-        } catch (e) {
-          // 更新失败也别把已挪出来的文本再塞回去。
+      try {
+        const scroll = editor.scroll;
+        const mutations = [];
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
+        let node;
+        while ((node = walker.nextNode())) {
+          const parent = node.parentNode;
+          if (!parent || !root.contains(parent)) continue;
+          // ql-ui 里的内容不是正文；上面已经挪走，这里跳过残留。
+          if (parent.nodeType === 1 && parent.closest('.ql-ui')) continue;
+          const blot = scroll.find(node, false);
+          if (blot) {
+            // 已注册的 text blot：浏览器改了 DOM 但记录丢了 → 同步 text。
+            if (typeof blot.text === 'string' && blot.text !== node.data) {
+              mutations.push({ type: 'characterData', target: node });
+            }
+          } else if (scroll.find(parent, true)) {
+            // 未注册的文本节点：当成一次 childList 插入补交给 Quill。
+            mutations.push({
+              type: 'childList',
+              target: parent,
+              addedNodes: [node],
+              removedNodes: [],
+            });
+          }
         }
+        if (mutations.length) {
+          scroll.update(mutations);
+        } else if (moved) {
+          editor.update();
+        }
+      } catch (e) {
+        // 修复失败不阻塞后续输入；文字仍留在 DOM 里。
       }
     }, 0);
   });
@@ -288,7 +325,7 @@ window.__rodeo_tiny_editor__ = {
     el.__rodeo_aux = Array.from(el.parentNode.children).filter((n) => !before.has(n));
     el.__rodeo_aux.forEach((n) => auxOwners.set(n, el));
     attachImageUpload(el, editor, opts);
-    salvageCompositionText(el, editor);
+    repairCompositionText(el, editor);
 
     if (deltaJson) {
       try {
