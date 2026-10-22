@@ -76,6 +76,7 @@ impl CommentService {
         // 发言是条目上的活动：推进 updated_at，让条目回到「按更新时间倒序」的最前。
         // 由此带来的副作用是，同时正在编辑详情的人保存时会撞上乐观并发冲突——
         // 属低频场景，前端已有冲突后重载的处理路径。
+        let old_updated_at_ms = entry.updated_at.timestamp_millis();
         entry.updated_by = actor;
         entry.updated_at = Utc::now();
 
@@ -99,6 +100,12 @@ impl CommentService {
             entry_code.as_bytes().to_vec(),
             &entry,
         )?);
+        // updated_at 前进了，排序索引键跟着换行——否则下一次 update() 用新时间戳
+        // 拼删除键会漏掉旧行，列表里同一条目会出现两次（见 touch_updated_index_ops）。
+        ops.extend(
+            self.entries
+                .touch_updated_index_ops(entry.workspace_id, old_updated_at_ms, &entry),
+        );
         self.store.write_batch(ops)?;
         self.entries.reindex_by_code(entry_code)?;
         let entry_ref = self.entries.get(entry_code)?;

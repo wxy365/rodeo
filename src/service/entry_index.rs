@@ -247,6 +247,11 @@ impl EntryIndexService {
     /// 这层 repair 不重建键，而是直接正向扫三个 builtin CF + 所有 sortable 标签桶，
     /// 对每条索引行反查 `cf::ENTRIES`，遇到 `is_deleted || archived` 就把这条 delete
     /// 掉；和记不记得旧键无关、idempotent、只对确实死掉的 entry 下手。
+    ///
+    /// 同时清掉三类 builtin CF 里「键与条目当前状态对不上」的**陈旧行**：评论 / 附件
+    /// 推进过 updated_at、但旧写入路径没同步索引（2026-10 修复前），或历史重复写入
+    /// 留下的第二行。判据是重新拼一遍该条目此刻应有的键、与扫描到的键逐字节比较；
+    /// 陈旧行必须删，否则 `query_indexed` 会把同一个 code 发射两次（列表重复条目）。
     pub fn repair_orphan_index_rows(&self, store: &Arc<DocStore>) -> Result<(), AppError> {
         use crate::domain::Entry;
         use std::collections::{HashMap, HashSet};
@@ -293,7 +298,14 @@ impl EntryIndexService {
         };
 
         // 三个 builtin 索引 CF：键格式 (ws[16B], sort_field..., code[16B])。
+        // 死条目的行直接删；活条目则重算「此刻应有的键」，不一致的陈旧行删掉并
+        // 按当前状态补写正确行——同一 (ws, code) 在 UPDATED CF 里留两行会让
+        // query_indexed 逐行发射，列表里出现两条一模一样的 Entry。
+        // 补写而不是只删，是为了兜住「陈旧行挤掉了正常行」的情形：只删的话，
+        // backfill_all 的覆盖率标记仍是 true，该条目会从 cursor 列表里彻底消失。
+        use crate::storage::keys::{idx_created_key, idx_title_key, idx_updated_key};
         let mut cleared_builtin = 0usize;
+        let mut rebuilt_stale = 0usize;
         for cf_name in [
             cf::ENTRIES_IDX_UPDATED,
             cf::ENTRIES_IDX_CREATED,
@@ -305,11 +317,37 @@ impl EntryIndexService {
                     continue;
                 };
                 if is_dead(&code) {
-                    ops.push(BatchOp::delete(cf_name, k.to_vec()));
                     cleared_builtin += 1;
-                    if ops.len() >= 1000 {
-                        store.write_batch(std::mem::take(&mut ops))?;
+                    ops.push(BatchOp::delete(cf_name, k.to_vec()));
+                } else {
+                    // is_dead 为假 ⇒ entries_by_code 里必有这条 entry。
+                    let entry = entries_by_code
+                        .get(&code)
+                        .expect("is_dead 为假时 entry 必然存在");
+                    let expected = match cf_name {
+                        cf::ENTRIES_IDX_UPDATED => idx_updated_key(
+                            entry.workspace_id,
+                            entry.updated_at.timestamp_millis(),
+                            &code,
+                        ),
+                        cf::ENTRIES_IDX_CREATED => idx_created_key(
+                            entry.workspace_id,
+                            entry.created_at.timestamp_millis(),
+                            &code,
+                        ),
+                        cf::ENTRIES_IDX_TITLE => {
+                            idx_title_key(entry.workspace_id, &entry.title, &code)
+                        }
+                        _ => continue,
+                    };
+                    if k.as_slice() != expected.as_slice() {
+                        rebuilt_stale += 1;
+                        ops.push(BatchOp::delete(cf_name, k.to_vec()));
+                        ops.push(BatchOp::put_raw(cf_name, expected, Vec::new()));
                     }
+                }
+                if ops.len() >= 1000 {
+                    store.write_batch(std::mem::take(&mut ops))?;
                 }
             }
             if !ops.is_empty() {
@@ -351,11 +389,12 @@ impl EntryIndexService {
                 store.write_batch(ops)?;
             }
         }
-        if cleared_builtin + cleared_label > 0 {
+        if cleared_builtin + rebuilt_stale + cleared_label > 0 {
             tracing::info!(
                 builtin = cleared_builtin,
+                rebuilt_stale = rebuilt_stale,
                 label_buckets = cleared_label,
-                "orphan-index repair: 已清理悬空索引行"
+                "orphan-index repair: 已清理悬空 / 陈旧索引行"
             );
         }
         Ok(())

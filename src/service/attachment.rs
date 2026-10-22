@@ -149,6 +149,7 @@ impl AttachmentService {
 
         // 上传是条目上的活动：推进 updated_at，让条目回到「按更新时间倒序」最前。
         // 与 `CommentService::create` 同一取舍——正在编辑详情的人保存时会撞乐观并发冲突。
+        let old_updated_at_ms = entry.updated_at.timestamp_millis();
         entry.updated_by = actor;
         entry.updated_at = Utc::now();
 
@@ -186,6 +187,11 @@ impl AttachmentService {
             entry_code.as_bytes().to_vec(),
             &entry,
         )?);
+        // 与评论同一约束：updated_at 是排序索引键的一部分，推进时必须同批换行。
+        ops.extend(
+            self.entries
+                .touch_updated_index_ops(entry.workspace_id, old_updated_at_ms, &entry),
+        );
         if let Err(e) = self.store.write_batch(ops) {
             // 元数据没落库，存储里那份就是孤儿，尽力清掉再报错。
             let _ = self.blobs.delete(&key).await;

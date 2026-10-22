@@ -862,6 +862,37 @@ impl EntryService {
         ops
     }
 
+    /// 评论 / 附件这类「条目活动」会推进 `Entry.updated_at`，而它是
+    /// `ENTRIES_IDX_UPDATED` 键的一部分。调用方先把新 `updated_at` 写进 entry，
+    /// 再把本方法返回的 ops 拼进同一个 `write_batch`：撤掉旧时间戳的行、插入新行。
+    ///
+    /// 漏做这一步的后果不是「排序偏一位」，而是**列表里出现重复条目**：记录里的
+    /// updated_at 已经前进，索引行还停在旧时间戳；之后 `update()` 拿当前（新）时间戳
+    /// 拼删除键，旧行删不掉，同一 code 在 `ENTRIES_IDX_UPDATED` 里留下两行，
+    /// `query_indexed` 逐行发射，同一条 Entry 就被扫出来两次。
+    /// `old_updated_at_ms` 必须取自**推进之前**的那份 entry。
+    pub fn touch_updated_index_ops(
+        &self,
+        ws: Ulid,
+        old_updated_at_ms: i64,
+        entry: &Entry,
+    ) -> Vec<BatchOp> {
+        // 与 idx_puts_for 同理：写过该 CF 就认为这个 ws 已被覆盖。
+        self.index.mark_covered(ws, cf::ENTRIES_IDX_UPDATED);
+        vec![
+            // 先删后写：同一毫秒内推进两次时，两个键相同，顺序反了会留下悬空删除。
+            BatchOp::delete(
+                cf::ENTRIES_IDX_UPDATED,
+                keys::idx_updated_key(ws, old_updated_at_ms, &entry.code),
+            ),
+            BatchOp::put_raw(
+                cf::ENTRIES_IDX_UPDATED,
+                keys::idx_updated_key(ws, entry.updated_at.timestamp_millis(), &entry.code),
+                Vec::new(),
+            ),
+        ]
+    }
+
     /// 单个 entry 的 idx BatchOp 列表（写完前删除旧条目）。与 idx_puts_for 配对；
     /// updated_at / title / label 值变化时必须先删旧再写新。
     fn idx_deletes_for(&self, ws: Ulid, entry: &Entry, labels: &[Labeling]) -> Vec<BatchOp> {
