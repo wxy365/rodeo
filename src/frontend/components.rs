@@ -9,8 +9,8 @@ use crate::frontend::graphql_client::{
 };
 use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::icons::{
-    ic_add, ic_check, ic_close, ic_copy, ic_folder, ic_history, ic_logo, ic_logout, ic_profile,
-    ic_setting, ic_timeline,
+    ic_add, ic_check, ic_close, ic_comment, ic_copy, ic_folder, ic_history, ic_logo, ic_logout,
+    ic_profile, ic_setting, ic_timeline,
 };
 use crate::frontend::language_button::LanguageButton;
 use crate::frontend::theme::ThemeButton;
@@ -489,7 +489,11 @@ pub fn AvatarMenu() -> impl IntoView {
     let i18n: I18nController = use_i18n();
 
     let unread = RwSignal::new(0i32);
+    // 消息列表抽屉（本地开关，与 Agent 面板无关）。
     let panel_open = RwSignal::new(false);
+    // Agent 面板的全局开关：顶栏「AI」按钮在工作空间页被改成「AI 查询模式」，
+    // 这里保留一个头像菜单入口，面板本身不至于失去所有入口。
+    let agent_open = crate::frontend::agent_panel::use_agent_panel_open();
 
     // 首次挂载拉一次未读数。
     if cfg!(target_arch = "wasm32") {
@@ -630,6 +634,9 @@ pub fn AvatarMenu() -> impl IntoView {
                 <button class="mi" on:click=move |_| panel_open.set(true)>
                     {ic_history()}{move || i18n.t("appbar.history")}
                 </button>
+                <button class="mi" on:click=move |_| agent_open.0.set(true)>
+                    {ic_comment()}{move || i18n.t("appbar.agent_panel")}
+                </button>
                 // 非管理员整项不渲染，而不是置灰：一个点不动的管理入口只会招来「为什么点不动」。
                 {move || {
                     let nav_admin = nav_admin.clone();
@@ -688,6 +695,26 @@ pub fn AppBar() -> impl IntoView {
     // `use_context` 必须放在组件 setup，不能放进事件闭包里——那是 Leptos
     // 上下文解析规则的硬约束。
     let panel_open = crate::frontend::agent_panel::use_agent_panel_open();
+    // AI 查询模式槽：WorkspaceMain 在挂载时写入。槽非空时，「AI」按钮改为
+    // 切换表达式输入框的 AI 模式（自然语言 → 标签表达式）；为空（非工作空间
+    // 路由）时退回原来的 Agent 面板开关。
+    let ai_query_slot = use_context::<crate::frontend::WorkspaceAiQuerySlot>()
+        .expect("WorkspaceAiQuerySlot 未在 App 层 provide");
+    let ai_query_present = move || ai_query_slot.current.get().is_some();
+    let ai_query_on = move || {
+        ai_query_slot
+            .current
+            .get()
+            .map(|s| s.is_ai_mode.get())
+            .unwrap_or(false)
+    };
+    let ai_btn_on = move || {
+        if ai_query_present() {
+            ai_query_on()
+        } else {
+            panel_open.0.get()
+        }
+    };
     // hover split 状态：只在 AppBar 这一个用到，留在组件内即可。
     let newentry_hover = RwSignal::new(false);
     // i18n：品牌 / 新建 / 时间轴 / agent 面板标题在这里翻。`I18nController`
@@ -748,11 +775,25 @@ pub fn AppBar() -> impl IntoView {
                         </button>
                     }
                 })}
-                // Agent 面板入口：复用 `timeline-btn` 的方形图标按钮样式，加 `.on`
-                // 态在面板展开时填主题色——与时间轴按钮视觉一致、好辨认。
-                <button class=move || if panel_open.0.get() { "agent-btn on" } else { "agent-btn" }
-                    title={move || i18n.t("appbar.agent_panel")}
-                    on:click=move |_| panel_open.0.update(|n| *n = !*n)>
+                // 「AI」入口：工作空间页切到表达式输入框的 AI 模式（自然语言
+                // 查询），其它路由仍打开 Agent 面板。`.on` 态在两种情况下都
+                // 填主题色，说明「AI 能力当前是开着的」。
+                <button class=move || if ai_btn_on() { "agent-btn on" } else { "agent-btn" }
+                    title=move || {
+                        if ai_query_present() {
+                            if ai_query_on() {
+                                i18n.t("appbar.ai_query_exit")
+                            } else {
+                                i18n.t("appbar.ai_query")
+                            }
+                        } else {
+                            i18n.t("appbar.agent_panel")
+                        }
+                    }
+                    on:click=move |_| match ai_query_slot.current.get_untracked() {
+                        Some(s) => s.on_toggle.run(()),
+                        None => panel_open.0.update(|n| *n = !*n),
+                    }>
                     "AI"
                 </button>
                 // 语言切换：地球图标 + 当前 locale 短码，hover 弹六选项。

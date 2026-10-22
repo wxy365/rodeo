@@ -258,6 +258,9 @@ pub fn App() -> impl IntoView {
     // 工作空间「时间轴切换」按钮的共享槽，与「新建」同源问题——AppBar 兄弟
     // 与 Router 后代共享一份读写。
     let _timeline_slot = crate::frontend::provide_workspace_timeline_slot();
+    // 顶栏「AI」按钮 → 表达式输入框的 AI 模式。与上面两个槽同源：AppBar 与
+    // WorkspaceMain 是兄弟节点，靠 App 层共享一份信号。
+    let _ai_query_slot = crate::frontend::provide_workspace_ai_query_slot();
     // Agent 面板开关：AppBar 里的 AI 按钮与 `<AgentPanel/>` 各自取用同一份信号。
     let _agent_panel_open = provide_agent_panel_open();
     // Agent 副作用 store：服务端 SSE 写入（Task 7/8）后由面板订阅刷新。

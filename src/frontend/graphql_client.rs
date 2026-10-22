@@ -1156,9 +1156,7 @@ pub async fn update_entry(
         .map(|ls| {
             Value::Array(
                 ls.iter()
-                    .map(|(name, value)| {
-                        json!({ "name": name, "value": value })
-                    })
+                    .map(|(name, value)| json!({ "name": name, "value": value }))
                     .collect(),
             )
         })
@@ -1733,6 +1731,31 @@ pub async fn parse_view_query(workspace_id: &str, expr: &str) -> Result<Value, S
     )
     .await?;
     Ok(data.get("parseViewQuery").cloned().unwrap_or(Value::Null))
+}
+
+/// AI 把自然语言翻译出的查询：`expr` 回填输入框，`query` 直接当 AST 执行。
+#[derive(Clone, serde::Deserialize)]
+pub struct QueryTranslation {
+    pub expr: String,
+    pub query: Value,
+}
+
+pub async fn translate_query_expression(
+    workspace_id: &str,
+    text: &str,
+) -> Result<QueryTranslation, String> {
+    let data = graphql(
+        "query($id: ID!, $t: String!) { \
+         translateQueryExpression(workspaceId: $id, text: $t) { expr query } }",
+        json!({ "id": workspace_id, "t": text }),
+    )
+    .await?;
+    serde_json::from_value(
+        data.get("translateQueryExpression")
+            .cloned()
+            .unwrap_or(Value::Null),
+    )
+    .map_err(|e| e.to_string())
 }
 
 pub async fn format_view_query(workspace_id: &str, query: &Value) -> Result<String, String> {

@@ -2428,6 +2428,39 @@ input[type="color"].sw:disabled {
 .querybar .q-expr .inp {
     width: 100%;
 }
+/* AI 查询模式：输入框换成淡绿色光晕，提示「这里输入的是自然语言，
+   服务端会翻译成标签表达式」。生成结果显示在输入框下方的小字行。 */
+.querybar .q-expr.ai {
+    flex-wrap: wrap;
+}
+.querybar .q-expr .inp.ai-query,
+.querybar .q-expr .inp.ai-query:focus {
+    border-color: var(--pos);
+    outline: none;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--pos) 22%, transparent);
+}
+.querybar .q-expr .inp.ai-query:focus {
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--pos) 32%, transparent);
+}
+.querybar .q-expr .q-expr-ai-result {
+    flex: 0 0 100%;
+    min-width: 0;
+    padding: 0 4px 3px;
+    font-size: 11px;
+    line-height: 1.5;
+    color: var(--ink2);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.querybar .q-expr .q-expr-ai-result code {
+    font-size: 11px;
+    color: var(--pos);
+}
+.querybar .q-expr .q-expr-ai-label {
+    margin-right: 6px;
+    color: var(--ink3);
+}
 
 /* 顶栏「新建 Entry」按钮：放在 .appbar-right 里，hover 弹 split 面板。 */
 .newentry-wrap {

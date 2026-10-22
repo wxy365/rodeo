@@ -9,7 +9,6 @@ use leptos_router::hooks::{use_navigate, use_params_map, use_query_map};
 
 use crate::frontend::attachment_list::AttachmentList;
 use crate::frontend::comment_list::CommentList;
-use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::components::{
     chip_glyph, display_enum_value, fmt_datetime, from_native, is_native_time_layout,
     label_chip_class, logged_out, member_label, short_time, to_native, value_to_string,
@@ -18,12 +17,13 @@ use crate::frontend::components::{
 use crate::frontend::graphql_client::{
     archive_entry, archived_entries, audit_logs, create_entry, create_view, delete_entry,
     delete_view, entry, format_view_query, get_sidebar_collapsed, label_schemas, members,
-    parse_view_query, query_all_entries, query_entries, set_labeling,
-    set_labelings, set_sidebar_collapsed, set_view_timeline, summarize_entries, unarchive_entry,
-    update_entry, update_view, views, workspace_ai_config, workspace_by_slug, AccountBrief,
-    AuditLog, Entry, LabelSchema, Labeling, Member, NamedPrompt, View, ViewSort, ViewTimeline,
-    Workspace,
+    parse_view_query, query_all_entries, query_entries, set_labeling, set_labelings,
+    set_sidebar_collapsed, set_view_timeline, summarize_entries, translate_query_expression,
+    unarchive_entry, update_entry, update_view, views, workspace_ai_config, workspace_by_slug,
+    AccountBrief, AuditLog, Entry, LabelSchema, Labeling, Member, NamedPrompt, View, ViewSort,
+    ViewTimeline, Workspace,
 };
+use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::icons::{
     ic_back, ic_close, ic_comment, ic_copy, ic_folder, ic_full, ic_help, ic_save, ic_search,
     ic_setting, ic_share, ic_tag, ic_undo,
@@ -67,10 +67,26 @@ const COLUMN_UPDATED_AT: &str = "@@updatedAt";
 /// 「配置视图」弹窗里的复选框都从这里取，避免四处散落的字符串。
 fn metadata_columns(i18n: &I18nController) -> [(&'static str, &'static str, String); 4] {
     [
-        (COLUMN_CREATED_BY, "createdBy", i18n.t("entry.col_created_by")),
-        (COLUMN_CREATED_AT, "createdAt", i18n.t("entry.col_created_at")),
-        (COLUMN_UPDATED_BY, "updatedBy", i18n.t("entry.col_updated_by")),
-        (COLUMN_UPDATED_AT, "updatedAt", i18n.t("entry.col_updated_at")),
+        (
+            COLUMN_CREATED_BY,
+            "createdBy",
+            i18n.t("entry.col_created_by"),
+        ),
+        (
+            COLUMN_CREATED_AT,
+            "createdAt",
+            i18n.t("entry.col_created_at"),
+        ),
+        (
+            COLUMN_UPDATED_BY,
+            "updatedBy",
+            i18n.t("entry.col_updated_by"),
+        ),
+        (
+            COLUMN_UPDATED_AT,
+            "updatedAt",
+            i18n.t("entry.col_updated_at"),
+        ),
     ]
 }
 
@@ -357,6 +373,17 @@ pub fn WorkspaceMain() -> impl IntoView {
     let ai_tone = RwSignal::new(String::new());
     let ai_busy = RwSignal::new(false);
     let ai_error = RwSignal::new(None::<String>);
+
+    // ---- AI 查询模式（表达式输入框） ----
+    // 输入框同时承载两种输入：普通模式编辑标签表达式（expr_text），AI 模式
+    // 编辑自然语言（ai_query_text）。分开两个信号而不是共用一个：退出 AI 模式
+    // 后输入框要回到「刚翻译出来的表达式」，保存视图 / 另存为展示的也必须是
+    // 表达式而不是用户原话。`ai_query_expr` 保存最近一次翻译结果，供输入框
+    // 下方小字展示与保存后的基线同步。
+    let ai_query_mode = RwSignal::new(false);
+    let ai_query_text = RwSignal::new(String::new());
+    let ai_query_expr = RwSignal::new(None::<String>);
+    let ai_query_busy = RwSignal::new(false);
     // Agent 副作用（view_query_replace / view_search_replace）落地时,服务端的
     // parseViewQuery 偶尔会拒绝 LLM 回传的表达式——以前只打 console.warn,
     // 用户看不到提示,视图又没改,会以为 agent 失灵。这里挂一条短提示,5s
@@ -419,8 +446,7 @@ pub fn WorkspaceMain() -> impl IntoView {
         if !cur.is_empty() && panel_dirty.get_untracked() {
             // 当前面板有未保存改动 → 任何 panel_code 切换都丢；提示横幅 4s 自消。
             // toggle-close 与切至不同 code 都走这一支。
-            panel_create_prompt
-                .set(Some(i18n.t("entry.errors.unsaved_block_switch")));
+            panel_create_prompt.set(Some(i18n.t("entry.errors.unsaved_block_switch")));
         } else if cur == code_for_click {
             panel_code.set(String::new());
         } else {
@@ -484,9 +510,7 @@ pub fn WorkspaceMain() -> impl IntoView {
     // 回填到当前的表达式输入框 / 全文输入框。走 server-side parseViewQuery
     // 保证 AST 与 server 端完全同构——不在前端复刻 parser。位置放在信号定义
     // 之后，确保 effect 闭包捕获的是最终信号。
-    if let Some(eff_ai) =
-        use_context::<crate::frontend::agent_side_effects::AgentSideEffects>()
-    {
+    if let Some(eff_ai) = use_context::<crate::frontend::agent_side_effects::AgentSideEffects>() {
         let expr_text_for_ai = expr_text;
         let query_ast_for_ai = query_ast;
         let ad_hoc_text_for_ai = ad_hoc_text;
@@ -503,14 +527,15 @@ pub fn WorkspaceMain() -> impl IntoView {
             if cur_tick <= tick_at_mount {
                 return;
             }
-            let Some(hint) = eff_ai.last.get() else { return };
+            let Some(hint) = eff_ai.last.get() else {
+                return;
+            };
             match hint.domain.as_str() {
                 "view_query_replace" => {
-                    let Some(payload) = hint.payload.clone() else { return };
-                    let Some(ws_id) = data_for_ai
-                        .get()
-                        .and_then(|r| r.ok())
-                        .map(|(w, _, _)| w.id)
+                    let Some(payload) = hint.payload.clone() else {
+                        return;
+                    };
+                    let Some(ws_id) = data_for_ai.get().and_then(|r| r.ok()).map(|(w, _, _)| w.id)
                     else {
                         return;
                     };
@@ -529,15 +554,25 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 // 用户需要知道这件事——不然视图没变,以为 agent 罢工。
                                 // 顶部挂 5s 自消失的提示,console.warn 留给排查。
                                 leptos::web_sys::console::warn_1(
-                                    &i18n.tf("entry.errors.invalid_view_query", &[("err", &e.to_string())]).into(),
+                                    &i18n
+                                        .tf(
+                                            "entry.errors.invalid_view_query",
+                                            &[("err", &e.to_string())],
+                                        )
+                                        .into(),
                                 );
-                                warning_for_ai.set(Some(i18n.tf("entry.errors.ai_view_query_rejected", &[("err", &e.to_string())])));
+                                warning_for_ai.set(Some(i18n.tf(
+                                    "entry.errors.ai_view_query_rejected",
+                                    &[("err", &e.to_string())],
+                                )));
                             }
                         }
                     });
                 }
                 "view_search_replace" => {
-                    let Some(payload) = hint.payload.clone() else { return };
+                    let Some(payload) = hint.payload.clone() else {
+                        return;
+                    };
                     batch(move || {
                         ad_hoc_text_for_ai.set(payload);
                         refresh_view_for_ai.update(|n| *n += 1);
@@ -563,10 +598,8 @@ pub fn WorkspaceMain() -> impl IntoView {
     // 和「浏览器刷新」都能恢复到上次选中的视图，而不是落到基础视图。
     // 一次性读，不订阅 location.search 变化——URL 同步由 open_entry / go_back
     // 主动写入，避免路由切换与 set_active 互相触发。
-    let initial_view_id: Option<String> = use_query_map()
-        .get()
-        .get("view")
-        .filter(|s| !s.is_empty());
+    let initial_view_id: Option<String> =
+        use_query_map().get().get("view").filter(|s| !s.is_empty());
     // 提供 AgentPanel 取用的上下文：当前视图 id + 表格勾选 codes。
     // 复用 batch_selected（与批量按钮同读同一份信号，行为一致）。
     let _ = provide_agent_context(active_id, batch_selected);
@@ -619,6 +652,11 @@ pub fn WorkspaceMain() -> impl IntoView {
             page_signal.set(1);
             // 新视图未必配了时间轴，渲染模式跟着回普通视图。
             timeline_mode.set(false);
+            // 换了视图就退出 AI 模式：输入框的语义重新变回「当前视图的表达式」，
+            // 上一轮的自然语言描述与翻译结果都不该跨视图残留。
+            ai_query_mode.set(false);
+            ai_query_text.set(String::new());
+            ai_query_expr.set(None);
         });
     };
     let load_views = move |ws_id: String, initial: Option<String>| {
@@ -771,6 +809,45 @@ pub fn WorkspaceMain() -> impl IntoView {
         });
     };
 
+    // AI 模式回车：把自然语言发给服务端，由大模型翻译成标签表达式；服务端
+    // 已按当前工作空间的标签 schema 校验过，这里拿到 AST 直接执行，不再走
+    // parseViewQuery（少一次往返）。自然语言原话留在 ai_query_text 里，表达式
+    // 回填 expr_text ——「保存视图 / 另存为」读的是 query_ast，因此落库的是
+    // 标签表达式，不会记录用户原话。
+    let apply_ai_query = move || {
+        let text = ai_query_text.get_untracked().trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        let Some(ws_id) = data
+            .get_untracked()
+            .and_then(|r| r.ok())
+            .map(|(w, _, _)| w.id)
+        else {
+            error.set(Some(i18n.t("entry.errors.workspace_not_loaded")));
+            return;
+        };
+        ai_query_busy.set(true);
+        error.set(None);
+        spawn_local(async move {
+            match translate_query_expression(&ws_id, &text).await {
+                Ok(t) => {
+                    ai_query_busy.set(false);
+                    expr_text.set(t.expr.clone());
+                    ai_query_expr.set(Some(t.expr));
+                    query_ast.set(t.query);
+                    page_signal.set(1);
+                    hint_open.set(false);
+                    time_pick.set(None);
+                }
+                Err(e) => {
+                    ai_query_busy.set(false);
+                    error.set(Some(e));
+                }
+            }
+        });
+    };
+
     // 数据第一次到位（None → Some(Ok(..))）+ 已排队表达式 → 自动重放。
     // 没有这个 Effect 的话，pending_expr 就只能等用户下一次按 Enter 触发。
     Effect::new(move |_| {
@@ -822,9 +899,8 @@ pub fn WorkspaceMain() -> impl IntoView {
     };
     // 「保存视图」按钮的判脏：只比 AST——保存的语义是「把当前 AST 落到视图上」，
     // ad-hoc 全文搜索与未回车的表达式文本都不会被保存进视图，不该点亮这个按钮。
-    let view_savable = move || {
-        active_view.get().is_some() && query_ast.get() != saved_baseline.get()
-    };
+    let view_savable =
+        move || active_view.get().is_some() && query_ast.get() != saved_baseline.get();
 
     // 排序自动落库，不再依赖「保存视图」按钮。两条约束：
     // 1) 只改排序——`query` 用视图已存的那份，不是界面上的 `query_ast`（那是临时过滤态，
@@ -870,7 +946,9 @@ pub fn WorkspaceMain() -> impl IntoView {
                         });
                     }
                     // 落库失败不回滚本地排序（列表已经按新排序显示），但要说出来。
-                    Err(e) => error.set(Some(i18n.tf("entry.errors.sort_save_failed", &[("err", &e.to_string())]))),
+                    Err(e) => error.set(Some(
+                        i18n.tf("entry.errors.sort_save_failed", &[("err", &e.to_string())]),
+                    )),
                 }
                 // 接力最新待发项：取与清之间没有 await（wasm 单线程），读写是原子的。
                 next = persist_pending.get_untracked();
@@ -1116,9 +1194,7 @@ pub fn WorkspaceMain() -> impl IntoView {
         }
         let url = match active_id.get_untracked() {
             Some(id) if !id.is_empty() => {
-                let is_default = active_view
-                    .get_untracked()
-                    .is_some_and(|v| v.is_default);
+                let is_default = active_view.get_untracked().is_some_and(|v| v.is_default);
                 if is_default {
                     format!("/{}/entry/{}", slug(), code)
                 } else {
@@ -1241,9 +1317,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                 selected.set(code.clone());
                 let cur = panel_code.get_untracked();
                 if !cur.is_empty() && cur != *code && panel_dirty.get_untracked() {
-                    panel_create_prompt.set(Some(
-                        i18n.t("entry.errors.unsaved_block_switch"),
-                    ));
+                    panel_create_prompt.set(Some(i18n.t("entry.errors.unsaved_block_switch")));
                 } else if !cur.is_empty() {
                     panel_code.set(code.clone());
                 }
@@ -1437,7 +1511,10 @@ pub fn WorkspaceMain() -> impl IntoView {
             batch_selected.set(Vec::new());
             refresh.update(|n| *n += 1);
             if let Some(e) = failure {
-                error.set(Some(i18n.tf("entry.errors.archive_partial", &[("done", &done.to_string()), ("err", &e.to_string())])));
+                error.set(Some(i18n.tf(
+                    "entry.errors.archive_partial",
+                    &[("done", &done.to_string()), ("err", &e.to_string())],
+                )));
             }
         });
     };
@@ -1503,10 +1580,9 @@ pub fn WorkspaceMain() -> impl IntoView {
                     panel_code.set(created.code);
                 }
                 Err(e) => {
-                    error.set(Some(i18n_err.tf(
-                        "entry.errors.create_failed",
-                        &[("err", &e.to_string())],
-                    )));
+                    error.set(Some(
+                        i18n_err.tf("entry.errors.create_failed", &[("err", &e.to_string())]),
+                    ));
                 }
             }
         });
@@ -1546,6 +1622,23 @@ pub fn WorkspaceMain() -> impl IntoView {
             }));
         on_cleanup(move || slot.current.set(None));
     }
+    // 顶栏 AI 按钮 → 表达式输入框的 AI 模式。同样通过 App 层槽与 AppBar 共享；
+    // 离开工作空间页时清槽，AppBar 自动退回 Agent 面板开关。
+    if let Some(slot) = crate::frontend::use_context::<crate::frontend::WorkspaceAiQuerySlot>() {
+        let on_toggle = Callback::new(move |_| {
+            ai_query_mode.update(|b| *b = !*b);
+            // 两种模式的候选浮层 / 时间控件语义不同，切换时一并收起。
+            hint_open.set(false);
+            time_pick.set(None);
+            error.set(None);
+        });
+        slot.current
+            .set(Some(crate::frontend::WorkspaceAiQueryToggle {
+                on_toggle,
+                is_ai_mode: ai_query_mode,
+            }));
+        on_cleanup(move || slot.current.set(None));
+    }
 
     view! {
         <div class="page page-app">
@@ -1582,7 +1675,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                 <div class="panel wmain">
                     <div class="filters">
                         <div class="querybar">
-                            <div class="q-expr">
+                            <div class=move || if ai_query_mode.get() { "q-expr ai" } else { "q-expr" }>
                             <div class="q-expr-tools">
                                 <button class="exprhelp" title=i18n.t("entry.expr_help")
                                     on:click=move |_| expr_help.set(true)>{ic_help()}</button>
@@ -1598,6 +1691,8 @@ pub fn WorkspaceMain() -> impl IntoView {
                                                 query_ast.set(saved_baseline.get_untracked());
                                                 ad_hoc_text.set(String::new());
                                                 expr_text.set(saved_baseline_expr.get_untracked());
+                                                ai_query_text.set(String::new());
+                                                ai_query_expr.set(None);
                                                 hint_open.set(false);
                                                 time_pick.set(None);
                                                 refresh_view.update(|n| *n += 1);
@@ -1607,11 +1702,27 @@ pub fn WorkspaceMain() -> impl IntoView {
                                     ().into_any()
                                 }}
                             </div>
-                            <input class="inp" style="flex:1;min-width:0"
-                                placeholder=i18n.t("entry.expr_placeholder")
-                                prop:value=expr_text
+                            <input class=move || if ai_query_mode.get() { "inp ai-query" } else { "inp" }
+                                style="flex:1;min-width:0"
+                                placeholder=move || if ai_query_mode.get() {
+                                    i18n.t("entry.ai_query_placeholder")
+                                } else {
+                                    i18n.t("entry.expr_placeholder")
+                                }
+                                prop:value=move || if ai_query_mode.get() {
+                                    ai_query_text.get()
+                                } else {
+                                    expr_text.get()
+                                }
+                                disabled=move || ai_query_mode.get() && ai_query_busy.get()
                                 on:input=move |ev| {
                                     let v = event_target_value(&ev);
+                                    // AI 模式里输入的是自然语言：`/` 标签候选与
+                                    // 时间控件识别都只对表达式语法有意义。
+                                    if ai_query_mode.get_untracked() {
+                                        ai_query_text.set(v);
+                                        return;
+                                    }
                                     hint_open.set(label_fragment(&v).is_some());
                                     // 时间型键（date/time/datetime 标签或 CreatedAt /
                                     // UpdatedAt）后接比较运算符再一个空白，就浮出原生控件。
@@ -1641,13 +1752,43 @@ pub fn WorkspaceMain() -> impl IntoView {
                                         ev.prevent_default();
                                         hint_open.set(false);
                                         time_pick.set(None);
-                                        apply_expr();
+                                        if ai_query_mode.get_untracked() {
+                                            apply_ai_query();
+                                        } else {
+                                            apply_expr();
+                                        }
                                     } else if ev.key() == "Escape" {
                                         hint_open.set(false);
                                         time_pick.set(None);
                                     }
                                 }
                                 on:blur=move |_| hint_open.set(false) />
+                            // AI 模式的小字提示：解析中 / 最近一次生成的标签表达式。
+                            // 表达式在下方常驻展示，用户保存视图前能确认到底执行了什么。
+                            {move || {
+                                if !ai_query_mode.get() {
+                                    return ().into_any();
+                                }
+                                if ai_query_busy.get() {
+                                    return view! {
+                                        <div class="q-expr-ai-result">
+                                            {i18n.t("entry.ai_query_busy")}
+                                        </div>
+                                    }.into_any();
+                                }
+                                match ai_query_expr.get() {
+                                    Some(expr) => {
+                                        let title = expr.clone();
+                                        view! {
+                                            <div class="q-expr-ai-result" title=title>
+                                                <span class="q-expr-ai-label">{i18n.t("entry.ai_query_result_label")}</span>
+                                                <code>{expr}</code>
+                                            </div>
+                                        }.into_any()
+                                    }
+                                    None => ().into_any(),
+                                }
+                            }}
                             {move || {
                                 if !hint_open.get() {
                                     return ().into_any();
@@ -2822,8 +2963,7 @@ fn EntryTable(
             let in_edit = ev.composed_path().iter().any(|node| {
                 node.dyn_ref::<leptos::web_sys::Element>()
                     .is_some_and(|el| {
-                        el.class_list().contains("lblcell")
-                            && el.class_list().contains("editing")
+                        el.class_list().contains("lblcell") && el.class_list().contains("editing")
                     })
             });
             if !in_edit {
@@ -2840,14 +2980,15 @@ fn EntryTable(
     #[cfg(target_arch = "wasm32")]
     {
         let mode_for_esc = multi_select_mode;
-        let esc_handle = window_event_listener(leptos::ev::keydown, move |ev: leptos::ev::KeyboardEvent| {
-            if !mode_for_esc.get_untracked() {
-                return;
-            }
-            if ev.key() == "Escape" {
-                mode_for_esc.set(false);
-            }
-        });
+        let esc_handle =
+            window_event_listener(leptos::ev::keydown, move |ev: leptos::ev::KeyboardEvent| {
+                if !mode_for_esc.get_untracked() {
+                    return;
+                }
+                if ev.key() == "Escape" {
+                    mode_for_esc.set(false);
+                }
+            });
         on_cleanup(move || esc_handle.remove());
     }
     #[cfg(target_arch = "wasm32")]
@@ -3880,9 +4021,10 @@ fn EntryPanel(
     // 别「简化」掉这个 trim，也别改成回头 set 缓冲——那会动到用户正在打的字。
     // 草稿态下还要算上 draft_labels：保存时一并提交，所以批量保存按钮必须反映出来。
     let dirty = Signal::derive(move || {
-        let base = data.get().and_then(|r| r.ok()).is_some_and(|e| {
-            e.title != title.get().trim() || e.detail != detail.get()
-        });
+        let base = data
+            .get()
+            .and_then(|r| r.ok())
+            .is_some_and(|e| e.title != title.get().trim() || e.detail != detail.get());
         if base {
             return true;
         }
@@ -4176,7 +4318,10 @@ fn EntryPanel(
                 if !expected.is_empty() {
                     let _ = update_entry(&c, &expected, &t, &d, labelings_slice).await;
                 }
-                nav(&format!("/{}/entry/{}", slug_for_async, code_for_later), Default::default());
+                nav(
+                    &format!("/{}/entry/{}", slug_for_async, code_for_later),
+                    Default::default(),
+                );
             });
         } else {
             navigate(&format!("/{}/entry/{}", &slug, c), Default::default());
