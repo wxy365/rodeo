@@ -2376,19 +2376,15 @@ input[type="color"].sw:disabled {
     color:var(--mut);font-family:var(--mono);font-size:.85em;
 }
 
-/* 标签表达式 + 全文搜索合并条：左右两个独立的输入框共享一个圆角外框，
-   内部不再画分隔线，靠左工具列 + 输入框 + 右侧搜索栏自然分段；
-   视觉上是「同一个搜索条的两部分」，但语义上各自保留独立 AST。 */
+/* 标签表达式 + 全文搜索：两个并列的独立输入框。
+   原先是一个共同外框套着「带边框的表达式框 + 去边框的搜索框」，看着像框中框；
+   现在左右各是一个完整的输入框，各画各的边框，并排放。 */
 .querybar {
     display: flex;
     align-items: stretch;
     gap: 8px;
-    padding: 0 8px;
     flex: 1;
     min-width: 0;
-    border: 1px solid var(--line);
-    border-radius: var(--r-m);
-    background: var(--bg);
 }
 .querybar .q-expr {
     flex: 1 1 auto;
@@ -2396,8 +2392,17 @@ input[type="color"].sw:disabled {
     display: flex;
     align-items: center;
     gap: 6px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-m);
+    background: var(--bg);
+    padding: 0 6px;
     /* 内部 `.lblhint` 用 absolute 定位；没有这个锚点它会飘到视窗根部。 */
     position: relative;
+}
+.querybar .q-expr:focus-within {
+    outline: 2px solid color-mix(in srgb, var(--blue) 25%, transparent);
+    outline-offset: -1px;
+    border-color: var(--blue);
 }
 /* 工具列：help 在上、reset 在下，垂直堆叠在输入框最左侧。 */
 .querybar .q-expr .q-expr-tools {
@@ -2407,15 +2412,31 @@ input[type="color"].sw:disabled {
     align-items: center;
     justify-content: center;
     gap: 1px;
-    padding-left: 2px;
+}
+/* 边框由外层框画，`<input>` 自身去样式，视觉上就是「在框里打字」。 */
+.querybar .q-expr .inp,
+.querybar .q-expr .inp:focus {
+    width: 100%;
+    border: 0;
+    outline: 0;
+    background: none;
+    padding: 7px 2px;
 }
 .querybar .q-search {
     flex: 0 0 25%;
     min-width: 0;
     display: flex;
     align-items: center;
-    padding: 0 4px;
+    padding: 0 12px;
     gap: 6px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-m);
+    background: var(--bg);
+}
+.querybar .q-search:focus-within {
+    outline: 2px solid color-mix(in srgb, var(--blue) 25%, transparent);
+    outline-offset: -1px;
+    border-color: var(--blue);
 }
 .querybar .q-search input {
     border: 0;
@@ -2424,22 +2445,20 @@ input[type="color"].sw:disabled {
     padding: 7px 0;
     background: none;
     min-width: 0;
+    font-size: 14px;
 }
-.querybar .q-expr .inp {
-    width: 100%;
-}
-/* AI 查询模式：输入框换成淡绿色光晕，提示「这里输入的是自然语言，
-   服务端会翻译成标签表达式」。生成结果显示在输入框下方的小字行。 */
+/* AI 查询模式：整个表达式框换成淡绿色光晕，提示「这里输入的是自然语言，
+   服务端会翻译成标签表达式」。生成结果显示在框内输入框下方的小字行。 */
 .querybar .q-expr.ai {
     flex-wrap: wrap;
 }
-.querybar .q-expr .inp.ai-query,
-.querybar .q-expr .inp.ai-query:focus {
+.querybar .q-expr.ai,
+.querybar .q-expr.ai:focus-within {
     border-color: var(--pos);
     outline: none;
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--pos) 22%, transparent);
 }
-.querybar .q-expr .inp.ai-query:focus {
+.querybar .q-expr.ai:focus-within {
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--pos) 32%, transparent);
 }
 .querybar .q-expr .q-expr-ai-result {
