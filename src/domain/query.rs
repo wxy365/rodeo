@@ -652,8 +652,7 @@ fn validate_change_value_type(
         LabelValueType::Float | LabelValueType::Currency => v.is_number(),
         LabelValueType::Boolean => v.is_boolean(),
         LabelValueType::Date | LabelValueType::Time | LabelValueType::DateTime => {
-            v.is_string()
-                && v.as_str().is_some_and(|s| parse_time(s).is_some())
+            v.is_string() && v.as_str().is_some_and(|s| parse_time(s).is_some())
         }
         LabelValueType::Null | LabelValueType::Account => {
             // Account 标签的值是 ULID 字符串，类型简单按字符串走；
@@ -750,9 +749,7 @@ impl Condition {
                         .as_ref()
                         .and_then(|v| v.as_object())
                         .ok_or_else(|| {
-                            AppError::InvalidQuery(format!(
-                                "标签 {name} 的 changed 值必须是对象"
-                            ))
+                            AppError::InvalidQuery(format!("标签 {name} 的 changed 值必须是对象"))
                         })?;
                     if self.op == Op::ChangedValue {
                         // from / to 各自独立可缺省（`changed from V` / `changed to V`），
@@ -981,20 +978,12 @@ impl Condition {
                     None => return false,
                 };
                 // from / to 各自可缺省：缺省侧在闭包里按通配处理（不比较 from/to）。
-                let from = value.get("from").and_then(|v| {
-                    if v.is_null() {
-                        None
-                    } else {
-                        Some(v)
-                    }
-                });
-                let to = value.get("to").and_then(|v| {
-                    if v.is_null() {
-                        None
-                    } else {
-                        Some(v)
-                    }
-                });
+                let from = value
+                    .get("from")
+                    .and_then(|v| if v.is_null() { None } else { Some(v) });
+                let to = value
+                    .get("to")
+                    .and_then(|v| if v.is_null() { None } else { Some(v) });
                 let interval = interval_from_value(&serde_json::Value::Object(value.clone()))
                     .unwrap_or_else(Interval::unbounded);
                 return f(&entry.code, name, from, to, &interval);
@@ -2160,13 +2149,10 @@ impl Parser {
             _ => {
                 let v = self.scalar()?;
                 let s = v.as_str().ok_or_else(|| {
-                    AppError::InvalidQuery(format!(
-                        "区间端点必须是字符串、- 或 +，实际 {v}"
-                    ))
+                    AppError::InvalidQuery(format!("区间端点必须是字符串、- 或 +，实际 {v}"))
                 })?;
-                let t = parse_time(s).ok_or_else(|| {
-                    AppError::InvalidQuery(format!("区间端点时间格式无效: {s}"))
-                })?;
+                let t = parse_time(s)
+                    .ok_or_else(|| AppError::InvalidQuery(format!("区间端点时间格式无效: {s}")))?;
                 Ok(IntervalBound::Time(t))
             }
         }

@@ -4,8 +4,8 @@ use std::sync::Arc;
 use ulid::Ulid;
 
 use crate::domain::{
-    AuditAction, AuditLog, Entry, InheritanceGraph, Labeling, LabelLink, LabelSchema, LabelValue,
-    LabelValueType, LinkKind, ValueColor, RESERVED_FIELDS,
+    AuditAction, AuditLog, Entry, InheritanceGraph, LabelLink, LabelSchema, LabelValue,
+    LabelValueType, Labeling, LinkKind, ValueColor, RESERVED_FIELDS,
 };
 use crate::error::AppError;
 use crate::service::audit::audit_ops;
@@ -283,10 +283,7 @@ pub struct LabelService {
 
 impl LabelService {
     pub fn new(store: Arc<DocStore>) -> Self {
-        Self {
-            store,
-            index: None,
-        }
+        Self { store, index: None }
     }
 
     pub fn with_index(
@@ -571,11 +568,7 @@ impl LabelService {
     /// 把该 sortable 标签的全部 `(ws, label, encoded_value, code)` 索引条目灌库。
     /// `update_schema` 检测 `sortable: false → true` 时调用。Phase 1 写但不读；
     /// cursor 路径目前拒 SortField::Label（见 Task 6 R2 / Task 7）。
-    pub fn enable_sortable(
-        &self,
-        ws_id: Ulid,
-        schema: &LabelSchema,
-    ) -> Result<usize, AppError> {
+    pub fn enable_sortable(&self, ws_id: Ulid, schema: &LabelSchema) -> Result<usize, AppError> {
         use crate::storage::keys::{idx_label_key, label_bucket_cf};
         let cf_name_static: &'static str = label_bucket_cf(&schema.name);
         let mut ops = Vec::new();
@@ -655,7 +648,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
-                sortable: false,
+                    sortable: false,
                     links: vec![],
                 },
             )
@@ -680,7 +673,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
-                sortable: false,
+                    sortable: false,
                     links: vec![],
                 },
             )
@@ -704,7 +697,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
-                sortable: false,
+                    sortable: false,
                     links: vec![],
                 },
             )
@@ -728,7 +721,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
-                sortable: false,
+                    sortable: false,
                     links: vec![],
                 },
             )
@@ -756,7 +749,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
-                sortable: false,
+                    sortable: false,
                     links: vec![],
                 },
             )
@@ -799,7 +792,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
-                sortable: false,
+                    sortable: false,
                     links: vec![],
                 },
             )
@@ -820,7 +813,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
-                sortable: false,
+                    sortable: false,
                     links: vec![],
                 },
             )
@@ -842,7 +835,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
-                sortable: false,
+                    sortable: false,
                     links: vec![],
                 },
             )
@@ -882,7 +875,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
-                sortable: false,
+                    sortable: false,
                     links: vec![],
                 },
             )
@@ -930,7 +923,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
-                sortable: false,
+                    sortable: false,
                     links: vec![],
                 },
             )
@@ -957,7 +950,7 @@ mod tests {
                     color: None,
                     value_colors: vec![],
                     default_value: None,
-                sortable: false,
+                    sortable: false,
                     links: vec![],
                 },
             )

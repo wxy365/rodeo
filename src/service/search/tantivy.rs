@@ -116,9 +116,10 @@ impl TantivyBackend {
             TextAnalyzer::builder(NgramTokenizer::new(1, 2, false).map_err(srch_err)?).build();
         index.tokenizers().register(TOKENIZER, analyzer);
         // code 专用：整串一个 token，不切分、不小写化。
-        index
-            .tokenizers()
-            .register(CODE_TOKENIZER, TextAnalyzer::builder(RawTokenizer::default()).build());
+        index.tokenizers().register(
+            CODE_TOKENIZER,
+            TextAnalyzer::builder(RawTokenizer::default()).build(),
+        );
 
         let writer = index
             .writer_with_num_threads(1, 50_000_000)
@@ -213,12 +214,7 @@ impl TantivyBackend {
         // 正文四字段走 ngram 子串匹配（标题 / 详情 / 标签值 / 评论正文）。
         let mut parser = QueryParser::for_index(
             &self.index,
-            vec![
-                self.f_title,
-                self.f_content,
-                self.f_labels,
-                self.f_comments,
-            ],
+            vec![self.f_title, self.f_content, self.f_labels, self.f_comments],
         );
         // ngram(1,2) 会把一个词拆成「单字 + 二元组」，而 QueryParser 默认在词之间
         // 取 OR（tantivy-0.26 `conjunction_by_default: false`）——搜「登录」会命中

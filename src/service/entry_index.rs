@@ -55,12 +55,7 @@ impl EntryIndexService {
     }
 
     /// sort 是否可走 cursor 路径：(1) 主字段有索引 CF；(2) (ws, primary_cf) 已灌完。
-    pub fn sort_is_indexed(
-        &self,
-        ws: Ulid,
-        sort: &SortSpec,
-        schemas: &[LabelSchema],
-    ) -> bool {
+    pub fn sort_is_indexed(&self, ws: Ulid, sort: &SortSpec, schemas: &[LabelSchema]) -> bool {
         let Some(cf_name) = Self::primary_cf(sort, schemas) else {
             return false;
         };
@@ -120,10 +115,7 @@ impl EntryIndexService {
                     if entry.is_deleted() {
                         continue;
                     }
-                    if store.exists(
-                        crate::storage::cf::ENTRIES_ARCHIVED,
-                        entry.code.as_bytes(),
-                    )? {
+                    if store.exists(crate::storage::cf::ENTRIES_ARCHIVED, entry.code.as_bytes())? {
                         continue;
                     }
                     out.push(entry);
@@ -138,8 +130,8 @@ impl EntryIndexService {
             // 列该 ws 的 schemas
             let schemas: Vec<crate::domain::label::LabelSchema> = {
                 let mut out = Vec::new();
-                for (_k, v) in store
-                    .scan_prefix(crate::storage::cf::LABEL_SCHEMAS, &ws.to_bytes())?
+                for (_k, v) in
+                    store.scan_prefix(crate::storage::cf::LABEL_SCHEMAS, &ws.to_bytes())?
                 {
                     if let Ok(s) = bincode::deserialize::<crate::domain::label::LabelSchema>(&v) {
                         out.push(s);

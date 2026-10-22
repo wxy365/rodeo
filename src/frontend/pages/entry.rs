@@ -229,11 +229,7 @@ pub fn EntryFullScreen() -> impl IntoView {
     // 依赖：code 变更（保存后 data 被替换）触发重拉；view_on_back 在组件生命周期内不变。
     if let Some(view_id_for_next) = view_on_back.clone() {
         Effect::new(move |_| {
-            let Some(current) = data
-                .get()
-                .and_then(|r| r.ok())
-                .map(|(_, e, _, _, _)| e)
-            else {
+            let Some(current) = data.get().and_then(|r| r.ok()).map(|(_, e, _, _, _)| e) else {
                 return;
             };
             if cfg!(target_arch = "wasm32") {

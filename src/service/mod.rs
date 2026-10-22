@@ -24,9 +24,9 @@ use std::sync::Arc;
 
 use crate::api::graphql::{build_schema, AppSchema};
 use crate::config::Config;
-use crate::service::entry_index::EntryIndexService;
 use crate::error::AppError;
 use crate::service::agent::runner::SessionTurns;
+use crate::service::entry_index::EntryIndexService;
 use crate::storage::{BlobStore, DocStore};
 
 pub use agent::AgentService;
@@ -240,7 +240,10 @@ impl Services {
         // 现在重做 idx_delete 也拼不出原键。启动期正向扫索引 → 反查 entry 状态 →
         // 已死（is_deleted / archived / 不存在）的索引行整体删掉。queryEntries 路径
         // 不再替死人说「他们还活着」。idempotent，无数据时 0 ops。
-        if let Err(e) = services.entry_index.repair_orphan_index_rows(&services.store) {
+        if let Err(e) = services
+            .entry_index
+            .repair_orphan_index_rows(&services.store)
+        {
             tracing::warn!("孤儿索引行启动清理失败（不阻塞启动）: {e}");
         }
         Ok(services)

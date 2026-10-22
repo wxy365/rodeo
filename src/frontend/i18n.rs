@@ -148,11 +148,7 @@ fn build_flat(json: &str) -> FlatMap {
 /// 把嵌套对象递归展开成 `section.subkey.subsubkey -> value` 的扁平表。
 /// 非字符串标量（数字 / 布尔 / null / 数组）在任何深度都跳过——历史 2 层
 /// 版本就只收 string leaf，行为上保持一致即可。
-fn flatten_into(
-    out: &mut FlatMap,
-    prefix: &str,
-    obj: &serde_json::Map<String, serde_json::Value>,
-) {
+fn flatten_into(out: &mut FlatMap, prefix: &str, obj: &serde_json::Map<String, serde_json::Value>) {
     for (k, v) in obj {
         let path = format!("{prefix}.{k}");
         match v {

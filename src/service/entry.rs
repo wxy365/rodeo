@@ -69,10 +69,7 @@ pub struct QueryInput {
 
 impl QueryInput {
     pub fn limit(&self) -> usize {
-        self.limit
-            .or(self.page_size)
-            .unwrap_or(50)
-            .min(200) as usize
+        self.limit.or(self.page_size).unwrap_or(50).min(200) as usize
     }
 }
 
@@ -624,7 +621,12 @@ impl EntryService {
                 .iter()
                 .map(|l| {
                     if let Some((_, lv)) = resolved.iter().find(|(n, _)| n == &l.label_name) {
-                        Labeling::new(l.entry_code.clone(), l.label_name.clone(), lv.clone(), actor)
+                        Labeling::new(
+                            l.entry_code.clone(),
+                            l.label_name.clone(),
+                            lv.clone(),
+                            actor,
+                        )
                     } else {
                         l.clone()
                     }
@@ -848,12 +850,7 @@ impl EntryService {
     /// 打标列表，生成 3 个内建字段 + 每个 sortable 标签的索引条目。
     /// 调用之后会自动 mark_covered(ws, cf) —— 写路径每写一次索引，cache 同步前进，
     /// 不依赖启动期灌库（Task 10）扫到该 ws。
-    fn idx_puts_for(
-        &self,
-        ws: Ulid,
-        entry: &Entry,
-        labels: &[Labeling],
-    ) -> Vec<BatchOp> {
+    fn idx_puts_for(&self, ws: Ulid, entry: &Entry, labels: &[Labeling]) -> Vec<BatchOp> {
         let schemas = self.sortable_schemas(ws);
         let ops = self.idx_batch_puts(ws, entry, labels, &schemas);
         // 写过一次索引就标记该 ws 的 3 个内建 CF 已覆盖。
@@ -867,12 +864,7 @@ impl EntryService {
 
     /// 单个 entry 的 idx BatchOp 列表（写完前删除旧条目）。与 idx_puts_for 配对；
     /// updated_at / title / label 值变化时必须先删旧再写新。
-    fn idx_deletes_for(
-        &self,
-        ws: Ulid,
-        entry: &Entry,
-        labels: &[Labeling],
-    ) -> Vec<BatchOp> {
+    fn idx_deletes_for(&self, ws: Ulid, entry: &Entry, labels: &[Labeling]) -> Vec<BatchOp> {
         let schemas = self.sortable_schemas(ws);
         self.idx_batch_deletes(ws, entry, labels, &schemas)
     }
@@ -880,7 +872,10 @@ impl EntryService {
     /// 按 entry_code 取该 entry 的所有打标。用于 idx_deletes_for 在写前捕获旧 label 状态。
     fn labels_for_entry(&self, ws: Ulid, code: &str) -> Result<Vec<Labeling>, AppError> {
         let mut out = Vec::new();
-        for (_, v) in self.store.scan_prefix(cf::LABELINGS_BY_WORKSPACE, &ws.to_bytes())? {
+        for (_, v) in self
+            .store
+            .scan_prefix(cf::LABELINGS_BY_WORKSPACE, &ws.to_bytes())?
+        {
             let l: Labeling = bincode::deserialize(&v)?;
             if l.entry_code == code {
                 out.push(l);
@@ -1047,9 +1042,8 @@ impl EntryService {
         // 且日志涉及的标签名 == name。区间判定由 `Interval::contains` 负责（开闭端点语义）。
         let changed_during = |code: &str, name: &str, interval: &Interval| -> bool {
             let logs = audit_of(code);
-            logs.iter().any(|l| {
-                audit_label_name(l).as_deref() == Some(name) && interval.contains(l.at)
-            })
+            logs.iter()
+                .any(|l| audit_label_name(l).as_deref() == Some(name) && interval.contains(l.at))
         };
         // ChangedValue：区间 `interval` 内至少一条事件，其 before.value == from
         // 且 after.value == to。`from` / `to` 任一为 `None` 表示该侧通配（任意值匹配）。
@@ -1218,12 +1212,12 @@ impl EntryService {
         if let Some(c) = &input.cursor {
             let decoded = crate::service::cursor::decode_cursor(c)?;
             if decoded.ws != ws {
-                return Err(AppError::InvalidQuery("cursor workspace 不匹配".to_string()));
+                return Err(AppError::InvalidQuery(
+                    "cursor workspace 不匹配".to_string(),
+                ));
             }
             if decoded.sort_hash != sort_hash {
-                return Err(AppError::InvalidQuery(
-                    "排序已变更，请从头分页".to_string(),
-                ));
+                return Err(AppError::InvalidQuery("排序已变更，请从头分页".to_string()));
             }
             if descending && decoded.last_key.is_empty() {
                 return Err(AppError::InvalidQuery(
@@ -1321,16 +1315,13 @@ impl EntryService {
                 match &cursor_last_key {
                     Some(clk) => self.store.scan_range(
                         primary_cf,
-                        clk,  // start = cursor_last_key（不含）
+                        clk, // start = cursor_last_key（不含）
                         &ws_end_vec,
                         500,
                     )?,
-                    None => self.store.scan_range(
-                        primary_cf,
-                        &ws_start(ws),
-                        &ws_end_vec,
-                        500,
-                    )?,
+                    None => self
+                        .store
+                        .scan_range(primary_cf, &ws_start(ws), &ws_end_vec, 500)?,
                 }
             } else {
                 return Err(AppError::InvalidQuery(
@@ -1498,9 +1489,9 @@ impl EntryService {
         ));
         for schema in schemas.iter().filter(|s| s.sortable) {
             if let Some(l) = labels.iter().find(|l| l.label_name == schema.name) {
-                if let Ok(encoded) = crate::domain::label::encode_label_value_for_index(
-                    &l.value, schema.value_type,
-                ) {
+                if let Ok(encoded) =
+                    crate::domain::label::encode_label_value_for_index(&l.value, schema.value_type)
+                {
                     ops.push(BatchOp::put_raw(
                         label_bucket_cf(&schema.name),
                         idx_label_key(ws, &schema.name, &encoded, &entry.code),
@@ -1540,9 +1531,9 @@ impl EntryService {
         ));
         for schema in schemas.iter().filter(|s| s.sortable) {
             if let Some(l) = labels.iter().find(|l| l.label_name == schema.name) {
-                if let Ok(encoded) = crate::domain::label::encode_label_value_for_index(
-                    &l.value, schema.value_type,
-                ) {
+                if let Ok(encoded) =
+                    crate::domain::label::encode_label_value_for_index(&l.value, schema.value_type)
+                {
                     ops.push(BatchOp::delete(
                         label_bucket_cf(&schema.name),
                         idx_label_key(ws, &schema.name, &encoded, &entry.code),
@@ -2209,7 +2200,13 @@ mod tests {
             None,
         );
         let rel_svc = crate::service::relation::RelationService::new(store.clone());
-        let svc = EntryService::with_search(store.clone(), search, msg_svc, rel_svc, crate::service::entry_index::EntryIndexService::new(store.clone()));
+        let svc = EntryService::with_search(
+            store.clone(),
+            search,
+            msg_svc,
+            rel_svc,
+            crate::service::entry_index::EntryIndexService::new(store.clone()),
+        );
         for i in 0..5 {
             let e = svc.create(actor, ws_id, &format!("条目{i}")).unwrap();
             if i % 2 == 0 {
@@ -2243,7 +2240,13 @@ mod tests {
             None,
         );
         let rel_svc = crate::service::relation::RelationService::new(store.clone());
-        let svc = EntryService::with_search(store.clone(), search, msg_svc, rel_svc, crate::service::entry_index::EntryIndexService::new(store.clone()));
+        let svc = EntryService::with_search(
+            store.clone(),
+            search,
+            msg_svc,
+            rel_svc,
+            crate::service::entry_index::EntryIndexService::new(store.clone()),
+        );
         let a = svc.create(actor, ws_id, "找回密码失败").unwrap();
         svc.update(
             actor,
@@ -2289,7 +2292,13 @@ mod tests {
             None,
         );
         let rel_svc = crate::service::relation::RelationService::new(store.clone());
-        let svc = EntryService::with_search(store.clone(), search, msg_svc, rel_svc, crate::service::entry_index::EntryIndexService::new(store.clone()));
+        let svc = EntryService::with_search(
+            store.clone(),
+            search,
+            msg_svc,
+            rel_svc,
+            crate::service::entry_index::EntryIndexService::new(store.clone()),
+        );
         let a = svc.create(actor, ws_id, "甲").unwrap();
         svc.set_labeling(actor, &a.code, "Task", &serde_json::json!(null))
             .unwrap();
@@ -2334,7 +2343,13 @@ mod tests {
             None,
         );
         let rel_svc = crate::service::relation::RelationService::new(store.clone());
-        let svc = EntryService::with_search(store.clone(), search, msg_svc, rel_svc, crate::service::entry_index::EntryIndexService::new(store.clone()));
+        let svc = EntryService::with_search(
+            store.clone(),
+            search,
+            msg_svc,
+            rel_svc,
+            crate::service::entry_index::EntryIndexService::new(store.clone()),
+        );
         for t in ["b", "a", "c"] {
             svc.create(actor, ws_id, t).unwrap();
         }
@@ -2517,7 +2532,13 @@ mod tests {
             None,
         );
         let rel_svc = crate::service::relation::RelationService::new(store.clone());
-        let svc = EntryService::with_search(store.clone(), search.clone(), msg_svc, rel_svc, crate::service::entry_index::EntryIndexService::new(store.clone()));
+        let svc = EntryService::with_search(
+            store.clone(),
+            search.clone(),
+            msg_svc,
+            rel_svc,
+            crate::service::entry_index::EntryIndexService::new(store.clone()),
+        );
         let e = svc.create(actor, ws_id, "独一无二的关键词").unwrap();
         assert_eq!(search.num_docs(), 1);
 
