@@ -903,9 +903,11 @@ select:focus {
     flex-wrap: wrap;
 }
 /* 筛选栏右侧的操作区：重置 + 保存视图 / 另存为。
-   贴着右边缘（margin-left:auto），与输入框区分开。 */
+   贴着右边缘（margin-left:auto），与输入框区分开。两个图标按钮纵向排列，
+   横排时两个 22px 的方块在窄栏里互相挤、也把这一列撑得比输入框高。 */
 .filter-actions {
     display: flex;
+    flex-direction: column;
     align-items: center;
     gap: 4px;
     margin-left: auto;

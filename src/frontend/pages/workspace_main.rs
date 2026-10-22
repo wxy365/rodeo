@@ -1888,15 +1888,18 @@ pub fn WorkspaceMain() -> impl IntoView {
                             </label>
                         </div>
                         <div class="filter-actions">
-                            // 重置按钮：把表达式与 ad-hoc 全文词还原到「视图已落库的基线」。
-                            // 基础视图的基线恒为空；普通视图的基线是上次保存的 query_expr。
-                            // `view_reset_dirty` 同时看 AST 与两个输入框里的未应用文本，
-                            // 确保敲完未回车也能一键还原；与基线一致时按钮置灰。
+                            // 这一栏里两个按钮（「重置」+「保存视图 / 另存为新视图」）共用同
+                            // 一套显隐规则：**有活可干才出现，没活干就整个不渲染**。改动被
+                            // 撤销 / 保存成功后两个一起消失，不会留下一个灰着的按钮让人猜。
                             //
-                            // 位置在筛选栏最右侧、与「保存视图」并排，而不是塞进表达式框里：
-                            // 它作用的是整个筛选态（表达式 + 全文搜索），放在某一个输入框
-                            // 内部会让人以为只重置那一个框。
-                            {move || if active_view.get().is_some() {
+                            // 「有没有活可干」按各按钮自己的语义算：重置看整个筛选态
+                            // （`view_reset_dirty`：AST + 两个输入框里的未应用文本）；保存看
+                            // 能落库的 AST（`view_savable`：ad-hoc 全文搜索不入库，不算）。
+                            //
+                            // 位置在筛选栏最右侧、纵向排列，而不是塞进表达式框里：它作用的
+                            // 是整个筛选态（表达式 + 全文搜索），放在某一个输入框内部会让人
+                            // 以为只重置那一个框。
+                            {move || if view_reset_dirty() {
                                 view! {
                                     <button class="ibtn exprreset" title=i18n.t("entry.expr_reset")
                                         disabled=move || !view_reset_dirty()
@@ -1940,7 +1943,8 @@ pub fn WorkspaceMain() -> impl IntoView {
                                             }>{ic_copy()}</button>
                                     }.into_any()
                                 }
-                            } else {
+                            } else if view_savable() {
+                                // 与重置同一套显隐规则：没有待落库的 AST 就不渲染按钮。
                                 view! {
                                     <button class="ibtn" disabled=move || !view_savable()
                                         title=i18n.t("entry.save_view")
@@ -1980,6 +1984,8 @@ pub fn WorkspaceMain() -> impl IntoView {
                                             });
                                         }>{ic_save()}</button>
                                 }.into_any()
+                            } else {
+                                ().into_any()
                             }}
                         </div>
                     </div>
