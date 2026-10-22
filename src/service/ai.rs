@@ -14,7 +14,10 @@ use rig::providers::openai::{self, CompletionModel};
 use ulid::Ulid;
 
 use crate::config::AiConfig;
-use crate::domain::{AuditAction, AuditLog, Entry, Labeling, NamedPrompt, WorkspaceAiConfig};
+use crate::domain::{
+    AuditAction, AuditLog, Entry, LabelSchema, Labeling, NamedPrompt, Query as ViewQuery,
+    WorkspaceAiConfig,
+};
 use crate::error::AppError;
 use crate::service::audit::audit_ops;
 use crate::service::search::strip_rich_text;
@@ -150,6 +153,176 @@ impl AiService {
         }
         Ok(out)
     }
+}
+
+/// 自然语言查询 → 标签表达式：system 提示里钉死语法与当前工作空间可用的
+/// 标签 / 成员，user 消息只放用户原话。标签 key、枚举值与成员名必须由
+/// 服务端给全，前端不在每轮请求里重复上传这些 schema。
+pub fn build_query_translation_prompt(
+    schemas: &[LabelSchema],
+    members: &[(String, String)],
+    text: &str,
+) -> Prompt {
+    Prompt {
+        instructions: query_translation_instructions(schemas, members),
+        input: text.to_string(),
+    }
+}
+
+/// 第一次输出过不了 `parse` / `validate` 时的重试提示：把上一版与错误一起
+/// 回给模型。只重试一次——连续两次不合法说明模型没理解 schema，继续烧 token
+/// 不如把错误抛给用户。
+pub fn build_query_translation_retry_prompt(
+    schemas: &[LabelSchema],
+    members: &[(String, String)],
+    text: &str,
+    previous: &str,
+    error: &str,
+) -> Prompt {
+    Prompt {
+        instructions: format!(
+            "{}\n\n## 上一次输出\n{previous}\n\n## 上一次输出的问题\n{error}\n\n\
+             请修正上述问题，重新输出一条合法表达式。仍然只输出表达式本身。",
+            query_translation_instructions(schemas, members),
+            previous = previous.trim(),
+            error = error.trim(),
+        ),
+        input: text.to_string(),
+    }
+}
+
+fn query_translation_instructions(schemas: &[LabelSchema], members: &[(String, String)]) -> String {
+    let mut out = String::from(
+        "你是任务跟踪系统 rodeo 的查询翻译器。把用户的自然语言筛选需求翻译成一条「标签表达式」。\n\n\
+         ## 语法\n\
+         - 布尔运算：AND / OR / NOT，可用括号分组。\n\
+         - 标签存在：直接写标签 key（如 Task）；不存在写 !Task 或 NOT Task。\n\
+         - 比较：<标签> <op> <值>。op 可用 = != > >= < <= ~ !~ in not in has is。\n\
+         - 单值标签用 = / !=；多值标签包含某元素用 has，集合等于用 is。\n\
+         - in 的右值写成 (\"a\", \"b\")；枚举的 in 候选值必须来自枚举值列表。\n\
+         - 字符串值用双引号；数字 / 布尔不加引号。\n\
+         - 内置字段：Code、Title、Detail、CreatedBy、UpdatedBy、CreatedAt、UpdatedAt；\
+           全文检索写 text ~ \"关键词\"。\n\
+         - 时间值写成 \"YYYY-MM-DD\" 或 \"YYYY-MM-DD HH:MM:SS\"。\n\n\
+         ## 可用标签\n",
+    );
+    if schemas.is_empty() {
+        out.push_str("（本工作空间还没有定义任何标签；只能使用上面的内置字段。）\n");
+    }
+    for s in schemas {
+        out.push_str("- ");
+        out.push_str(&describe_schema(s));
+        out.push('\n');
+    }
+    if !members.is_empty() {
+        out.push_str("\n## 工作空间成员（account 型标签的值可用姓名或邮箱）\n");
+        for (name, email) in members {
+            let name = name.trim();
+            if name.is_empty() {
+                out.push_str(&format!("- {email}\n"));
+            } else {
+                out.push_str(&format!("- {name} <{email}>\n"));
+            }
+        }
+    }
+    out.push_str(
+        "\n## 输出要求\n\
+         只输出一条标签表达式，不要 Markdown 代码块，不要解释、前后缀或句号。\n\
+         标签必须使用上面列出的 key 原文，不要使用标题、拼音或自造名称。\n\
+         无法翻译成标签条件时，退化为全文检索 text ~ \"用户的原话\"。\n\n\
+         示例：\n\
+         用户：王晓雁未完成的任务\n\
+         输出：Assignee has \"王晓雁\" AND !Done AND Task\n\
+         用户：标题里带登录的 bug\n\
+         输出：Bug AND Title ~ \"登录\"",
+    );
+    out
+}
+
+fn describe_schema(s: &LabelSchema) -> String {
+    let mut out = format!("`{}`", s.name);
+    let title = s.title.trim();
+    if !title.is_empty() && title != s.name {
+        out.push_str(&format!("（标题：{title}）"));
+    }
+    out.push_str(&format!("，类型：{}", s.value_type.as_str()));
+    if s.multi {
+        out.push_str("，多值");
+    }
+    match s.value_type {
+        crate::domain::LabelValueType::Null => {
+            out.push_str("，无值标签：直接写 key 表示已打上，!key 表示未打上");
+        }
+        crate::domain::LabelValueType::Enum if !s.enum_values.is_empty() => {
+            out.push_str(&format!("，可选值：{}", s.enum_values.join("、")));
+        }
+        crate::domain::LabelValueType::Account => {
+            out.push_str("，值用成员姓名或邮箱，多值时用 has");
+        }
+        crate::domain::LabelValueType::Date
+        | crate::domain::LabelValueType::Time
+        | crate::domain::LabelValueType::DateTime => {
+            out.push_str("，值写成时间字符串");
+        }
+        _ => {}
+    }
+    out
+}
+
+/// 从模型输出里抽出表达式并做语法 + schema 校验。
+///
+/// 模型偶尔会裹 ```` ```...``` ```` 代码块、加「表达式：」前缀，或在表达式后
+/// 补一句解释。先清掉最外层的代码围栏与前缀，整段不合法时再逐行尝试——
+/// 这样「第一行解释、第二行表达式」也能直接成功，不必多花一次重试请求。
+pub fn parse_translation(raw: &str, schemas: &[LabelSchema]) -> Result<ViewQuery, AppError> {
+    let cleaned = clean_model_output(raw);
+    if cleaned.is_empty() {
+        return Err(AppError::Ai("模型没有返回可用的查询表达式".into()));
+    }
+    let first_err = match ViewQuery::parse(&cleaned).and_then(|q| {
+        q.validate(schemas)?;
+        Ok(q)
+    }) {
+        Ok(q) => return Ok(q),
+        Err(e) => e,
+    };
+    for line in cleaned.lines() {
+        let line = line.trim().trim_matches('`').trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(q) = ViewQuery::parse(line) {
+            if q.validate(schemas).is_ok() {
+                return Ok(q);
+            }
+        }
+    }
+    Err(first_err)
+}
+
+fn clean_model_output(raw: &str) -> String {
+    let mut s = raw.trim();
+    if let Some(rest) = s.strip_prefix("```") {
+        // 去掉 ```lang 那一行与结尾的围栏。
+        s = match rest.find('\n') {
+            Some(i) => &rest[i + 1..],
+            None => rest,
+        };
+        if let Some(end) = s.rfind("```") {
+            s = &s[..end];
+        }
+    }
+    let s = s.trim().trim_start_matches('`').trim();
+    let s = s
+        .strip_prefix("表达式：")
+        .or_else(|| s.strip_prefix("表达式:"))
+        .unwrap_or(s)
+        .trim();
+    s.trim_end_matches('`')
+        .trim()
+        .trim_end_matches('。')
+        .trim()
+        .to_string()
 }
 
 /// Rig 客户端薄壳：把 `AiConfig` 喂给 rig-core 的 OpenAI provider，固化 Chat

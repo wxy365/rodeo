@@ -23,7 +23,10 @@ use crate::domain::{
 };
 use crate::error::AppError;
 use crate::service::agent::runner::run_turn;
-use crate::service::ai::derive_title;
+use crate::service::ai::{
+    build_query_translation_prompt, build_query_translation_retry_prompt, derive_title,
+    parse_translation,
+};
 use crate::service::auth::generate_initial_password;
 use crate::service::entry::PageInput as EntryPageInput;
 use crate::service::{AuthContext, Services};
@@ -865,6 +868,15 @@ pub struct GqlView {
     timeline: Option<GqlViewTimeline>,
 }
 
+/// AI 查询翻译结果：`expr` 是规范化后的标签表达式（前端直接回填输入框），
+/// `query` 是同一份表达式的 AST（前端跳过 parseViewQuery，直接执行）。
+#[derive(SimpleObject, Clone)]
+#[graphql(rename_fields = "camelCase")]
+pub struct GqlQueryTranslation {
+    expr: String,
+    query: Json<serde_json::Value>,
+}
+
 /// 视图的时间轴配置。必须是**对象类型**而不是 JSON 标量：客户端按
 /// `timeline { start end person }` 取字段，JSON 标量不允许带子选择，整条 views 查询会被拒。
 #[derive(SimpleObject, Clone)]
@@ -1610,12 +1622,10 @@ impl Query {
         if !v.is_shared && v.owner_id != auth.account_id {
             return Err(AppError::Forbidden.into());
         }
-        let Some(next) = gql.services.entry.next_in_view(
-            v.workspace_id,
-            &v.query,
-            &v.sort,
-            &current_code,
-        )?
+        let Some(next) =
+            gql.services
+                .entry
+                .next_in_view(v.workspace_id, &v.query, &v.sort, &current_code)?
         else {
             return Ok(None);
         };
@@ -1919,6 +1929,59 @@ impl Query {
         ))
     }
 
+    /// 自然语言 → 标签表达式。返回规范化表达式与其 AST，前端直接执行。
+    ///
+    /// 模型输出不可信：先按正式语法 parse，再用当前工作空间的标签 schema
+    /// `validate` 一遍；第一次失败时把错误回喂给模型重试一次，仍失败则把
+    /// 原始错误抛给用户——前端不会拿到一条未经验证的表达式。
+    async fn translate_query_expression(
+        &self,
+        ctx: &Context<'_>,
+        workspace_id: ID,
+        text: String,
+    ) -> GqlResult<GqlQueryTranslation> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let ws = parse_ulid(workspace_id.as_str())?;
+        gql.require_member(ws)?;
+        if text.trim().is_empty() {
+            return Err(AppError::InvalidQuery("请输入查询描述".to_string()).into());
+        }
+        let client = gql
+            .services
+            .rig_client
+            .as_ref()
+            .ok_or(AppError::AiNotConfigured)?;
+        let schemas = gql.services.label.list_schemas(ws)?;
+        let members: Vec<(String, String)> = gql
+            .services
+            .workspace
+            .list_members(ws)?
+            .into_iter()
+            .map(|(_, a)| (a.name, a.email))
+            .collect();
+
+        let prompt = build_query_translation_prompt(&schemas, &members, &text);
+        let raw = client.complete(&prompt).await?;
+        let query = match parse_translation(&raw, &schemas) {
+            Ok(q) => q,
+            Err(first) => {
+                let retry = build_query_translation_retry_prompt(
+                    &schemas,
+                    &members,
+                    &text,
+                    &raw,
+                    &first.to_string(),
+                );
+                let raw2 = client.complete(&retry).await?;
+                parse_translation(&raw2, &schemas)?
+            }
+        };
+        Ok(GqlQueryTranslation {
+            expr: query.to_expr(),
+            query: Json(serde_json::to_value(&query).unwrap_or(serde_json::Value::Null)),
+        })
+    }
+
     /// 规则列表：成员即可读。返回顺序即求值顺序（创建顺序）。
     async fn automation_rules(
         &self,
@@ -1995,7 +2058,10 @@ impl Query {
         let use_cursor_path = !gql.services.config.query.force_legacy_path
             && !legacy_for_changed
             && (page.cursor.is_some()
-                || (gql.services.entry_index.sort_is_indexed(ws, &sort, &schemas)
+                || (gql
+                    .services
+                    .entry_index
+                    .sort_is_indexed(ws, &sort, &schemas)
                     && (page.cursor.is_some() || page.page.unwrap_or(1) <= 1)));
 
         // 回滚开关下 client 仍发 cursor：必须显式拒绝，不能静默吃掉 cursor 走 Legacy。
@@ -2007,8 +2073,15 @@ impl Query {
         }
 
         let (result, page_for_response, page_size_for_response) = if use_cursor_path {
-            if page.cursor.is_some() && !gql.services.entry_index.sort_is_indexed(ws, &sort, &schemas) {
-                return Err(AppError::InvalidQuery("当前排序不支持 cursor 分页".to_string()).into());
+            if page.cursor.is_some()
+                && !gql
+                    .services
+                    .entry_index
+                    .sort_is_indexed(ws, &sort, &schemas)
+            {
+                return Err(
+                    AppError::InvalidQuery("当前排序不支持 cursor 分页".to_string()).into(),
+                );
             }
             let input = crate::service::entry::QueryInput {
                 page: page.page.map(|p| p as u32),
@@ -2438,15 +2511,14 @@ impl Mutation {
         let ws_id = parse_ulid(workspace_id.as_str())?;
         gql.require_role(ws_id, WorkspaceRole::Worker)?;
         let entry = if title.trim().is_empty() {
-            gql.services
-                .entry
-                .create_blank(auth.account_id, ws_id)?
+            gql.services.entry.create_blank(auth.account_id, ws_id)?
         } else {
             match detail.filter(|d| !d.is_empty()) {
-                Some(d) => gql
-                    .services
-                    .entry
-                    .create_with_detail(auth.account_id, ws_id, &title, &d)?,
+                Some(d) => {
+                    gql.services
+                        .entry
+                        .create_with_detail(auth.account_id, ws_id, &title, &d)?
+                }
                 None => gql.services.entry.create(auth.account_id, ws_id, &title)?,
             }
         };
