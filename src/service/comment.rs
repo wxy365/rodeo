@@ -102,10 +102,11 @@ impl CommentService {
         )?);
         // updated_at 前进了，排序索引键跟着换行——否则下一次 update() 用新时间戳
         // 拼删除键会漏掉旧行，列表里同一条目会出现两次（见 touch_updated_index_ops）。
-        ops.extend(
-            self.entries
-                .touch_updated_index_ops(entry.workspace_id, old_updated_at_ms, &entry),
-        );
+        ops.extend(self.entries.touch_updated_index_ops(
+            entry.workspace_id,
+            old_updated_at_ms,
+            &entry,
+        ));
         self.store.write_batch(ops)?;
         self.entries.reindex_by_code(entry_code)?;
         let entry_ref = self.entries.get(entry_code)?;

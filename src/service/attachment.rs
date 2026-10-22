@@ -188,10 +188,11 @@ impl AttachmentService {
             &entry,
         )?);
         // 与评论同一约束：updated_at 是排序索引键的一部分，推进时必须同批换行。
-        ops.extend(
-            self.entries
-                .touch_updated_index_ops(entry.workspace_id, old_updated_at_ms, &entry),
-        );
+        ops.extend(self.entries.touch_updated_index_ops(
+            entry.workspace_id,
+            old_updated_at_ms,
+            &entry,
+        ));
         if let Err(e) = self.store.write_batch(ops) {
             // 元数据没落库，存储里那份就是孤儿，尽力清掉再报错。
             let _ = self.blobs.delete(&key).await;
