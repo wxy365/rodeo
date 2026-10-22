@@ -17,11 +17,11 @@ use crate::frontend::components::{
 use crate::frontend::graphql_client::{
     archive_entry, archived_entries, audit_logs, create_entry, create_view, delete_entry,
     delete_view, entry, format_view_query, get_sidebar_collapsed, label_schemas, members,
-    parse_view_query, query_all_entries, query_entries, set_labeling, set_labelings,
-    set_sidebar_collapsed, set_view_timeline, summarize_entries, translate_query_expression,
-    unarchive_entry, update_entry, update_view, views, workspace_ai_config, workspace_by_slug,
-    AccountBrief, AuditLog, Entry, LabelSchema, Labeling, Member, NamedPrompt, View, ViewSort,
-    ViewTimeline, Workspace,
+    parse_view_query, query_all_entries, query_entries, remove_labeling, set_labeling,
+    set_labelings, set_sidebar_collapsed, set_view_timeline, summarize_entries,
+    translate_query_expression, unarchive_entry, update_entry, update_view, views,
+    workspace_ai_config, workspace_by_slug, AccountBrief, AuditLog, Entry, LabelSchema, Labeling,
+    Member, NamedPrompt, View, ViewSort, ViewTimeline, Workspace,
 };
 use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::icons::{
@@ -2972,6 +2972,19 @@ fn EntryTable(
         });
         on_cleanup(move || exit_handle.remove());
     }
+    // 离开某个编辑态后重拉一次条目表，让新值立刻反映在表格。挂在 `editing_cell` 的
+    // 转换上：多选是「点别处才关」，关的动作发生在全局 mousedown 里，刷新跟着
+    // 信号走才盖得住所有出口（点别处 / 右键切到别的格）。`prev` 非空才刷——那是
+    // 「本来在编辑」；None→Some 是刚进入编辑，不该在这里重拉。编辑期间也不刷：
+    // 重拉会重建整张表、把编辑器重新挂载，用户「连续勾选」的体验就断了。
+    Effect::new(move |prev: Option<Option<(String, String)>>| {
+        let before = prev.flatten();
+        let cur = editing_cell.get();
+        if before.is_some() && before != cur {
+            on_label_changed.run(());
+        }
+        cur
+    });
     // 持久多选模式的两条退出路径：
     // 1) ESC 键退出。
     // 2) 点表格外区域退出——`.tbl-scroll` 是表格滚动容器（含表格本体 + 分页器之外的列头），
@@ -3425,9 +3438,11 @@ fn EntryTable(
                                             let name_for_edit = name.clone();
                                             let code_for_edit = code_for_check.clone();
                                             let ms_for_edit = members.clone();
+                                            // 只负责关编辑态；重拉表格由上面那条监听
+                                            // `editing_cell` 转 None 的 Effect 统一做，
+                                            // 免得多选（点别处才关）漏掉刷新。
                                             let close_edit: Callback<()> = Callback::new(move |_: ()| {
                                                 editing_cell.set(None);
-                                                on_label_changed.run(());
                                             });
                                             return match schema_for_edit {
                                                 Some(s) => view! {
@@ -3627,8 +3642,13 @@ fn EntryTable(
 /// 退出由外层 EntryTable 的全局 mousedown 监听负责（左键落在 `.lblcell.editing` 之外），
 /// 这里不再渲染「↩ 返回」按钮。
 ///
-/// 视图表格里**不允许移除标签**：清空输入时不写入（保留原值）；无值标签只能「打上」、不能
-/// 移除。删除须到详情面板用完整 LabelEditor。
+/// 单值控件（enum 单选 / boolean / 日期 / 金额 / 邮箱 / 数字文本）写完即关编辑态——一次
+/// 选择就是最终答案，没有继续停留的理由。**多选控件例外**：勾选集合可反复增删，编辑态一直
+/// 开着，直到用户点别处才退出（外层在 `editing_cell` 转 None 时统一重拉表格）。多选取消到
+/// 空集 = 移除整个标签，所以最后一个值也能在列表里删掉，不必进详情面板。
+///
+/// 视图表格里单值控件仍**不允许清空移除**：清空输入时不写入（保留原值）；无值标签只能
+/// 「打上」、不能移除。删除它们须到详情面板用完整 LabelEditor。
 #[component]
 fn LabelCellEditor(
     /// 当前条目 code。落地要它，不能一次解锁。
@@ -3665,6 +3685,34 @@ fn LabelCellEditor(
         })
     };
 
+    // 多选专用的写通道：落库后**不**关编辑态、也不重拉表格。多选要能连续勾选，
+    // 退出统一交给「点别处」（外层监听 `editing_cell` 转 None 时才重拉）。
+    let set_multi: Callback<Value> = {
+        let c = code.clone();
+        let n = name.clone();
+        Callback::new(move |v: Value| {
+            let c = c.clone();
+            let n = n.clone();
+            spawn_local(async move {
+                let res = set_labeling(&c, &n, &v).await;
+                local_err.set(res.err());
+            });
+        })
+    };
+    // 多选取消到空集 = 移除整个标签，与详情面板 LabelEditor 的多选分支同款语义。
+    let del_multi: Callback<()> = {
+        let c = code.clone();
+        let n = name.clone();
+        Callback::new(move |_: ()| {
+            let c = c.clone();
+            let n = n.clone();
+            spawn_local(async move {
+                let res = remove_labeling(&c, &n).await;
+                local_err.set(res.err());
+            });
+        })
+    };
+
     view! {
         // 屏蔽浏览器右键菜单：编辑态不是来要菜单的；左键 stop_propagation 留给下面那些
         // 控件自己用，免得点空白处冒到外层 td 把当前编辑关掉（外层 td 不再监听点击，
@@ -3690,54 +3738,57 @@ fn LabelCellEditor(
                     }
                 }
                 // 多选 Enum：勾选集合整体写成一个数组。
+                //
+                // 勾选真值放在本地信号里，不依赖外层重拉回来的 `current`：多选要能
+                // 连续勾选，编辑态一直开着（写完不关），期间不会重拉表格；即便外层
+                // 因别的原因重建了整张表，本地信号也是这一串勾选的权威值。
                 s if s.value_type == "enum" && s.multi => {
                     let opts = s.enum_values.clone();
-                    let selected: std::collections::HashSet<String> = current
-                        .as_ref()
-                        .and_then(|v| v.as_array())
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|x| x.as_str().map(str::to_string))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    let current_arc = current.clone();
+                    let sel: RwSignal<Vec<String>> = RwSignal::new(
+                        current
+                            .as_ref()
+                            .and_then(|v| v.as_array())
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|x| x.as_str().map(str::to_string))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                    );
                     view! {
                         <div class="multienum">
                             {opts.into_iter().map(|o| {
-                                let checked = selected.contains(&o);
-                                let cur = current_arc.clone();
                                 let oc = o.clone();
-                                let on_set = on_set.clone();
+                                let oc_checked = o.clone();
+                                let sel_for_checked = sel.clone();
+                                let sel_for_change = sel.clone();
+                                let on_set = set_multi.clone();
+                                let on_remove = del_multi.clone();
                                 view! {
                                     <label class="mut">
-                                        <input type="checkbox" prop:checked=checked on:change=move |ev| {
-                                            let mut set: Vec<String> = cur
-                                                .as_ref()
-                                                .and_then(|v| v.as_array())
-                                                .map(|a| {
-                                                    a.iter()
-                                                        .filter_map(|x| x.as_str().map(str::to_string))
-                                                        .collect()
-                                                })
-                                                .unwrap_or_default();
-                                            if event_target_checked(&ev) {
-                                                if !set.contains(&oc) {
-                                                    set.push(oc.clone());
+                                        <input type="checkbox"
+                                            prop:checked=move || sel_for_checked.get().contains(&oc_checked)
+                                            on:change=move |ev| {
+                                                let mut set = sel_for_change.get_untracked();
+                                                if event_target_checked(&ev) {
+                                                    if !set.contains(&oc) {
+                                                        set.push(oc.clone());
+                                                    }
+                                                } else {
+                                                    set.retain(|x| x != &oc);
                                                 }
-                                            } else {
-                                                set.retain(|x| x != &oc);
-                                            }
-                                            // 不支持移除：全空时不写入，保留原值。
-                                            if !set.is_empty() {
-                                                on_set
-                                                    .run(
-                                                        Value::Array(
-                                                            set.into_iter().map(Value::String).collect(),
-                                                        ),
-                                                    );
-                                            }
-                                        } />
+                                                sel_for_change.set(set.clone());
+                                                // 清空即移除该标签（与详情面板 LabelEditor 同款），
+                                                // 否则写数组。两条路都不关编辑态——用户可能
+                                                // 还要接着勾，点别处才退出。
+                                                if set.is_empty() {
+                                                    on_remove.run(());
+                                                } else {
+                                                    on_set.run(Value::Array(
+                                                        set.into_iter().map(Value::String).collect(),
+                                                    ));
+                                                }
+                                            } />
                                         {display_enum_value(&o)}
                                     </label>
                                 }
@@ -3858,13 +3909,30 @@ fn LabelCellEditor(
                 }
                 s if s.value_type == "account" => {
                     let s_multi = s.multi;
+                    // 多选：勾选集合同样是本地真值，写完不关编辑态，取消到空即移除标签。
+                    let sel_multi: RwSignal<Vec<String>> = RwSignal::new(
+                        current
+                            .as_ref()
+                            .and_then(|v| v.as_array())
+                            .map(|a| {
+                                a.iter()
+                                    .filter_map(|x| x.as_str().map(str::to_string))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                    );
                     let picked = {
                         let on_set = on_set.clone();
+                        let set_multi = set_multi.clone();
+                        let del_multi = del_multi.clone();
+                        let sel_multi = sel_multi.clone();
                         Callback::new(move |ids: Vec<String>| {
                             if s_multi {
-                                // 不支持移除：清空选择时不写入，保留原值。
-                                if !ids.is_empty() {
-                                    on_set.run(Value::Array(
+                                sel_multi.set(ids.clone());
+                                if ids.is_empty() {
+                                    del_multi.run(());
+                                } else {
+                                    set_multi.run(Value::Array(
                                         ids.into_iter().map(Value::String).collect(),
                                     ));
                                 }
@@ -3877,22 +3945,19 @@ fn LabelCellEditor(
                             }
                         })
                     };
-                    // AccountPicker 现在按 Signal<Vec<String>> 读 selected；外面 on_set
-                    // 触发本组件重渲时 current_text 不变（仍是上次读到的字符串），但
-                    // Signal::derive 让 AccountPicker 内部 chip 随 selected 变化刷新。
-                    let selected = Signal::derive(move || {
-                        if s_multi {
-                            current_text
-                                .split(',')
-                                .map(|s| s.trim().to_string())
-                                .filter(|s| !s.is_empty())
-                                .collect()
-                        } else if current_text.is_empty() {
-                            Vec::new()
-                        } else {
-                            vec![current_text.clone()]
-                        }
-                    });
+                    // 多选直接把本地信号交给 picker（chip 随勾选即时增删）；单选仍从
+                    // `current_text` 派生，外层 on_set 触发重渲后自然反映新值。
+                    let selected: Signal<Vec<String>> = if s_multi {
+                        Signal::derive(move || sel_multi.get())
+                    } else {
+                        Signal::derive(move || {
+                            if current_text.is_empty() {
+                                Vec::new()
+                            } else {
+                                vec![current_text.clone()]
+                            }
+                        })
+                    };
                     view! {
                         <AccountPicker members=members.clone() selected=selected multi=s_multi
                             on_change=picked />
