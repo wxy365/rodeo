@@ -13,7 +13,7 @@ use tantivy::query::{BooleanQuery, Occur, QueryParser, TermQuery};
 use tantivy::schema::{
     Field, IndexRecordOption, Schema, TextFieldIndexing, TextOptions, Value, STORED, STRING,
 };
-use tantivy::tokenizer::{NgramTokenizer, TextAnalyzer};
+use tantivy::tokenizer::{NgramTokenizer, RawTokenizer, TextAnalyzer};
 use tantivy::{doc, Index, IndexReader, IndexWriter, Term};
 use ulid::Ulid;
 
@@ -26,8 +26,15 @@ use super::SearchBackend;
 
 pub const TEXT_CANDIDATE_LIMIT: usize = 1000;
 const TOKENIZER: &str = "cjk";
-/// 承载 Entry Code 的可检索副本；`f_code` 是未分词的 STRING 字段，只能精确匹配，
-/// 供删除/取回用，检索需要走这里的分词字段。
+/// Entry Code 专用分词器：整串发一个 token，不切分。
+///
+/// code 是 16 位定长随机 base62（`domain::entry::generate_entry_code`），任意单个
+/// 字符出现在其中的概率约 `1-(52/62)^16 ≈ 94%`。若跟正文一样走 ngram(1,2) 子串
+/// 匹配，搜「6」会因为 code 字段几乎命中全表——这正是「全文搜索本视图」搜出过量
+/// 结果的主因。改成整串 token 后，code 只能靠**完整 code 精确命中**。
+const CODE_TOKENIZER: &str = "code_raw";
+/// 承载 Entry Code 的可检索副本；`f_code` 是未分词的 STRING 字段（只存不建索引），
+/// 检索走这里，且只接受整串精确匹配。
 const CODE_TEXT_FIELD: &str = "entry_code_text";
 /// 评论正文的检索副本。单开一个字段而不是拼进 `content`，
 /// 是为了不让标题/详情/评论混在一起影响相关度。
@@ -61,17 +68,41 @@ impl TantivyBackend {
         let f_title = text(&mut b, "title");
         let f_content = text(&mut b, "content");
         let f_labels = text(&mut b, "labels");
-        let f_code_text = text(&mut b, CODE_TEXT_FIELD);
         let f_comments = text(&mut b, COMMENTS_FIELD);
+        // code 走独立分词器：整串一个 token，只接受精确命中。
+        let f_code_text = b.add_text_field(
+            CODE_TEXT_FIELD,
+            TextOptions::default().set_indexing_options(
+                TextFieldIndexing::default()
+                    .set_tokenizer(CODE_TOKENIZER)
+                    .set_index_option(IndexRecordOption::Basic),
+            ),
+        );
         let schema = b.build();
 
+        // 旧索引与当前 schema 不一致时必须删掉重建。索引是纯派生物，启动时的
+        // `backfill` 会从 RocksDB 重新灌满。
+        //
+        // 两种失配都要认：① 缺少 code / 评论检索字段；② `entry_code_text` 还在用
+        // 旧的 `cjk` 分词器——那种索引里存的是 ngram 词元，拿精确 TermQuery 去查必然
+        // 零命中，而且残留的 code 子串词元正是「搜 6 命中全表」的来源。
+        let needs_rebuild = |existing: &Index| -> bool {
+            let sch = existing.schema();
+            if sch.get_field(CODE_TEXT_FIELD).is_err() || sch.get_field(COMMENTS_FIELD).is_err() {
+                return true;
+            }
+            let f = sch.get_field(CODE_TEXT_FIELD).expect("刚判过存在");
+            match sch.get_field_entry(f).field_type() {
+                tantivy::schema::FieldType::Str(opts) => opts
+                    .get_indexing_options()
+                    .map(|i| i.tokenizer() != CODE_TOKENIZER)
+                    // 没有 indexing options = 不建索引，等价于失配。
+                    .unwrap_or(true),
+                _ => true,
+            }
+        };
         let index = match Index::open_in_dir(dir) {
-            // 旧索引缺少 code 或评论检索字段：删掉重建。索引是纯派生物，
-            // 启动时的 `backfill` 会从 RocksDB 重新灌满。
-            Ok(existing)
-                if existing.schema().get_field(CODE_TEXT_FIELD).is_err()
-                    || existing.schema().get_field(COMMENTS_FIELD).is_err() =>
-            {
+            Ok(existing) if needs_rebuild(&existing) => {
                 drop(existing);
                 std::fs::remove_dir_all(dir).map_err(srch_err)?;
                 // create_in_dir 要求父目录存在，重建刚被删掉的目录。
@@ -84,6 +115,10 @@ impl TantivyBackend {
         let analyzer =
             TextAnalyzer::builder(NgramTokenizer::new(1, 2, false).map_err(srch_err)?).build();
         index.tokenizers().register(TOKENIZER, analyzer);
+        // code 专用：整串一个 token，不切分、不小写化。
+        index
+            .tokenizers()
+            .register(CODE_TOKENIZER, TextAnalyzer::builder(RawTokenizer::default()).build());
 
         let writer = index
             .writer_with_num_threads(1, 50_000_000)
@@ -175,23 +210,42 @@ impl TantivyBackend {
         if keyword.is_empty() {
             return Ok(Vec::new());
         }
-        let parser = QueryParser::for_index(
+        // 正文四字段走 ngram 子串匹配（标题 / 详情 / 标签值 / 评论正文）。
+        let mut parser = QueryParser::for_index(
             &self.index,
             vec![
                 self.f_title,
                 self.f_content,
                 self.f_labels,
-                self.f_code_text,
                 self.f_comments,
             ],
         );
+        // ngram(1,2) 会把一个词拆成「单字 + 二元组」，而 QueryParser 默认在词之间
+        // 取 OR（tantivy-0.26 `conjunction_by_default: false`）——搜「登录」会命中
+        // 任何含「登」**或**「录」的条目。改取 AND 后语义才回到「该字段包含这个词」；
+        // 字段之间仍是 OR（`query_parser.rs:790` 的 per-field 合并写死 Should）。
+        parser.set_conjunction_by_default();
         let parsed = parser.parse_query(keyword).map_err(srch_err)?;
+        // code 不走 ngram：只认**整串精确命中**。见 CODE_TOKENIZER 的说明——code 是
+        // 随机 base62，子串匹配等于「几乎全表命中」。这一支按 code 检索的能力保留，
+        // 但必须把完整 code 敲进去才命中。
+        let code_query = TermQuery::new(
+            Term::from_field_text(self.f_code_text, keyword),
+            IndexRecordOption::Basic,
+        );
         let ws_query = TermQuery::new(
             Term::from_field_text(self.f_ws, &ws.to_string()),
             IndexRecordOption::Basic,
         );
         let combined = BooleanQuery::new(vec![
-            (Occur::Must, parsed),
+            // 正文命中 或 code 整串命中 —— 两者都在工作空间内。
+            (
+                Occur::Must,
+                Box::new(BooleanQuery::new(vec![
+                    (Occur::Should, parsed),
+                    (Occur::Should, Box::new(code_query)),
+                ])),
+            ),
             (Occur::Must, Box::new(ws_query)),
         ]);
 
@@ -318,12 +372,18 @@ mod tests {
         e.code = "RD-kM3vB7dR".to_string();
         idx.index_entry(&e, &[], "").unwrap();
 
-        // 整段 Code 与其中一段子串都应命中。
+        // 整段 Code 命中；**子串不再命中**——这是有意的行为变更。
+        // code 是 16 位定长随机 base62，任意单字符出现在其中的概率约 94%，
+        // 若对 code 做 ngram 子串匹配，「搜 6」会几乎命中全表。现在 code 只走
+        // 整串精确匹配（CODE_TOKENIZER = RawTokenizer），正文四字段仍走 ngram。
         assert_eq!(
             idx.search(ws, "RD-kM3vB7dR", 10).unwrap(),
             vec![e.code.clone()]
         );
-        assert_eq!(idx.search(ws, "kM3v", 10).unwrap(), vec![e.code.clone()]);
+        assert!(
+            idx.search(ws, "kM3v", 10).unwrap().is_empty(),
+            "code 子串必须不再命中，否则短词检索会洪泛"
+        );
         drop(idx);
         std::fs::remove_dir_all(&dir).ok();
     }

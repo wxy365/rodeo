@@ -1264,26 +1264,29 @@ impl EntryService {
             .collect();
         let account_of = |id: Ulid| accounts.get(&id).cloned();
         let label_of = |name: &str| schemas.get(name).cloned();
-        let text_hits: Option<std::collections::HashSet<String>> =
-            match query.first_text_keyword() {
-                Some(keyword) => {
-                    let search = self
-                        .search
-                        .as_ref()
-                        .ok_or_else(|| AppError::Internal("全文检索不可用".to_string()))?;
-                    Some(
-                        search
-                            .search(ws, &keyword, TEXT_CANDIDATE_LIMIT)
-                            .or_else(|_| search.search(ws, &keyword, 10_000))?
-                            .into_iter()
-                            .collect(),
-                    )
-                }
-                None => None,
-            };
-        let text_ok = |kw: &str| -> bool {
+        // 与查询树中的 text 条件一一对应：整次查询至多一个全文关键词。
+        let text_kw = query.first_text_keyword();
+        let text_hits: Option<std::collections::HashSet<String>> = match &text_kw {
+            Some(keyword) => {
+                let search = self
+                    .search
+                    .as_ref()
+                    .ok_or_else(|| AppError::Internal("全文检索不可用".to_string()))?;
+                Some(
+                    search
+                        .search(ws, keyword, TEXT_CANDIDATE_LIMIT)
+                        .or_else(|_| search.search(ws, keyword, 10_000))?
+                        .into_iter()
+                        .collect(),
+                )
+            }
+            None => None,
+        };
+        // 参数是 **条目 code**，不是关键词：`text_hits` 装的是 `search()` 返回的
+        // 命中 code 集合。关键词相等性由调用点的 `text_hit_for_entry` 单独判定。
+        let text_ok = |entry_code: &str| -> bool {
             match &text_hits {
-                Some(set) => set.contains(kw),
+                Some(set) => set.contains(entry_code),
                 None => false,
             }
         };
@@ -1359,11 +1362,12 @@ impl EntryService {
                     continue;
                 }
                 let labels = self.labels_for_entry(ws, &code)?;
-                let text_kw = query.first_text_keyword();
-                let text_hit_for_entry = |_kw: &str| -> bool {
+                // 关键词与查询树在整次查询里不变，提到循环外算一次即可（原先每行
+                // 都重新 `first_text_keyword()` 分配一次 String）。
+                let text_hit_for_entry = |kw: &str| -> bool {
                     text_kw
                         .as_ref()
-                        .map(|kw| text_ok(kw))
+                        .map(|want| kw == want && text_ok(&code))
                         .unwrap_or(false)
                 };
                 let env_for_entry = EvalEnv {

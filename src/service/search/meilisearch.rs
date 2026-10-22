@@ -27,7 +27,11 @@ use super::SearchBackend;
 
 const PRIMARY_KEY: &str = "entry_code";
 const FILTERABLE: &[&str] = &["workspace_id"];
-const SEARCHABLE: &[&str] = &["title", "content", "labels", "code_text", "comments"];
+// 与 `TantivyBackend::search` 的检索范围保持一致：标题 / 详情 / 标签值 / 评论正文。
+// `code_text` 不参与召回——code 是 16 位定长随机 base62，任意单字符在其中出现的
+// 概率约 94%，子串匹配会让「搜 6」直接变成全表返回。tantivy 侧靠整串精确匹配保留
+// 按 code 检索的能力；meili 侧字段照常写入文档，只是不列为 searchable。
+const SEARCHABLE: &[&str] = &["title", "content", "labels", "comments"];
 
 /// Meilisearch 索引里的文档形态。字段名必须与 `SEARCHABLE` / `FILTERABLE` 字面量一致。
 #[derive(Debug, Clone, Serialize, Deserialize)]
