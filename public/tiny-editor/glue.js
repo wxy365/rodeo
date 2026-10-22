@@ -7,6 +7,11 @@
 //   - style.css         ← https://unpkg.com/@opentiny/fluent-editor@<ver>/style.css
 import FluentEditor from './fluent-editor.mjs';
 
+// 版本标记：诊断页会把它带进 trace，用来确认浏览器实际加载的是哪一版。
+// 每次修改本文件时同步更新。
+const RODEO_GLUE_VERSION = '2026-10-22-ime-7';
+window.__rodeo_glue_version__ = RODEO_GLUE_VERSION;
+
 // ── 列表 Delta 兼容层 ────────────────────────────────────────────────
 // fluent-editor 3.x 自带的 "formats/list" blot（内部类，注册在
 // FluentEditor.imports）跟 Quill 标准的 List 不一样：
@@ -33,6 +38,45 @@ if (origListFormats) {
       return v.value;
     }
     return v;
+  };
+}
+
+// ── 列表标记节点（Safari 输入法）────────────────────────────────────
+// fluent-editor 的列表 blot 会在每个 <li> 里塞一个
+// `<span class="ql-ui" contenteditable="false">` 作为第一个子节点。
+// 有序/无序列表的标记其实由 CSS `li.ordered::before` / `li.bullet::before`
+// 绘制，这个 span 是纯装饰、还破坏 Safari 的输入法提交：
+//
+//   Safari 提交中文时先 `deleteCompositionText`（删掉拼音），
+//   再 `insertFromComposition`（插入汉字）。删完拼音的瞬间，LI 里只剩
+//   这个 contenteditable=false 的 span——WebKit 认为该块「没有可编辑
+//   内容」，会把整个 LI 移除并换成 <br> 占位；随后的汉字被插到 <ol> 上，
+//   Quill 收不进列表，列表和文字一起消失。
+//   （2026-10-22 用 Safari 26.2 + 系统拼音抓到的 DOM trace 证实。）
+//
+// 所以有序/无序列表不再挂 uiNode；勾选列表（checked/unchecked）需要
+// 可点击的方框，保持原行为。
+const origAttachUI = ListBlot && ListBlot.prototype && ListBlot.prototype.attachUI;
+if (origAttachUI) {
+  ListBlot.prototype.attachUI = function (node) {
+    let value;
+    try {
+      const f = this.statics.formats(this.domNode, this.scroll);
+      value = f && typeof f === 'object' ? f.value : f;
+    } catch (e) {
+      value = undefined;
+    }
+    if (value === 'ordered' || value === 'bullet') {
+      this.uiNode = null;
+      // 复刻 attachUI 里「空块补默认子节点」的行为，只是不插入 uiNode。
+      if (this.children.length === 0 && this.statics.defaultChild != null) {
+        const child = this.scroll.create(this.statics.defaultChild.blotName);
+        this.appendChild(child);
+      }
+      this.cache = {};
+      return;
+    }
+    return origAttachUI.call(this, node);
   };
 }
 
@@ -146,27 +190,165 @@ async function uploadIntoEditor(editor, upload, files) {
   }
 }
 
-// 输入法组合文本兜底（Safari / 部分中文 IME）。
+// Safari 提交输入法时会把列表项拆掉（2026-10-22 Safari 26.2 + 系统拼音 trace）：
+//   beforeinput deleteCompositionText  拼音 zhong 被删除
+//   → 整个 LI（连同里面的拼音）被 WebKit 从 DOM 摘掉，列表容器里换成占位 <br>
+//   → beforeinput insertFromComposition 汉字「中」被直接插到 <ol> 下
+//   → Quill batchEnd 看到列表容器下的裸文本，收不进模型，最后把 <ol> 换成 <p>，
+//     列表和文字一起消失。
 //
-// 两个已知的丢字路径，都会让「DOM 里有中文、Quill 的模型里没有」：
-//   1) 组合文本被塞进 `<span class="ql-ui" contenteditable="false">` 这个
-//      标记节点（有序/无序列表每项的第一个子节点）。它不是一个 blot，
-//      Quill 的 mutation diff 完全看不见它，下一次按模型重写 DOM 就没了。
-//   2) 浏览器在组合输入期间丢 MutationRecord（slab/quill#3837、#3969）：
-//      文本节点已经插进 li，但 Quill 的 MutationObserver 没收到记录，
-//      blot 树/Delta 里没有这段文字，下一次 update 就会把它删掉。
+// 主修复在 input deleteCompositionText 时（earlyRestore）：清掉游离 LI 里
+// 残留的拼音、把它接回列表、把原生光标放进去，让随后的汉字落回 LI。
+// 这里的函数是补漏：若汉字已经掉到 <ol>/<ul> 下（例如事件时序不如预期），
+// 在 compositionend（Quill 的 batchEnd microtask 之前）把裸文本收回 LI。
+function restoreEmptiedListItems(root, lineNode, listNode) {
+  // 1) 优先复用组合开始时那一行的 LI 节点：Quill 处理「LI 被移除」的
+  //    mutation 时会检查 removed node 是否仍连着文档，复用同一节点即可
+  //    跳过 detach，原来的 LI blot 得以保留，后面的文本对账才能挂回去。
+  if (
+    lineNode && lineNode.nodeType === 1 && lineNode.tagName === 'LI' &&
+    !root.contains(lineNode) && listNode && root.contains(listNode) &&
+    (listNode.tagName === 'OL' || listNode.tagName === 'UL')
+  ) {
+    const strayText = [];
+    const strayBr = [];
+    listNode.childNodes.forEach((n) => {
+      if (n.nodeType === 3 && n.data.length > 0) strayText.push(n);
+      else if (n.nodeType === 1 && n.tagName === 'BR') strayBr.push(n);
+    });
+    if (strayText.length > 0) {
+      listNode.insertBefore(lineNode, strayText[0]);
+      strayText.forEach((n) => lineNode.appendChild(n));
+      strayBr.forEach((n) => n.remove());
+      return true;
+    }
+  }
+  // 2) 兜底：没有记录到原 LI 时，把列表容器下的裸文本包进一个新 LI。
+  let restored = false;
+  root.querySelectorAll('ol, ul').forEach((list) => {
+    const stray = [];
+    list.childNodes.forEach((n) => {
+      if (n.nodeType === 3 && n.data.length > 0) stray.push(n);
+      else if (n.nodeType === 1 && n.tagName === 'BR') stray.push(n);
+    });
+    const strayText = stray.filter((n) => n.nodeType === 3);
+    if (strayText.length === 0) return;
+    const type = (list.className || '').trim().split(/\s+/)[0] || 'ordered';
+    const li = document.createElement('li');
+    li.className = type;
+    list.insertBefore(li, strayText[0]);
+    strayText.forEach((n) => li.appendChild(n));
+    stray.filter((n) => n.nodeType === 1).forEach((n) => n.remove());
+    restored = true;
+  });
+  return restored;
+}
+
+// 输入法组合文本兜底。
 //
-// compositionend 后统一修：
-//   - 把 ql-ui 里的孤儿文本挪回 li；
-//   - 扫一遍编辑器的文本节点：未注册成 blot 的、以及 text blot 的 text
-//     与 DOM 不一致的，合成 MutationRecord 交给 scroll.update()——让
-//     Quill 走它本来该走的 mutation 处理路径，把文字收进模型。
-// 正常输入时两者都无事可做（DOM 与模型一致），不会产生额外改动。
+// 两类已知丢字路径都会让「DOM 里有中文、Quill 的模型里没有」：
+//   1) Safari 提交时拆掉空 LI（见上），汉字落到列表容器上；
+//   2) 浏览器在组合输入期间丢 MutationRecord（slab/quill#3837、#3969），
+//      或者组合文本被塞进 `.ql-ui` 标记节点（勾选列表仍保留该节点）——
+//      blot 树/Delta 里没有这段文字，下一次 update 就会被删掉。
+//
+// 三层处理：
+//   - input deleteCompositionText / insertFromComposition：提前把 LI 接回去、
+//     放好光标（主修复，见 earlyRestore）；
+//   - compositionend 同步阶段：补漏恢复被拆掉的列表结构；
+//   - compositionend 的 setTimeout：把 ql-ui 里的孤儿文本挪回 li，并扫一遍
+//     文本节点：未注册成 blot 的、以及 text blot 的 text 与 DOM 不一致的，
+//     合成 MutationRecord 交给 scroll.update()，让 Quill 把文字收进模型。
+// 正常输入时这些都无事可做（DOM 与模型一致），不会产生额外改动。
 function repairCompositionText(el, editor) {
   // 每个容器只绑一次；节点被复用、create 再来一遍时不叠加监听。
   if (el.__rodeo_composition_repair) return;
   el.__rodeo_composition_repair = true;
+  // 组合开始时记下当前行的 DOM 节点与所属列表容器：Safari 会在提交时
+  // 把这个 LI 从 DOM 里摘掉，之后要靠同一节点把它接回去。
+  let composingLine = null;
+  let composingList = null;
+  // Safari 的提交是 deleteCompositionText → insertFromComposition 两步。
+  // 在 delete 的 input 事件时把被摘掉的 LI 提前接回去（并放好原生光标），
+  // 让随后那次插入落回列表项，而不是落到 <ol> 上。
+  const earlyRestore = () => {
+    try {
+      const root = el.querySelector('.ql-editor');
+      if (!root) return false;
+      const li = composingLine;
+      const list = composingList;
+      if (!li || li.nodeType !== 1 || li.tagName !== 'LI') return false;
+      if (!list || !root.contains(list)) return false;
+      if (list.tagName !== 'OL' && list.tagName !== 'UL') return false;
+      if (list.contains(li)) return true;
+      // Safari 删除拼音的做法是把整个（变空的）LI 从 DOM 摘掉——拼音文本
+      // 还留在这个游离节点里。直接原样接回去会把它复活成「中zhong」；
+      // 清掉残留（保留勾选列表的 ql-ui 标记节点），换成可编辑占位。
+      Array.from(li.childNodes).forEach((n) => {
+        if (!(n.nodeType === 1 && n.classList && n.classList.contains('ql-ui'))) {
+          n.remove();
+        }
+      });
+      if (!li.firstChild) li.appendChild(document.createElement('br'));
+      list.appendChild(li);
+      try {
+        const r = document.createRange();
+        r.setStart(li, 0);
+        r.collapse(true);
+        const s = window.getSelection();
+        s.removeAllRanges();
+        s.addRange(r);
+      } catch (e) {
+        // 光标放不进去也至少把结构恢复了。
+      }
+      return true;
+    } catch (e) {
+      return false;
+    }
+  };
+  el.addEventListener('input', (ev) => {
+    if (ev.inputType === 'deleteCompositionText') {
+      earlyRestore();
+    } else if (ev.inputType === 'insertFromComposition') {
+      // 如果 delete 时没能把 LI 接回去，Safari 会把汉字插到 <ol> 下；
+      // 在输入事件里立刻把它收回 LI，赶在 compositionend 之前。
+      try {
+        const root = el.querySelector('.ql-editor');
+        if (root) restoreEmptiedListItems(root, composingLine, composingList);
+      } catch (e) {
+        // 忽略：compositionend 还有一次兜底。
+      }
+    }
+  });
+  el.addEventListener('beforeinput', (ev) => {
+    if (ev.inputType === 'insertFromComposition') earlyRestore();
+  });
+  el.addEventListener('compositionstart', () => {
+    composingLine = null;
+    composingList = null;
+    try {
+      const sel = editor.getSelection();
+      if (!sel) return;
+      const [line] = editor.getLine(sel.index);
+      if (line && line.domNode) {
+        composingLine = line.domNode;
+        composingList = line.domNode.parentNode;
+      }
+    } catch (e) {
+      composingLine = null;
+      composingList = null;
+    }
+  });
   el.addEventListener('compositionend', () => {
+    // 同步阶段：必须在 Quill 的 batchEnd（queueMicrotask）之前完成。
+    try {
+      const root = el.querySelector('.ql-editor');
+      if (root) restoreEmptiedListItems(root, composingLine, composingList);
+    } catch (e) {
+      // 结构恢复失败也不能挡住输入。
+    }
+    composingLine = null;
+    composingList = null;
     // fluent-editor 自己的 compositionend 处理走 queueMicrotask，
     // setTimeout 排在其后，避免和它的 batchEnd 抢时序。
     setTimeout(() => {
