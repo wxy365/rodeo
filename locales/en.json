@@ -239,7 +239,7 @@
     "col_updated_at": "Updated at",
     "back_workspaces_btn": "Workspaces",
     "expr_help": "Expression syntax help",
-    "expr_reset": "Reset to default",
+    "expr_reset": "Reset filters to this view's saved conditions",
     "search_view": "Full-text search view",
     "saveas_view": "Save as new view",
     "save_view": "Save view",

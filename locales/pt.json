@@ -239,7 +239,7 @@
     "col_updated_at": "Atualizado em",
     "back_workspaces_btn": "Workspaces",
     "expr_help": "Ajuda de sintaxe",
-    "expr_reset": "Restaurar padrão",
+    "expr_reset": "Restaurar os filtros para as condições salvas da vista",
     "search_view": "Buscar no modo de exibição",
     "saveas_view": "Salvar como nova vista",
     "save_view": "Salvar vista",

@@ -891,6 +891,18 @@ pub fn WorkspaceMain() -> impl IntoView {
     // 否则用户想一键还原就只能挨个清输入框。
     // 对普通视图（即已保存表达式的视图）：基线非空时只看输入框是否非空会把
     // 刚加载完的视图也判脏——所以改为对比 expr_text 与 saved_baseline_expr。
+    //
+    // 这里必须用可追踪的 `get()`：`disabled` 绑的是个响应式闭包，只有它 `get()` 过的
+    // 信号才能把它唤醒。用 `get_untracked()` 的话，光是输入框里的文本变化不会让它
+    // 重新求值，按钮会一直灰着，直到 AST 变化才亮。
+    let view_reset_dirty = move || {
+        active_view.get().is_some()
+            && (query_ast.get() != saved_baseline.get()
+                || expr_text.get() != saved_baseline_expr.get()
+                || !ad_hoc_text.get().trim().is_empty())
+    };
+    // 「另存为」按钮的判脏：与「重置」不同，它存的是当前 AST，未回车的输入框文本
+    // 并不在 AST 里，所以只看 AST 即可（文本项用 untracked，避免每敲一个字就重算）。
     let view_dirty = move || {
         active_view.get().is_some()
             && (query_ast.get() != saved_baseline.get()
@@ -1677,30 +1689,11 @@ pub fn WorkspaceMain() -> impl IntoView {
                         <div class="querybar">
                             <div class=move || if ai_query_mode.get() { "q-expr ai" } else { "q-expr" }>
                             <div class="q-expr-tools">
+                                // 只留帮助按钮：它讲的确实是表达式语法，留在表达式框里名正言顺。
+                                // 重置按钮挪到了筛选栏最右侧（见 `.filter-actions`）——
+                                // 它重置的是整个筛选态，不属于任何一个输入框。
                                 <button class="exprhelp" title=i18n.t("entry.expr_help")
                                     on:click=move |_| expr_help.set(true)>{ic_help()}</button>
-                                // 重置按钮：把表达式与 ad-hoc 全文词还原到「视图已落库的基线」。
-                                // 基础视图的基线恒为空；普通视图的基线是上次保存的 query_expr。
-                                // `view_dirty` 同时看 AST 与两个输入框里的未应用文本，
-                                // 确保敲完未回车也能一键还原；与基线一致时按钮置灰。
-                                {move || if active_view.get().is_some() {
-                                    view! {
-                                        <button class="exprreset" title=i18n.t("entry.expr_reset")
-                                            disabled=move || !view_dirty()
-                                            on:click=move |_| {
-                                                query_ast.set(saved_baseline.get_untracked());
-                                                ad_hoc_text.set(String::new());
-                                                expr_text.set(saved_baseline_expr.get_untracked());
-                                                ai_query_text.set(String::new());
-                                                ai_query_expr.set(None);
-                                                hint_open.set(false);
-                                                time_pick.set(None);
-                                                refresh_view.update(|n| *n += 1);
-                                            }>{ic_undo()}</button>
-                                    }.into_any()
-                                } else {
-                                    ().into_any()
-                                }}
                             </div>
                             <input class=move || if ai_query_mode.get() { "inp ai-query" } else { "inp" }
                                 style="flex:1;min-width:0"
@@ -1894,73 +1887,101 @@ pub fn WorkspaceMain() -> impl IntoView {
                                     } />
                             </label>
                         </div>
-                        {move || if active_view.get().is_some_and(|v| v.is_default) {
+                        <div class="filter-actions">
+                            // 重置按钮：把表达式与 ad-hoc 全文词还原到「视图已落库的基线」。
+                            // 基础视图的基线恒为空；普通视图的基线是上次保存的 query_expr。
+                            // `view_reset_dirty` 同时看 AST 与两个输入框里的未应用文本，
+                            // 确保敲完未回车也能一键还原；与基线一致时按钮置灰。
+                            //
+                            // 位置在筛选栏最右侧、与「保存视图」并排，而不是塞进表达式框里：
+                            // 它作用的是整个筛选态（表达式 + 全文搜索），放在某一个输入框
+                            // 内部会让人以为只重置那一个框。
+                            {move || if active_view.get().is_some() {
+                                view! {
+                                    <button class="ibtn exprreset" title=i18n.t("entry.expr_reset")
+                                        disabled=move || !view_reset_dirty()
+                                        on:click=move |_| {
+                                            query_ast.set(saved_baseline.get_untracked());
+                                            ad_hoc_text.set(String::new());
+                                            expr_text.set(saved_baseline_expr.get_untracked());
+                                            ai_query_text.set(String::new());
+                                            ai_query_expr.set(None);
+                                            hint_open.set(false);
+                                            time_pick.set(None);
+                                            refresh_view.update(|n| *n += 1);
+                                        }>{ic_undo()}</button>
+                                }.into_any()
+                            } else {
+                                ().into_any()
+                            }}
+                            {move || if active_view.get().is_some_and(|v| v.is_default) {
                             // 基础视图上的过滤是临时态：不给「保存」，要留存只能另存为新视图。
                             // 仅在表达式 / 全文搜索有未落库改动时才点亮，否则按钮无意义。
-                            if !view_dirty() {
-                                ().into_any()
+                                if !view_dirty() {
+                                    ().into_any()
+                                } else {
+                                    view! {
+                                        <button class="ibtn" title=i18n.t("entry.saveas_view")
+                                            on:click=move |_| {
+                                                let Some(v) = active_view.get() else { return };
+                                                let ast = query_ast.get_untracked();
+                                                let sorts = v.sorts.clone();
+                                                let cols = v.columns.clone();
+                                                dialog_error.set(None);
+                                                batch(move || {
+                                                    view_dialog_saveas.set(true);
+                                                    view_query_input.set(ast);
+                                                    view_sort_input.set(sorts);
+                                                    view_name_input.set(String::new());
+                                                    view_columns_input.set(cols);
+                                                    view_shared_input.set(false);
+                                                    show_view_dialog.set(true);
+                                                });
+                                            }>{ic_copy()}</button>
+                                    }.into_any()
+                                }
                             } else {
                                 view! {
-                                    <button class="ibtn" style="margin-left:auto" title=i18n.t("entry.saveas_view")
+                                    <button class="ibtn" disabled=move || !view_savable()
+                                        title=i18n.t("entry.save_view")
                                         on:click=move |_| {
                                             let Some(v) = active_view.get() else { return };
-                                            let ast = query_ast.get_untracked();
+                                            let ast = query_ast.get();
                                             let sorts = v.sorts.clone();
                                             let cols = v.columns.clone();
-                                            dialog_error.set(None);
-                                            batch(move || {
-                                                view_dialog_saveas.set(true);
-                                                view_query_input.set(ast);
-                                                view_sort_input.set(sorts);
-                                                view_name_input.set(String::new());
-                                                view_columns_input.set(cols);
-                                                view_shared_input.set(false);
-                                                show_view_dialog.set(true);
-                                            });
-                                        }>{ic_copy()}</button>
-                                }.into_any()
-                            }
-                        } else {
-                            view! {
-                                <button class="ibtn" style="margin-left:auto" disabled=move || !view_savable()
-                                    title=i18n.t("entry.save_view")
-                                    on:click=move |_| {
-                                        let Some(v) = active_view.get() else { return };
-                                        let ast = query_ast.get();
-                                        let sorts = v.sorts.clone();
-                                        let cols = v.columns.clone();
-                                        let shared = v.is_shared;
-                                        let id = v.id.clone();
-                                        let name = v.name.clone();
-                                        let title_colors = v.title_colors.clone();
-                                        // 保存后用服务端权威的 query_expr 同步基线文本——比
-                                        // 直接拿 expr_text 更稳，规避两端规范化差异导致重置按钮残留亮起。
-                                        let saved_expr_text = expr_text.get_untracked();
-                                        spawn_local(async move {
-                                            match update_view(&id, &name, &ast, &sorts, &cols, shared, &title_colors).await {
-                                                Ok(saved) => {
-                                                    let new_expr_text = saved.query_expr.clone();
-                                                    view_list.update(|l| {
-                                                        if let Some(slot) = l.iter_mut().find(|x| x.id == saved.id) {
-                                                            *slot = saved.clone();
+                                            let shared = v.is_shared;
+                                            let id = v.id.clone();
+                                            let name = v.name.clone();
+                                            let title_colors = v.title_colors.clone();
+                                            // 保存后用服务端权威的 query_expr 同步基线文本——比
+                                            // 直接拿 expr_text 更稳，规避两端规范化差异导致重置按钮残留亮起。
+                                            let saved_expr_text = expr_text.get_untracked();
+                                            spawn_local(async move {
+                                                match update_view(&id, &name, &ast, &sorts, &cols, shared, &title_colors).await {
+                                                    Ok(saved) => {
+                                                        let new_expr_text = saved.query_expr.clone();
+                                                        view_list.update(|l| {
+                                                            if let Some(slot) = l.iter_mut().find(|x| x.id == saved.id) {
+                                                                *slot = saved.clone();
+                                                            }
+                                                        });
+                                                        active_view.set(Some(saved));
+                                                        saved_baseline.set(ast);
+                                                        saved_baseline_expr.set(new_expr_text);
+                                                        // 保存后输入框文本也应与服务端一致，否则 expr_text
+                                                        // 与基线分歧会让「重置」按钮误亮。
+                                                        if expr_text.get_untracked() != saved_expr_text {
+                                                            expr_text.set(saved_expr_text);
                                                         }
-                                                    });
-                                                    active_view.set(Some(saved));
-                                                    saved_baseline.set(ast);
-                                                    saved_baseline_expr.set(new_expr_text);
-                                                    // 保存后输入框文本也应与服务端一致，否则 expr_text
-                                                    // 与基线分歧会让「重置」按钮误亮。
-                                                    if expr_text.get_untracked() != saved_expr_text {
-                                                        expr_text.set(saved_expr_text);
+                                                        error.set(None);
                                                     }
-                                                    error.set(None);
+                                                    Err(e) => error.set(Some(e)),
                                                 }
-                                                Err(e) => error.set(Some(e)),
-                                            }
-                                        });
-                                    }>{ic_save()}</button>
-                            }.into_any()
-                        }}
+                                            });
+                                        }>{ic_save()}</button>
+                                }.into_any()
+                            }}
+                        </div>
                     </div>
 
                     {move || error.get().map(|e| view! { <p class="error" style="padding:8px 16px">{e}</p> })}

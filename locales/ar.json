@@ -239,7 +239,7 @@
     "col_updated_at": "وقت التحديث",
     "back_workspaces_btn": "مساحات العمل",
     "expr_help": "مساعدة بناء الجملة",
-    "expr_reset": "إعادة للافتراضي",
+    "expr_reset": "إعادة ضبط التصفية إلى شروط العرض المحفوظة",
     "search_view": "بحث في العرض",
     "saveas_view": "حفظ كعرض جديد",
     "save_view": "حفظ العرض",

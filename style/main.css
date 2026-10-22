@@ -902,16 +902,23 @@ select:focus {
     border-top: 1px solid var(--line);
     flex-wrap: wrap;
 }
+/* 筛选栏右侧的操作区：重置 + 保存视图 / 另存为。
+   贴着右边缘（margin-left:auto），与输入框区分开。 */
+.filter-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: auto;
+}
 /* 表达式输入框容器：为 `/` 标签候选下拉提供定位基准。 */
 .exprwrap {
     position: relative;
     flex: 1;
     min-width: 260px;
 }
-/* 表达式输入框左侧的工具列：上方帮助按钮（点开语法说明）+ 下方重置按钮（清空过滤态）。
+/* 表达式输入框左侧的工具列：只有帮助按钮（点开语法说明）。
    与原先把 exprhelp 绝对定位到右上角相比，左侧竖排更符合「输入框自带工具」的直觉。 */
-.exprhelp,
-.exprreset {
+.exprhelp {
     width: 22px;
     height: 20px;
     padding: 0;
@@ -924,21 +931,28 @@ select:focus {
     color: var(--ink3);
     cursor: pointer;
 }
-.exprhelp:hover,
+.exprhelp:hover {
+    color: var(--ink);
+    background: var(--bg2);
+}
+.exprhelp .ic {
+    width: 14px;
+    height: 14px;
+}
+/* 重置按钮：放在筛选栏最右侧、与「保存视图」并排。
+   它把整个筛选态（表达式 + 全文搜索）还原成视图保存时的基线，
+   所以既不归属于任何一个输入框，尺寸也跟着旁边的 ibtn 走。 */
+.exprreset {
+    color: var(--ink2);
+}
 .exprreset:hover:not(:disabled) {
     color: var(--ink);
     background: var(--bg2);
 }
-.exprhelp:disabled,
 .exprreset:disabled {
     color: var(--ink3);
-    opacity: 0.5;
+    opacity: 0.45;
     cursor: not-allowed;
-}
-.exprhelp .ic,
-.exprreset .ic {
-    width: 14px;
-    height: 14px;
 }
 /* 语法说明弹窗正文。 */
 .exprdoc {
@@ -2404,7 +2418,7 @@ input[type="color"].sw:disabled {
     outline-offset: -1px;
     border-color: var(--blue);
 }
-/* 工具列：help 在上、reset 在下，垂直堆叠在输入框最左侧。 */
+/* 工具列：help 按钮，垂直居中在输入框最左侧。 */
 .querybar .q-expr .q-expr-tools {
     flex: 0 0 auto;
     display: flex;

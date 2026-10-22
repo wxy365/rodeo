@@ -239,7 +239,7 @@
     "col_updated_at": "更新时间",
     "back_workspaces_btn": "工作空间列表",
     "expr_help": "标签表达式语法说明",
-    "expr_reset": "重置为默认",
+    "expr_reset": "重置筛选：回到视图保存时的条件",
     "search_view": "全文搜索本视图",
     "saveas_view": "另存为新视图",
     "save_view": "保存视图",

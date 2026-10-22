@@ -239,7 +239,7 @@
     "col_updated_at": "更新日時",
     "back_workspaces_btn": "ワークスペース一覧",
     "expr_help": "式構文ヘルプ",
-    "expr_reset": "デフォルトに戻す",
+    "expr_reset": "フィルターをビュー保存時の条件に戻す",
     "search_view": "全文検索",
     "saveas_view": "新しいビューとして保存",
     "save_view": "ビューを保存",
