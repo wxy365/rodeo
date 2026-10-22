@@ -1105,7 +1105,7 @@ fn acc_in(name: &str, email: &str, want: Option<&serde_json::Value>) -> bool {
 ///  - `SetContains`（`has`）：want 的每一个元素都至少匹配到 stored 集合里的一个 (name, email)。
 ///  - `SetEquals`（`is`）：stored 与 want 一一对应（按 name/email 任一相等）。
 ///  - `Eq` / `Ne`（`=` / `!=`）：单值上与 name/email 任一相等；多值上等价 SetEquals 集合相等，
-///    但保留 `Eq`/`Ne` 形态以兼容「Assignee = 王晓雁」这类最常见的单值写法。
+///    但保留 `Eq`/`Ne` 形态以兼容「Assignee = 张三」这类最常见的单值写法。
 ///  - `In` / `NotIn`（`in` / `not in`）：任一 stored (name|email) 落在 want 数组内。
 ///
 /// want 接受标量或数组；空 want 一律返回 false（与 `SetEquals` 的"集合相等"语义一致——

@@ -345,7 +345,7 @@
     "collapse_sidebar": "Plegar/expandir barra lateral",
     "view_label": "Vista «{name}»",
     "expr_placeholder": "Expresión: Task AND !Bug (Enter para aplicar; / para elegir)",
-    "ai_query_placeholder": "Describe el filtro en lenguaje natural, p. ej. tareas sin terminar de 王晓雁 (Enter para que la IA lo interprete)",
+    "ai_query_placeholder": "Describe el filtro en lenguaje natural, p. ej. tareas sin terminar de Joy (Enter para que la IA lo interprete)",
     "ai_query_busy": "La IA está analizando…",
     "ai_query_result_label": "Expresión generada por la IA:",
     "title_color_match_hint": "Coincidir en orden; la primera coincidencia pinta el título. Las condiciones combinan etiquetas con AND / OR / NOT. Las filas vacías se ignoran al guardar.",

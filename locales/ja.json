@@ -345,7 +345,7 @@
     "collapse_sidebar": "サイドバーを折りたたみ/展開",
     "view_label": "ビュー「{name}」",
     "expr_placeholder": "式: Task AND !Bug（Enter で適用、/ で選択）",
-    "ai_query_placeholder": "自然言語で絞り込み条件を入力。例：王晓雁の未完了タスク（Enter で AI が解析）",
+    "ai_query_placeholder": "自然言語で絞り込み条件を入力。例：Joy の未完了タスク（Enter で AI が解析）",
     "ai_query_busy": "AI が解析中…",
     "ai_query_result_label": "AI が生成したラベル式：",
     "title_color_match_hint": "順に評価し、最初に一致したものがタイトルを色付けします。条件は AND / OR / NOT でラベルを結合できます。空の行は保存時に無視されます。",

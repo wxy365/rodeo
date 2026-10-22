@@ -231,8 +231,8 @@ fn query_translation_instructions(schemas: &[LabelSchema], members: &[(String, S
          标签必须使用上面列出的 key 原文，不要使用标题、拼音或自造名称。\n\
          无法翻译成标签条件时，退化为全文检索 text ~ \"用户的原话\"。\n\n\
          示例：\n\
-         用户：王晓雁未完成的任务\n\
-         输出：Assignee has \"王晓雁\" AND !Done AND Task\n\
+         用户：张三未完成的任务\n\
+         输出：Assignee has \"张三\" AND !Done AND Task\n\
          用户：标题里带登录的 bug\n\
          输出：Bug AND Title ~ \"登录\"",
     );

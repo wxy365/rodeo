@@ -348,7 +348,7 @@
     "collapse_sidebar": "Collapse/expand sidebar",
     "view_label": "View «{name}»",
     "expr_placeholder": "Expression: Task AND !Bug (Enter to apply; / to pick)",
-    "ai_query_placeholder": "Describe the filter in plain language, e.g. 王晓雁's unfinished tasks (Enter to let AI parse)",
+    "ai_query_placeholder": "Describe the filter in plain language, e.g. Joy's unfinished tasks (Enter to let AI parse)",
     "ai_query_busy": "AI is parsing…",
     "ai_query_result_label": "AI-generated expression:",
     "title_color_match_hint": "Match in order; first hit paints the title. Conditions combine labels with AND / OR / NOT. Empty rows are ignored when saving.",

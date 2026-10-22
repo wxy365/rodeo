@@ -345,7 +345,7 @@
     "collapse_sidebar": "Recolher/expandir barra lateral",
     "view_label": "Vista «{name}»",
     "expr_placeholder": "Expressão: Task AND !Bug (Enter para aplicar; / para escolher)",
-    "ai_query_placeholder": "Descreva o filtro em linguagem natural, ex.: tarefas inacabadas de 王晓雁 (Enter para a IA interpretar)",
+    "ai_query_placeholder": "Descreva o filtro em linguagem natural, ex.: tarefas inacabadas de Joy (Enter para a IA interpretar)",
     "ai_query_busy": "A IA está analisando…",
     "ai_query_result_label": "Expressão gerada pela IA:",
     "title_color_match_hint": "Corresponder em ordem; o primeiro acerto pinta o título. Condições combinam rótulos com AND / OR / NOT. Linhas vazias são ignoradas ao salvar.",
