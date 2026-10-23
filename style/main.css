@@ -11,10 +11,10 @@
     --warn: #b35900;
     --dgr: #cf222e;
     --blue: #0969da;
-    /* 列表选中行的底色。亮色下 6% 蓝几乎看不出，提到 18%（约 #d3e4f8）才
-       能和其他行的白底一眼分开；hover 再深一档。 */
-    --sel-row: color-mix(in srgb, var(--blue) 18%, var(--bg));
-    --sel-row-hover: color-mix(in srgb, var(--blue) 26%, var(--bg));
+    /* 列表选中行的底色：浅绿（--pos）。亮色下 18% 约 #d6e8db，比普通行的
+       白底明显一档，又不至于盖过文字；hover 再深一档。 */
+    --sel-row: color-mix(in srgb, var(--pos) 18%, var(--bg));
+    --sel-row-hover: color-mix(in srgb, var(--pos) 26%, var(--bg));
     --r-s: 6px;
     --r-m: 10px;
     --r-l: 12px;
@@ -57,10 +57,10 @@
            取 RGB 中点 #9fcaf9 让所有默认态图标与文字用同一档；
            hover/active/expanded 才回到饱和的 --blue。*/
         --toolbar-icon: #9fcaf9;
-        /* 选中行底色：深底上同样的百分比看不出色差（蓝叠在近黑上几乎没饱和度），
-           所以暗色用比亮色更高的比例（26% / hover 34%）。 */
-        --sel-row: color-mix(in srgb, var(--blue) 26%, var(--bg));
-        --sel-row-hover: color-mix(in srgb, var(--blue) 34%, var(--bg));
+        /* 选中行底色：深底上同样的百分比看不出色差，所以暗色用比亮色更高的
+           比例（28% / hover 36%）。 */
+        --sel-row: color-mix(in srgb, var(--pos) 28%, var(--bg));
+        --sel-row-hover: color-mix(in srgb, var(--pos) 36%, var(--bg));
     }
 }
 
@@ -90,8 +90,8 @@
     --fe-editor-bg-color: var(--bg3);
     --toolbar-icon: #9fcaf9;
     /* 与上面 @media 块里的同名变量保持一致（见那里的说明）。 */
-    --sel-row: color-mix(in srgb, var(--blue) 26%, var(--bg));
-    --sel-row-hover: color-mix(in srgb, var(--blue) 34%, var(--bg));
+    --sel-row: color-mix(in srgb, var(--pos) 28%, var(--bg));
+    --sel-row-hover: color-mix(in srgb, var(--pos) 36%, var(--bg));
 }
 
 /* fluent-editor 把工具栏整条写死成亮色：背景 `#fff`、SVG 描边/填充
@@ -590,10 +590,10 @@ select:focus {
 .tbl tbody tr:hover {
     background: var(--bg2);
 }
-/* 选中行（点行高亮的那一行）：原来只有 6% 主色蓝打底，在白底上几乎看不出来。
-   现在背景改成主题感知的 `--sel-row`（亮色 18% / 暗色 26% 蓝），再在首列左侧
-   加一道 3px 主色竖条——竖条是「选中」的强信号，背景色弱时也认得出。
-   hover 时再深一档（`--sel-row-hover`），与普通行的 hover 灰底区分开。 */
+/* 选中行（点行高亮的那一行）：浅绿底（主题感知的 `--sel-row`，亮色 18% /
+   暗色 28% 的 --pos 绿），再在首列左侧加一道 3px 绿竖条——竖条是「选中」的
+   强信号，背景色弱时也认得出。hover 时再深一档（`--sel-row-hover`），
+   与普通行的 hover 灰底区分开。 */
 .tbl tbody tr.sel {
     background: var(--sel-row);
 }
@@ -603,7 +603,7 @@ select:focus {
 /* 竖条画在第一格（勾选/行号列）内侧：用 inset box-shadow 而不是 border，
    不占布局宽度，也不会被 `border-collapse: collapse` 的合并边框吃掉。 */
 .tbl tbody tr.sel > td:first-child {
-    box-shadow: inset 3px 0 0 var(--blue);
+    box-shadow: inset 3px 0 0 var(--pos);
 }
 .tbl tbody tr.static {
     cursor: default;
@@ -2682,7 +2682,8 @@ input[type="color"].sw:disabled {
     height: 16px;
 }
 
-/* 顶栏「AI」入口：与时间轴按钮同款方形按钮，"AI" 字样代替图标。
+/* 顶栏「Buckaroo 助手」入口：与时间轴按钮同款方形按钮，里头放一颗牛仔帽
+   描边图标（`ic_hat`），跟头像菜单里曾经那份入口同一造型。
    `.on` 态填主题色——面板展开时一眼能看出来开关已切。 */
 .agent-btn {
     display: inline-flex;
@@ -2696,10 +2697,11 @@ input[type="color"].sw:disabled {
     cursor: pointer;
     background: transparent;
     color: var(--ink);
-    font-size: 12px;
-    font-weight: 600;
-    letter-spacing: 0.5px;
     transition: background 120ms ease, color 120ms ease;
+}
+.agent-btn .ic {
+    width: 18px;
+    height: 18px;
 }
 .agent-btn:hover {
     background: var(--bg2);
