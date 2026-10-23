@@ -695,26 +695,6 @@ pub fn AppBar() -> impl IntoView {
     // `use_context` 必须放在组件 setup，不能放进事件闭包里——那是 Leptos
     // 上下文解析规则的硬约束。
     let panel_open = crate::frontend::agent_panel::use_agent_panel_open();
-    // AI 查询模式槽：WorkspaceMain 在挂载时写入。槽非空时，「AI」按钮改为
-    // 切换表达式输入框的 AI 模式（自然语言 → 标签表达式）；为空（非工作空间
-    // 路由）时退回原来的 Agent 面板开关。
-    let ai_query_slot = use_context::<crate::frontend::WorkspaceAiQuerySlot>()
-        .expect("WorkspaceAiQuerySlot 未在 App 层 provide");
-    let ai_query_present = move || ai_query_slot.current.get().is_some();
-    let ai_query_on = move || {
-        ai_query_slot
-            .current
-            .get()
-            .map(|s| s.is_ai_mode.get())
-            .unwrap_or(false)
-    };
-    let ai_btn_on = move || {
-        if ai_query_present() {
-            ai_query_on()
-        } else {
-            panel_open.0.get()
-        }
-    };
     // hover split 状态：只在 AppBar 这一个用到，留在组件内即可。
     let newentry_hover = RwSignal::new(false);
     // i18n：品牌 / 新建 / 时间轴 / agent 面板标题在这里翻。`I18nController`
@@ -775,25 +755,13 @@ pub fn AppBar() -> impl IntoView {
                         </button>
                     }
                 })}
-                // 「AI」入口：工作空间页切到表达式输入框的 AI 模式（自然语言
-                // 查询），其它路由仍打开 Agent 面板。`.on` 态在两种情况下都
-                // 填主题色，说明「AI 能力当前是开着的」。
-                <button class=move || if ai_btn_on() { "agent-btn on" } else { "agent-btn" }
-                    title=move || {
-                        if ai_query_present() {
-                            if ai_query_on() {
-                                i18n.t("appbar.ai_query_exit")
-                            } else {
-                                i18n.t("appbar.ai_query")
-                            }
-                        } else {
-                            i18n.t("appbar.agent_panel")
-                        }
-                    }
-                    on:click=move |_| match ai_query_slot.current.get_untracked() {
-                        Some(s) => s.on_toggle.run(()),
-                        None => panel_open.0.update(|n| *n = !*n),
-                    }>
+                // 「AI」入口：打开 Agent 面板（Buckaroo 助手）。工作空间页
+                // 另有「自然语言查询」模式，但那个开关已经搬进表达式输入框
+                // 自己内部（见 `workspace_main.rs` 的 `.q-expr-tools`）——
+                // 它只对那个输入框有意义，顶栏不该替它代劳。
+                <button class=move || if panel_open.0.get() { "agent-btn on" } else { "agent-btn" }
+                    title=move || i18n.t("appbar.agent_panel")
+                    on:click=move |_| panel_open.0.update(|n| *n = !*n)>
                     "AI"
                 </button>
                 // 语言切换：地球图标 + 当前 locale 短码，hover 弹六选项。

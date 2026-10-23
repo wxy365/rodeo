@@ -25,8 +25,8 @@ use crate::frontend::graphql_client::{
 };
 use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::icons::{
-    ic_back, ic_close, ic_comment, ic_copy, ic_folder, ic_full, ic_help, ic_save, ic_search,
-    ic_setting, ic_share, ic_tag, ic_undo,
+    ic_ai, ic_back, ic_check, ic_close, ic_comment, ic_copy, ic_folder, ic_full, ic_help, ic_save,
+    ic_search, ic_setting, ic_share, ic_tag, ic_undo,
 };
 use crate::frontend::label_editor::LabelEditor;
 use crate::frontend::query_eval;
@@ -848,6 +848,34 @@ pub fn WorkspaceMain() -> impl IntoView {
         });
     };
 
+    // AI 模式开关：现在就在表达式框内（顶栏那个入口已搬走），进出两种模式时
+    // 都要收掉候选浮层 / 时间控件 / 上一次的错误——它们的语义只在表达式语法下
+    // 成立，叠在自然语言模式上只会误导。退出时顺手丢掉上一次的生成结果，
+    // 免得重新进来还挂着一行已经被采纳过的旧表达式。
+    let toggle_ai_query = move || {
+        let next = !ai_query_mode.get_untracked();
+        batch(move || {
+            ai_query_mode.set(next);
+            hint_open.set(false);
+            time_pick.set(None);
+            error.set(None);
+            if !next {
+                ai_query_expr.set(None);
+            }
+        });
+    };
+    // 「采用这个表达式」：AI 已经在生成时就把它写进 expr_text 了（那边不写的话
+    // 「保存视图」存下来的会是上一条表达式），所以这里要做的只是退出 AI 模式，
+    // 让输入框把表达式亮出来给用户接着改。再顺手把候选浮层与时间控件收掉——
+    // 输入框里的内容刚换成人读的表达式，它们不该留着。
+    let apply_ai_expr = move || {
+        ai_query_mode.set(false);
+        ai_query_expr.set(None);
+        hint_open.set(false);
+        time_pick.set(None);
+        error.set(None);
+    };
+
     // 数据第一次到位（None → Some(Ok(..))）+ 已排队表达式 → 自动重放。
     // 没有这个 Effect 的话，pending_expr 就只能等用户下一次按 Enter 触发。
     Effect::new(move |_| {
@@ -1634,23 +1662,6 @@ pub fn WorkspaceMain() -> impl IntoView {
             }));
         on_cleanup(move || slot.current.set(None));
     }
-    // 顶栏 AI 按钮 → 表达式输入框的 AI 模式。同样通过 App 层槽与 AppBar 共享；
-    // 离开工作空间页时清槽，AppBar 自动退回 Agent 面板开关。
-    if let Some(slot) = crate::frontend::use_context::<crate::frontend::WorkspaceAiQuerySlot>() {
-        let on_toggle = Callback::new(move |_| {
-            ai_query_mode.update(|b| *b = !*b);
-            // 两种模式的候选浮层 / 时间控件语义不同，切换时一并收起。
-            hint_open.set(false);
-            time_pick.set(None);
-            error.set(None);
-        });
-        slot.current
-            .set(Some(crate::frontend::WorkspaceAiQueryToggle {
-                on_toggle,
-                is_ai_mode: ai_query_mode,
-            }));
-        on_cleanup(move || slot.current.set(None));
-    }
 
     view! {
         <div class="page page-app">
@@ -1689,11 +1700,21 @@ pub fn WorkspaceMain() -> impl IntoView {
                         <div class="querybar">
                             <div class=move || if ai_query_mode.get() { "q-expr ai" } else { "q-expr" }>
                             <div class="q-expr-tools">
-                                // 只留帮助按钮：它讲的确实是表达式语法，留在表达式框里名正言顺。
-                                // 重置按钮挪到了筛选栏最右侧（见 `.filter-actions`）——
-                                // 它重置的是整个筛选态，不属于任何一个输入框。
+                                // 框内工具列：帮助讲的是表达式语法，AI 讲的是这个框
+                                // 自己的输入方式（自然语言 ⇄ 标签表达式）——两件事都
+                                // 只跟这个输入框有关，所以按钮住框里而不是顶栏。
+                                // 重置按钮不在这里：它重置的是整个筛选态，
+                                // 已经挪到筛选栏最右侧（见 `.filter-actions`）。
                                 <button class="exprhelp" title=i18n.t("entry.expr_help")
                                     on:click=move |_| expr_help.set(true)>{ic_help()}</button>
+                                <button class=move || if ai_query_mode.get() { "exprai on" } else { "exprai" }
+                                    title=move || if ai_query_mode.get() {
+                                        i18n.t("entry.ai_query_exit")
+                                    } else {
+                                        i18n.t("entry.ai_query")
+                                    }
+                                    on:click=move |_| toggle_ai_query()
+                                >{ic_ai()}</button>
                             </div>
                             <input class=move || if ai_query_mode.get() { "inp ai-query" } else { "inp" }
                                 style="flex:1;min-width:0"
@@ -1757,7 +1778,8 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 }
                                 on:blur=move |_| hint_open.set(false) />
                             // AI 模式的小字提示：解析中 / 最近一次生成的标签表达式。
-                            // 表达式在下方常驻展示，用户保存视图前能确认到底执行了什么。
+                            // 表达式在下方常驻展示，用户保存视图前能确认到底执行了什么；
+                            // 行尾那枚对勾把结果一键写回输入框并退出 AI 模式。
                             {move || {
                                 if !ai_query_mode.get() {
                                     return ().into_any();
@@ -1774,8 +1796,11 @@ pub fn WorkspaceMain() -> impl IntoView {
                                         let title = expr.clone();
                                         view! {
                                             <div class="q-expr-ai-result" title=title>
-                                                <span class="q-expr-ai-label">{i18n.t("entry.ai_query_result_label")}</span>
                                                 <code>{expr}</code>
+                                                <button class="expruse"
+                                                    title=i18n.t("entry.ai_query_apply")
+                                                    on:click=move |_| apply_ai_expr()
+                                                    >{ic_check()}</button>
                                             </div>
                                         }.into_any()
                                     }

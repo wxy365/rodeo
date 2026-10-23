@@ -113,27 +113,3 @@ pub fn provide_workspace_timeline_slot() -> WorkspaceTimelineSlot {
     provide_context(slot);
     slot
 }
-
-/// 顶栏「AI」按钮驱动的「自然语言查询模式」。
-///
-/// 同样受兄弟节点上下文限制：AppBar 看不到 WorkspaceMain 里的表达式输入框
-/// 信号，只通过这个槽拿到「切到 AI 模式」回调与当前模式态。槽为空说明当前
-/// 不在工作空间页——AppBar 退回原来的 Agent 面板开关行为。
-#[derive(Clone, Copy)]
-pub struct WorkspaceAiQueryToggle {
-    pub on_toggle: Callback<()>,
-    pub is_ai_mode: RwSignal<bool>,
-}
-
-#[derive(Clone, Copy)]
-pub struct WorkspaceAiQuerySlot {
-    pub current: RwSignal<Option<WorkspaceAiQueryToggle>>,
-}
-
-pub fn provide_workspace_ai_query_slot() -> WorkspaceAiQuerySlot {
-    let slot = WorkspaceAiQuerySlot {
-        current: RwSignal::new(None),
-    };
-    provide_context(slot);
-    slot
-}
