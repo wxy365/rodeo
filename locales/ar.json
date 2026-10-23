@@ -519,6 +519,7 @@
     "error.forbidden": "ممنوع",
     "error.graphql": "خطأ بروتوكول GraphQL",
     "error.network": "خطأ شبكة أو غير معروف",
+    "workspace_missing": "لم يتم العثور على مساحة العمل",
     "retrying_turn_prefix": "إعادة محاولة LLM للجولة ",
     "attach_need_session": "اختر جلسة قبل الإرفاق",
     "unnamed_file": "ملف بدون اسم"

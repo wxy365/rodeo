@@ -522,6 +522,7 @@
     "error.forbidden": "Forbidden",
     "error.graphql": "GraphQL protocol error",
     "error.network": "Network or unknown error",
+    "workspace_missing": "Workspace not found",
     "retrying_turn_prefix": "LLM retrying turn ",
     "attach_need_session": "Pick a session before attaching",
     "unnamed_file": "Unnamed file"

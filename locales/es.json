@@ -519,6 +519,7 @@
     "error.forbidden": "Sin permiso",
     "error.graphql": "Error de protocolo GraphQL",
     "error.network": "Error de red o desconocido",
+    "workspace_missing": "Espacio de trabajo no encontrado",
     "retrying_turn_prefix": "LLM reintentando turn ",
     "attach_need_session": "Elige una sesión antes de adjuntar",
     "unnamed_file": "Archivo sin nombre"

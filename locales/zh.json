@@ -522,6 +522,7 @@
     "error.forbidden": "无权限",
     "error.graphql": "GraphQL 协议错误",
     "error.network": "网络或未知错误",
+    "workspace_missing": "未找到工作空间",
     "retrying_turn_prefix": "LLM 内部重试 turn ",
     "attach_need_session": "请先选择会话再添加附件",
     "unnamed_file": "未命名文件"

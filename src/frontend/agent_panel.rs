@@ -133,6 +133,30 @@ pub fn use_agent_context() -> Option<AgentContext> {
     use_context::<AgentContext>()
 }
 
+/// `workspace_by_slug` 的三态。
+///
+/// 面板挂在 App 层（`<Routes>` 之外，不在任何 `<Route>` 子树里），拿不到路由
+/// 参数，只能自己从 `Location::pathname` 解析 slug——于是「解析出来的不是工作空
+/// 间」「工作空间不存在」「网络失败」全都收敛到同一个出口。失败必须显式落到
+/// `Failed`：混进「还没查完」的话 UI 会永远停在「加载中…」，用户既看不到原因，
+/// 也没有重试的入口。
+#[derive(Clone)]
+enum WorkspaceLookup {
+    Loading,
+    Ready(String),
+    /// i18n key，直接喂 `i18n.t()`。
+    Failed(&'static str),
+}
+
+impl WorkspaceLookup {
+    fn id(&self) -> Option<&str> {
+        match self {
+            Self::Ready(id) => Some(id.as_str()),
+            _ => None,
+        }
+    }
+}
+
 #[component]
 pub fn AgentPanel() -> impl IntoView {
     let i18n: I18nController = use_i18n();
@@ -153,30 +177,33 @@ pub fn AgentPanel() -> impl IntoView {
     // Effect + spawn_local 直接拉一次，与 SSR 路径上的 workspace_by_slug
     // 行为一致：native 端 graphql() 返回 Err → 这个 Effect 在 SSR 期间无
     // 网络也没副作用，到 hydrate 后浏览器真实运行时会拿到 workspace_id。
-    let workspace_id_resolved: RwSignal<Option<String>> = RwSignal::new(None);
+    let workspace_id_resolved: RwSignal<WorkspaceLookup> = RwSignal::new(WorkspaceLookup::Loading);
     {
         let location = location.clone();
         Effect::new(move |_| {
             let slug = first_path_segment(&location.pathname.get());
             if slug.is_empty() {
-                workspace_id_resolved.set(None);
+                workspace_id_resolved.set(WorkspaceLookup::Failed("agent.workspace_missing"));
                 return;
             }
+            // 换路由先回到 Loading：上一站的 Failed 不能留在屏幕上，新站的
+            // 查询还在飞。
+            workspace_id_resolved.set(WorkspaceLookup::Loading);
             spawn_local(async move {
                 let res = crate::frontend::graphql_client::workspace_by_slug(&slug).await;
                 let (next, log) = match res {
-                    Ok(Some(ws)) => (Some(ws.id), None),
+                    Ok(Some(ws)) => (WorkspaceLookup::Ready(ws.id), None),
                     Ok(None) => (
-                        None,
+                        WorkspaceLookup::Failed("agent.workspace_missing"),
                         Some(format!("workspace_by_slug slug={slug:?} → 不存在")),
                     ),
-                    Err(e) => (
-                        None,
-                        Some(format!(
-                            "workspace_by_slug slug={slug:?} → {}: {e}",
-                            classify_workspace_error(&e)
-                        )),
-                    ),
+                    Err(e) => {
+                        let key = classify_workspace_error(&e);
+                        (
+                            WorkspaceLookup::Failed(key),
+                            Some(format!("workspace_by_slug slug={slug:?} → {key}: {e}")),
+                        )
+                    }
                 };
                 if let Some(m) = log {
                     web_sys_console_warn(&m);
@@ -404,11 +431,13 @@ pub fn AgentPanel() -> impl IntoView {
     // None，消息发出去会被 on_send 早返回 + 仅 console.warn 静默丢掉。
     Effect::new(move |_| {
         let is_open = open.0.get();
-        let ws_id = workspace_id_resolved.get();
+        let lookup = workspace_id_resolved.get();
         if !is_open {
             return;
         }
-        let Some(ws_id) = ws_id else { return };
+        let WorkspaceLookup::Ready(ws_id) = lookup else {
+            return;
+        };
         spawn_local(async move {
             match list_agent_sessions(&ws_id).await {
                 Ok(list) => {
@@ -580,10 +609,12 @@ pub fn AgentPanel() -> impl IntoView {
         if content.trim().is_empty() {
             return;
         }
-        let Some(ws_id) = workspace_id_resolved.get_untracked() else {
+        let lookup = workspace_id_resolved.get_untracked();
+        let Some(ws_id) = lookup.id() else {
             web_sys_console_warn("workspace not ready");
             return;
         };
+        let ws_id = ws_id.to_string();
         if streaming.get_untracked() {
             return;
         }
@@ -610,7 +641,8 @@ pub fn AgentPanel() -> impl IntoView {
     };
 
     let on_new_session = move |_| {
-        let Some(ws_id) = workspace_id_resolved.get_untracked() else {
+        let lookup = workspace_id_resolved.get_untracked();
+        let Some(ws_id) = lookup.id().map(str::to_owned) else {
             return;
         };
         spawn_local(async move {
@@ -667,8 +699,12 @@ pub fn AgentPanel() -> impl IntoView {
                 </header>
                 <Suspense fallback=move || view! { <div class="agent-loading">{move || i18n.t("common.loading")}</div> }>
                     {move || match workspace_id_resolved.get() {
-                        None => view! { <div class="agent-loading">{move || i18n.t("common.loading")}</div> }.into_any(),
-                        Some(_) => view! {
+                        WorkspaceLookup::Loading => view! { <div class="agent-loading">{move || i18n.t("common.loading")}</div> }.into_any(),
+                        // 查不到 / 没权限 / 网络断了：说人话，而不是继续骗人「加载中」。
+                        WorkspaceLookup::Failed(key) => view! {
+                            <div class="agent-loading agent-load-failed">{move || i18n.t(key)}</div>
+                        }.into_any(),
+                        WorkspaceLookup::Ready(_) => view! {
                             <div class="agent-body">
                                 <aside class="agent-sessions">
                                     <For
@@ -1358,12 +1394,19 @@ fn next_char_boundary(s: &str, i: usize) -> usize {
 /// 从 `/foo/bar` 取首段 `foo`，从 `/login` 取 `login`，从 `/` 或 `""` 取 `""`。
 /// workspace_id 的获取逻辑只关心当前 URL 的工作空间 slug（单段路由
 /// `/:slug`），不需要完整路径解析。
+/// 取 pathname 的第一段当 workspace slug。
+///
+/// **必须做百分号解码**：`Location::pathname` 来自 `window.location.pathname`
+/// / `web_sys::Url::pathname()`，非 ASCII 是编码态的（`/业务中台` →
+/// `/%E4%B8%9A%E5%8A%A1%E4%B8%AD%E5%8F%B0`）。路由参数那条路不需要操心：
+/// `use_params_map` 的 `Params::insert` 内部调 `Url::unescape` 解过码，所以
+/// `workspace_main` 拿到的是明文 slug。这里若不解码，`workspace_by_slug` 拿
+/// 编码串去查必然返回 null——而面板只在 console 里 warn 一句，UI 永远停在
+/// 「加载中…」（非 ASCII slug 的工作空间必现）。
 fn first_path_segment(pathname: &str) -> String {
     let trimmed = pathname.trim_start_matches('/');
-    trimmed
-        .split('/')
-        .next()
-        .unwrap_or("")
+    let raw = trimmed.split('/').next().unwrap_or("");
+    leptos_router::location::Url::unescape(raw)
         .trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
         .to_string()
 }
@@ -1479,17 +1522,20 @@ fn web_sys_console_warn(_msg: &str) {}
 /// 匹配的是 `error.rs` 里 `AppError` 的 Display 字面量（"未授权" /
 /// "无权限执行此操作"），因为 async-graphql 7 的 blanket `From<T: Display>`
 /// 不走 `ErrorExtensions::extend`，extensions.code 实际拿不到——和
-/// `service/agent/exec.rs::classify_tool_error` 同款困境。这里只用来打
-/// 分类日志，不是路由决策，匹配不到就归「网络或未知」。
+/// `service/agent/exec.rs::classify_tool_error` 同款困境。这里不是路由决策，
+/// 匹配不到就归「网络或未知」。
+///
+/// 返回**i18n key** 而不是文案：这份分类现在要同时喂给 console 日志和面板上
+/// 真正显示的那行字，写死中文的话非中文 locale 会看到半句没翻译的话。
 fn classify_workspace_error(msg: &str) -> &'static str {
     if msg.contains("未授权") {
-        "未授权"
+        "agent.error.unauthorized"
     } else if msg.contains("无权限") {
-        "无权限"
+        "agent.error.forbidden"
     } else if msg == "GraphQL 错误" || msg.is_empty() {
-        "GraphQL 协议错误"
+        "agent.error.graphql"
     } else {
-        "网络或未知错误"
+        "agent.error.network"
     }
 }
 

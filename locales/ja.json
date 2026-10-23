@@ -519,6 +519,7 @@
     "error.forbidden": "権限なし",
     "error.graphql": "GraphQL プロトコルエラー",
     "error.network": "ネットワークまたは不明なエラー",
+    "workspace_missing": "ワークスペースが見つかりません",
     "retrying_turn_prefix": "LLM 内部リトライ turn ",
     "attach_need_session": "添付前にセッションを選択",
     "unnamed_file": "無題のファイル"

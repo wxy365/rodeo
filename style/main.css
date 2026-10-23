@@ -2731,6 +2731,11 @@ input[type="color"].sw:disabled {
     text-align: center;
     font-size: 13px;
 }
+/* 查不到工作空间 / 没权限 / 网络断了：跟「还在加载」长得一样会让人一直等，
+   所以换个颜色，扫一眼就知道这条不会再动了。 */
+.agent-load-failed {
+    color: var(--warn);
+}
 .agent-body {
     flex: 1 1 auto;
     min-height: 0;
