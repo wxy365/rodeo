@@ -9,7 +9,7 @@ use crate::frontend::graphql_client::{
 };
 use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::icons::{
-    ic_add, ic_check, ic_close, ic_comment, ic_copy, ic_folder, ic_history, ic_logo, ic_logout,
+    ic_add, ic_check, ic_close, ic_copy, ic_folder, ic_hat, ic_history, ic_logo, ic_logout,
     ic_profile, ic_setting, ic_timeline,
 };
 use crate::frontend::language_button::LanguageButton;
@@ -635,7 +635,7 @@ pub fn AvatarMenu() -> impl IntoView {
                     {ic_history()}{move || i18n.t("appbar.history")}
                 </button>
                 <button class="mi" on:click=move |_| agent_open.0.set(true)>
-                    {ic_comment()}{move || i18n.t("appbar.agent_panel")}
+                    {ic_hat()}{move || i18n.t("appbar.agent_panel")}
                 </button>
                 // 非管理员整项不渲染，而不是置灰：一个点不动的管理入口只会招来「为什么点不动」。
                 {move || {

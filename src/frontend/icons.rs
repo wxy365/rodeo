@@ -125,6 +125,24 @@ pub fn ic_comment() -> impl IntoView {
     }
 }
 
+/// 牛仔帽：Buckaroo 助手的形象标识。
+///
+/// 造型与 Agent 面板标题栏里的那只帽子（`agent_panel.rs` 的 `.agent-avatar`）
+/// 同一个轮廓——椭圆帽檐 + 圆顶帽冠 + 一道帽带——只是这里走描边而不是实心
+/// 填充，跟菜单里其它线性图标（`ic_link` 等）保持同一视觉重量。
+///
+/// 这几个图元都靠 `stroke` 成形，故每个都显式写 `fill="none"`：它比继承自
+/// `svg.ic` 的 `fill: currentColor` 优先，否则帽子内部会被填成实心块。
+pub fn ic_hat() -> impl IntoView {
+    view! {
+        <svg class="ic" viewBox="0 0 24 24">
+            <ellipse fill="none" stroke="currentColor" stroke-width="1.8" cx="12" cy="16.4" rx="9.6" ry="1.7"/>
+            <path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M6.75 14.9V9Q6.75 6 12 6Q17.25 6 17.25 9V14.9"/>
+            <path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M6.9 12.6H17.1"/>
+        </svg>
+    }
+}
+
 pub fn ic_folder() -> impl IntoView {
     view! {
         <svg class="ic" viewBox="0 0 24 24">
