@@ -491,9 +491,8 @@ pub fn AvatarMenu() -> impl IntoView {
     let unread = RwSignal::new(0i32);
     // 消息列表抽屉（本地开关，与 Agent 面板无关）。
     let panel_open = RwSignal::new(false);
-    // Agent 面板的全局开关：顶栏「AI」按钮在工作空间页被改成「AI 查询模式」，
-    // 这里保留一个头像菜单入口，面板本身不至于失去所有入口。
-    let agent_open = crate::frontend::agent_panel::use_agent_panel_open();
+    // Buckaroo 助手的入口只有顶栏那颗牛仔帽按钮（`.agent-btn`），头像菜单里
+    // 不再重复一项——同一个助手在两个地方各摆一个入口，用户会以为是两个功能。
 
     // 首次挂载拉一次未读数。
     if cfg!(target_arch = "wasm32") {
@@ -634,9 +633,6 @@ pub fn AvatarMenu() -> impl IntoView {
                 <button class="mi" on:click=move |_| panel_open.set(true)>
                     {ic_history()}{move || i18n.t("appbar.history")}
                 </button>
-                <button class="mi" on:click=move |_| agent_open.0.set(true)>
-                    {ic_hat()}{move || i18n.t("appbar.agent_panel")}
-                </button>
                 // 非管理员整项不渲染，而不是置灰：一个点不动的管理入口只会招来「为什么点不动」。
                 {move || {
                     let nav_admin = nav_admin.clone();
@@ -755,14 +751,14 @@ pub fn AppBar() -> impl IntoView {
                         </button>
                     }
                 })}
-                // 「AI」入口：打开 Agent 面板（Buckaroo 助手）。工作空间页
-                // 另有「自然语言查询」模式，但那个开关已经搬进表达式输入框
-                // 自己内部（见 `workspace_main.rs` 的 `.q-expr-tools`）——
-                // 它只对那个输入框有意义，顶栏不该替它代劳。
+                // Buckaroo 助手入口：顶栏这颗牛仔帽就是唯一的入口（头像菜单里
+                // 那份重复项已撤掉）。工作空间页另有「自然语言查询」模式，但那个
+                // 开关已经搬进表达式输入框自己内部（见 `workspace_main.rs` 的
+                // `.q-expr-tools`）——它只对那个输入框有意义，顶栏不该替它代劳。
                 <button class=move || if panel_open.0.get() { "agent-btn on" } else { "agent-btn" }
                     title=move || i18n.t("appbar.agent_panel")
                     on:click=move |_| panel_open.0.update(|n| *n = !*n)>
-                    "AI"
+                    {ic_hat()}
                 </button>
                 // 语言切换：地球图标 + 当前 locale 短码，hover 弹六选项。
                 <LanguageButton/>
