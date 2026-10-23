@@ -348,6 +348,7 @@
     "ai_query": "Consulta em linguagem natural",
     "ai_query_exit": "Sair da consulta com IA",
     "ai_query_apply": "Usar esta expressão e sair da consulta com IA",
+    "ai_query_dblclick": "Clique duplo para preencher na caixa de expressão",
     "title_color_match_hint": "Corresponder em ordem; o primeiro acerto pinta o título. Condições combinam rótulos com AND / OR / NOT. Linhas vazias são ignoradas ao salvar.",
     "tab_detail": "Detalhes",
     "side_relations": "Relações",

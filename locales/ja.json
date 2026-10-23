@@ -348,6 +348,7 @@
     "ai_query": "自然言語で検索",
     "ai_query_exit": "AI 検索を終了",
     "ai_query_apply": "この式をセットして AI 検索を終了",
+    "ai_query_dblclick": "ダブルクリックで式ボックスにセット",
     "title_color_match_hint": "順に評価し、最初に一致したものがタイトルを色付けします。条件は AND / OR / NOT でラベルを結合できます。空の行は保存時に無視されます。",
     "tab_detail": "詳細",
     "side_relations": "関連",

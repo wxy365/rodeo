@@ -2573,6 +2573,14 @@ input[type="color"].sw:disabled {
     overflow: hidden;
     text-overflow: ellipsis;
 }
+/* 双击回填：结果行里那段表达式文本整个都是热区——比行尾那枚 12px 的 ✓ 按钮
+   好瞄得多。指针 + hover 下划线提示它可以双击。 */
+.querybar .q-expr .q-expr-ai-result code.exprpick {
+    cursor: pointer;
+}
+.querybar .q-expr .q-expr-ai-result code.exprpick:hover {
+    text-decoration: underline;
+}
 
 /* 顶栏「新建 Entry」按钮：放在 .appbar-right 里，hover 弹 split 面板。 */
 .newentry-wrap {

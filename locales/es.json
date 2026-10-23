@@ -348,6 +348,7 @@
     "ai_query": "Consulta en lenguaje natural",
     "ai_query_exit": "Salir de la consulta con IA",
     "ai_query_apply": "Usar esta expresión y salir de la consulta con IA",
+    "ai_query_dblclick": "Doble clic para rellenarlo en el cuadro de expresión",
     "title_color_match_hint": "Coincidir en orden; la primera coincidencia pinta el título. Las condiciones combinan etiquetas con AND / OR / NOT. Las filas vacías se ignoran al guardar.",
     "tab_detail": "详情",
     "side_relations": "Relaciones",

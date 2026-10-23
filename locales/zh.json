@@ -351,6 +351,7 @@
     "ai_query": "用自然语言查询",
     "ai_query_exit": "退出 AI 查询",
     "ai_query_apply": "填入表达式并退出 AI 模式",
+    "ai_query_dblclick": "双击填入标签表达式输入框",
     "title_color_match_hint": "按顺序匹配，首个命中即上色；条件支持 AND / OR / NOT 组合标签。留空的行保存时忽略。",
     "tab_detail": "详情",
     "side_relations": "关联",

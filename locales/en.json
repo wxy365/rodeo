@@ -351,6 +351,7 @@
     "ai_query": "Natural-language query",
     "ai_query_exit": "Exit AI query",
     "ai_query_apply": "Use this expression and exit AI query",
+    "ai_query_dblclick": "Double-click to fill it into the expression box",
     "title_color_match_hint": "Match in order; first hit paints the title. Conditions combine labels with AND / OR / NOT. Empty rows are ignored when saving.",
     "tab_detail": "Detail",
     "side_relations": "Relations",

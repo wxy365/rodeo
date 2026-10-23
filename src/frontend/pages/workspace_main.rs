@@ -864,11 +864,17 @@ pub fn WorkspaceMain() -> impl IntoView {
             }
         });
     };
-    // 「采用这个表达式」：AI 已经在生成时就把它写进 expr_text 了（那边不写的话
-    // 「保存视图」存下来的会是上一条表达式），所以这里要做的只是退出 AI 模式，
-    // 让输入框把表达式亮出来给用户接着改。再顺手把候选浮层与时间控件收掉——
-    // 输入框里的内容刚换成人读的表达式，它们不该留着。
-    let apply_ai_expr = move || {
+    // 「采用这个表达式」：把 AI 生成的表达式写回标签表达式输入框，并退出 AI 模式。
+    // AI 在生成时就已经把表达式写进 expr_text、并落到 query_ast 上（见
+    // apply_ai_query），所以这里要做的只是退出 AI 模式，让输入框把表达式亮出来
+    // 给用户接着改。再顺手把候选浮层与时间控件收掉——输入框里的内容刚换成人读
+    // 的表达式，它们不该留着。
+    //
+    // 两种触发方式共用这一条路：结果行行尾那枚 ✓ 按钮，以及直接双击结果行里
+    // 那段表达式文本（热区大得多，用户不必瞄准 12px 的小图标就能把表达式取回
+    // 输入框）。
+    let use_ai_expr = move |expr: String| {
+        expr_text.set(expr);
         ai_query_mode.set(false);
         ai_query_expr.set(None);
         hint_open.set(false);
@@ -1794,12 +1800,26 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 match ai_query_expr.get() {
                                     Some(expr) => {
                                         let title = expr.clone();
+                                        let expr_dbl = expr.clone();
+                                        let expr_btn = expr.clone();
+                                        // 表达式本身可能很长（行内省略号截断），所以 tooltip
+                                        // 里先给全文，再给「双击能干什么」。
+                                        let pick_title =
+                                            format!("{}\n{}", expr, i18n.t("entry.ai_query_dblclick"));
                                         view! {
                                             <div class="q-expr-ai-result" title=title>
-                                                <code>{expr}</code>
+                                                <code class="exprpick"
+                                                    title=pick_title
+                                                    on:dblclick=move |ev: leptos::ev::MouseEvent| {
+                                                        // 双击的默认行为是选中一个词；这里双击的意思是
+                                                        // 「把整段表达式取回输入框」，别让它顺手选词。
+                                                        ev.prevent_default();
+                                                        use_ai_expr(expr_dbl.clone());
+                                                    }
+                                                >{expr}</code>
                                                 <button class="expruse"
                                                     title=i18n.t("entry.ai_query_apply")
-                                                    on:click=move |_| apply_ai_expr()
+                                                    on:click=move |_| use_ai_expr(expr_btn.clone())
                                                     >{ic_check()}</button>
                                             </div>
                                         }.into_any()
