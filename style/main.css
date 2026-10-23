@@ -11,6 +11,10 @@
     --warn: #b35900;
     --dgr: #cf222e;
     --blue: #0969da;
+    /* 列表选中行的底色。亮色下 6% 蓝几乎看不出，提到 18%（约 #d3e4f8）才
+       能和其他行的白底一眼分开；hover 再深一档。 */
+    --sel-row: color-mix(in srgb, var(--blue) 18%, var(--bg));
+    --sel-row-hover: color-mix(in srgb, var(--blue) 26%, var(--bg));
     --r-s: 6px;
     --r-m: 10px;
     --r-l: 12px;
@@ -53,6 +57,10 @@
            取 RGB 中点 #9fcaf9 让所有默认态图标与文字用同一档；
            hover/active/expanded 才回到饱和的 --blue。*/
         --toolbar-icon: #9fcaf9;
+        /* 选中行底色：深底上同样的百分比看不出色差（蓝叠在近黑上几乎没饱和度），
+           所以暗色用比亮色更高的比例（26% / hover 34%）。 */
+        --sel-row: color-mix(in srgb, var(--blue) 26%, var(--bg));
+        --sel-row-hover: color-mix(in srgb, var(--blue) 34%, var(--bg));
     }
 }
 
@@ -81,6 +89,9 @@
     --fg: var(--ink);
     --fe-editor-bg-color: var(--bg3);
     --toolbar-icon: #9fcaf9;
+    /* 与上面 @media 块里的同名变量保持一致（见那里的说明）。 */
+    --sel-row: color-mix(in srgb, var(--blue) 26%, var(--bg));
+    --sel-row-hover: color-mix(in srgb, var(--blue) 34%, var(--bg));
 }
 
 /* fluent-editor 把工具栏整条写死成亮色：背景 `#fff`、SVG 描边/填充
@@ -579,8 +590,20 @@ select:focus {
 .tbl tbody tr:hover {
     background: var(--bg2);
 }
+/* 选中行（点行高亮的那一行）：原来只有 6% 主色蓝打底，在白底上几乎看不出来。
+   现在背景改成主题感知的 `--sel-row`（亮色 18% / 暗色 26% 蓝），再在首列左侧
+   加一道 3px 主色竖条——竖条是「选中」的强信号，背景色弱时也认得出。
+   hover 时再深一档（`--sel-row-hover`），与普通行的 hover 灰底区分开。 */
 .tbl tbody tr.sel {
-    background: color-mix(in srgb, var(--blue) 6%, transparent);
+    background: var(--sel-row);
+}
+.tbl tbody tr.sel:hover {
+    background: var(--sel-row-hover);
+}
+/* 竖条画在第一格（勾选/行号列）内侧：用 inset box-shadow 而不是 border，
+   不占布局宽度，也不会被 `border-collapse: collapse` 的合并边框吃掉。 */
+.tbl tbody tr.sel > td:first-child {
+    box-shadow: inset 3px 0 0 var(--blue);
 }
 .tbl tbody tr.static {
     cursor: default;
@@ -904,13 +927,31 @@ select:focus {
 }
 /* 筛选栏右侧的操作区：重置 + 保存视图 / 另存为。
    贴着右边缘（margin-left:auto），与输入框区分开。两个图标按钮纵向排列，
-   横排时两个 22px 的方块在窄栏里互相挤、也把这一列撑得比输入框高。 */
+   整列的高度贴着筛选栏这一行（= 输入框高度）：容器 align-self:stretch 跟着
+   父行走，两个按钮 flex:1 各占一半——`.ibtn` 那个固定 28px 的高放不下两个，
+   会把这一列顶得比输入框高一截。 */
 .filter-actions {
     display: flex;
     flex-direction: column;
     align-items: center;
-    gap: 4px;
+    justify-content: center;
+    align-self: stretch;
+    gap: 1px;
     margin-left: auto;
+}
+/* 单个按钮：高度改由上面的均分给出（覆盖 `.ibtn` 的固定 28px），
+   尺寸对齐框内工具按钮那一档（`.exprhelp` 22×17）。只显示一个时它占满整列
+   高度，仍与输入框齐平。 */
+.filter-actions .ibtn {
+    flex: 1 1 0;
+    min-height: 0;
+    width: 22px;
+    height: auto;
+}
+/* 16px 的图标塞进 ~16px 的按钮会顶到边，按帮助按钮那样收到 14px 留点余量。 */
+.filter-actions .ibtn .ic {
+    width: 14px;
+    height: 14px;
 }
 /* 表达式输入框容器：为 `/` 标签候选下拉提供定位基准。 */
 .exprwrap {
@@ -918,11 +959,13 @@ select:focus {
     flex: 1;
     min-width: 260px;
 }
-/* 表达式输入框左侧的工具列：只有帮助按钮（点开语法说明）。
+/* 表达式输入框左侧的工具列：帮助（语法说明）+ AI（自然语言查询）两枚图标按钮。
+   22×17 叠两枚加 1px 间隙 = 35px，正好贴住输入框那一行的高度，筛选栏不会被撑高。
    与原先把 exprhelp 绝对定位到右上角相比，左侧竖排更符合「输入框自带工具」的直觉。 */
-.exprhelp {
+.exprhelp,
+.exprai {
     width: 22px;
-    height: 20px;
+    height: 17px;
     padding: 0;
     display: inline-flex;
     align-items: center;
@@ -933,13 +976,45 @@ select:focus {
     color: var(--ink3);
     cursor: pointer;
 }
-.exprhelp:hover {
+.exprhelp:hover,
+.exprai:hover {
     color: var(--ink);
     background: var(--bg2);
 }
-.exprhelp .ic {
-    width: 14px;
-    height: 14px;
+.exprhelp .ic,
+.exprai .ic {
+    width: 13px;
+    height: 13px;
+}
+/* AI 开着：点亮与 `.q-expr.ai` 那圈光晕同一个 `--pos`，用户一眼能看出
+   「输入框现在吃的是自然语言」。 */
+.exprai.on {
+    color: var(--pos);
+    background: color-mix(in srgb, var(--pos) 16%, transparent);
+}
+/* 「采用这个表达式」：把 AI 生成的结果一键写回输入框并退出 AI 模式。
+   常驻在结果行行尾，所以只给 hover 反馈，不做常态强调。 */
+.expruse {
+    flex: 0 0 auto;
+    width: 18px;
+    height: 16px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: none;
+    border-radius: var(--r-s);
+    background: none;
+    color: var(--ink3);
+    cursor: pointer;
+}
+.expruse:hover {
+    color: var(--pos);
+    background: color-mix(in srgb, var(--pos) 14%, transparent);
+}
+.expruse .ic {
+    width: 12px;
+    height: 12px;
 }
 /* 重置按钮：放在筛选栏最右侧、与「保存视图」并排。
    它把整个筛选态（表达式 + 全文搜索）还原成视图保存时的基线，
@@ -2420,7 +2495,7 @@ input[type="color"].sw:disabled {
     outline-offset: -1px;
     border-color: var(--blue);
 }
-/* 工具列：help 按钮，垂直居中在输入框最左侧。 */
+/* 工具列：help + AI 两枚按钮，垂直居中在输入框最左侧。 */
 .querybar .q-expr .q-expr-tools {
     flex: 0 0 auto;
     display: flex;
@@ -2480,21 +2555,23 @@ input[type="color"].sw:disabled {
 .querybar .q-expr .q-expr-ai-result {
     flex: 0 0 100%;
     min-width: 0;
-    padding: 0 4px 3px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 0 2px 4px;
     font-size: 11px;
     line-height: 1.5;
     color: var(--ink2);
+}
+/* 表达式可能很长，超出时省略号截断；行尾那枚「采用」按钮永远留得住。 */
+.querybar .q-expr .q-expr-ai-result code {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 11px;
+    color: var(--pos);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-}
-.querybar .q-expr .q-expr-ai-result code {
-    font-size: 11px;
-    color: var(--pos);
-}
-.querybar .q-expr .q-expr-ai-label {
-    margin-right: 6px;
-    color: var(--ink3);
 }
 
 /* 顶栏「新建 Entry」按钮：放在 .appbar-right 里，hover 弹 split 面板。 */
