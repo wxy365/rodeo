@@ -4678,11 +4678,17 @@ fn LabelDraft(rows: RwSignal<Vec<DraftLabel>>, members: RwSignal<Vec<Member>>) -
                             // `sel` 是 RwSignal<Vec<String>>，AccountPicker 按 Signal
                             // 读：内部 pick 闭包每次 get_untracked 拿最新值，多选不会
                             // 把之前的勾选「覆盖」掉；chip 渲染随 sel 变化刷新。
+                            //
+                            // `multi` 必须显式传：AccountPicker 默认单选（multi=false），
+                            // 单选模式下 pick 会把已选集合整个替换成新值——草稿态里
+                            // 表现为「只能选一个」。少了这个 prop，账号多选标签在新建
+                            // Entry 表单里退化成单选（编辑既有标签的 LabelRow 一直
+                            // 传着 multi，故只有草稿表单受影响）。
                             view! {
                                 <div class="lblrow">
                                     <span class="k">{ic_tag()}{title}</span>
                                     <AccountPicker members=members.get() selected=sel
-                                        on_change=picked />
+                                        multi=true on_change=picked />
                                 </div>
                             }.into_any()
                         } else if r.value_type == "account" {
