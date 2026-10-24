@@ -512,6 +512,7 @@
     "thinking": "Razonamiento",
     "thinking_in_progress": "Buckaroo está pensando…",
     "retrying": "LLM está reintentando la vuelta {turn}",
+    "turn_failed": "Este turno terminó con un error: {message}",
     "placeholder": "Pregúntale a Buckaroo…",
     "send": "Enviar",
     "newline": "Nueva línea",

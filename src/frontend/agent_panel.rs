@@ -242,6 +242,11 @@ pub fn AgentPanel() -> impl IntoView {
     // 清空；中途又来新 retry 事件,Effect 重新计时——避免前一轮 timer 误关。
     // SSR / native 编译下不会有事件来源,信号始终 None。
     let retry_signal: RwSignal<Option<usize>> = RwSignal::new(None);
+    // 本轮 turn 的失败原因（服务端 AgentEvent::Error 的原文）。挂在消息区顶部
+    // 当错误横幅——之前 error 事件只用来清 tool_call 卡片，错误本身被前端
+    // 吞掉：用户看到的是「模型想了半天，什么也没回答」，既不知道是回合数
+    // 耗尽还是网络断了。新一轮发送 / 切会话时清空。
+    let error_signal: RwSignal<Option<String>> = RwSignal::new(None);
     // 用户是否「贴底」：scroll 事件每次把它更新成 (scroll_height - top - client) < 32px。
     // 初始 true —— 切会话 / 首次打开面板时直接滚到底，而不是停在历史某处。
     // 自动滚动 effect 只在 at_bottom 时推进 scroll_top，避免用户主动上滑读历史时跳回去。
@@ -475,6 +480,8 @@ pub fn AgentPanel() -> impl IntoView {
         // 切会话时同步清掉旧会话遗留的重试 banner——banner 描述的是上一会话
         // LLM 的 retry 行为,跨会话展示会让用户以为新会话也在重试。
         retry_signal.set(None);
+        // 同样清掉上一会话的错误横幅——错误属于某一轮对话，不跟着会话走。
+        error_signal.set(None);
     });
 
     // 参数显式标 `()`：原来 `move |_|` 是让 on:click 推断成 MouseEvent handler,
@@ -524,6 +531,8 @@ pub fn AgentPanel() -> impl IntoView {
             selected_entry_codes: c.selected_entry_codes.get_untracked(),
         });
         streaming.set(true);
+        // 新一轮开始：清掉上一轮的错误横幅——旧错误不该挂在新的回答上面。
+        error_signal.set(None);
         let sid_for_refresh = sid.clone();
         let attachment_ids_for_send = attachment_ids.clone();
         // 服务端 send_agent_message 在落 user 消息后会同步写一个 title（首条
@@ -564,6 +573,7 @@ pub fn AgentPanel() -> impl IntoView {
                         streaming,
                         streaming_tool_calls,
                         retry_signal,
+                        error_signal,
                         effects,
                     )
                     .await;
@@ -814,6 +824,24 @@ pub fn AgentPanel() -> impl IntoView {
                                                     let turn = retry_signal.get().unwrap_or(0);
                                                     i18n.tf("agent.retrying", &[("turn", &turn.to_string())])
                                                 }}
+                                            </div>
+                                        </Show>
+                                        // 本轮失败横幅：服务端 AgentEvent::Error 的原文。
+                                        // 不做成消息——消息列表在流结束后会被
+                                        // list_agent_messages 整体覆盖，横幅独立于
+                                        // 消息列表，不会被覆盖掉。
+                                        <Show
+                                            when=move || error_signal.get().is_some()
+                                            fallback=move || view! { <span></span> }
+                                        >
+                                            <div class="agent-error-banner" role="alert">
+                                                <span class="agent-error-icon" aria-hidden="true">{"!"}</span>
+                                                <span class="agent-error-text">
+                                                    {move || {
+                                                        let msg = error_signal.get().unwrap_or_default();
+                                                        i18n.tf("agent.turn_failed", &[("message", &msg)])
+                                                    }}
+                                                </span>
                                             </div>
                                         </Show>
                                         <For
@@ -1557,6 +1585,7 @@ async fn open_stream(
     streaming: RwSignal<bool>,
     streaming_tool_calls: RwSignal<Vec<ToolCallDisplay>>,
     retry_signal: RwSignal<Option<usize>>,
+    error_signal: RwSignal<Option<String>>,
     effects: AgentSideEffects,
 ) {
     use gloo_net::http::Request;
@@ -1648,6 +1677,7 @@ async fn open_stream(
                     &messages,
                     &streaming_tool_calls,
                     &retry_signal,
+                    &error_signal,
                     &effects,
                 );
             }
@@ -1683,6 +1713,7 @@ async fn open_stream(
     streaming: RwSignal<bool>,
     _streaming_tool_calls: RwSignal<Vec<ToolCallDisplay>>,
     _retry_signal: RwSignal<Option<usize>>,
+    _error_signal: RwSignal<Option<String>>,
     _effects: AgentSideEffects,
 ) {
     streaming.set(false);
@@ -1694,6 +1725,7 @@ fn handle_event(
     messages: &RwSignal<Vec<AgentMessage>>,
     streaming_tool_calls: &RwSignal<Vec<ToolCallDisplay>>,
     retry_signal: &RwSignal<Option<usize>>,
+    error_signal: &RwSignal<Option<String>>,
     effects: &AgentSideEffects,
 ) {
     let typ = parsed.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -1854,12 +1886,14 @@ fn handle_event(
             streaming_tool_calls.set(Vec::new());
         }
         "error" => {
-            // 两种来源都要收尾：
-            // 1. 服务端 `ModelTurnRetried`（runner.rs:284）推一条临时 banner
+            // 三种来源：
+            // 1. 服务端 `ModelTurnRetried`（runner.rs）推一条临时 banner
             //    消息——"LLM 内部重试 turn N"，前端解析 N 挂到 retry_signal
             //    显示 3 秒。流并未结束,故 streaming_tool_calls 不清。
-            // 2. 其它真正的 end-of-stream 错误（沿用旧行为）——同样清掉
-            //    streaming_tool_calls,避免乐观态和重拉到的 m.tool_calls 重复。
+            // 2. 真正的 end-of-stream 错误（网络断 / 回合数耗尽 / 模型报错）——
+            //    清 tool_call 卡片，并把错误原文挂到 error_signal 显示成横幅。
+            //    之前这一步只清卡片、错误被吞掉：用户只看到模型想了一堆，
+            //    什么也没回答，也不知道为什么。
             let message = parsed
                 .get("message")
                 .and_then(|v| v.as_str())
@@ -1871,6 +1905,9 @@ fn handle_event(
             } else {
                 // 非内部重试的 error：按原行为清 tool_call 卡片。
                 streaming_tool_calls.set(Vec::new());
+                if !message.is_empty() {
+                    error_signal.set(Some(message));
+                }
             }
         }
         _ => {}

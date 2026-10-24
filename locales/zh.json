@@ -515,6 +515,7 @@
     "thinking": "思考过程",
     "thinking_in_progress": "Buckaroo 正在思考…",
     "retrying": "LLM 正在重试第 {turn} 轮",
+    "turn_failed": "本轮回答中断：{message}",
     "placeholder": "向 Buckaroo 提问…",
     "send": "发送",
     "newline": "换行",

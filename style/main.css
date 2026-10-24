@@ -3409,6 +3409,38 @@ input[type="color"].sw:disabled {
     line-height: 1.4;
     align-self: stretch;
 }
+/* 本轮失败的横幅：错误横幅比 retry banner 更重（红底），因为它意味着这一轮
+   不会有最终答案了——用户必须知道为什么只看到思考过程。 */
+.agent-error-banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    background: #fdecec;
+    color: #8a1f1f;
+    border: 1px solid #f0b4b4;
+    border-radius: var(--r-s);
+    padding: 8px 12px;
+    font-size: 13px;
+    line-height: 1.4;
+    align-self: stretch;
+    word-break: break-word;
+}
+.agent-error-icon {
+    flex: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #d64545;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 16px;
+    text-align: center;
+    margin-top: 1px;
+}
+.agent-error-text {
+    min-width: 0;
+}
 /* 流式状态条：输入区下方的小行，spinner + 文案。靠 <Show> 挂卸，开 SSR 时不会渲染。 */
 .agent-streaming {
     display: flex;

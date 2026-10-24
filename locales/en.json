@@ -515,6 +515,7 @@
     "thinking": "Reasoning",
     "thinking_in_progress": "Buckaroo is thinking…",
     "retrying": "LLM is retrying turn {turn}",
+    "turn_failed": "This turn ended with an error: {message}",
     "placeholder": "Ask Buckaroo…",
     "send": "Send",
     "newline": "Newline",
