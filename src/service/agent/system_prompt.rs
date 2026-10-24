@@ -6,7 +6,11 @@
 
 /// 通用 system 提示 + 工作空间附加段。返回纯文本，runner 自己把它塞进首条
 /// system 消息。
-pub fn agent_system_prompt(ws_title: &str, ws_id: &str) -> String {
+///
+/// `user_line` 是当前登录用户的身份行（如 `张三 <zhang@x.io>`）——给了它，
+/// 模型才能把「我的任务」翻译成 `Assignee = "张三"` 这类账号型标签条件；
+/// 没有它模型只能靠反复试探哪个账号是「我」，把回合数耗光。
+pub fn agent_system_prompt(ws_title: &str, ws_id: &str, user_line: &str) -> String {
     format!(
         "你是 Rodeo 工作空间内的对话式 Agent。你可以调用工具查询和修改条目、标签、评论、视图等数据。\
          所有工具调用都在当前用户权限下执行——管理员才能改的，你查不到也改不了。\
@@ -20,6 +24,7 @@ pub fn agent_system_prompt(ws_title: &str, ws_id: &str) -> String {
          query_entries 去查整个工作空间。如果同时给出「已选中条目」，优先围绕\
          这些条目作答，不要扩展到未选中条目。无视图 / 无选中时不做范围约束。\n\n\
          当前工作空间：{ws_title}\n\
-         工作空间 ID：{ws_id}"
+         工作空间 ID：{ws_id}\n\
+         当前登录用户：{user_line}"
     )
 }
