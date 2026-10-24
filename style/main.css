@@ -18,8 +18,8 @@
     --r-s: 6px;
     --r-m: 10px;
     --r-l: 12px;
-    /* 详情面板（右栏）宽度：最小 480px（原固定值），随窗口变宽，最多 720px。
-       视图页右栏与 Entry 全屏页右栏共用同一条曲线，两处来回切时宽度不跳。 */
+    /* Entry 全屏页右栏（标签 / 附件 / 历史 / 元信息）宽度：最小 480px，
+       随窗口变宽，最多 720px。视图页的详情面板走黄金分割，见 `.view-body`。 */
     --detail-w: clamp(480px, 34vw, 720px);
     /* 面板与面板之间的间距。视图页（导航栏 ↔ 视图表格容器）与 Entry 全屏页
        （顶栏 ↔ 正文栏、正文栏 ↔ 右栏、编辑器 ↔ 评论）用同一个值，两边看起来
@@ -1139,9 +1139,10 @@ select:focus {
     flex: 1;
     min-height: 0;
     display: grid;
-    /* 右栏是 Entry 详情面板：宽度跟着窗口走（--detail-w：480px 起、最多 720px），
-       左边表格列吃掉剩下的。`.dmeta` 在 480px 下排两列，宽度变大后列数自适应。 */
-    grid-template-columns: minmax(0, 1fr) var(--detail-w);
+    /* 表格区 : Entry 详情面板 = 618 : 382（黄金分割）。详情列不小于 480px，
+       窗口不够宽时退化成「详情固定 480px、表格吃掉剩下的」（minmax 的下限
+       生效、表格列被压到 0），比例不会反过来把详情挤瘪。 */
+    grid-template-columns: minmax(0, 61.8%) minmax(480px, 38.2%);
     gap: 0;
     align-items: stretch;
     overflow: hidden;
@@ -1424,8 +1425,7 @@ select:focus {
 }
 .entry-layout {
     display: grid;
-    /* 右栏跟视图页详情面板共用 --detail-w：两栏全屏与视图右栏视觉上是同一块
-       东西，宽度曲线一致，来回切时不会跳。 */
+    /* 右栏宽度用 --detail-w（480px 起、最多 720px），随窗口变宽。 */
     grid-template-columns: minmax(0, 1fr) var(--detail-w);
     /* 面板间距跟视图页一致（导航栏 ↔ 视图表格容器就是 8px）。 */
     gap: var(--gap-panel);
