@@ -18,9 +18,11 @@
     --r-s: 6px;
     --r-m: 10px;
     --r-l: 12px;
-    /* Entry 全屏页右栏（标签 / 附件 / 历史 / 元信息）宽度：最小 480px，
-       随窗口变宽，最多 720px。视图页的详情面板走黄金分割，见 `.view-body`。 */
-    --detail-w: clamp(480px, 34vw, 720px);
+    /* Entry 全屏页右栏（标签 / 附件 / 历史 / 元信息）宽度：最小 420px，
+       随窗口变宽，最多 600px。宽度压在这里而不是更大，是为了让 `.dmeta`
+       的四行元信息（创建人 / 创建时间 / 更新人 / 更新时间）稳定排成两行两列
+       ——内容盒宽过 450px 就会挤出第三列，四项变成「3 + 1」。 */
+    --detail-w: clamp(420px, 28vw, 600px);
     /* 面板与面板之间的间距。视图页（导航栏 ↔ 视图表格容器）与 Entry 全屏页
        （顶栏 ↔ 正文栏、正文栏 ↔ 右栏、编辑器 ↔ 评论）用同一个值，两边看起来
        是同一套面板语言。 */
@@ -1377,12 +1379,12 @@ select:focus {
 }
 
 /* ===== 4 Entry 全屏 ===== */
-/* 全屏 Entry 页右边不留白：顶栏 / 正文 / 右栏三块一起顶到窗口右边缘，
-   跟视图页的「右侧不留白」同一套做法。`.page-wide` 还被设置页共用，
+/* 全屏 Entry 页左右都不留白：顶栏 / 正文 / 右栏三块一起顶到窗口两侧边缘，
+   跟视图页的「贴边」同一套做法。`.page-wide` 还被设置页共用，
    所以按「页里有 .entry-layout」来认这张页（`:has()` 在 Chrome 105+ /
    Safari 15.4+ / Firefox 121+ 都可用），不必动 Rust 侧的 class。 */
 .page-wide:has(.entry-layout) {
-    padding-right: 0;
+    padding: 16px 0;
 }
 .entry-top {
     display: flex;
@@ -1439,7 +1441,8 @@ select:focus {
     min-width: 0;
 }
 .entry-comments {
-    padding: 16px;
+    /* 左右页边距减半（16px → 8px），跟右侧元数据面板一致。 */
+    padding: 16px 8px;
 }
 /* 详情页左栏直接就是编辑器，没有 `.editor` 包裹层，`.detail .editor` 的
    保底高度够不着它；短正文时编辑器会只有一行高（实测 86px）。
@@ -1454,10 +1457,12 @@ select:focus {
     flex: 1 1 auto;
 }
 .entry-side {
-    padding: 16px;
+    /* 左右页边距减半（16px → 8px），跟左侧评论面板一致。 */
+    padding: 16px 8px;
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    /* 面板内部的间距跟页面上的面板间距统一（--gap-panel）。 */
+    gap: var(--gap-panel);
     position: sticky;
     top: 16px;
 }
