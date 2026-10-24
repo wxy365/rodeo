@@ -94,6 +94,39 @@
     --sel-row-hover: color-mix(in srgb, var(--pos) 36%, var(--bg));
 }
 
+/* ===== 滚动条 ===== */
+/* 默认滚动条 15px 宽，视图页表格区、Entry 详情面板各被吃掉一条宽度。
+   统一压到 5px（当前宽度的 1/3）：
+   - 经典滚动条（占位）的浏览器里，这 10px 直接还给内容；
+   - 覆盖式（overlay）滚动条的浏览器里它本来就不占位，滚动条只是从 15px
+     画细到 5px，盖住的内容更少。
+   两种浏览器下 `::-webkit-scrollbar` 的 width 都是 5px（实测 computed 值）。 */
+::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+}
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+::-webkit-scrollbar-thumb {
+    background: var(--ink4);
+    border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: var(--ink3);
+}
+::-webkit-scrollbar-corner {
+    background: transparent;
+}
+/* Firefox 不认 ::-webkit-scrollbar 伪元素（且规范上 scrollbar-width 非 auto
+   时伪元素会被忽略），只能走标准属性；它没有任意宽度档位，thin 是最接近的。 */
+@supports not selector(::-webkit-scrollbar) {
+    * {
+        scrollbar-width: thin;
+        scrollbar-color: var(--ink4) transparent;
+    }
+}
+
 /* fluent-editor 把工具栏整条写死成亮色：背景 `#fff`、SVG 描边/填充
    `#444`、按钮 hover/active 背景 `#f0f0f0`、`.ql-toolbar` 边框 `#adb0b8`、
    hover/active 文字 `#06c`。在深底上要么看不清（白底 + 近白描边），
