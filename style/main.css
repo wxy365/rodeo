@@ -1153,7 +1153,9 @@ select:focus {
 .detail {
     border-left: 1px solid var(--line);
     border-radius: 0 var(--r-l) var(--r-l) 0;
-    padding: 16px;
+    /* 左右留空减半（16px → 8px）：面板本身已经跟着窗口变宽了，内边距再松一点，
+       里面的编辑器 / 标签行能多拿到 16px。上下保持 16px，标题与按钮不挤。 */
+    padding: 16px 8px;
     display: flex;
     flex-direction: column;
     gap: 12px;
