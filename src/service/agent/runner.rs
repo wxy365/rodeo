@@ -176,7 +176,16 @@ pub async fn run_turn(services: Arc<Services>, auth: AuthContext, session_id: Ul
         .flatten()
         .map(|w| w.name)
         .unwrap_or_else(|| workspace_id.to_string());
-    let preamble = agent_system_prompt(&ws_title, &workspace_id.to_string());
+    // 当前用户身份：账号型标签（Assignee 等）按「名字或邮箱」比较，模型得知道
+    // 「我」是谁才能把「我的任务」写成表达式条件。查不到就退化成 account_id。
+    let user_line = services
+        .auth
+        .find_by_id(auth.account_id)
+        .ok()
+        .flatten()
+        .map(|a| format!("{} <{}>", a.name, a.email))
+        .unwrap_or_else(|| auth.account_id.to_string());
+    let preamble = agent_system_prompt(&ws_title, &workspace_id.to_string(), &user_line);
     let completion_model = rig.completion_model();
 
     // 当前 user 输入：ctx_md 存在就用它，否则拿 history 最后一条；都没有就空 user。
@@ -290,23 +299,40 @@ pub async fn run_turn(services: Arc<Services>, auth: AuthContext, session_id: Ul
                 tool_result,
                 ..
             })) => {
-                let preview = tool_result
-                    .content
-                    .iter()
-                    .map(|trc| match trc {
-                        ToolResultContent::Text(t) => t.text.clone(),
-                        _ => String::new(),
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                // rig 0.42 的 ToolResult 没有 is_err 字段——到达这里说明工具执行
-                // 没失败（失败的执行不产 ToolResult，见 rig-agent MultiTurnStreamItem
-                // 注释）。前端 ok=true 用 ToolErrorKind::Ok 表达即可。
+                // rig 0.42 的 wire 级 ToolResult 没有 is_err / disposition 字段——
+                // 失败与否只能从 content 形状推断：
+                //   - 成功：工具返回结构化输出 → `ToolResultContent::Json`
+                //   - 失败：rig 把错误信息塞成文本 → `ToolResultContent::Text`
+                // （框架级参数错也是文本，见 rig-agent `failed to parse tool arguments`）
+                //
+                // 之前的实现一律报 ok=true，且只取 Text —— 于是「工具失败」在面板上
+                // 是一张绿勾卡、预览还是空的；模型却看得见错误文本，于是一个劲重试，
+                // 把回合数耗光 → 没有最终答案。
+                let mut preview_parts: Vec<String> = Vec::new();
+                let mut failed = false;
+                for trc in &tool_result.content {
+                    match trc {
+                        ToolResultContent::Text(t) => {
+                            failed = true;
+                            preview_parts.push(t.text.clone());
+                        }
+                        ToolResultContent::Json { value } => {
+                            preview_parts.push(value.to_string());
+                        }
+                        ToolResultContent::Image(_) => {}
+                    }
+                }
+                let preview = preview_parts.join("\n");
+                let (ok, kind) = if failed {
+                    (false, classify_tool_error(&preview))
+                } else {
+                    (true, ToolErrorKind::Ok)
+                };
                 let _ = tx.send(AgentEvent::ToolResult {
                     turn_id,
                     name: tool_result.name.clone(),
-                    ok: true,
-                    kind: ToolErrorKind::Ok,
+                    ok,
+                    kind,
                     preview,
                 });
             }
@@ -321,34 +347,30 @@ pub async fn run_turn(services: Arc<Services>, auth: AuthContext, session_id: Ul
                 });
             }
             Ok(MultiTurnStreamItem::FinalResponse(_resp)) => {
+                // ThinkParser 尾部还压着几个字符（防跨 chunk 切开 `<think>` 的残段，
+                // 最多 THINK_LEN-1 个）。之前只在「没收到 FinalResponse」的兜底路径
+                // flush，成功路径没刷——答案最后几个字被吞掉，用户看到的是一句
+                // 断在半截的话（例如「…或者把「1」指」）。这里补刷并推给前端。
+                for piece in think_parser.flush() {
+                    if let ThinkPiece::Text(s) = piece {
+                        accumulated_text.push_str(&s);
+                        let _ = tx.send(AgentEvent::Delta {
+                            turn_id,
+                            content: s,
+                        });
+                    }
+                }
                 // 落库 assistant 消息：Rig Message::Assistant 的 content 是
                 // Vec<AssistantContent>，文本先放，再追加全部 tool_call。
-                let mut content = Vec::new();
-                if !accumulated_text.is_empty() {
-                    content.push(AssistantContent::text(accumulated_text.clone()));
-                }
-                content.extend(
-                    assistant_tool_calls
-                        .iter()
-                        .cloned()
-                        .map(AssistantContent::ToolCall),
-                );
-                if content.is_empty() {
-                    content.push(AssistantContent::text(String::new()));
-                }
-                let assistant_msg = AgentMessage::Assistant { id: None, content };
-                let record = AgentMessageRecord {
-                    id: assistant_id,
+                persist_assistant(
+                    &services,
+                    &tx,
+                    turn_id,
+                    assistant_id,
                     session_id,
-                    message: assistant_msg,
-                    created_at: chrono::Utc::now(),
-                };
-                if let Err(e) = services.agent.append_record(record) {
-                    let _ = tx.send(AgentEvent::Error {
-                        turn_id,
-                        message: format!("assistant 落库失败: {e}"),
-                    });
-                }
+                    &accumulated_text,
+                    &assistant_tool_calls,
+                );
                 let _ = tx.send(AgentEvent::Done {
                     turn_id,
                     message_id: assistant_id,
@@ -356,6 +378,19 @@ pub async fn run_turn(services: Arc<Services>, auth: AuthContext, session_id: Ul
                 done_emitted = true;
             }
             Err(e) => {
+                // 流出错（网络断、模型报错、回合数耗尽）时，已经说出口的话不能丢：
+                // 前端在流结束后会用 list_agent_messages 整体覆盖消息列表，
+                // 不落库 = 用户看到「问了一句，回复整条消失」。
+                // 这里先把已产出的文本 / 工具调用落库，再把错误推给前端。
+                persist_assistant(
+                    &services,
+                    &tx,
+                    turn_id,
+                    assistant_id,
+                    session_id,
+                    &accumulated_text,
+                    &assistant_tool_calls,
+                );
                 let _ = tx.send(AgentEvent::Error {
                     turn_id,
                     message: format!("stream error: {e}"),
@@ -382,29 +417,15 @@ pub async fn run_turn(services: Arc<Services>, auth: AuthContext, session_id: Ul
             }
         }
         if !accumulated_text.is_empty() || !assistant_tool_calls.is_empty() {
-            let mut content = Vec::new();
-            if !accumulated_text.is_empty() {
-                content.push(AssistantContent::text(accumulated_text.clone()));
-            }
-            content.extend(
-                assistant_tool_calls
-                    .iter()
-                    .cloned()
-                    .map(AssistantContent::ToolCall),
-            );
-            let assistant_msg = AgentMessage::Assistant { id: None, content };
-            let record = AgentMessageRecord {
-                id: assistant_id,
+            persist_assistant(
+                &services,
+                &tx,
+                turn_id,
+                assistant_id,
                 session_id,
-                message: assistant_msg,
-                created_at: chrono::Utc::now(),
-            };
-            if let Err(e) = services.agent.append_record(record) {
-                let _ = tx.send(AgentEvent::Error {
-                    turn_id,
-                    message: format!("assistant 落库失败: {e}"),
-                });
-            }
+                &accumulated_text,
+                &assistant_tool_calls,
+            );
             let _ = tx.send(AgentEvent::Done {
                 turn_id,
                 message_id: assistant_id,
@@ -413,6 +434,62 @@ pub async fn run_turn(services: Arc<Services>, auth: AuthContext, session_id: Ul
     }
 
     services.agent_turns.finish(turn_id);
+}
+
+/// 把本轮 assistant 消息落库：文本在前、工具调用在后。
+///
+/// 三条路径共用（FinalResponse / 兜底 / 流出错），文案与结构保持一致——
+/// 落库失败只报 Error 不中断流。
+fn persist_assistant(
+    services: &Arc<Services>,
+    tx: &broadcast::Sender<AgentEvent>,
+    turn_id: Ulid,
+    assistant_id: Ulid,
+    session_id: Ulid,
+    accumulated_text: &str,
+    assistant_tool_calls: &[RigToolCall],
+) {
+    let mut content = Vec::new();
+    if !accumulated_text.is_empty() {
+        content.push(AssistantContent::text(accumulated_text.to_string()));
+    }
+    content.extend(
+        assistant_tool_calls
+            .iter()
+            .cloned()
+            .map(AssistantContent::ToolCall),
+    );
+    if content.is_empty() {
+        content.push(AssistantContent::text(String::new()));
+    }
+    let assistant_msg = AgentMessage::Assistant { id: None, content };
+    let record = AgentMessageRecord {
+        id: assistant_id,
+        session_id,
+        message: assistant_msg,
+        created_at: chrono::Utc::now(),
+    };
+    if let Err(e) = services.agent.append_record(record) {
+        let _ = tx.send(AgentEvent::Error {
+            turn_id,
+            message: format!("assistant 落库失败: {e}"),
+        });
+    }
+}
+
+/// 工具失败文本 → 错误分类。给前端决定卡片颜色 / 提示文案。
+///
+/// rig 的框架级参数错前缀是 `failed to parse tool arguments:`；rodeo 自己的
+/// 工具错误按 `xxx bad args: …` / `xxx server error: …` 两种形态产出。
+/// 兜底归 `Rejected`（业务拒绝）——最保守的一类，不该把未知错误说成参数错。
+fn classify_tool_error(text: &str) -> ToolErrorKind {
+    if text.starts_with("failed to parse tool arguments:") || text.contains(" bad args: ") {
+        ToolErrorKind::BadArgs
+    } else if text.contains(" server error: ") {
+        ToolErrorKind::ServerError
+    } else {
+        ToolErrorKind::Rejected
+    }
 }
 
 /// 流式 `` 解析器：chunk 进来时攒到 buffer，扫到完整
