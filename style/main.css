@@ -963,7 +963,10 @@ select:focus {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 6px 16px;
+    /* 左边距压到 8px：标签表达式输入框的左边框离容器左边，和两个输入框
+       之间（`.querybar` 的 gap 8px）的间距保持一致。右边仍留 16px，
+       右侧那列操作按钮贴着容器右边缘。 */
+    padding: 6px 16px 6px 8px;
     border-top: 1px solid var(--line);
     flex-wrap: wrap;
 }
