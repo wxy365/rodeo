@@ -1212,14 +1212,21 @@ select:focus {
     gap: 6px;
     align-self: flex-end;
 }
-/* 下限 150px 而非 200px：`.dmeta` 放在 423px 整宽行时，200px 时两列只剩 7px 余量，
-   经典的 15px 滚动条一挤就退回一列；150px 下即使 408px 也稳定排两列。
-   `.entry-side` 在视图页是 480px（`.view-body` 网格），去掉内边距后 ≈ 448px 内容盒，
-   在全屏页也用同一份宽度，四个元数据（创建人/创建时间/更新人/更新时间）
-   稳定排成两行两列。 */
-.dmeta { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    gap: 4px 16px; padding: 8px 12px; font-size: 12px; }
-.dmeta .mut { margin-right: 6px; }
+/* 元信息块：整块位于标签区域上方，内部按「人 / 时间」两行排——第一行是
+   创建人 + 更新人，第二行是创建时间 + 更新时间，两个时间值落在同一行。
+   `.dmeta-line` 固定两列（不再用 auto-fit）：auto-fit 会按面板宽度排出 3~4 列，
+   时间值就被拆到不同行，「时间一行」就守不住。
+   右栏最窄 420px（`--detail-w` 的 clamp 下限），去掉内边距后 ≈ 404px 内容盒，
+   两列各 ≈ 194px，够放下「创建时间 2026-10-17 09:44:48」（约 174px）。 */
+.dmeta { display: flex; flex-direction: column; gap: 4px;
+    padding: 8px 12px; font-size: 12px; }
+.dmeta-line { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 4px 16px; }
+.dmeta-kv { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.dmeta-kv .mut { flex: none; }
+/* 时间戳是「日期 + 空格 + 时分秒」，空格是可断行点；不锁 nowrap 的话窄面板下
+   会断成「2026-10-17」/「09:44:48」两行。 */
+.dmeta-kv .v { white-space: nowrap; }
 .editing {
     display: flex;
     align-items: center;

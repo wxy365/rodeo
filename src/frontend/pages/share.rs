@@ -203,17 +203,21 @@ pub fn SharedEntry() -> impl IntoView {
 
                                 <aside class="panel entry-side">
                                     <div class="dmeta">
-                                        <div>
-                                            <span class="mut">{move || i18n.t("entry.created_by")}</span>
-                                            {entry_created_by.clone()}
+                                        <div class="dmeta-line">
+                                            <div class="dmeta-kv">
+                                                <span class="mut">{move || i18n.t("entry.created_by")}</span>
+                                                <span class="v">{entry_created_by.clone()}</span>
+                                            </div>
                                         </div>
-                                        <div>
-                                            <span class="mut">{move || i18n.t("entry.created_at")}</span>
-                                            {fmt_datetime(&entry_created)}
-                                        </div>
-                                        <div>
-                                            <span class="mut">{move || i18n.t("entry.updated_at")}</span>
-                                            {fmt_datetime(&entry_updated)}
+                                        <div class="dmeta-line">
+                                            <div class="dmeta-kv">
+                                                <span class="mut">{move || i18n.t("entry.created_at")}</span>
+                                                <span class="v">{fmt_datetime(&entry_created)}</span>
+                                            </div>
+                                            <div class="dmeta-kv">
+                                                <span class="mut">{move || i18n.t("entry.updated_at")}</span>
+                                                <span class="v">{fmt_datetime(&entry_updated)}</span>
+                                            </div>
                                         </div>
                                     </div>
 

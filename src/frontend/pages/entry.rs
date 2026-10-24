@@ -415,13 +415,37 @@ pub fn EntryFullScreen() -> impl IntoView {
                     {move || data.get().and_then(|r| r.ok()).map(|(_, e, _, _, _)| {
                         let by = |a: &Option<AccountBrief>| a.as_ref().map(|x| x.name.clone()).unwrap_or_else(|| "—".to_string());
                         view! {
+                            // 元信息分两行：人（创建人 / 更新人）一行、时间（创建时间 /
+                            // 更新时间）一行——两个时间值落在同一行，且整块位于标签区域
+                            // 上方。`.dmeta-kv .v` 的 nowrap 保证时间戳本身不折行。
                             <div class="dmeta">
-                                <div><span class="mut">{move || i18n.t("entry.created_by")}</span>{by(&e.created_by_account)}</div>
-                                <div><span class="mut">{move || i18n.t("entry.created_at")}</span>{fmt_datetime(&e.created_at)}</div>
-                                <div><span class="mut">{move || i18n.t("entry.updated_by")}</span>{by(&e.updated_by_account)}</div>
-                                <div><span class="mut">{move || i18n.t("entry.updated_at")}</span>{fmt_datetime(&e.updated_at)}</div>
+                                <div class="dmeta-line">
+                                    <div class="dmeta-kv">
+                                        <span class="mut">{move || i18n.t("entry.created_by")}</span>
+                                        <span class="v">{by(&e.created_by_account)}</span>
+                                    </div>
+                                    <div class="dmeta-kv">
+                                        <span class="mut">{move || i18n.t("entry.updated_by")}</span>
+                                        <span class="v">{by(&e.updated_by_account)}</span>
+                                    </div>
+                                </div>
+                                <div class="dmeta-line">
+                                    <div class="dmeta-kv">
+                                        <span class="mut">{move || i18n.t("entry.created_at")}</span>
+                                        <span class="v">{fmt_datetime(&e.created_at)}</span>
+                                    </div>
+                                    <div class="dmeta-kv">
+                                        <span class="mut">{move || i18n.t("entry.updated_at")}</span>
+                                        <span class="v">{fmt_datetime(&e.updated_at)}</span>
+                                    </div>
+                                </div>
                                 {e.archived_at.clone().map(|at| view! {
-                                    <div><span class="mut">{move || i18n.t("entry.archived_at")}</span>{fmt_datetime(&at)}</div>
+                                    <div class="dmeta-line">
+                                        <div class="dmeta-kv">
+                                            <span class="mut">{move || i18n.t("entry.archived_at")}</span>
+                                            <span class="v">{fmt_datetime(&at)}</span>
+                                        </div>
+                                    </div>
                                 })}
                             </div>
                         }
