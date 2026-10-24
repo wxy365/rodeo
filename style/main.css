@@ -21,6 +21,10 @@
     /* 详情面板（右栏）宽度：最小 480px（原固定值），随窗口变宽，最多 720px。
        视图页右栏与 Entry 全屏页右栏共用同一条曲线，两处来回切时宽度不跳。 */
     --detail-w: clamp(480px, 34vw, 720px);
+    /* 面板与面板之间的间距。视图页（导航栏 ↔ 视图表格容器）与 Entry 全屏页
+       （顶栏 ↔ 正文栏、正文栏 ↔ 右栏、编辑器 ↔ 评论）用同一个值，两边看起来
+       是同一套面板语言。 */
+    --gap-panel: 8px;
 }
 
 /* 暗色主题：data-theme="dark" 由 src/frontend/theme.rs 在 hydrate 后挂到 <html>；
@@ -1384,7 +1388,8 @@ select:focus {
     align-items: center;
     gap: 12px;
     padding: 10px 16px;
-    margin-bottom: 12px;
+    /* 顶栏 ↔ 下面两栏的间距，同样跟视图页的面板间距一致。 */
+    margin-bottom: var(--gap-panel);
     flex-wrap: wrap;
 }
 .entry-top .inp {
@@ -1422,14 +1427,15 @@ select:focus {
     /* 右栏跟视图页详情面板共用 --detail-w：两栏全屏与视图右栏视觉上是同一块
        东西，宽度曲线一致，来回切时不会跳。 */
     grid-template-columns: minmax(0, 1fr) var(--detail-w);
-    gap: 16px;
+    /* 面板间距跟视图页一致（导航栏 ↔ 视图表格容器就是 8px）。 */
+    gap: var(--gap-panel);
     align-items: start;
 }
 /* 左栏：正文编辑器在上，评论在下。 */
 .entry-main {
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: var(--gap-panel);
     min-width: 0;
 }
 .entry-comments {
@@ -2308,7 +2314,7 @@ input[type="color"].sw:disabled {
        不会溢出视口——`.page-app` 那一层的 overflow: hidden 兜底。 */
     overflow: visible;
     /* 导航栏与右侧表格之间的缝隙：16px → 8px（贴边后这张卡不再「浮」在页面里）。 */
-    gap: 8px;
+    gap: var(--gap-panel);
 }
 /* 视图导航栏贴住窗口左边缘：卡片边框压到 x=0，不再跟着 `.page-app` 的
    16px 左边距一起内缩。左侧 padding 补回那 16px，视图名 / 图标 / 计数的位置
