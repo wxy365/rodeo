@@ -18,6 +18,9 @@
     --r-s: 6px;
     --r-m: 10px;
     --r-l: 12px;
+    /* 详情面板（右栏）宽度：最小 480px（原固定值），随窗口变宽，最多 720px。
+       视图页右栏与 Entry 全屏页右栏共用同一条曲线，两处来回切时宽度不跳。 */
+    --detail-w: clamp(480px, 34vw, 720px);
 }
 
 /* 暗色主题：data-theme="dark" 由 src/frontend/theme.rs 在 hydrate 后挂到 <html>；
@@ -1132,8 +1135,9 @@ select:focus {
     flex: 1;
     min-height: 0;
     display: grid;
-    /* 480px 是详情面板的固定宽度；`.dmeta` 在该宽度下排两列（下限见 `.dmeta` 处）。 */
-    grid-template-columns: 1fr 480px;
+    /* 右栏是 Entry 详情面板：宽度跟着窗口走（--detail-w：480px 起、最多 720px），
+       左边表格列吃掉剩下的。`.dmeta` 在 480px 下排两列，宽度变大后列数自适应。 */
+    grid-template-columns: minmax(0, 1fr) var(--detail-w);
     gap: 0;
     align-items: stretch;
     overflow: hidden;
@@ -1366,6 +1370,13 @@ select:focus {
 }
 
 /* ===== 4 Entry 全屏 ===== */
+/* 全屏 Entry 页右边不留白：顶栏 / 正文 / 右栏三块一起顶到窗口右边缘，
+   跟视图页的「右侧不留白」同一套做法。`.page-wide` 还被设置页共用，
+   所以按「页里有 .entry-layout」来认这张页（`:has()` 在 Chrome 105+ /
+   Safari 15.4+ / Firefox 121+ 都可用），不必动 Rust 侧的 class。 */
+.page-wide:has(.entry-layout) {
+    padding-right: 0;
+}
 .entry-top {
     display: flex;
     align-items: center;
@@ -1406,9 +1417,9 @@ select:focus {
 }
 .entry-layout {
     display: grid;
-    /* 480px 跟视图页详情面板（见 `.view-body`）一致：两栏全屏与视图右栏
-       视觉上是同一块东西，宽度差几像素切换起来会跳。 */
-    grid-template-columns: 1fr 480px;
+    /* 右栏跟视图页详情面板共用 --detail-w：两栏全屏与视图右栏视觉上是同一块
+       东西，宽度曲线一致，来回切时不会跳。 */
+    grid-template-columns: minmax(0, 1fr) var(--detail-w);
     gap: 16px;
     align-items: start;
 }
@@ -2275,7 +2286,9 @@ input[type="color"].sw:disabled {
     height: 100vh;
     max-width: none;
     margin: 0;
-    padding: 12px 16px;
+    /* 右边不留白：视图容器的右边界直接顶到窗口右边缘，把滚动条压细省下的
+       宽度真正让给内容。左边仍留 16px——导航栏靠 `margin-left: -16px` 补掉。 */
+    padding: 12px 0 12px 16px;
     display: flex;
     flex-direction: column;
     overflow: hidden;
