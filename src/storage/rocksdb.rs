@@ -82,7 +82,8 @@ impl RocksDoc {
         opts.create_if_missing(true);
         opts.create_missing_column_families(true);
         opts.set_compaction_style(DBCompactionStyle::Level);
-        let db = DB::open_cf(&opts, path, ALL_CFS).map_err(|e| AppError::Storage(e.to_string()))?;
+        let db = DB::open_cf(&opts, path, ALL_CFS)
+            .map_err(|e| AppError::Storage(open_error_message(path, &e)))?;
         Ok(Self { db })
     }
 
@@ -202,6 +203,46 @@ impl RocksDoc {
         }
         self.db.write(batch).map_err(Into::into)
     }
+}
+
+/// 把 RocksDB 的打开错误翻译成人能照着做的提示。
+///
+/// 目录被别的进程锁住是这里唯一「用户自己能解决」的失败：多半是上一个
+/// rodeo 实例还活着（终端关了也不一定死干净），停掉它就能启动。RocksDB 的
+/// 原文 "IO error: While lock file: ./data/LOCK: Resource temporarily
+/// unavailable" 既没说是什么错，也没说该找谁——所以这里点名目录、锁文件，
+/// 能查到进程号就把 PID 也带上。
+fn open_error_message(path: &str, e: &rocksdb::Error) -> String {
+    let raw = e.to_string();
+    if !raw.contains("lock file") {
+        return format!("打开 RocksDB 失败（目录 {path}）: {raw}");
+    }
+    let lock_path = format!("{}/LOCK", path.trim_end_matches('/'));
+    match lock_holder_pid(&lock_path) {
+        Some(pid) => format!(
+            "数据目录 {path} 已被另一个进程占用（RocksDB 锁 {lock_path}，持有者 PID {pid}）。\
+             多半是上一个 rodeo 实例还在运行：停掉它（kill {pid}）再启动。"
+        ),
+        None => format!(
+            "数据目录 {path} 已被另一个进程占用（RocksDB 锁 {lock_path}）。\
+             多半是上一个 rodeo 实例还在运行：查 lsof {lock_path} 找到它并停掉，再启动。"
+        ),
+    }
+}
+
+/// 找出当前持有 LOCK 文件的进程号。
+///
+/// lsof 不是处处都有（精简容器镜像里通常没装），查不到就返回 None——
+/// 少一个 PID 不影响这条消息的可操作性，用户仍能自己去查。
+fn lock_holder_pid(lock_path: &str) -> Option<u32> {
+    let out = std::process::Command::new("lsof")
+        .args(["-t", lock_path])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.trim().parse::<u32>().ok())
+        .next()
 }
 
 #[cfg(test)]
