@@ -18,10 +18,10 @@ use crate::frontend::graphql_client::{
     archive_entry, archived_entries, audit_logs, create_entry, create_view, delete_entry,
     delete_view, entry, format_view_query, get_sidebar_collapsed, label_schemas, members,
     parse_view_query, query_all_entries, query_entries, remove_labeling, set_labeling,
-    set_labelings, set_sidebar_collapsed, set_view_timeline, summarize_entries,
-    translate_query_expression, unarchive_entry, update_entry, update_view, views,
-    workspace_ai_config, workspace_by_slug, AccountBrief, AuditLog, Entry, LabelSchema, Labeling,
-    Member, NamedPrompt, View, ViewSort, ViewTimeline, Workspace,
+    set_labelings, set_sidebar_collapsed, set_view_description, set_view_timeline,
+    summarize_entries, translate_query_expression, unarchive_entry, update_entry, update_view,
+    views, workspace_ai_config, workspace_by_slug, AccountBrief, AuditLog, Entry, LabelSchema,
+    Labeling, Member, NamedPrompt, View, ViewSort, ViewTimeline, Workspace,
 };
 use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::icons::{
@@ -1055,6 +1055,12 @@ pub fn WorkspaceMain() -> impl IntoView {
     // ---- 视图配置弹窗（重命名 + 列配置）----
     let show_config_dialog = RwSignal::new(false);
     let config_name_input = RwSignal::new(String::new());
+    // 视图描述：落独立列族（见 service/view.rs 的 set_description），所以保存时
+    // 另发一条 mutation，与时间轴配置同理。
+    let config_desc_input = RwSignal::new(String::new());
+    // 「配置视图」弹窗正在配的那个视图。保存要写回它——当前激活视图未必是它
+    // （右键弹菜单不切换激活视图）。
+    let config_view = RwSignal::new(None::<View>);
     let config_columns_input = RwSignal::new(Vec::<String>::new());
     let config_shared_input = RwSignal::new(false);
     // 弹窗内错误单独存放：页面级 error 渲染在弹窗遮罩之下，用户看不到。
@@ -1094,6 +1100,11 @@ pub fn WorkspaceMain() -> impl IntoView {
             return;
         };
         config_name_input.set(v.name.clone());
+        config_desc_input.set(v.description.clone());
+        // 记住「这个弹窗是为哪个视图开的」——保存时必须写回它，而不是当前激活的
+        // 那个。右键不会切换激活视图（右键只弹 menu，不触发行上的 on:click），
+        // 所以对非激活视图点「配置视图」时，两者不是同一个。
+        config_view.set(Some(v.clone()));
         // 「更新时间」在弹窗里默认勾选——配置视图打开时如果原 columns 没有它，
         // 就把它追加到勾选态。用户保存即落库；不保存只代表「看了一下默认是开的」，
         // 原 columns 一行不动。基础视图 columns 恒空，这条路径负责把弹窗预填成
@@ -1730,6 +1741,14 @@ pub fn WorkspaceMain() -> impl IntoView {
                     None => format!("/{} · {}", slug(), i18n.t("sidebar.base_view_all_entries")),
                 }}</span>
             </div>
+            // 视图描述：配了就在标题下方显示一行。侧栏的 tooltip 只是入口提示，
+            // 这里才是描述真正被读到的地方。
+            {move || active_view.get()
+                .map(|v| v.description.trim().to_string())
+                .filter(|d| !d.is_empty())
+                .map(|d| view! {
+                    <div class="mut vdesc" style="padding:0 16px 8px;font-size:12px;flex:0 0 auto">{d}</div>
+                })}
             <div class=move || if sidebar_collapsed.get() { "ws-layout collapsed" } else { "ws-layout" }>
                 <WorkspaceSidebar
                     slug=slug().to_string()
@@ -2514,11 +2533,18 @@ pub fn WorkspaceMain() -> impl IntoView {
                     <div class="dmodal" on:click=move |_| show_config_dialog.set(false)>
                         <div class="panel dmbox" on:click=|ev| ev.stop_propagation()>
                             <h3>{i18n.t("entry.config_view")}</h3>
-                            {move || (!active_view.get().is_some_and(|v| v.is_default)).then(|| view! {
+                            {move || (!config_view.get().is_some_and(|v| v.is_default)).then(|| view! {
                                 // 基础视图的名字是固定概念，不提供改名；服务端也会挡下。
                                 <input class="inp" placeholder=i18n.t("entry.view_name_ph") prop:value=config_name_input
                                     on:input=move |ev| config_name_input.set(event_target_value(&ev)) />
                             })}
+                            <div class="dfield">
+                                <span class="dlabel">{i18n.t("entry.view_description")}</span>
+                                <textarea class="inp" rows="3"
+                                    placeholder=i18n.t("entry.view_description_ph")
+                                    prop:value=config_desc_input
+                                    on:input=move |ev| config_desc_input.set(event_target_value(&ev))></textarea>
+                            </div>
                             <div class="dfield">
                                 <span class="dlabel">{i18n.t("entry.display_columns")}</span>
                                 <ColumnPicker schemas=schemas selected=config_columns_input />
@@ -2644,7 +2670,9 @@ pub fn WorkspaceMain() -> impl IntoView {
                             <div style="display:flex;gap:8px;justify-content:flex-end">
                                 <button class="btn" on:click=move |_| show_config_dialog.set(false)>{i18n.t("common.cancel")}</button>
                                 <button class="btn pri" disabled=move || rules_loading.get() on:click=move |_| {
-                                    let Some(v) = active_view.get() else {
+                                    // 保存要写回「这个弹窗是为哪个视图开的」那个，不是当前
+                                    // 激活的视图——右键弹菜单不切换激活视图，两者可能不同。
+                                    let Some(v) = config_view.get() else {
                                         dialog_error.set(Some(i18n.t("entry.select_view_first")));
                                         return;
                                     };
@@ -2653,11 +2681,20 @@ pub fn WorkspaceMain() -> impl IntoView {
                                     let name = config_name_input.get();
                                     let shared = config_shared_input.get();
                                     let cols = config_columns_input.get();
-                                    let ast = query_ast.get();
+                                    // 配的就是当前视图时，沿用筛选栏里那份「还没落库」的
+                                    // AST；配的是别的视图时必须用它自己的条件——拿当前
+                                    // 视图的 AST 盖过去等于把筛选写到错的视图上。
+                                    let is_active = active_view.get().is_some_and(|a| a.id == v.id);
+                                    let ast = if is_active {
+                                        query_ast.get()
+                                    } else {
+                                        v.query.clone()
+                                    };
                                     let sorts = v.sorts.clone();
                                     let tl_start = config_tl_start.get_untracked();
                                     let tl_end = config_tl_end.get_untracked();
                                     let tl_person = config_tl_person.get_untracked();
+                                    let desc = config_desc_input.get_untracked();
                                     let ws_id = data.get().and_then(|r| r.ok()).map(|(w, _, _)| w.id.clone());
                                     // 快照规则：条件表达式 + 颜色 + 预填缓存。
                                     let draft: Vec<(String, String, String, Value)> =
@@ -2708,12 +2745,25 @@ pub fn WorkspaceMain() -> impl IntoView {
                                                         return;
                                                     }
                                                 }
+                                                // 描述同样另发一条 mutation（独立列族、独立并发语义）。
+                                                match set_view_description(&saved.id, &desc).await {
+                                                    Ok(d) => saved.description = d,
+                                                    Err(e) => {
+                                                        dialog_error.set(Some(i18n.tf("entry.description_save_failed", &[("err", &e.to_string())])));
+                                                        return;
+                                                    }
+                                                }
                                                 view_list.update(|l| {
                                                     if let Some(slot) = l.iter_mut().find(|x| x.id == saved.id) {
                                                         *slot = saved.clone();
                                                     }
                                                 });
-                                                active_view.set(Some(saved));
+                                                // 只有配的就是当前激活视图时才回写 active_view——
+                                                // 它跟 active_id / query_ast 是一套的，单独换掉会让
+                                                // 面包屑、侧栏高亮、表达式框指向不同的视图。
+                                                if is_active {
+                                                    active_view.set(Some(saved));
+                                                }
                                                 show_config_dialog.set(false);
                                             }
                                             Err(e) => dialog_error.set(Some(e)),
@@ -2907,6 +2957,12 @@ fn WorkspaceSidebar(
                     .find(|s| !s.trim().is_empty())
                     .unwrap_or(&name)
                     .to_string();
+                // 提示里带上描述：侧栏一行放不下描述，tooltip 是最省地方的展示位。
+                let tooltip = if v.description.trim().is_empty() {
+                    name.clone()
+                } else {
+                    format!("{}\n{}", name, v.description.trim())
+                };
                 let count = v.entry_count;
                 let is_active = {
                     let id = id.clone();
@@ -2922,7 +2978,7 @@ fn WorkspaceSidebar(
                              c
                          }
                          style=indent
-                         title=name.clone()
+                         title=tooltip.clone()
                          on:click=move |_| on_select.run(click_id.clone())
                          on:contextmenu=move |ev: leptos::ev::MouseEvent| {
                              ev.prevent_default();

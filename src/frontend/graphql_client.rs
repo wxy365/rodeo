@@ -1499,6 +1499,9 @@ pub struct View {
     /// 时间轴配置；`None` 表示未配置，此时界面不显示「普通 / 时间轴」开关。
     #[serde(default)]
     pub timeline: Option<ViewTimeline>,
+    /// 视图描述；未配置为空串。
+    #[serde(default)]
+    pub description: String,
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -1516,7 +1519,7 @@ pub struct EntryPage {
 }
 
 const VIEW_FIELDS: &str = "id name query queryExpr sorts { field desc } columns isShared ownerId \
-     titleColors entryCount isDefault timeline { start end person }";
+     titleColors entryCount isDefault timeline { start end person } description";
 
 /// 排序键链 → GraphQL 变量值。空数组会被服务端解释为「用默认排序」。
 fn sorts_var(sorts: &[ViewSort]) -> Value {
@@ -1710,6 +1713,20 @@ pub async fn set_view_timeline(
     serde_json::from_value(v)
         .map(Some)
         .map_err(|e| e.to_string())
+}
+
+/// 设置 / 清除视图的描述。传空串即清除，返回落库后的描述文本。
+pub async fn set_view_description(id: &str, description: &str) -> Result<String, String> {
+    let data = graphql(
+        "mutation($id: ID!, $d: String!) { setViewDescription(id: $id, description: $d) }",
+        json!({ "id": id, "d": description }),
+    )
+    .await?;
+    Ok(data
+        .get("setViewDescription")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string())
 }
 
 pub async fn delete_view(id: &str) -> Result<bool, String> {
