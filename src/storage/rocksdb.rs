@@ -40,6 +40,7 @@ const ALL_CFS: &[&str] = &[
     cf::OAUTH_BINDINGS,
     cf::INLINE_ATTACHMENTS,
     cf::VIEW_TIMELINE,
+    cf::VIEW_DESCRIPTION,
     cf::MESSAGES_BY_RECIPIENT,
     cf::AGENT_SESSIONS,
     cf::AGENT_MESSAGES,

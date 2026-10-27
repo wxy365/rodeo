@@ -83,6 +83,10 @@ pub mod cf {
     /// 与 `ENTRIES_ARCHIVED` / `WORKSPACES_DELETED` 同理，用独立列族而不是给 `View`
     /// 加字段——加字段会让存量视图记录反序列化读到 EOF。
     pub const VIEW_TIMELINE: &str = "view_timeline";
+    /// 视图的描述：view id（16 字节）→ 描述文本（UTF-8 原始字节，非 bincode）。
+    /// **键缺席即无描述**，与 `VIEW_TIMELINE` 同款取舍：加字段会让存量视图记录
+    /// 反序列化读到 EOF（bincode 的 struct 布局定长，少一个字段就短一截）。
+    pub const VIEW_DESCRIPTION: &str = "view_description";
     /// 站内消息：(recipient_id 字节 + 时间倒序 + id) → `Message`（bincode）。
     /// recipient_id 作前缀，每位用户的消息天然分区。
     /// 用 i64::MAX - millis 倒序键让最新消息排在前。

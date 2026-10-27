@@ -866,6 +866,8 @@ pub struct GqlView {
     is_default: bool,
     /// 时间轴配置；未配置为 `null`，此时前端不显示「普通 / 时间轴」开关。
     timeline: Option<GqlViewTimeline>,
+    /// 视图描述；未配置为空串。
+    description: String,
 }
 
 /// AI 查询翻译结果：`expr` 是规范化后的标签表达式（前端直接回填输入框），
@@ -898,7 +900,13 @@ impl From<ViewTimeline> for GqlViewTimeline {
 }
 
 impl GqlView {
-    fn new(v: View, entry_count: i32, is_default: bool, timeline: Option<ViewTimeline>) -> Self {
+    fn new(
+        v: View,
+        entry_count: i32,
+        is_default: bool,
+        timeline: Option<ViewTimeline>,
+        description: String,
+    ) -> Self {
         let query = serde_json::to_value(&v.query).unwrap_or(serde_json::Value::Null);
         let query_expr = v.query.to_expr();
         // 手写投影：整结构序列化会把 TitleColorRule.query 变成转义过的 JSON 字符串。
@@ -931,6 +939,7 @@ impl GqlView {
             entry_count,
             is_default,
             timeline,
+            description,
         }
     }
 }
@@ -1891,7 +1900,8 @@ impl Query {
             let count = gql.services.entry.count(ws, &v.query)? as i32;
             let is_default = v.id == def;
             let timeline = gql.services.view.timeline_of(v.id)?;
-            out.push(GqlView::new(v, count, is_default, timeline));
+            let description = gql.services.view.description_of(v.id)?.unwrap_or_default();
+            out.push(GqlView::new(v, count, is_default, timeline, description));
         }
         Ok(out)
     }
@@ -1910,7 +1920,14 @@ impl Query {
         let count = gql.services.entry.count(v.workspace_id, &v.query)? as i32;
         let is_default = gql.services.view.default_view_id(v.workspace_id)? == Some(v.id);
         let timeline = gql.services.view.timeline_of(v.id)?;
-        Ok(Some(GqlView::new(v, count, is_default, timeline)))
+        let description = gql.services.view.description_of(v.id)?.unwrap_or_default();
+        Ok(Some(GqlView::new(
+            v,
+            count,
+            is_default,
+            timeline,
+            description,
+        )))
     }
 
     async fn parse_view_query(
@@ -3258,7 +3275,7 @@ impl Mutation {
             title_colors,
         )?;
         let count = gql.services.entry.count(ws, &v.query)? as i32;
-        Ok(GqlView::new(v, count, false, None))
+        Ok(GqlView::new(v, count, false, None, String::new()))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3304,7 +3321,8 @@ impl Mutation {
         let count = gql.services.entry.count(existing.workspace_id, &v.query)? as i32;
         let is_default = gql.services.view.default_view_id(existing.workspace_id)? == Some(v.id);
         let timeline = gql.services.view.timeline_of(v.id)?;
-        Ok(GqlView::new(v, count, is_default, timeline))
+        let description = gql.services.view.description_of(v.id)?.unwrap_or_default();
+        Ok(GqlView::new(v, count, is_default, timeline, description))
     }
 
     /// 设置 / 清除视图的时间轴配置。`start` 或 `end` 传空串即清除。
@@ -3345,6 +3363,36 @@ impl Mutation {
             .view
             .set_timeline(auth.account_id, view_id, cfg)?;
         Ok(saved.map(GqlViewTimeline::from))
+    }
+
+    /// 设置 / 清除视图的描述。传空串即清除。
+    ///
+    /// 与 `updateView` 分成两条 mutation，理由同 `setViewTimeline`：描述落在独立
+    /// 列族（`VIEW_DESCRIPTION`），改它不该顺带重写视图的查询 / 排序 / 列。
+    /// 返回落库后的描述文本（清除后为空串）。
+    async fn set_view_description(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+        description: String,
+    ) -> GqlResult<String> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let view_id = parse_ulid(id.as_str())?;
+        let existing = gql.services.view.get(view_id)?.ok_or(AppError::NotFound)?;
+        gql.require_member(existing.workspace_id)?;
+        // 与 update_view 同一套权限：改共享视图、或改别人的视图，都要 Maintainer。
+        let need = if existing.is_shared || existing.owner_id != auth.account_id {
+            WorkspaceRole::Maintainer
+        } else {
+            WorkspaceRole::Worker
+        };
+        gql.require_role(existing.workspace_id, need)?;
+        let saved =
+            gql.services
+                .view
+                .set_description(auth.account_id, view_id, Some(description))?;
+        Ok(saved.unwrap_or_default())
     }
 
     /// 删除视图（共享视图或别人的视图需 Maintainer；自己的 Worker 即可）。

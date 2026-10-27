@@ -15,6 +15,10 @@ use crate::service::message::MessageService;
 use crate::service::workspace::WorkspaceService;
 use crate::storage::{cf, keys, BatchOp, DocStore};
 
+/// 视图描述的字数上限。描述是用户随手写的一段说明，不该无限长——上限挡住
+/// 「把整篇文档粘进描述」这类误用。
+const MAX_DESCRIPTION_CHARS: usize = 1000;
+
 pub struct ViewService {
     store: Arc<DocStore>,
     /// 删除视图时通知 workspace 管理员（Owner + Maintainer）。
@@ -491,6 +495,69 @@ impl ViewService {
         self.store.get(cf::VIEW_TIMELINE, &keys::view_key(id))
     }
 
+    /// 读视图的描述；没配过（或已被清除）返回 `None`。
+    pub fn description_of(&self, id: Ulid) -> Result<Option<String>, AppError> {
+        let Some(bytes) = self
+            .store
+            .get_raw(cf::VIEW_DESCRIPTION, &keys::view_key(id))?
+        else {
+            return Ok(None);
+        };
+        String::from_utf8(bytes)
+            .map(Some)
+            .map_err(|e| AppError::Storage(format!("视图描述不是合法 UTF-8: {e}")))
+    }
+
+    /// 写 / 清视图的描述。空串等价于清除（键缺席即无描述）。
+    ///
+    /// 与时间轴配置同款取舍：描述落在独立列族 `VIEW_DESCRIPTION` 而不是 `View`
+    /// 的字段上——给 bincode 结构加字段会让存量视图记录反序列化读到 EOF。
+    pub fn set_description(
+        &self,
+        actor: Ulid,
+        id: Ulid,
+        description: Option<String>,
+    ) -> Result<Option<String>, AppError> {
+        let view = self.get(id)?.ok_or(AppError::NotFound)?;
+        let text = description
+            .map(|d| d.trim().to_string())
+            .filter(|d| !d.is_empty());
+        if let Some(d) = &text {
+            if d.chars().count() > MAX_DESCRIPTION_CHARS {
+                return Err(AppError::InvalidQuery(format!(
+                    "视图描述过长（上限 {MAX_DESCRIPTION_CHARS} 字）"
+                )));
+            }
+        }
+        let before = self.description_of(id)?;
+        // 复用 `ViewUpdated`：改描述确实是「改视图配置」，不值得为它往
+        // `AuditAction` 追加变体（那是 bincode 编码的枚举，多一个变体就多一份
+        // 向后兼容的负担）。
+        let audit = AuditLog::new(
+            AuditAction::ViewUpdated,
+            actor,
+            "view",
+            &id.to_string(),
+            Some(view.workspace_id),
+            Some(serde_json::to_string(&before).unwrap_or_default()),
+            Some(serde_json::to_string(&text).unwrap_or_default()),
+        );
+        let mut ops = audit_ops(&audit)?;
+        match &text {
+            Some(d) => ops.push(BatchOp::put_raw(
+                cf::VIEW_DESCRIPTION,
+                keys::view_key(id).to_vec(),
+                d.as_bytes().to_vec(),
+            )),
+            None => ops.push(BatchOp::delete(
+                cf::VIEW_DESCRIPTION,
+                keys::view_key(id).to_vec(),
+            )),
+        }
+        self.store.write_batch(ops)?;
+        Ok(text)
+    }
+
     /// 写 / 清视图的时间轴配置。`cfg` 为 `None` 即清除，界面上的开关随之消失。
     pub fn set_timeline(
         &self,
@@ -593,6 +660,10 @@ impl ViewService {
         // 配置随视图一起删：留着就是永远读不到的孤儿记录。
         ops.push(BatchOp::delete(
             cf::VIEW_TIMELINE,
+            keys::view_key(id).to_vec(),
+        ));
+        ops.push(BatchOp::delete(
+            cf::VIEW_DESCRIPTION,
             keys::view_key(id).to_vec(),
         ));
         self.store.write_batch(ops)?;
