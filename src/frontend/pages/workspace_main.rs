@@ -160,6 +160,20 @@ impl DraftLabel {
         Self::new(s, true)
     }
 
+    /// 批量表单专用：一律空着，空即「本次不写这个标签」。
+    ///
+    /// 与 `from_schema` 的差别只在日期类标签：`new` 会给它预填「现在」（用户
+    /// 手动加一个日期标签时该有的行为），这里要留空——批量表单的语义是
+    /// 「留空的标签不会改动」，预填「今天」会让一次批量应用静默给所有选中
+    /// 条目都打上时间戳（用户明明只勾了另外两个标签）。
+    fn from_schema_batch(s: LabelSchema) -> Self {
+        let d = Self::new(s, false);
+        if matches!(d.value_type, "date" | "time" | "datetime") {
+            d.text.set(String::new());
+        }
+        d
+    }
+
     fn new(s: LabelSchema, preset: bool) -> Self {
         let value_type = match s.value_type.as_str() {
             "null" => "null",
@@ -1399,7 +1413,10 @@ pub fn WorkspaceMain() -> impl IntoView {
             schemas
                 .get_untracked()
                 .into_iter()
-                .map(DraftLabel::from_schema)
+                // 批量表单用 `from_schema_batch`：日期类标签不预填「现在」——
+                // 弹窗的语义是「留空的标签不会改动」，预填会让批量应用静默
+                // 给所有选中条目打上时间戳。
+                .map(DraftLabel::from_schema_batch)
                 .collect(),
         );
         batch_error.set(None);
