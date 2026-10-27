@@ -10,9 +10,9 @@ use leptos_router::hooks::{use_navigate, use_params_map, use_query_map};
 use crate::frontend::attachment_list::AttachmentList;
 use crate::frontend::comment_list::CommentList;
 use crate::frontend::components::{
-    chip_glyph, display_enum_value, fmt_datetime, from_native, is_native_time_layout,
-    label_chip_class, logged_out, member_label, short_time, to_native, value_to_string,
-    AccountPicker, AuditTimeline, CodeCopy, ColorPick, GlyphPos, TabBar,
+    chip_glyph, default_time_stored, display_enum_value, fmt_datetime, from_native,
+    is_native_time_layout, label_chip_class, logged_out, member_label, short_time, to_native,
+    value_to_string, AccountPicker, AuditTimeline, CodeCopy, ColorPick, GlyphPos, TabBar,
 };
 use crate::frontend::graphql_client::{
     archive_entry, archived_entries, audit_logs, create_entry, create_view, delete_entry,
@@ -190,6 +190,16 @@ impl DraftLabel {
             && is_native_time_layout(value_type, s.format.as_deref())
         {
             text = to_native(value_type, &text);
+        }
+        // 用户手动加的日期类标签：控件预填「现在」按类型截断的结果（日期型给今天、
+        // 日期时间型给此刻、时间型给当前时刻）。自动集（preset）不预填——那里由标签
+        // 定义里的默认值说话，没有默认值就是「本次不写这个标签」。
+        if !preset
+            && text.is_empty()
+            && matches!(value_type, "date" | "time" | "datetime")
+            && is_native_time_layout(value_type, s.format.as_deref())
+        {
+            text = to_native(value_type, &default_time_stored(value_type));
         }
         Self {
             name: s.name,
@@ -3933,19 +3943,45 @@ fn LabelCellEditor(
                             "time" => "time",
                             _ => "datetime-local",
                         };
-                        let current_native = to_native(&vt, &current_text);
+                        // 没有已落库的值时，控件预填「现在」按类型截断的结果：
+                        // 日期型给今天，日期时间型给此刻，时间型给当前时刻。
+                        let needs_commit = current_text.is_empty();
+                        let current_native = if needs_commit {
+                            to_native(&vt, &default_time_stored(&vt))
+                        } else {
+                            to_native(&vt, &current_text)
+                        };
+                        // 控件的实时值：原生控件只在值**变化**时发 change，用户在
+                        // 日历里点中的正是预填的那天时没有事件，故「设置」按钮读这里。
+                        let picked = RwSignal::new(current_native.clone());
+                        // 两个闭包都要用 vt：输入框的即时落库、按钮的显式落库。
+                        let vt_btn = vt.clone();
                         let on_set = on_set.clone();
                         view! {
-                            <input class="inp" type=input_type prop:value=current_native
-                                on:change=move |ev| {
-                                    let v = event_target_value(&ev);
-                                    // 不支持移除：清空时不写入。
-                                    if !v.is_empty() {
-                                        if let Some(stored) = from_native(&vt, &v) {
+                            <div style="display:flex;gap:6px;align-items:center">
+                                <input class="inp" type=input_type prop:value=current_native
+                                    on:input=move |ev| picked.set(event_target_value(&ev))
+                                    on:change=move |ev| {
+                                        let v = event_target_value(&ev);
+                                        picked.set(v.clone());
+                                        // 不支持移除：清空时不写入。
+                                        if !v.is_empty() {
+                                            if let Some(stored) = from_native(&vt, &v) {
+                                                on_set.run(Value::String(stored));
+                                            }
+                                        }
+                                    } />
+                                {needs_commit.then(|| view! {
+                                    // 预填的默认值还没落库：原生控件不发 change，得有个
+                                    // 显式动作把它写下去（改了值的话 change 已经即时落库）。
+                                    <button class="btn" on:click=move |_| {
+                                        let v = picked.get_untracked();
+                                        if let Some(stored) = from_native(&vt_btn, &v) {
                                             on_set.run(Value::String(stored));
                                         }
-                                    }
-                                } />
+                                    }>{move || i18n.t("label.set")}</button>
+                                })}
+                            </div>
                         }.into_any()
                     }
                 }
