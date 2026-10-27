@@ -275,6 +275,7 @@
     "expr_help_row_neq": "Status não é Done",
     "expr_help_row_in": "Status é um destes",
     "expr_help_row_ge": "Rótulo numérico ≥ 2",
+    "expr_help_row_enum_cmp": "Rótulo enum / texto comparado lexicograficamente (Status maior que Open)",
     "expr_help_row_contains": "Rótulo de texto contém «login»",
     "expr_help_row_direct": "L5 marcado diretamente",
     "expr_help_row_lplus_ne": "Nem L4 direto nem herdado",

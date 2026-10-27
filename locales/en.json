@@ -275,6 +275,7 @@
     "expr_help_row_neq": "Status is not Done",
     "expr_help_row_in": "Status is one of these",
     "expr_help_row_ge": "Numeric label ≥ 2",
+    "expr_help_row_enum_cmp": "Enum / text label compared lexicographically (Status greater than Open)",
     "expr_help_row_contains": "Text label contains «login»",
     "expr_help_row_direct": "Directly tagged L5",
     "expr_help_row_lplus_ne": "Neither directly L4 nor inherited L4",

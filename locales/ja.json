@@ -275,6 +275,7 @@
     "expr_help_row_neq": "Status が Done ではない",
     "expr_help_row_in": "Status がこれらのいずれか",
     "expr_help_row_ge": "数値ラベル ≥ 2",
+    "expr_help_row_enum_cmp": "列挙 / 文字列ラベルは辞書順で比較（Status が Open より大きい）",
     "expr_help_row_contains": "テキストラベルに「ログイン」を含む",
     "expr_help_row_direct": "L5 を直接タグ付け",
     "expr_help_row_lplus_ne": "L4 直接でも継承でもなし",

@@ -275,6 +275,7 @@
     "expr_help_row_neq": "Status 不等于 Done",
     "expr_help_row_in": "Status 是其中之一",
     "expr_help_row_ge": "数值标签大于等于 2",
+    "expr_help_row_enum_cmp": "枚举 / 字符串标签按字典序比较（Status 大于 Open）",
     "expr_help_row_contains": "文本标签包含「登录」",
     "expr_help_row_direct": "直接打了 L5 标签",
     "expr_help_row_lplus_ne": "既没直接打 L4，也没有继承来 L4",

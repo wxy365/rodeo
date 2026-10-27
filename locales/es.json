@@ -275,6 +275,7 @@
     "expr_help_row_neq": "Status no es Done",
     "expr_help_row_in": "Status es uno de estos",
     "expr_help_row_ge": "Etiqueta numérica ≥ 2",
+    "expr_help_row_enum_cmp": "Etiqueta enum / texto comparada lexicográficamente (Status mayor que Open)",
     "expr_help_row_contains": "Etiqueta de texto contiene «login»",
     "expr_help_row_direct": "L5 etiquetado directamente",
     "expr_help_row_lplus_ne": "Ni L4 directo ni heredado",

@@ -275,6 +275,7 @@
     "expr_help_row_neq": "Status ليس Done",
     "expr_help_row_in": "Status واحد من هؤلاء",
     "expr_help_row_ge": "تسمية رقمية ≥ 2",
+    "expr_help_row_enum_cmp": "تسمية التعداد / النص تُقارَن معجميًا (Status أكبر من Open)",
     "expr_help_row_contains": "تسمية نصية تحتوي على «login»",
     "expr_help_row_direct": "L5 موسوم مباشرة",
     "expr_help_row_lplus_ne": "لا L4 مباشر ولا موروث",

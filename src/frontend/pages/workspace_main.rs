@@ -2391,6 +2391,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                         <tr><td><code>"Status != \"Done\""</code></td><td>{i18n.t("entry.expr_help_row_neq")}</td></tr>
                                         <tr><td><code>"Status IN (\"Open\", \"Done\")"</code></td><td>{i18n.t("entry.expr_help_row_in")}</td></tr>
                                         <tr><td><code>"Priority >= 2"</code></td><td>{i18n.t("entry.expr_help_row_ge")}</td></tr>
+                                        <tr><td><code>"Status > \"Open\""</code></td><td>{i18n.t("entry.expr_help_row_enum_cmp")}</td></tr>
                                         <tr><td><code>"Summary ~ \"登录\""</code></td><td>{i18n.t("entry.expr_help_row_contains")}</td></tr>
                                         <tr><td><code>"L5"</code></td><td>{i18n.t("entry.expr_help_row_direct")}</td></tr>
                                         <tr><td><code>"L4+"</code></td><td>{i18n.t("entry.expr_help_row_lplus_eq")}</td></tr>
