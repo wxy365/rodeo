@@ -40,7 +40,23 @@ impl EntryIndexService {
         match field {
             SortField::UpdatedAt => Some(cf::ENTRIES_IDX_UPDATED),
             SortField::CreatedAt => Some(cf::ENTRIES_IDX_CREATED),
-            SortField::Title => Some(cf::ENTRIES_IDX_TITLE),
+            // Phase 1：Title 不进 cursor 路径，退回 legacy 全量排序。
+            // 「按 title 排序 → Entry 表格空了」就是这个坑：早期 Title 也走索引，
+            // 而索引键 `(ws, title_utf8, code)` 定不出 code 的起点，解出来的 code
+            // 查主表必然落空 → 列表恒空。键布局后来补了 u16 长度前缀
+            // （见 storage::keys::idx_title_key），但 Title 仍不进 cursor 路径，
+            // 剩下的理由有三条：
+            //   1. 键序不是标题字典序：长度前缀排在标题前面，键序变成「先比长度、
+            //      再比标题」，用它排序会得到「按标题长度排」的结果。
+            //   2. 大小写：legacy 路径的标题比较大小写不敏感，索引是字节序，
+            //      两者顺序不同。
+            //   3. 同标题的 tie-break：索引按 code 升序，legacy 按 updated_at 倒序
+            //      → 第 1 页（索引）与第 2 页起（legacy）会错位，条目重复或漏掉。
+            // 另外 desc 方向要反向扫描，而 `scan_range_reverse` 在 Postgres 后端
+            // 还没实现。
+            // Phase 2 要接回索引：保序编码的标题键 + 一次性数据重写 + 反向扫描
+            // （含 Postgres）+ 与 legacy 一致的比较与 tie-break。
+            SortField::Title => None,
             // Phase 1: SortField::Label 索引未支持 cursor 路径（key 布局歧义）。
             SortField::Label(name) => {
                 let s = schemas.iter().find(|s| &s.name == name)?;
@@ -64,6 +80,19 @@ impl EntryIndexService {
             sort.keys.first().map(|k| &k.field),
             Some(SortField::Label(_))
         ) {
+            return false;
+        }
+        // 升序也不进 cursor 路径：Phase 1 只实现了 desc 的扫描方向（索引键里编码
+        // 的是 `i64::MAX - ms`，前向扫 = 新的在前）。升序会撞 `query_indexed` 的
+        // 「Phase 1 仅支持 desc 排序」错误，整个视图查询直接失败 → 前端表格空。
+        // （列头点第二下就是升序，这个坑和 title 那条一样致命。）
+        if !sort.keys.first().map(|k| k.desc).unwrap_or(true) {
+            return false;
+        }
+        // 多键排序也不进：cursor 路径只认第一键，次键被整个忽略（legacy 路径会
+        // 逐键比较），两者结果不一致——「Shift 点第二个列头加一个次键」正是这种
+        // 用法，次键不生效看着就像排序没反应。
+        if sort.keys.len() > 1 {
             return false;
         }
         let guard = self.coverage.read().unwrap();

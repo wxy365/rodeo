@@ -1217,7 +1217,16 @@ impl EntryService {
         let primary_cf: &'static str = match &primary_field {
             SortField::UpdatedAt => cf::ENTRIES_IDX_UPDATED,
             SortField::CreatedAt => cf::ENTRIES_IDX_CREATED,
-            SortField::Title => cf::ENTRIES_IDX_TITLE,
+            SortField::Title => {
+                // 按标题排序不进 cursor 路径：早期标题索引键定不出 code 的起点，
+                // 解码必然查不到主表（列表恒空）；而且前向扫是标题升序、与 desc
+                // 相反。详见 `EntryIndexService::primary_cf` 的说明。调用方
+                // （graphql::query_entries）会先把 title 排序挡在 cursor 路径外，
+                // 这里的报错只是防止有人直接调本方法时拿到一个空列表。
+                return Err(AppError::InvalidQuery(
+                    "按标题排序暂不走 cursor 路径（Phase 1 未实现标题索引）".to_string(),
+                ));
+            }
             // Phase 1 暂不支持 sortable 标签的索引：key 布局里 tag_name 变长、
             // 解析 entry_code 需要反向匹配，跟 ENTRIES 主表的全量反查成本几乎
             // 等价于「退化到 Legacy 路径」。Phase 2 加 u16 tag_name_len 前缀解决。
@@ -1912,19 +1921,40 @@ pub fn labeling_ops(
 
 /// 从索引 key 的尾部解出 entry_code。Phase 1 仅内建三字段索引：
 /// - UpdatedAt/CreatedAt：key = (ws_id, desc_ms[8B], code)
-/// - Title：key = (ws_id, title_utf8, code)
+/// - Title：key = (ws_id, title_len_be16[2B], title_utf8, code)
+///
+/// Title 的长度前缀是必需的：标题长度不定，`(ws_id, title_utf8, code)` 里 code 的
+/// 起点定不下来——早期版本把 ws 之后的整段当成 code 去查主表，必然落空，
+/// 「按 title 排序 → 列表恒空」就是这么来的。
 fn decode_code_from_idx_key(
     primary_field: &crate::domain::view::SortField,
     ws_bytes: &[u8],
     key: &[u8],
 ) -> String {
     use crate::domain::view::SortField;
+    if key.len() < ws_bytes.len() {
+        return String::new();
+    }
     let after_ws = &key[ws_bytes.len()..];
     match primary_field {
         SortField::UpdatedAt | SortField::CreatedAt => {
+            if after_ws.len() < 8 {
+                return String::new();
+            }
             String::from_utf8_lossy(&after_ws[8..]).into_owned()
         }
-        SortField::Title => String::from_utf8_lossy(after_ws).into_owned(),
+        SortField::Title => {
+            // 长度前缀（2 字节大端）定位 code 起点。
+            if after_ws.len() < 2 {
+                return String::new();
+            }
+            let len = u16::from_be_bytes([after_ws[0], after_ws[1]]) as usize;
+            let start = 2 + len;
+            if after_ws.len() < start {
+                return String::new();
+            }
+            String::from_utf8_lossy(&after_ws[start..]).into_owned()
+        }
         _ => String::new(),
     }
 }

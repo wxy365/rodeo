@@ -342,11 +342,27 @@ pub fn idx_created_key(ws: Ulid, ts_ms: i64, code: &str) -> Vec<u8> {
     k
 }
 
-/// (ws_id, title_utf8, code)
+/// (ws_id, title_len_be, title_utf8, code)
+///
+/// 标题长度变长，早期版本直接拼 `title_utf8 + code`，于是「键里哪一段是 code」
+/// 无法定位——读路径按 ws 之后的全部字节当 code 去查主表必然落空，
+/// 按 Title 排序的列表恒为空（见 service/entry.rs 的 decode_code_from_idx_key）。
+///
+/// 现在把长度显式写进键：解码端按长度切出 code，位置确定。
+/// 长度用 2 字节大端，够放下 64KB 标题。
+///
+/// 注意：这个布局**不是字典序**——长度前缀排在标题前面，键序变成「先比长度、
+/// 再比标题」，与标题字典序不一致。所以本键目前只用来「定位条目」，
+/// 不能直接当排序键用（按标题排序仍走 legacy 路径，见
+/// service/entry_index.rs 的 primary_cf）。要真正进索引路径，Phase 2 得换成
+/// 保序编码（terminator / escape 方案），让标题字节序在键里保持不变。
 pub fn idx_title_key(ws: Ulid, title: &str, code: &str) -> Vec<u8> {
-    let mut k = Vec::with_capacity(16 + title.len() + code.len());
+    let bytes = title.as_bytes();
+    let len = bytes.len().min(u16::MAX as usize);
+    let mut k = Vec::with_capacity(16 + 2 + len + code.len());
     k.extend_from_slice(&ws.to_bytes());
-    k.extend_from_slice(title.as_bytes());
+    k.extend_from_slice(&(len as u16).to_be_bytes());
+    k.extend_from_slice(&bytes[..len]);
     k.extend_from_slice(code.as_bytes());
     k
 }
