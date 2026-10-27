@@ -39,6 +39,17 @@ use serde_json::Value;
 
 use crate::frontend::agent_panel::provide_agent_context;
 
+/// 多选模式自身的部件标记类。
+///
+/// 批量操作栏（`.batchbar`）与批量弹窗都带上它：`EntryTable` 里那条「点表格外
+/// 区域退出多选模式」的全局 mousedown 监听要认这些区域——它们只在多选模式下存在，
+/// 是同一次多选操作的一部分，点它们不该退出模式。
+///
+/// 不认会怎样：点批量按钮时 mousedown 先把模式关掉，batchbar 随即重渲染、按钮被
+/// 从 DOM 摘除；随后的 mouseup / click 落在别的元素上，批量设置标签 / AI 总结 /
+/// 归档 / 清除选择四个按钮就全都点不动（表现为「点了没反应」）。
+const MULTI_AREA: &str = "multi-area";
+
 /// 内置元数据关键字 → 本地化展示名。恒定并入 `/` 候选，与视图里有哪些标签无关
 /// （`src/domain/query.rs` 的 `RESERVED_FIELDS` 是同一份名单）。展示名通过 i18n 在
 /// 使用处即时解析，避免 `const` 里写死中文。
@@ -2073,7 +2084,9 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 let n = batch_selected.get().len();
                                 let in_mode = multi_select_mode.get();
                                 (n > 0 && in_mode).then(|| view! {
-                                    <div class="batchbar">
+                                    // multi-area 标记：批量操作栏是多选模式自己的部件，
+                                    // 点它不能退出多选模式（见 MULTI_AREA）。
+                                    <div class=format!("batchbar {}", MULTI_AREA)>
                                         <span class="mut">{i18n.tf("entry.selected_n", &[("n", &n.to_string())])}</span>
                                         <button class="btn pri sm" on:click=open_batch>{i18n.t("entry.batch_set_labels")}</button>
                                         <button class="btn sm" disabled=move || batch_busy.get() || ai_busy.get()
@@ -2205,7 +2218,8 @@ pub fn WorkspaceMain() -> impl IntoView {
             </div>
 
             {move || show_batch.get().then(|| view! {
-                <div class="dmodal" on:click=move |_| show_batch.set(false)>
+                // multi-area 标记：批量弹窗属于多选流程，点它（含点背景关闭）不退出多选模式。
+                <div class=format!("dmodal {}", MULTI_AREA) on:click=move |_| show_batch.set(false)>
                     <div class="panel dmbox" style="max-width:560px" on:click=|ev| ev.stop_propagation()>
                         <h3>{i18n.t("entry.batch_set_labels")}</h3>
                         <p class="mut">{move || i18n.tf("entry.batch_hint", &[("n", &batch_selected.get().len().to_string())])}</p>
@@ -2222,7 +2236,8 @@ pub fn WorkspaceMain() -> impl IntoView {
             })}
 
             {move || show_ai.get().then(|| view! {
-                <div class="dmodal" on:click=move |_| show_ai.set(false)>
+                // multi-area 标记：同批量设置标签，AI 总结也是多选流程的一环。
+                <div class=format!("dmodal {}", MULTI_AREA) on:click=move |_| show_ai.set(false)>
                     <div class="panel dmbox" style="max-width:520px" on:click=|ev| ev.stop_propagation()>
                         <h3>{i18n.t("entry.ai_summary")}</h3>
                         <p class="mut">{move || i18n.tf("entry.ai_summary_hint", &[("n", &batch_selected.get().len().to_string())])}</p>
@@ -3096,11 +3111,17 @@ fn EntryTable(
             // 只要点击目标在 `.tbl-scroll` 之内就保留模式；表格之外一律退出。
             // 用 composed_path 走完整冒泡路径，跟 editing_cell 那条监听同款——
             // 避免 Chrome 在 `<span>text</span>` 上偶发把 target 设成 Text 节点。
-            let in_scroll = ev.composed_path().iter().any(|node| {
+            //
+            // `.multi-area` 是多选模式自己的部件（批量操作栏 / 批量弹窗）：它们
+            // 不在 `.tbl-scroll` 里，但属于同一次多选操作，点它们同样保留模式。
+            let in_area = ev.composed_path().iter().any(|node| {
                 node.dyn_ref::<leptos::web_sys::Element>()
-                    .is_some_and(|el| el.class_list().contains("tbl-scroll"))
+                    .is_some_and(|el| {
+                        el.class_list().contains("tbl-scroll")
+                            || el.class_list().contains(MULTI_AREA)
+                    })
             });
-            if !in_scroll {
+            if !in_area {
                 mode_for_outside.set(false);
             }
         });
