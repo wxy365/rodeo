@@ -586,14 +586,66 @@ select:focus {
     width: 100%;
     border-collapse: collapse;
 }
-/* 横向滚动容器：列很多（标签列多 + 时间/创建人）或窄屏时给出水平滚动条。
-   `min-width: 0` 让 flexbox 把它当成可压缩节点而不是按内容撑开；
-   `flex: 1 1 auto` 让它填满 wmain 的剩余竖直高度。 */
+/* 表格滚动容器：纵向 + 横向都归它管。
+   列头 sticky 必须以「表格自己」为滚动容器——浏览器把 sticky 的参照系定在最近的
+   滚动容器上，中间若隔一层 overflow:auto 的盒子（旧的 `.view-body > div:first-child`），
+   sticky 直接失效（实测：表头跟着内容一起滚走）。所以表格那一列改成 flex 列，
+   表格区自己滚，分页器钉在下面（见 `.view-col.tbl-mode`）。
+   `min-width: 0` / `min-height: 0` 让 flexbox 把它当成可压缩节点而不是按内容撑开。 */
 .tbl-scroll {
-    overflow-x: auto;
-    overflow-y: auto;
+    overflow: auto;
     min-width: 0;
-    flex: 1 1 auto;
+    min-height: 0;
+    flex: 0 1 auto;
+}
+/* 表格那一列（`.view-body` 的第一列）：表格模式改成 flex 列——表格区自己滚，
+   批量栏 / 分页器钉在上下两端。时间轴模式维持原样：整列一起滚。 */
+.view-body > div.view-col.tbl-mode {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+/* 表格区：纵向 + 横向滚动都在这里，列头 sticky 以它为参照系。 */
+.view-body > div.view-col.tbl-mode .tbl-scroll {
+    flex: 0 1 auto;
+    min-height: 0;
+    overflow: auto;
+}
+/* 批量栏 / 分页器不参与压缩：表格矮时它们紧跟表格，表格高时钉在底部。 */
+.view-body > div.view-col.tbl-mode .batchbar,
+.view-body > div.view-col.tbl-mode .pager {
+    flex: 0 0 auto;
+}
+/* 以下几条只作用于条目表（`.tbl-scroll` 里那张），别影响设置页 / 自动化页
+   复用 `.tbl` 的小表格。 */
+/* 单元格一律不换行：右侧详情面板打开、表格横向空间被挤压时，行高保持不变
+   （不因文字折行而变高），多出来的宽度交给横向滚动条。 */
+.tbl-scroll .tbl th,
+.tbl-scroll .tbl td {
+    white-space: nowrap;
+}
+/* 表头常驻：表格纵向滚动时列头始终可见。`z-index` 让表头盖住从下面滚过去的行。
+   分隔线用 inset 阴影而不是 border——`border-collapse: collapse` 的边框由表格层
+   绘制、不跟着 sticky 位移，表头一吸顶，下沿的分隔线就跟着内容滚走了（实测）。 */
+.tbl-scroll .tbl thead th {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    border-bottom: none;
+    box-shadow: inset 0 -1px 0 var(--line);
+}
+/* 标题列：保底宽度（横向被挤压时不至于压成一条缝），超长标题在 460px 处截断
+   加省略号——不让一条长标题把整张表撑到几千像素宽（完整标题在详情面板里看）。 */
+.tbl-scroll .tbl td.title-cell {
+    min-width: 220px;
+}
+.tbl-scroll .tbl td.title-cell .tt {
+    display: inline-block;
+    max-width: 460px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: bottom;
 }
 .tbl th,
 .tbl td {

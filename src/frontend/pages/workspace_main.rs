@@ -619,7 +619,9 @@ pub fn WorkspaceMain() -> impl IntoView {
     }
     // ---- 分页状态 ----
     let page_signal = RwSignal::new(1i64);
-    let page_size: i64 = 20;
+    // 每页 50 条：表格列多、标签列窄，一页 20 条翻得太碎，看不出「一屏里有多少条」。
+    // 服务端 `PageInput::to_page` 的上限是 100，50 在范围内。
+    let page_size: i64 = 50;
     let total_signal = RwSignal::new(0i64);
     // 请求序号：并发请求乱序返回时只接受最新一次的结果。
     let req_seq = RwSignal::new(0u32);
@@ -2091,7 +2093,18 @@ pub fn WorkspaceMain() -> impl IntoView {
                             "view-body".to_string()
                         }
                     }>
-                        <div>
+                        <div class=move || {
+                            // 表格模式 / 时间轴模式对这一列的布局要求不同：
+                            // - 表格模式要「列头 sticky」，滚动容器必须是表格自己
+                            //   （浏览器把 sticky 的参照系定在最近的滚动容器上），
+                            //   所以这一列改成 flex 列：表格区自己滚，分页器钉在下面。
+                            // - 时间轴模式维持原样：整列一起滚，横向由时间轴自己管。
+                            if tl_active.get() {
+                                "view-col tl-mode".to_string()
+                            } else {
+                                "view-col tbl-mode".to_string()
+                            }
+                        }>
                             {move || {
                                 // 批量按钮栏只在持久多选模式下显示。
                                 // 多选模式由右键行序号开启；ESC / 点表格外区域退出，
@@ -3478,7 +3491,7 @@ fn EntryTable(
                                             ev.client_y(),
                                         ));
                                     }
-                                >{title_text.clone()}{counts
+                                ><span class="tt">{title_text.clone()}</span>{counts
                                         .get()
                                         .get(&code_for_badge)
                                         .copied()
