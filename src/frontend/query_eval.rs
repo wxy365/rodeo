@@ -280,6 +280,20 @@ fn eval_label(
                             _ => a <= b,
                         };
                     }
+                    // 枚举标签的值语义就是字符串（单值是字符串，多值是字符串数组），
+                    // 范围运算符按 UTF-8 code-point 序比较——与后端 `eval_label` 的
+                    // String / Enum 分支同构。多值枚举按「任一元素满足即真」。
+                    if s.value_type == "enum" && matches!(op, "gt" | "ge" | "lt" | "le") {
+                        let Some(b) = want.and_then(Value::as_str) else {
+                            return false;
+                        };
+                        return elem_strings(v).iter().any(|a| match op {
+                            "gt" => a.as_str() > b,
+                            "ge" => a.as_str() >= b,
+                            "lt" => a.as_str() < b,
+                            _ => a.as_str() <= b,
+                        });
+                    }
                 }
                 cmp_value(v, op, want)
             }

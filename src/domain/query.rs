@@ -260,13 +260,15 @@ pub fn extract_index_hints(query: &Query, schemas: &[LabelSchema]) -> Vec<IndexH
         if schema.value_type == LabelValueType::Account {
             continue;
         }
-        // 字符串标签的范围扫描不走索引：`encode_label_value_for_index` 用 4 字节
-        // 长度前缀 + UTF-8 编码，长度前缀的字节序不等于字符串字典序——
+        // 字符串 / 枚举标签的范围扫描不走索引：`encode_label_value_for_index` 用
+        // 4 字节长度前缀 + UTF-8 编码，长度前缀的字节序不等于字符串字典序——
         // 例如「z」编码为 `[0,0,0,1,'z']` 小于「aa」编码的 `[0,0,0,2,'a','a']`，
         // 跨长度比较会得出错误候选。等值（Eq / Ne / NotIn）不受影响，因为它们走
-        // 严格等值 scan_prefix，不比编码长度。
-        if schema.value_type == LabelValueType::String
-            && matches!(cond.op, Op::Gt | Op::Ge | Op::Lt | Op::Le)
+        // 严格等值 scan_prefix，不比编码长度。枚举的编码与字符串同源，同样要跳过。
+        if matches!(
+            schema.value_type,
+            LabelValueType::String | LabelValueType::Enum
+        ) && matches!(cond.op, Op::Gt | Op::Ge | Op::Lt | Op::Le)
         {
             continue;
         }
@@ -307,7 +309,7 @@ pub fn extract_index_hints(query: &Query, schemas: &[LabelSchema]) -> Vec<IndexH
 /// - `Present` / `Absent`：所有字段（标签 / 事件字段 / 内置元数据）。
 /// - `Eq` / `Ne` / `In` / `NotIn` / `Contains` / `NotContains`：所有非 Null 字段
 ///   （具体可用的字段类型由 `op_allowed` / `string_field_op_allowed` 控制）。
-/// - `Gt` / `Ge` / `Lt` / `Le`：数字、货币、时间型标签，以及字符串（按字典序）。
+/// - `Gt` / `Ge` / `Lt` / `Le`：数字、货币、时间型标签，以及字符串 / 枚举（按字典序）。
 /// - `SetContains` / `SetEquals`：**多值**标签（Account / Enum）的集合语义，单值不可用。
 /// - `Changed` / `ChangedValue`：仅标签字段，依赖 `EvalEnv::changed_during` /
 ///   `changed_value` 闭包；前端 wasm 闭包为 `None`，所以 wasm 端求值恒假。
@@ -849,6 +851,26 @@ impl Condition {
                             )));
                         }
                     }
+                    LabelValueType::Enum => {
+                        // 枚举的范围比较同样按字典序解释，比较值必须是字符串，
+                        // 且得是枚举值之一——与 In / NotIn 的候选值约束同思路：
+                        // 拼错的枚举值会让查询静默命中 0 条，报错更友好。
+                        if matches!(self.op, Op::Gt | Op::Ge | Op::Lt | Op::Le) {
+                            let Some(v) = self.value.as_ref().and_then(|v| v.as_str()) else {
+                                return Err(AppError::InvalidQuery(format!(
+                                    "枚举标签 {name} 的范围运算符比较值必须是字符串"
+                                )));
+                            };
+                            if !schema.enum_values.is_empty()
+                                && !schema.enum_values.iter().any(|e| e == v)
+                            {
+                                return Err(AppError::InvalidQuery(format!(
+                                    "标签 {name} 的比较值必须在枚举范围内: {}",
+                                    schema.enum_values.join(", ")
+                                )));
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1066,6 +1088,24 @@ impl Condition {
                             Op::Lt => a < b,
                             _ => a <= b,
                         };
+                    }
+                    // 枚举标签的值语义就是字符串（单值是 `Enum`，多值是 `EnumList`），
+                    // 范围运算符按 UTF-8 code-point 序比较——与上面的 String 分支同构。
+                    // 多值枚举按「任一元素满足即真」：与 Eq / Contains 在多值标签上的
+                    // 集合语义一致（`cmp_value` 的 `elem_strings` 同样按元素展开）。
+                    if vt == LabelValueType::Enum
+                        && matches!(self.op, Op::Gt | Op::Ge | Op::Lt | Op::Le)
+                    {
+                        let Some(b) = self.value.as_ref().and_then(|v| v.as_str()) else {
+                            return false;
+                        };
+                        let elems = elem_strings(&value.to_json());
+                        return elems.iter().any(|a| match self.op {
+                            Op::Gt => a.as_str() > b,
+                            Op::Ge => a.as_str() >= b,
+                            Op::Lt => a.as_str() < b,
+                            _ => a.as_str() <= b,
+                        });
                     }
                 }
                 cmp_value(&value.to_json(), self.op, self.value.as_ref())
@@ -1310,12 +1350,22 @@ fn op_allowed(vt: LabelValueType, op: Op, multi: bool) -> bool {
             op,
             Op::Eq | Op::Ne | Op::Contains | Op::NotContains | Op::In | Op::NotIn
         ),
-        // Enum：单值时与字符串等价（精确 / 子串 / 列表匹配）；
+        // Enum：单值时与字符串等价（精确 / 子串 / 列表匹配 / 字典序范围比较）；
         // 多值时额外允许 SetContains / SetEquals，语义是值集合而非字符串集合。
+        // 范围比较的值语义就是字符串（枚举值本身是字符串），与 String 分支同构。
         Enum => {
             let base = matches!(
                 op,
-                Op::Eq | Op::Ne | Op::Contains | Op::NotContains | Op::In | Op::NotIn
+                Op::Eq
+                    | Op::Ne
+                    | Op::Contains
+                    | Op::NotContains
+                    | Op::In
+                    | Op::NotIn
+                    | Op::Gt
+                    | Op::Ge
+                    | Op::Lt
+                    | Op::Le
             );
             let set_ops = multi && matches!(op, Op::SetContains | Op::SetEquals);
             base || set_ops
