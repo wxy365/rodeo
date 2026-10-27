@@ -818,6 +818,50 @@ pub fn from_native(vt: &str, s: &str) -> Option<String> {
     })
 }
 
+/// 浏览器所在时区的当前时刻。
+///
+/// 非 wasm 侧没有浏览器，退到 UTC：时间类控件都在客户端挂载（服务端渲染时
+/// 条目数据还没到），故这里只需要一个能编译、语义大致正确的值。
+#[cfg(target_arch = "wasm32")]
+pub fn local_now() -> crate::golayout::YmdHms {
+    let d = js_sys::Date::new_0();
+    crate::golayout::YmdHms {
+        year: js_sys::Date::get_full_year(&d) as i32,
+        // JS 的月份从 0 起。
+        month: js_sys::Date::get_month(&d) + 1,
+        day: js_sys::Date::get_date(&d),
+        hour: js_sys::Date::get_hours(&d),
+        minute: js_sys::Date::get_minutes(&d),
+        second: js_sys::Date::get_seconds(&d),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn local_now() -> crate::golayout::YmdHms {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or_default();
+    crate::golayout::from_seconds(secs)
+}
+
+/// 时间类标签（date / time / datetime）的默认填充值，**存储布局**格式：
+/// date → `2026-10-26`，time → `14:30:00`，datetime → `2026-10-26 14:30:00`。
+///
+/// 语义是「现在」按类型截断：日期型给今天，日期时间型给此刻，时间型给当前时刻。
+/// 控件层再用 `to_native` 转成浏览器能认的格式。
+pub fn default_time_stored(vt: &str) -> String {
+    let t = local_now();
+    match vt {
+        "datetime" => format!(
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+            t.year, t.month, t.day, t.hour, t.minute, t.second
+        ),
+        "time" => format!("{:02}:{:02}:{:02}", t.hour, t.minute, t.second),
+        _ => format!("{:04}-{:02}-{:02}", t.year, t.month, t.day),
+    }
+}
+
 /// 内置枚举值 → 友好展示（InProgress → In progress 等）。
 pub fn display_enum_value(v: &str) -> String {
     match v {

@@ -3,8 +3,8 @@ use leptos::task::spawn_local;
 use serde_json::Value;
 
 use super::components::{
-    chip_glyph, display_enum_value, from_native, is_native_time_layout, to_native, value_to_string,
-    AccountPicker, GlyphPos,
+    chip_glyph, default_time_stored, display_enum_value, from_native, is_native_time_layout,
+    to_native, value_to_string, AccountPicker, GlyphPos,
 };
 use super::graphql_client::{remove_labeling, set_labeling, LabelSchema, Labeling, Member};
 use super::i18n::{use_i18n, I18nController};
@@ -422,21 +422,48 @@ fn LabelRow(
                     "time" => "time",
                     _ => "datetime-local",
                 };
-                let current_native = to_native(&vt, &current);
+                // 没有已落库的值时，控件预填「现在」按类型截断的结果：日期型给今天，
+                // 日期时间型给此刻，时间型给当前时刻——打开日历即选中今天。
+                let needs_commit = current.is_empty();
+                let current_native = if needs_commit {
+                    to_native(&vt, &default_time_stored(&vt))
+                } else {
+                    to_native(&vt, &current)
+                };
+                // 控件的实时值：原生控件只在值**变化**时发 change，用户在日历里
+                // 点中的正是预填的那天时没有任何事件可挂，故「设置」按钮读这里。
+                let picked = RwSignal::new(current_native.clone());
+                // 两个闭包都要用 vt：输入框的即时落库、按钮的显式落库。
+                let vt_btn = vt.clone();
                 // 注意：原生 datetime-local 控件挂载时锁住当时 <html lang>，
                 // 后续改 lang 不会重新本地化。Leptos 0.8 的 HtmlElement::key
                 // 不存在；强制重建元素必须由父组件的 key 信号（Show/For）
                 // 或受控重挂载驱动。当前选择保持轻量，把日历界面与 lang
                 // 同步这一项列在已知限制里——需要切语言时刷新一次页面即恢复。
                 view! {
-                    <input class="inp" type=input_type prop:value=current_native on:change=move |ev| {
-                        let v = event_target_value(&ev);
-                        match from_native(&vt, &v) {
-                            Some(stored) => on_set.run(Value::String(stored)),
-                            // 清空原生控件 → 移除该标签，与 currency / email 分支一致。
-                            None => on_remove.run(()),
-                        }
-                    } />
+                    <div style="display:flex;gap:6px;align-items:center">
+                        <input class="inp" type=input_type prop:value=current_native
+                            on:input=move |ev| picked.set(event_target_value(&ev))
+                            on:change=move |ev| {
+                                let v = event_target_value(&ev);
+                                picked.set(v.clone());
+                                match from_native(&vt, &v) {
+                                    Some(stored) => on_set.run(Value::String(stored)),
+                                    // 清空原生控件 → 移除该标签，与 currency / email 分支一致。
+                                    None => on_remove.run(()),
+                                }
+                            } />
+                        {needs_commit.then(|| view! {
+                            // 预填的默认值还没落库：原生控件不发 change，得有个显式
+                            // 动作把它写下去（改了值的话 change 已经即时落库了）。
+                            <button class="btn" on:click=move |_| {
+                                let v = picked.get_untracked();
+                                if let Some(stored) = from_native(&vt_btn, &v) {
+                                    on_set.run(Value::String(stored));
+                                }
+                            }>{move || i18n.t("label.set")}</button>
+                        })}
+                    </div>
                 }
                 .into_any()
             }
