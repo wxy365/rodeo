@@ -1,3 +1,4 @@
+use leptos::html::Input;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use serde_json::Value;
@@ -34,8 +35,11 @@ pub fn LabelEditor(
     read_only: bool,
 ) -> impl IntoView {
     let i18n: I18nController = use_i18n();
-    // 正在新增、还没落库的标签名（本地待定行）。
-    let pending = RwSignal::new(None::<String>);
+    // 正在新增、还没落库的标签名（本地待定行）+ 该行的日期控件是否被「清除」过。
+    // 清除位跟 pending 一起存：pending 一变待定行就重建，控件按这个位决定填今天
+    // 还是留空——只存在行内的局部信号里的话，父级任何一次重渲染（保存条目后
+    // labels 更新等）都会把今天又填回去，用户刚清掉的值又冒出来。
+    let pending = RwSignal::new(None::<(String, bool)>);
 
     // 最近一次写值 / 删值被服务端拒绝的原因。此前 Result 被丢弃，非法值会静默回退。
     let error = RwSignal::new(None::<String>);
@@ -93,14 +97,21 @@ pub fn LabelEditor(
                 // 在 AnyView 路径里表现为「啥也不渲染」。
                 pending
                     .get()
-                    .map(|name| {
+                    .map(|(name, cleared)| {
                         let schema = schemas.get().into_iter().find(|s| s.name == name);
                         let title = row_title(&schema, &name);
                         let color = row_color(&schema, &Value::Null);
                         let cancel = Callback::new(move |_| pending.set(None));
+                        // 「清除」只改 pending 里的那一位：待定行随即重建，日期控件
+                        // 按新状态留空，而不是又被填回今天。
+                        let on_date_clear = {
+                            let n = name.clone();
+                            Callback::new(move |_| pending.set(Some((n.clone(), true))))
+                        };
                         view! {
                             <LabelRow title=title schema=schema value=None color=color
-                                members=members.get() on_set=set_callback(apply, name) on_remove=cancel />
+                                members=members.get() on_set=set_callback(apply, name)
+                                on_remove=cancel date_cleared=cleared on_date_clear=on_date_clear />
                         }
                     })
                     .into_any()
@@ -113,7 +124,7 @@ pub fn LabelEditor(
                 }
                 // 「＋ 添加标签」：只列还没打上的标签定义，避免和已有行重复。
                 let taken: Vec<String> = labels.get().into_iter().map(|l| l.label_name).collect();
-                let pend = pending.get();
+                let pend = pending.get().map(|(n, _)| n);
                 let avail: Vec<LabelSchema> = schemas
                     .get()
                     .into_iter()
@@ -143,7 +154,7 @@ pub fn LabelEditor(
                         if valueless || default.is_some() {
                             apply.run((v, Some(default.unwrap_or(Value::Null))));
                         } else {
-                            pending.set(Some(v));
+                            pending.set(Some((v, false)));
                         }
                     }>
                         <option value="" selected=true>{move || i18n.t("label.add")}</option>
@@ -266,6 +277,13 @@ fn LabelRow(
     on_set: Callback<Value>,
     on_remove: Callback<()>,
     #[prop(default = false)] read_only: bool,
+    /// 日期控件是否已被「清除」：清除过就不再回填今天（只有待定行用得上）。
+    #[prop(default = false)]
+    date_cleared: bool,
+    /// 日期控件被「清除」时通知外层——外层得记住这个状态，否则下一次重渲染
+    /// 又会把预填的今天填回去。
+    #[prop(default = Callback::new(|_: ()| {}))]
+    on_date_clear: Callback<()>,
 ) -> impl IntoView {
     let i18n: I18nController = use_i18n();
     let current = value.as_ref().map(value_to_string).unwrap_or_default();
@@ -422,9 +440,10 @@ fn LabelRow(
                     "time" => "time",
                     _ => "datetime-local",
                 };
-                // 没有已落库的值时，控件预填「现在」按类型截断的结果：日期型给今天，
-                // 日期时间型给此刻，时间型给当前时刻——打开日历即选中今天。
-                let needs_commit = current.is_empty();
+                // 待定行（还没有已落库的值）才预填「现在」按类型截断的结果：日期型
+                // 给今天，日期时间型给此刻，时间型给当前时刻——打开日历即选中今天。
+                // 被「清除」过的待定行留空，等用户自己挑 / 手输。
+                let needs_commit = value.is_none() && !date_cleared;
                 let current_native = if needs_commit {
                     to_native(&vt, &default_time_stored(&vt))
                 } else {
@@ -433,6 +452,9 @@ fn LabelRow(
                 // 控件的实时值：原生控件只在值**变化**时发 change，用户在日历里
                 // 点中的正是预填的那天时没有任何事件可挂，故「设置」按钮读这里。
                 let picked = RwSignal::new(current_native.clone());
+                // 「清除」要直接抹掉浏览器里的值：原生控件的值不是响应式绑定的，
+                // 只能戳 DOM（NodeRef 拿到 input 元素）。
+                let input_ref: NodeRef<Input> = NodeRef::new();
                 // 两个闭包都要用 vt：输入框的即时落库、按钮的显式落库。
                 let vt_btn = vt.clone();
                 // 注意：原生 datetime-local 控件挂载时锁住当时 <html lang>，
@@ -442,7 +464,7 @@ fn LabelRow(
                 // 同步这一项列在已知限制里——需要切语言时刷新一次页面即恢复。
                 view! {
                     <div style="display:flex;gap:6px;align-items:center">
-                        <input class="inp" type=input_type prop:value=current_native
+                        <input class="inp" type=input_type node_ref=input_ref prop:value=current_native
                             on:input=move |ev| picked.set(event_target_value(&ev))
                             on:change=move |ev| {
                                 let v = event_target_value(&ev);
@@ -456,12 +478,28 @@ fn LabelRow(
                         {needs_commit.then(|| view! {
                             // 预填的默认值还没落库：原生控件不发 change，得有个显式
                             // 动作把它写下去（改了值的话 change 已经即时落库了）。
-                            <button class="btn" on:click=move |_| {
+                            //
+                            // 用 mousedown 而不是 click：标题输入框失焦会改状态 → 重渲染
+                            // 把这一行的按钮换掉，click 就落不到按钮上了（mousedown 与
+                            // click 之间 DOM 被换掉，浏览器不会把 click 重定向过去）。
+                            // mousedown 在失焦重渲染之前跑，动作不会丢。
+                            <button class="btn" on:mousedown=move |_| {
                                 let v = picked.get_untracked();
                                 if let Some(stored) = from_native(&vt_btn, &v) {
                                     on_set.run(Value::String(stored));
                                 }
                             }>{move || i18n.t("label.set")}</button>
+                            // 「清除」：一键抹掉预填的今天，用户接着自己挑 / 手输别的
+                            // 日期。控件的值只能直接戳 DOM（原生控件不经响应式绑定）；
+                            // 另外通知外层记下「这行被清过了」，否则父级重渲染会把
+                            // 今天又填回来。
+                            <button class="btn" on:mousedown=move |_| {
+                                if let Some(el) = input_ref.get() {
+                                    el.set_value("");
+                                }
+                                picked.set(String::new());
+                                on_date_clear.run(());
+                            }>{move || i18n.t("label.clear")}</button>
                         })}
                     </div>
                 }

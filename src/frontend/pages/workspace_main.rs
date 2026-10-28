@@ -4055,7 +4055,7 @@ fn LabelCellEditor(
                         };
                         // 没有已落库的值时，控件预填「现在」按类型截断的结果：
                         // 日期型给今天，日期时间型给此刻，时间型给当前时刻。
-                        let needs_commit = current_text.is_empty();
+                        let needs_commit = current.is_none();
                         let current_native = if needs_commit {
                             to_native(&vt, &default_time_stored(&vt))
                         } else {
@@ -4064,12 +4064,15 @@ fn LabelCellEditor(
                         // 控件的实时值：原生控件只在值**变化**时发 change，用户在
                         // 日历里点中的正是预填的那天时没有事件，故「设置」按钮读这里。
                         let picked = RwSignal::new(current_native.clone());
+                        // 「清除」要直接抹掉浏览器里的值：原生控件的值不是响应式绑定
+                        // 的，只能戳 DOM（NodeRef 拿到 input 元素）。
+                        let input_ref: NodeRef<Input> = NodeRef::new();
                         // 两个闭包都要用 vt：输入框的即时落库、按钮的显式落库。
                         let vt_btn = vt.clone();
                         let on_set = on_set.clone();
                         view! {
                             <div style="display:flex;gap:6px;align-items:center">
-                                <input class="inp" type=input_type prop:value=current_native
+                                <input class="inp" type=input_type node_ref=input_ref prop:value=current_native
                                     on:input=move |ev| picked.set(event_target_value(&ev))
                                     on:change=move |ev| {
                                         let v = event_target_value(&ev);
@@ -4084,12 +4087,25 @@ fn LabelCellEditor(
                                 {needs_commit.then(|| view! {
                                     // 预填的默认值还没落库：原生控件不发 change，得有个
                                     // 显式动作把它写下去（改了值的话 change 已经即时落库）。
-                                    <button class="btn" on:click=move |_| {
+                                    //
+                                    // 用 mousedown 而不是 click：标题输入框失焦会改状态
+                                    // → 重渲染把这一行的按钮换掉，click 就落不到按钮上
+                                    // 了（mousedown 与 click 之间 DOM 被换掉，浏览器不
+                                    // 会把 click 重定向过去）。
+                                    <button class="btn" on:mousedown=move |_| {
                                         let v = picked.get_untracked();
                                         if let Some(stored) = from_native(&vt_btn, &v) {
                                             on_set.run(Value::String(stored));
                                         }
                                     }>{move || i18n.t("label.set")}</button>
+                                    // 「清除」：一键抹掉预填的今天，用户接着自己挑 / 手输
+                                    // 别的日期。清空本身不写入（本格不支持移除）。
+                                    <button class="btn" on:mousedown=move |_| {
+                                        if let Some(el) = input_ref.get() {
+                                            el.set_value("");
+                                        }
+                                        picked.set(String::new());
+                                    }>{move || i18n.t("label.clear")}</button>
                                 })}
                             </div>
                         }.into_any()
@@ -4931,6 +4947,9 @@ fn LabelDraft(rows: RwSignal<Vec<DraftLabel>>, members: RwSignal<Vec<Member>>) -
                             }.into_any()
                         } else {
                             let inp = r.text;
+                            // 「清除」要直接抹掉浏览器里的值：原生控件的值不是响应式
+                            // 绑定的，只能戳 DOM（NodeRef 拿到 input 元素）。
+                            let input_ref: NodeRef<Input> = NodeRef::new();
                             // 时间类默认布局走原生控件；自定义 Go 布局原生控件表达不了，
                             // 退回文本输入（与 LabelRow 一致）。金额 / 整数 / 浮点走数字
                             // 输入；其余为文本。
@@ -4952,8 +4971,28 @@ fn LabelDraft(rows: RwSignal<Vec<DraftLabel>>, members: RwSignal<Vec<Member>>) -
                             view! {
                                 <div class="lblrow">
                                     <span class="k">{ic_tag()}{title}</span>
-                                    <input class="inp" type=input_type prop:value=inp
+                                    <input class="inp" type=input_type node_ref=input_ref prop:value=inp
                                         on:input=move |ev| inp.set(event_target_value(&ev)) />
+                                    {is_time.then(|| view! {
+                                        // 日期类预填了今天：给一键清除，省得逐段删。
+                                        // 清空 = 本次不写这个标签（草稿里空值即不写）。
+                                        // 值为空时按钮不出现——没东西可清。
+                                        //
+                                        // mousedown 而不是 click：面板标题输入框失焦会改
+                                        // 状态 → 重渲染把这一行的按钮换掉，click 落不到
+                                        // 按钮上（mousedown 与 click 之间 DOM 被换掉）。
+                                        <Show when=move || !inp.get().is_empty()>
+                                            <button class="btn" on:mousedown=move |_| {
+                                                // 原生控件的值不经响应式绑定，只能戳 DOM。
+                                                if let Some(el) = input_ref.get() {
+                                                    el.set_value("");
+                                                }
+                                                inp.set(String::new());
+                                            }>
+                                                {move || i18n.t("label.clear")}
+                                            </button>
+                                        </Show>
+                                    })}
                                 </div>
                             }.into_any()
                         }
