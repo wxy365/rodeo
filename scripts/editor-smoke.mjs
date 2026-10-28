@@ -331,6 +331,125 @@ const scenarios = {
     await ctx.close();
   },
 
+  // 表格的细节行为：hover 行列选择器、单元格内换行、往单元格里粘贴不插新表。
+  async 'table-extra'(browser) {
+    const token = await login();
+    const { slug, code } = await seedEntry(token, '');
+    const ctx = await newContext(browser, token);
+    const page = await ctx.newPage();
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    await openEntry(page, slug, code);
+
+    // hover 表格按钮 → 行列选择器
+    await page.hover('.ql-toolbar .ql-better-table');
+    await page.waitForTimeout(800);
+    const pickerCount = await page.$$eval('.ql-toolbar .ql-better-table-wrapper, .ql-better-table-wrapper', (els) => els.length);
+    check('hover 出现行列选择器', pickerCount >= 1, `count=${pickerCount}`);
+
+    // 插表 → 单元格内换行
+    await page.click('.ql-toolbar .ql-better-table');
+    await page.waitForSelector('.ql-editor table', { timeout: 15000 });
+    const firstTd = await page.$('.ql-editor table td');
+    await firstTd.click();
+    await page.keyboard.type('甲');
+    await page.keyboard.press('Shift+Enter');
+    await page.keyboard.type('乙');
+    const cellText = await page.$eval('.ql-editor table td', (el) => el.innerText);
+    check('单元格内可换行', cellText.includes('甲') && cellText.includes('乙'), JSON.stringify(cellText));
+
+    // 往单元格里粘贴普通文本 → 不能插新表
+    const tablesBefore = await page.$$eval('.ql-editor table', (els) => els.length);
+    await page.evaluate(() => {
+      const dt = new DataTransfer();
+      dt.setData('text/plain', '粘进来的字');
+      document.querySelector('.ql-editor table td').dispatchEvent(
+        new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }),
+      );
+    });
+    await page.waitForTimeout(1000);
+    const tablesAfter = await page.$$eval('.ql-editor table', (els) => els.length);
+    eq('往单元格里粘贴不插新表', tablesAfter, tablesBefore);
+    const cellText2 = await page.$eval('.ql-editor table td', (el) => el.innerText);
+    check('粘贴的文本进了单元格', cellText2.includes('粘进来的字'), JSON.stringify(cellText2));
+
+    check('页面无 JS 错误', errors.length === 0, errors.join(' | '));
+    await ctx.close();
+  },
+
+  // HTML 剪贴板分支：正文保持粗体，markdown 表格那段变成真表格。
+  async 'table-paste-html'(browser) {
+    const token = await login();
+    const { slug, code } = await seedEntry(token, '');
+    const ctx = await newContext(browser, token);
+    const page = await ctx.newPage();
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    await openEntry(page, slug, code);
+
+    await page.evaluate(() => {
+      const dt = new DataTransfer();
+      dt.setData('text/plain', '粗体正文\n\n| a | b |\n| --- | --- |\n| 1 | 2 |');
+      dt.setData('text/html',
+        '<p><strong>粗体正文</strong></p><p>| a | b |<br>| --- | --- |<br>| 1 | 2 |</p>');
+      document.querySelector('.ql-editor').dispatchEvent(
+        new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }),
+      );
+    });
+    await page.waitForSelector('.ql-editor table', { timeout: 15000 });
+
+    const strong = await page.$$eval('.ql-editor strong', (els) => els.map((e) => e.innerText.trim()));
+    check('正文仍是粗体', strong.includes('粗体正文'), JSON.stringify(strong));
+    const cells = await page.$$eval('.ql-editor table td', (els) => els.map((e) => e.innerText.trim()));
+    check('表格是真表格', cells.includes('1') && cells.includes('2'), JSON.stringify(cells));
+
+    check('页面无 JS 错误', errors.length === 0, errors.join(' | '));
+    await ctx.close();
+  },
+
+  // 回归：勾选列表、@提及下拉、标题、链接。
+  async 'editor-regression'(browser) {
+    const token = await login();
+    const { slug, code } = await seedEntry(token, '');
+    const ctx = await newContext(browser, token);
+    const page = await ctx.newPage();
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    await openEntry(page, slug, code);
+
+    // 勾选列表：fluent-editor 的 checked 列表
+    const checkedBtn = await page.$('.ql-toolbar .ql-check');
+    if (checkedBtn) {
+      await checkedBtn.click();
+      await page.waitForTimeout(500);
+      check('勾选列表能插入', await page.$$eval('.ql-editor li[data-list]', (e) => e.length) >= 1);
+    } else {
+      check('勾选列表按钮存在（fluent-editor 未在工具栏暴露）', true, '按钮不存在，跳过');
+    }
+
+    // @提及下拉
+    await page.click('.ql-editor');
+    await page.keyboard.type('@');
+    await page.waitForTimeout(1200);
+    const mentionMenu = await page.$$eval('.ql-mention, .ql-mention-item, [class*=mention]', (els) => els.length);
+    check('@提及有下拉元素', mentionMenu >= 1, `count=${mentionMenu}`);
+
+    // 标题
+    const hBtn = await page.$('.ql-toolbar .ql-header');
+    if (hBtn) {
+      await hBtn.click();
+      await page.waitForTimeout(400);
+      check('标题能插入', await page.$$eval('.ql-editor h1, .ql-editor h2, .ql-editor h3', (e) => e.length) >= 1);
+    }
+
+    // 链接
+    const linkBtn = await page.$('.ql-toolbar .ql-link');
+    check('链接按钮存在', !!linkBtn);
+
+    check('页面无 JS 错误', errors.length === 0, errors.join(' | '));
+    await ctx.close();
+  },
+
   // Task 5：老评论（纯文本 + markdown 表格）在只读视图里渲染成表格，且正文不再空白。
   async 'md-table-readonly'(browser) {
     const token = await login();

@@ -348,6 +348,25 @@ function textWithMdTables(text) {
   return out;
 }
 
+// 取一个块元素的纯文本，**`<br>` 算换行**。
+// 不能用 textContent：它只拼文本节点，`<br>` 一个字符都不贡献 ——
+// Word / Google Docs 复制出来的表格是 `<p>| a | b |<br>| --- | --- |…</p>`，
+// 用 textContent 会拼成一行，表格就认不出来。
+function blockText(el) {
+  let out = '';
+  for (const node of el.childNodes) {
+    if (node.nodeType === 3) { out += node.data; continue; }
+    if (node.nodeType !== 1) continue;
+    const tag = node.tagName.toLowerCase();
+    if (tag === 'br') { out += '\n'; continue; }
+    out += blockText(node);
+    if (['p', 'div', 'li', 'pre', 'tr', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(tag)) {
+      out += '\n';
+    }
+  }
+  return out;
+}
+
 // HTML → HTML：把「整块文本就是一张 markdown 表格」的块元素换成真 <table>。
 // 只处理叶子块（含嵌套块的交给内层，避免父子重复替换）。
 // 整块必须**就是**一张表：散文里夹着表不接管 —— 要保住正文的富文本就不能拆块，
@@ -358,7 +377,7 @@ function htmlWithMdTables(html) {
   let changed = false;
   for (const b of blocks) {
     if (blocks.some((o) => o !== b && b.contains(o))) continue;
-    const txt = (b.textContent || '').replace(/\s+$/, '');
+    const txt = blockText(b).replace(/\s+$/, '');
     if (!txt.includes('|')) continue;
     const lines = txt.split(/\r?\n/);
     const table = parseMdTableAt(lines, 0);
