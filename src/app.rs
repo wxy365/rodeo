@@ -332,6 +332,16 @@ pub fn App() -> impl IntoView {
 
     view! {
         <Stylesheet id="tiny-editor" href="/tiny-editor/style.css"/>
+        // highlight.js 必须排在 glue.js 之前：fluent-editor.mjs 在**模块求值时**就
+        // 执行 `Ji.DEFAULTS = { hljs: window.hljs, ... }`，晚于它就位的话
+        // DEFAULTS.hljs 是 undefined，syntax 模块的构造函数会抛
+        // "Syntax module requires highlight.js"。
+        //
+        // 这里用普通 script（不带 type_="module"）：Leptos 的 <Script> 的 async_ /
+        // defer 两个 prop 默认都是 None（不渲染该属性），所以这是阻塞式经典脚本，
+        // 解析到它时立即同步执行；而 module script 按规范延迟到文档解析完才执行。
+        // 顺序因此被 HTML 规范保证，不依赖两者的相对位置之外的任何东西。
+        <Script src="/tiny-editor/hljs.min.js"/>
         <Script type_="module" src="/tiny-editor/glue.js"/>
         <Title text="Rodeo"/>
         // 顶栏抽到独立组件里：父组件把 `<Show>` 当兄弟元素用时，需要它的内部闭包是

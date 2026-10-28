@@ -5,12 +5,59 @@
 // 升级方式：npm 包名实为 @opentiny/fluent-editor（Quill 2.0 版）。
 //   - fluent-editor.mjs ← https://esm.sh/@opentiny/fluent-editor@<ver>/es2022/fluent-editor.bundle.mjs
 //   - style.css         ← https://unpkg.com/@opentiny/fluent-editor@<ver>/style.css
+//
+// hljs.min.js 是 highlight.js 11.12.0 的官方浏览器构建（BSD-3-Clause），
+// 从 cdnjs 抓的一份 UMD 产物，直接 commit 进仓库（和 fluent-editor.mjs 一样的做法）：
+//   - hljs.min.js       ← https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.12.0/highlight.min.js
+// 它必须在 glue.js 之前加载：fluent-editor.mjs 在模块求值时就快照 window.hljs，
+// 晚于它就位的话 syntax 模块的构造函数会抛 "Syntax module requires highlight.js"。
+// app.rs 里用的是普通 <script>（非 module），HTML 规范保证它先于 module script 执行。
 import FluentEditor from './fluent-editor.mjs';
 
 // 版本标记：诊断页会把它带进 trace，用来确认浏览器实际加载的是哪一版。
 // 每次修改本文件时同步更新。
-const RODEO_GLUE_VERSION = '2026-10-22-ime-7';
+const RODEO_GLUE_VERSION = '2026-10-28-syntax-1';
 window.__rodeo_glue_version__ = RODEO_GLUE_VERSION;
+
+// syntax 模块的语言下拉清单。fluent-editor 默认只给 14 项（没有 Rust/Go/
+// TypeScript/JSON/YAML），而这些 highlight.js 全都支持 —— 模块的 languages
+// 选项是可配的，这里换成开发者常用的完整清单。
+//
+// key 必须是 highlight.js 认识的语言名或别名（'cs' 是 csharp 的别名，
+// 'shell'/'bash' 都是独立条目），否则 hljs.highlight 会抛 "Unknown language"。
+const SYNTAX_LANGUAGES = [
+  { key: 'plain', label: '纯文本' },
+  { key: 'bash', label: 'Bash' },
+  { key: 'shell', label: 'Shell' },
+  { key: 'c', label: 'C' },
+  { key: 'cpp', label: 'C++' },
+  { key: 'cs', label: 'C#' },
+  { key: 'css', label: 'CSS' },
+  { key: 'diff', label: '差异对比' },
+  { key: 'go', label: 'Go' },
+  { key: 'java', label: 'Java' },
+  { key: 'javascript', label: 'JavaScript' },
+  { key: 'json', label: 'JSON' },
+  { key: 'kotlin', label: 'Kotlin' },
+  { key: 'markdown', label: 'Markdown' },
+  { key: 'php', label: 'PHP' },
+  { key: 'python', label: 'Python' },
+  { key: 'ruby', label: 'Ruby' },
+  { key: 'rust', label: 'Rust' },
+  { key: 'sql', label: 'SQL' },
+  { key: 'swift', label: 'Swift' },
+  { key: 'typescript', label: 'TypeScript' },
+  { key: 'xml', label: 'HTML/XML' },
+  { key: 'yaml', label: 'YAML' },
+];
+
+// 三个编辑器实例（可编辑分支 / 只读分支 / toHtml 渲染实例）都要挂同一个
+// syntax 配置。window.hljs 判空是必须的：syntax 模块的构造函数在
+// options.hljs == null 时会抛异常，抛在 new FluentEditor 里会让整个编辑器挂不上。
+function syntaxModule() {
+  if (!window.hljs) return {};
+  return { syntax: { hljs: window.hljs, languages: SYNTAX_LANGUAGES } };
+}
 
 // ── 列表 Delta 兼容层 ────────────────────────────────────────────────
 // fluent-editor 3.x 自带的 "formats/list" blot（内部类，注册在
@@ -188,6 +235,228 @@ async function uploadIntoEditor(editor, upload, files) {
     }
     editor.setSelection(index, 0);
   }
+}
+
+// ── markdown 表格 ────────────────────────────────────────────────────
+// 识别规则（Rust 侧 src/frontend/agent_panel.rs 有一份等价实现，两边必须逐条一致，
+// 否则同一张表在编辑器里是表、在对话面板里是竖线）：
+//   表格   := 表头行 分隔行 (数据行)*
+//   表头行 := 含 '|' 的行，切出 N 个单元格，N >= 2
+//   分隔行 := 每格匹配 /^:?-+:?$/，且格数与表头行相同
+//   数据行 := 紧跟分隔行之后的连续「含 '|' 的行」
+// 切格：按 '|' 切（'\|' 是字面竖线），首尾 trim；行内代码 span 里的 '|' 不算分隔符。
+// 分隔行的 ':' 对齐标记不实现；各行格数不一致时按最大列数补空。
+// 表头至少 2 格 —— 用来压掉「a | b」这种普通文本被误判成表格。
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// 把一行切成单元格。行内代码 span 与转义竖线先换成占位符，切完再还原。
+function splitMdRow(line) {
+  const codes = [];
+  let t = line.trim();
+  t = t.replace(/`[^`]*`/g, (m) => { codes.push(m); return `\u0000${codes.length - 1}\u0000`; });
+  t = t.replace(/\\\|/g, '\u0001');
+  const parts = t.split('|');
+  // 行首/行尾的竖线只是 markdown 装饰，切完要去掉对应的空串
+  if (t.startsWith('|')) parts.shift();
+  if (t.endsWith('|') && parts.length) parts.pop();
+  return parts.map((p) => p.trim()
+    .replace(/\u0001/g, '|')
+    .replace(/\u0000(\d+)\u0000/g, (_, i) => codes[Number(i)]));
+}
+
+function isMdSeparator(cells) {
+  return cells.length > 0 && cells.every((c) => /^:?-+:?$/.test(c));
+}
+
+// 从第 i 行开始试解析一张表。成功返回 { header, rows, start, end }，
+// end 是数据行之后的行号（exclusive）；失败返回 null。
+function parseMdTableAt(lines, i) {
+  if (i + 1 >= lines.length) return null;
+  const headerLine = lines[i];
+  if (!headerLine.includes('|')) return null;
+  const header = splitMdRow(headerLine);
+  if (header.length < 2) return null;
+  const sep = splitMdRow(lines[i + 1]);
+  if (sep.length !== header.length) return null;
+  if (!isMdSeparator(sep)) return null;
+  const rows = [];
+  for (let j = i + 2; j < lines.length; j++) {
+    if (!lines[j].includes('|')) break;
+    rows.push(splitMdRow(lines[j]));
+  }
+  const cols = rows.reduce((m, r) => Math.max(m, r.length), header.length);
+  while (header.length < cols) header.push('');
+  for (const r of rows) { while (r.length < cols) r.push(''); }
+  return { header, rows, start: i, end: i + 2 + rows.length };
+}
+
+// 扫出一段文本里的所有 markdown 表格（互不重叠）。
+function scanMdTables(lines) {
+  const out = [];
+  let i = 0;
+  while (i < lines.length) {
+    const t = parseMdTableAt(lines, i);
+    if (t) { out.push(t); i = t.end; }
+    else i++;
+  }
+  return out;
+}
+
+// 表格 → HTML。表头行整行加粗（用行内 <strong>，不用模块自带的「表头单元格」
+// 格式 —— 那个在只读导出时会变成 <h1>，套在 <td> 里很难看）。
+// 单元格内容按字面文本处理（编辑器路径不解析 markdown 标记）。
+function mdTableHtml(table) {
+  const t = document.createElement('table');
+  const tbody = document.createElement('tbody');
+  const mkRow = (cells, header) => {
+    const tr = document.createElement('tr');
+    for (const c of cells) {
+      const cell = document.createElement('td');
+      if (header) cell.innerHTML = `<strong>${escapeHtml(c)}</strong>`;
+      else cell.textContent = c;
+      tr.appendChild(cell);
+    }
+    return tr;
+  };
+  tbody.appendChild(mkRow(table.header, true));
+  for (const r of table.rows) tbody.appendChild(mkRow(r, false));
+  t.appendChild(tbody);
+  return t;
+}
+
+// 纯文本 → HTML：非表格段每行一个 <p>，表格段换成 <table>。
+function textWithMdTables(text) {
+  const lines = text.split(/\r?\n/);
+  const tables = scanMdTables(lines);
+  if (!tables.length) return null;
+  let out = '';
+  let pos = 0;
+  for (const t of tables) {
+    for (const line of lines.slice(pos, t.start)) out += `<p>${escapeHtml(line)}</p>`;
+    out += mdTableHtml(t).outerHTML;
+    pos = t.end;
+  }
+  for (const line of lines.slice(pos)) out += `<p>${escapeHtml(line)}</p>`;
+  return out;
+}
+
+// HTML → HTML：把「整块文本就是一张 markdown 表格」的块元素换成真 <table>。
+// 只处理叶子块（含嵌套块的交给内层，避免父子重复替换）。
+// 整块必须**就是**一张表：散文里夹着表不接管 —— 要保住正文的富文本就不能拆块，
+// 那样一个 <pre> 里既有散文又有表格就会整块保持原样。
+function htmlWithMdTables(html) {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  const blocks = Array.from(doc.body.querySelectorAll('p, pre, div, li'));
+  let changed = false;
+  for (const b of blocks) {
+    if (blocks.some((o) => o !== b && b.contains(o))) continue;
+    const txt = (b.textContent || '').replace(/\s+$/, '');
+    if (!txt.includes('|')) continue;
+    const lines = txt.split(/\r?\n/);
+    const table = parseMdTableAt(lines, 0);
+    if (!table || table.end !== lines.length) continue;
+    const t = mdTableHtml(table);
+    b.parentNode.replaceChild(doc.importNode(t, true), b);
+    changed = true;
+  }
+  if (!changed) return null;
+  return doc.body.innerHTML;
+}
+
+// 粘贴 markdown 表格 → 编辑器原生表格。
+//
+// 接管条件（两个都要满足）：
+//   · 剪贴板里没有图片文件（有则交给 attachImageUpload 的守卫，否则两个
+//     capture 监听都会 preventDefault，图片就传不上去了）
+//   · 光标不在表格里：better-table 对表格单元格有专门的粘贴处理（过滤 op、
+//     重建 cell-line、列宽平衡），我们一旦 preventDefault 就把它整个绕开，
+//     「往单元格里粘贴」会变成「粘什么都插一张新表」。
+function attachMarkdownTablePaste(el, editor) {
+  el.addEventListener('paste', (e) => {
+    const dt = e.clipboardData;
+    if (!dt) return;
+    const hasImage = dt.items && Array.from(dt.items)
+      .some((it) => it.kind === 'file' && (it.type || '').startsWith('image/'));
+    if (hasImage) return;
+
+    const sel = editor.getSelection();
+    if (sel) {
+      const fmt = editor.getFormat(sel.index) || {};
+      if (fmt['table-cell-line'] || fmt['table-col']) return;
+    }
+
+    const text = dt.getData('text/plain') || '';
+    const html = dt.getData('text/html') || '';
+    let newHtml = null;
+    if (html) {
+      newHtml = htmlWithMdTables(html);
+      if (!newHtml) return;          // 没有 markdown 表格 → 交给 Quill 正常处理
+    } else {
+      newHtml = textWithMdTables(text);
+      if (!newHtml) return;
+    }
+
+    let delta;
+    try {
+      // editor.clipboard.convert 是 Quill 公开的同步方法：走一遍 clipboard
+      // matcher，把 HTML 变成 Delta。better-table 自带的 td/tr matcher 在这条
+      // 路径上，表格因此是「模块自己认的」原生表格，而不是我们手搓的 ops。
+      delta = editor.clipboard.convert({ html: newHtml, text: '' });
+    } catch (err) {
+      return;
+    }
+    if (!delta || !delta.ops || !delta.ops.length) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+    const index = sel ? sel.index : editor.getLength();
+    const Delta = FluentEditor.imports && FluentEditor.imports.delta;
+    const full = Delta ? new Delta().retain(index).concat(delta) : delta;
+    editor.updateContents(full, 'user');
+    try { editor.setSelection(index + delta.length(), 0); } catch (e2) { /* 位置算不准也不该挡住粘贴 */ }
+  }, true);
+}
+
+// 只读渲染路径：把 Delta op 里的 markdown 表格拆成表格 ops。
+// 表格 ops 同样走 clipboard matcher 拿，保证与编辑器产出的形状一致。
+function splitOpsByMdTables(ops, editor) {
+  const out = [];
+  for (const op of ops) {
+    const ins = op && op.insert;
+    if (typeof ins !== 'string' || !ins.includes('|')) { out.push(op); continue; }
+    const lines = ins.split('\n');
+    const tables = scanMdTables(lines);
+    if (!tables.length) { out.push(op); continue; }
+    let pos = 0;
+    for (const t of tables) {
+      if (t.start > pos) {
+        const text = lines.slice(pos, t.start).join('\n');
+        if (text) out.push({ insert: text, attributes: op.attributes });
+      }
+      try {
+        const tdelta = editor.clipboard.convert({ html: mdTableHtml(t).outerHTML, text: '' });
+        for (const o of tdelta.ops) out.push(o);
+      } catch (err) {
+        // 转换不了就退回纯文本，不丢内容
+        const text = lines.slice(t.start, t.end).join('\n');
+        if (text) out.push({ insert: text, attributes: op.attributes });
+      }
+      pos = t.end;
+    }
+    if (pos < lines.length) {
+      const text = lines.slice(pos).join('\n');
+      if (text) out.push({ insert: text, attributes: op.attributes });
+    }
+  }
+  return out;
 }
 
 // Safari 提交输入法时会把列表项拆掉（2026-10-22 Safari 26.2 + 系统拼音 trace）：
@@ -426,8 +695,18 @@ window.__rodeo_tiny_editor__ = {
         theme: 'snow',
         placeholder: '',
         readOnly: true,
-        modules: { toolbar: false },
+        modules: {
+          toolbar: false,
+          // 只读视图也要高亮代码块（分享页的条目正文走这条路）。
+          // window.hljs 判空同可编辑分支：syntax 模块缺 hljs 会抛异常，
+          // 抛在 new FluentEditor 里会让整个编辑器挂不上。
+          ...syntaxModule(),
+        },
       });
+      // 标记只读：syntax 模块会把语言下拉（<select>）作为 code-block 的 uiNode
+      // 挂进内容里，只读视图不该有可交互控件。用 CSS 藏掉它
+      // （见 style/main.css 的 .ql-readonly select）。
+      el.classList.add('ql-readonly');
       if (deltaJson) {
         try {
           readOnlyEditor.setContents(normalizeListAttributes(JSON.parse(deltaJson)), 'silent');
@@ -485,13 +764,33 @@ window.__rodeo_tiny_editor__ = {
           },
         }
       : false;
+    // syntax 模块（Quill 自带的）：给 code-block 挂语言下拉 + highlight.js 高亮。
+    //
+    // 两个坑：
+    // 1. 它在构造函数里检查 `options.hljs == null` 就抛异常
+    //    （"Syntax module requires highlight.js"）。抛在 new FluentEditor 里
+    //    会让整个编辑器不出现（正文区空白），所以必须先判 window.hljs。
+    // 2. fluent-editor.mjs 在**模块求值时**就执行 `Ji.DEFAULTS = { hljs: window.hljs }`，
+    //    所以 hljs 必须在那个 bundle 求值之前就在页面上——app.rs 里把
+    //    /tiny-editor/hljs.min.js 排在 glue.js 之前就是为此。
+    //
+    // 显式传 hljs 而不是依赖 DEFAULTS 的快照：将来万一调整了 script 顺序，
+    // DEFAULTS.hljs 变 undefined，这里传的值仍然兜得住。
     const modules = {
+      ...syntaxModule(),
       toolbar: [
         ['bold', 'italic', 'underline', 'strike'],
         [{ header: 1 }, { header: 2 }, { header: 3 }],
         [{ list: 'ordered' }, { list: 'bullet' }],
         ['blockquote', 'code-block'],
         ['link'],
+        // better-table 模块本身已经在跑（themes/snow 的 DEFAULTS.modules 里
+        // 带了 "better-table": {operationMenu:{color:true}}），只差工具栏这一行。
+        //
+        // 这里不用再写 'better-table': true —— 主题默认已经带了，写了也没坏处
+        //（Quill 把 true 映射成 {}，lodash merge 用空对象做源不会覆盖目标，
+        // 主题的 operationMenu 配置原样保留），但主题默认那份更完整，不必重复。
+        ['better-table'],
         ['clean'],
       ],
     };
@@ -507,6 +806,7 @@ window.__rodeo_tiny_editor__ = {
     el.__rodeo_aux = Array.from(el.parentNode.children).filter((n) => !before.has(n));
     el.__rodeo_aux.forEach((n) => auxOwners.set(n, el));
     attachImageUpload(el, editor, opts);
+    attachMarkdownTablePaste(el, editor);
     repairCompositionText(el, editor);
 
     if (deltaJson) {
@@ -545,17 +845,52 @@ window.__rodeo_tiny_editor__ = {
       document.body.appendChild(renderHost);
       renderEditor = new FluentEditor(renderHost, {
         readOnly: true,
-        modules: { toolbar: false },
+        modules: {
+          toolbar: false,
+          // 渲染实例用 default theme，没有 better-table；table-view blot 的
+          // scroll 处理器 getModule('better-table') 缺模块会 TypeError。
+          'better-table': true,
+          // 只读实例也要挂 syntax，否则评论里的代码块导出出来是纯文本。
+          // window.hljs 判空同可编辑分支：syntax 模块缺 hljs 会抛异常。
+          ...syntaxModule(),
+        },
       });
     }
     try {
-      const parsed = normalizeListAttributes(JSON.parse(deltaJson));
-      renderEditor.setContents(parsed, 'silent');
+      // 兜底条件是「解析不出 Delta」而不只是「JSON.parse 失败」：老正文可能
+      // 恰好是 123、"foo"、{"a":1} —— JSON.parse 成功但不是 Delta 形状，
+      // setContents 会抛错，还是落进 catch → 空白。所以判定写成：
+      // parse 失败 **或** 结果不是 {ops:[…]} / [...] 形状 → 一律按纯文本兜底。
+      // 这一步顺带修掉一个现存缺陷：老评论存的是纯文本，现在 toHtml 直接
+      // catch 返回空串，评论正文在只读视图里是空白。
+      let ops;
+      try {
+        const parsed = JSON.parse(deltaJson);
+        const arr = parsed && Array.isArray(parsed.ops) ? parsed.ops
+          : (Array.isArray(parsed) ? parsed : null);
+        if (!arr) throw new Error('不是 Delta 形状');
+        ops = normalizeListAttributes({ ops: arr }).ops;
+      } catch (e) {
+        ops = [{ insert: String(deltaJson) }];
+      }
+      // 老正文里的 markdown 表格（纯文本形态）拆成表格 ops。
+      ops = splitOpsByMdTables(ops, renderEditor);
+      renderEditor.setContents({ ops }, 'silent');
+      // syntax 模块的高亮是 debounce 1s 的（SCROLL_OPTIMIZE 触发），
+      // 刚 setContents 就导出会拿到没高亮的纯文本。这里手动同步跑一次。
+      const syntax = renderEditor.getModule('syntax');
+      if (syntax && typeof syntax.highlight === 'function') {
+        try { syntax.highlight(); } catch (e) { /* 高亮失败不影响导出 */ }
+      }
       // 导出窗口：只在这段同步调用里让 ListBlot.formats() 返回字符串，
       // 导出器才能把相邻列表项归进同一个 <ol>/<ul>。
       exportingSemantic = true;
       try {
-        return renderEditor.getSemanticHTML();
+        let html = renderEditor.getSemanticHTML();
+        // 语言下拉是 code-block 的 uiNode，正常不进 getSemanticHTML 的输出；
+        // 万一进去了也不能漏到只读视图里。
+        html = html.replace(/<select\b[\s\S]*?<\/select>/gi, '');
+        return html;
       } finally {
         exportingSemantic = false;
       }

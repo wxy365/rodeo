@@ -136,6 +136,15 @@
     }
 }
 
+/* 只读视图（分享页的条目正文）里，syntax 模块会把语言下拉（<select>）作为
+   code-block 的 uiNode 挂进内容里。代码块照样高亮，但下拉是可交互控件，
+   只读页面不该有——藏掉它。`.ql-readonly` 这个类由 glue.js 的 readonly 分支
+   给容器加上（别在 Rust 侧写 class：Leptos 重渲染会把 class 整体重写，
+   把这里加的类抹掉）。 */
+.ql-readonly select {
+    display: none;
+}
+
 /* fluent-editor 把工具栏整条写死成亮色：背景 `#fff`、SVG 描边/填充
    `#444`、按钮 hover/active 背景 `#f0f0f0`、`.ql-toolbar` 边框 `#adb0b8`、
    hover/active 文字 `#06c`。在深底上要么看不清（白底 + 近白描边），
@@ -3299,6 +3308,30 @@ input[type="color"].sw:disabled {
 .agent-msg a {
     color: var(--blue);
     text-decoration: underline;
+}
+/* 模型输出的 markdown 表格（render_markdown 的产物）。
+   不复用 `.tbl` —— 那是视图表格，结构与配色都不同。
+   宽表横向滚动而不是把聊天区撑破。 */
+.agent-msg table.md-table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 6px 0;
+    font-size: 0.92em;
+    display: block;
+    overflow-x: auto;
+    max-width: 100%;
+}
+.agent-msg table.md-table th,
+.agent-msg table.md-table td {
+    border: 1px solid var(--line);
+    padding: 4px 8px;
+    text-align: left;
+    vertical-align: top;
+    white-space: nowrap;
+}
+.agent-msg table.md-table th {
+    background: var(--bg3);
+    font-weight: 600;
 }
 /* 工具调用折叠块：默认收起，summary 上展示「✓/✗ + 工具名」，展开看 args / result。
  * 用 <details> 原生折叠而不是自实现 click handler：键盘可达、SSR 输出即正确、
