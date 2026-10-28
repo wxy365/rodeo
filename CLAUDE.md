@@ -28,7 +28,7 @@ make reset-data    # rm -rf data（bincode 结构变更、调试需要时使用�
 ```bash
 make build-linux        # Docker 内交叉编译，产物 dist/rodeo + dist/site/
 make build-linux-host   # 宿主 zig 交叉编译，更快但只出二进制（不出 site）
-make package-linux      # 打成 dist/rodeo-<arch>.tar.gz，含 start.sh
+make package-linux      # 打成 dist/rodeo-<arch>.tar.gz，含 start.sh（后台常驻）
 ```
 
 `make help` 列出全部目标。所有 Linux/网络细节（zig musl 头、registry mirror、下载代理）都在 `Makefile` 注释里——如果要新加交叉编译选项，先读那一段。
