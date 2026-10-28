@@ -1502,6 +1502,10 @@ pub struct View {
     /// 视图描述；未配置为空串。
     #[serde(default)]
     pub description: String,
+    /// 视图最后一次改动的时间戳（RFC3339）。作乐观并发令牌用：改配置时带上
+    /// 打开弹窗时拿到的这份值，服务端发现期间被人改过就拒绝写入。
+    #[serde(default)]
+    pub updated_at: String,
 }
 
 #[derive(Clone, serde::Deserialize)]
@@ -1519,7 +1523,7 @@ pub struct EntryPage {
 }
 
 const VIEW_FIELDS: &str = "id name query queryExpr sorts { field desc } columns isShared ownerId \
-     titleColors entryCount isDefault timeline { start end person } description";
+     titleColors entryCount isDefault timeline { start end person } description updatedAt";
 
 /// 排序键链 → GraphQL 变量值。空数组会被服务端解释为「用默认排序」。
 fn sorts_var(sorts: &[ViewSort]) -> Value {
@@ -1675,21 +1679,58 @@ pub async fn update_view(
     columns: &[String],
     is_shared: bool,
     title_colors: &Value,
+    expected_updated_at: Option<&str>,
 ) -> Result<View, String> {
     let q = format!(
-        "mutation($id: ID!, $n: String!, $q: JSON!, $s: [SortInput!], $c: [String!]!, $sh: Boolean!, $tc: JSON!) {{ \
-         updateView(id: $id, name: $n, query: $q, sorts: $s, columns: $c, isShared: $sh, titleColors: $tc) {{ {VIEW_FIELDS} }} }}"
+        "mutation($id: ID!, $n: String!, $q: JSON!, $s: [SortInput!], $c: [String!]!, $sh: Boolean!, $tc: JSON!, $eu: String) {{ \
+         updateView(id: $id, name: $n, query: $q, sorts: $s, columns: $c, isShared: $sh, titleColors: $tc, expectedUpdatedAt: $eu) {{ {VIEW_FIELDS} }} }}"
     );
     let data = graphql(
         &q,
         json!({
             "id": id, "n": name, "q": query,
             "s": sorts_var(sorts), "c": columns, "sh": is_shared,
-            "tc": title_colors,
+            "tc": title_colors, "eu": expected_updated_at,
         }),
     )
     .await?;
     serde_json::from_value(data.get("updateView").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+/// 只改排序：其余字段不动。
+///
+/// 走独立 mutation 而不是 `updateView` 的整条覆盖：排序是点表头就落库的高频操作，
+/// 整条覆盖会把客户端本地那份**旧名字**一起写回库，把别人刚改的视图名顶回旧值。
+pub async fn update_view_sort(id: &str, sorts: &[ViewSort]) -> Result<View, String> {
+    let q = format!(
+        "mutation($id: ID!, $s: [SortInput!]) {{ \
+         updateViewSort(id: $id, sorts: $s) {{ {VIEW_FIELDS} }} }}"
+    );
+    let data = graphql(&q, json!({ "id": id, "s": sorts_var(sorts) })).await?;
+    serde_json::from_value(data.get("updateViewSort").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+/// 只改共享标记：其余字段不动（理由同 `update_view_sort`）。
+pub async fn update_view_shared(id: &str, is_shared: bool) -> Result<View, String> {
+    let q = format!(
+        "mutation($id: ID!, $sh: Boolean!) {{ \
+         updateViewShared(id: $id, isShared: $sh) {{ {VIEW_FIELDS} }} }}"
+    );
+    let data = graphql(&q, json!({ "id": id, "sh": is_shared })).await?;
+    serde_json::from_value(data.get("updateViewShared").cloned().unwrap_or(Value::Null))
+        .map_err(|e| e.to_string())
+}
+
+/// 只改查询条件：其余字段不动（理由同 `update_view_sort`）。
+pub async fn update_view_query(id: &str, query: &Value) -> Result<View, String> {
+    let q = format!(
+        "mutation($id: ID!, $q: JSON!) {{ \
+         updateViewQuery(id: $id, query: $q) {{ {VIEW_FIELDS} }} }}"
+    );
+    let data = graphql(&q, json!({ "id": id, "q": query })).await?;
+    serde_json::from_value(data.get("updateViewQuery").cloned().unwrap_or(Value::Null))
         .map_err(|e| e.to_string())
 }
 

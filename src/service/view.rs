@@ -103,15 +103,7 @@ impl ViewService {
             }
         }
         // 排序键引用的标签必须存在，与列同一套校验。
-        for k in &sort.keys {
-            if let SortField::Label(n) = &k.field {
-                if !schemas.iter().any(|s| &s.name == n) {
-                    return Err(AppError::InvalidQuery(format!(
-                        "排序引用了不存在的标签: {n}"
-                    )));
-                }
-            }
-        }
+        validate_sort_keys(&schemas, sort)?;
         query.validate(&schemas)?;
         // 标题色规则：颜色格式 + 条件 schema 校验（§7）。
         for r in title_colors {
@@ -119,6 +111,12 @@ impl ViewService {
             r.query.validate(&schemas)?;
         }
         Ok(())
+    }
+
+    /// 只校验查询条件——「只改条件」这种局部更新用（其余字段不在本次改动范围内）。
+    fn validate_query(&self, ws: Ulid, query: &Query) -> Result<(), AppError> {
+        let schemas = self.schemas(ws)?;
+        query.validate(&schemas)
     }
 
     /// 基础视图的 id：每个 workspace 一条指针，指向那个「始终存在、不可删除」的视图。
@@ -344,6 +342,35 @@ impl ViewService {
         self.store.write_batch(audit_ops(&log)?)
     }
 
+    /// 落库一次视图改动：审计 + 记录同一批写（`write_batch` 原子）。
+    ///
+    /// 所有「改视图」的路径都从这里走，保证审计快照与实际落库内容一致。
+    fn write_view(
+        &self,
+        actor: Ulid,
+        view: &View,
+        before: String,
+        action: AuditAction,
+    ) -> Result<View, AppError> {
+        let audit = AuditLog::new(
+            action,
+            actor,
+            "view",
+            &view.id.to_string(),
+            Some(view.workspace_id),
+            Some(before),
+            Some(serde_json::to_string(view).unwrap_or_default()),
+        );
+        let mut ops = audit_ops(&audit)?;
+        ops.push(BatchOp::put(
+            cf::VIEWS,
+            keys::view_key(view.id).to_vec(),
+            view,
+        )?);
+        self.store.write_batch(ops)?;
+        Ok(view.clone())
+    }
+
     pub fn list(&self, actor: Ulid, ws: Ulid) -> Result<Vec<View>, AppError> {
         let rows = self
             .store
@@ -388,8 +415,20 @@ impl ViewService {
         columns: Vec<String>,
         is_shared: bool,
         title_colors: Vec<TitleColorRule>,
+        expected_updated_at: Option<&str>,
     ) -> Result<View, AppError> {
         let mut view = self.get(id)?.ok_or(AppError::NotFound)?;
+        // 乐观并发：调用方是基于某个版本改的配置，落库前发现库里 updated_at 已经
+        // 变了（别人先改过）就报冲突——宁可让用户重开一次弹窗，也不要把别人的
+        // 改动静默顶掉。与 Entry 的 `expected_updated_at` 同一套语义。
+        if let Some(expected) = expected_updated_at {
+            let expected = chrono::DateTime::parse_from_rfc3339(expected)
+                .map_err(|_| AppError::Internal("时间格式无效".to_string()))?
+                .with_timezone(&Utc);
+            if view.updated_at != expected {
+                return Err(AppError::ConflictDetected);
+            }
+        }
         self.validate(
             view.workspace_id,
             name,
@@ -415,20 +454,50 @@ impl ViewService {
         // 基础视图必须对所有成员可见，否则他人列表里就少了这个入口。
         view.is_shared = is_shared || is_default;
         view.updated_at = Utc::now();
-        let after = serde_json::to_string(&view).unwrap_or_default();
-        let audit = AuditLog::new(
-            AuditAction::ViewUpdated,
-            actor,
-            "view",
-            &id.to_string(),
-            Some(view.workspace_id),
-            Some(before),
-            Some(after),
-        );
-        let mut ops = audit_ops(&audit)?;
-        ops.push(BatchOp::put(cf::VIEWS, keys::view_key(id).to_vec(), &view)?);
-        self.store.write_batch(ops)?;
-        Ok(view)
+        self.write_view(actor, &view, before, AuditAction::ViewUpdated)
+    }
+
+    /// 只改排序：名字 / 条件 / 列 / 标题色一律不碰。
+    ///
+    /// 排序是「点一下表头就自动落库」的高频操作。若走整条覆盖，任何持有旧副本的
+    /// 客户端（另一个浏览器、另一个标签页、开着很久没刷新的页面）点一下表头，
+    /// 就会把它那份**旧名字**连同旧排序一起写回库，把别人刚改的视图名顶回旧值
+    /// ——「我改了名字，刷新后又变回旧的了」的根因就在这里。
+    pub fn update_sort(&self, actor: Ulid, id: Ulid, sort: SortSpec) -> Result<View, AppError> {
+        let mut view = self.get(id)?.ok_or(AppError::NotFound)?;
+        let schemas = self.schemas(view.workspace_id)?;
+        validate_sort_keys(&schemas, &sort)?;
+        let before = serde_json::to_string(&view).unwrap_or_default();
+        // 基础视图的排序是临时态（ad-hoc），不落库——与 `update` 的既有规则一致。
+        if self.default_view_id(view.workspace_id)? != Some(id) {
+            view.sort = sort;
+        }
+        view.updated_at = Utc::now();
+        self.write_view(actor, &view, before, AuditAction::ViewUpdated)
+    }
+
+    /// 只改共享标记：其余字段一律不碰。
+    pub fn update_shared(&self, actor: Ulid, id: Ulid, is_shared: bool) -> Result<View, AppError> {
+        let mut view = self.get(id)?.ok_or(AppError::NotFound)?;
+        let before = serde_json::to_string(&view).unwrap_or_default();
+        // 基础视图必须对所有成员可见，否则他人列表里就少了这个入口。
+        let is_default = self.default_view_id(view.workspace_id)? == Some(id);
+        view.is_shared = is_shared || is_default;
+        view.updated_at = Utc::now();
+        self.write_view(actor, &view, before, AuditAction::ViewUpdated)
+    }
+
+    /// 只改查询条件（「保存视图」按钮：把筛选栏当前的 AST 落到视图上）。
+    pub fn update_query(&self, actor: Ulid, id: Ulid, query: Query) -> Result<View, AppError> {
+        let mut view = self.get(id)?.ok_or(AppError::NotFound)?;
+        self.validate_query(view.workspace_id, &query)?;
+        let before = serde_json::to_string(&view).unwrap_or_default();
+        // 基础视图的条件是临时态，不落库——与 `update` 的既有规则一致。
+        if self.default_view_id(view.workspace_id)? != Some(id) {
+            view.query = query;
+        }
+        view.updated_at = Utc::now();
+        self.write_view(actor, &view, before, AuditAction::ViewUpdated)
     }
 
     /// 摘除一个工作区里所有视图「表格列」对 `label_name` 的引用：当标签被删时
@@ -709,6 +778,20 @@ impl ViewService {
     }
 }
 
+/// 排序键引用的标签必须存在（与列同一套校验）。整条保存与「只改排序」共用。
+fn validate_sort_keys(schemas: &[LabelSchema], sort: &SortSpec) -> Result<(), AppError> {
+    for k in &sort.keys {
+        if let SortField::Label(n) = &k.field {
+            if !schemas.iter().any(|s| &s.name == n) {
+                return Err(AppError::InvalidQuery(format!(
+                    "排序引用了不存在的标签: {n}"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// 多字段排序之前的 `View` 落库形状，只用于一次性转码。
 /// `query` 一栏沿用它当时的 `query_json` 适配器，否则解不出来。
 #[derive(Deserialize)]
@@ -932,6 +1015,7 @@ mod tests {
                 vec![],
                 false,
                 vec![],
+                None,
             )
             .unwrap();
         assert_eq!(u.name, "改名");
@@ -992,6 +1076,7 @@ mod tests {
                 vec!["Task".into()],
                 false,
                 vec![],
+                None,
             )
             .unwrap();
         assert!(u.is_shared);
@@ -1069,6 +1154,7 @@ mod tests {
                 vec!["Task".into()],
                 true,
                 vec![],
+                None,
             )
             .unwrap();
         assert_eq!(u.name, "b");

@@ -944,6 +944,16 @@ impl GqlView {
     }
 }
 
+/// 视图 → GraphQL 投影：条目数 / 是否基础视图 / 时间轴 / 描述都要回查存储。
+/// 查询与 mutation 共用同一份拼装逻辑，免得两处各写一遍、字段集走样。
+fn gql_view(gql: &GraphqlContext, v: View) -> GqlResult<GqlView> {
+    let count = gql.services.entry.count(v.workspace_id, &v.query)? as i32;
+    let is_default = gql.services.view.default_view_id(v.workspace_id)? == Some(v.id);
+    let timeline = gql.services.view.timeline_of(v.id)?;
+    let description = gql.services.view.description_of(v.id)?.unwrap_or_default();
+    Ok(GqlView::new(v, count, is_default, timeline, description))
+}
+
 #[derive(SimpleObject, Clone)]
 pub struct GqlRuleWrite {
     label_name: String,
@@ -3281,6 +3291,10 @@ impl Mutation {
     #[allow(clippy::too_many_arguments)]
     /// 改视图（共享视图需 Maintainer；本人个人视图 Worker 即可）。
     /// 不动时间轴配置，时间轴走 `setViewTimeline`。
+    ///
+    /// `expectedUpdatedAt` 是乐观并发令牌：客户端带上它打开弹窗时那份视图的
+    /// `updatedAt`，若期间别人改过这个视图（updated_at 已变），服务端拒绝这次
+    /// 写入并报「内容已被他人修改，请刷新后重试」——而不是把别人的改动静默顶掉。
     async fn update_view(
         &self,
         ctx: &Context<'_>,
@@ -3291,6 +3305,7 @@ impl Mutation {
         columns: Vec<String>,
         is_shared: bool,
         title_colors: Option<Json<serde_json::Value>>,
+        expected_updated_at: Option<String>,
     ) -> GqlResult<GqlView> {
         let gql = ctx.data::<GraphqlContext>()?;
         let auth = gql.require_auth()?;
@@ -3317,12 +3332,91 @@ impl Mutation {
             columns,
             is_shared,
             title_colors,
+            expected_updated_at.as_deref(),
         )?;
-        let count = gql.services.entry.count(existing.workspace_id, &v.query)? as i32;
-        let is_default = gql.services.view.default_view_id(existing.workspace_id)? == Some(v.id);
-        let timeline = gql.services.view.timeline_of(v.id)?;
-        let description = gql.services.view.description_of(v.id)?.unwrap_or_default();
-        Ok(GqlView::new(v, count, is_default, timeline, description))
+        gql_view(gql, v)
+    }
+
+    /// 只改排序：名字 / 条件 / 列 / 标题色一律不碰。
+    ///
+    /// 与 `updateView` 分开是必须的：排序是「点表头就自动落库」的高频操作，
+    /// 若走整条覆盖，客户端会把它本地那份**旧名字**一起写回库，把别人刚改的
+    /// 视图名顶回旧值（另一个浏览器 / 另一个标签页 / 开着很久没刷新的页面都会中招）。
+    async fn update_view_sort(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+        sorts: Option<Vec<SortInput>>,
+    ) -> GqlResult<GqlView> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let view_id = parse_ulid(id.as_str())?;
+        let existing = gql.services.view.get(view_id)?.ok_or(AppError::NotFound)?;
+        gql.require_member(existing.workspace_id)?;
+        let need = if existing.is_shared || existing.owner_id != auth.account_id {
+            WorkspaceRole::Maintainer
+        } else {
+            WorkspaceRole::Worker
+        };
+        gql.require_role(existing.workspace_id, need)?;
+        let v = gql
+            .services
+            .view
+            .update_sort(auth.account_id, view_id, to_sort(sorts))?;
+        gql_view(gql, v)
+    }
+
+    /// 只改共享标记：其余字段一律不碰（理由同 `updateViewSort`）。
+    async fn update_view_shared(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+        is_shared: bool,
+    ) -> GqlResult<GqlView> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let view_id = parse_ulid(id.as_str())?;
+        let existing = gql.services.view.get(view_id)?.ok_or(AppError::NotFound)?;
+        gql.require_member(existing.workspace_id)?;
+        let need = if is_shared || existing.is_shared || existing.owner_id != auth.account_id {
+            WorkspaceRole::Maintainer
+        } else {
+            WorkspaceRole::Worker
+        };
+        gql.require_role(existing.workspace_id, need)?;
+        let v = gql
+            .services
+            .view
+            .update_shared(auth.account_id, view_id, is_shared)?;
+        gql_view(gql, v)
+    }
+
+    /// 只改查询条件（「保存视图」按钮：把筛选栏当前的 AST 落到视图上）。
+    /// 与 `updateView` 分开是必须的：理由同 `updateViewSort`。
+    async fn update_view_query(
+        &self,
+        ctx: &Context<'_>,
+        id: ID,
+        query: Json<serde_json::Value>,
+    ) -> GqlResult<GqlView> {
+        let gql = ctx.data::<GraphqlContext>()?;
+        let auth = gql.require_auth()?;
+        let view_id = parse_ulid(id.as_str())?;
+        let existing = gql.services.view.get(view_id)?.ok_or(AppError::NotFound)?;
+        gql.require_member(existing.workspace_id)?;
+        let need = if existing.is_shared || existing.owner_id != auth.account_id {
+            WorkspaceRole::Maintainer
+        } else {
+            WorkspaceRole::Worker
+        };
+        gql.require_role(existing.workspace_id, need)?;
+        let q: ViewQuery = serde_json::from_value(query.0)
+            .map_err(|e| AppError::InvalidQuery(format!("查询条件格式错误: {e}")))?;
+        let v = gql
+            .services
+            .view
+            .update_query(auth.account_id, view_id, q)?;
+        gql_view(gql, v)
     }
 
     /// 设置 / 清除视图的时间轴配置。`start` 或 `end` 传空串即清除。

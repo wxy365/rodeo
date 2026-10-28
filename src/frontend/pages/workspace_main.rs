@@ -20,8 +20,9 @@ use crate::frontend::graphql_client::{
     parse_view_query, query_all_entries, query_entries, remove_labeling, set_labeling,
     set_labelings, set_sidebar_collapsed, set_view_description, set_view_timeline,
     summarize_entries, translate_query_expression, unarchive_entry, update_entry, update_view,
-    views, workspace_ai_config, workspace_by_slug, AccountBrief, AuditLog, Entry, LabelSchema,
-    Labeling, Member, NamedPrompt, View, ViewSort, ViewTimeline, Workspace,
+    update_view_query, update_view_sort, views, workspace_ai_config, workspace_by_slug,
+    AccountBrief, AuditLog, Entry, LabelSchema, Labeling, Member, NamedPrompt, View, ViewSort,
+    ViewTimeline, Workspace,
 };
 use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::icons::{
@@ -1007,17 +1008,9 @@ pub fn WorkspaceMain() -> impl IntoView {
         spawn_local(async move {
             let mut next = Some(v);
             while let Some(v) = next {
-                match update_view(
-                    &v.id,
-                    &v.name,
-                    &v.query,
-                    &v.sorts,
-                    &v.columns,
-                    v.is_shared,
-                    &v.title_colors,
-                )
-                .await
-                {
+                // 只落排序，不整条覆盖：整条覆盖会把本地那份**旧名字**一起写回库，
+                // 把别人刚改的视图名顶回旧值（另一个浏览器 / 另一个标签页都会中招）。
+                match update_view_sort(&v.id, &v.sorts).await {
                     Ok(saved) => {
                         // 上一次失败可能留下横幅，成功后清掉。
                         error.set(None);
@@ -2055,17 +2048,14 @@ pub fn WorkspaceMain() -> impl IntoView {
                                         on:click=move |_| {
                                             let Some(v) = active_view.get() else { return };
                                             let ast = query_ast.get();
-                                            let sorts = v.sorts.clone();
-                                            let cols = v.columns.clone();
-                                            let shared = v.is_shared;
                                             let id = v.id.clone();
-                                            let name = v.name.clone();
-                                            let title_colors = v.title_colors.clone();
                                             // 保存后用服务端权威的 query_expr 同步基线文本——比
                                             // 直接拿 expr_text 更稳，规避两端规范化差异导致重置按钮残留亮起。
                                             let saved_expr_text = expr_text.get_untracked();
                                             spawn_local(async move {
-                                                match update_view(&id, &name, &ast, &sorts, &cols, shared, &title_colors).await {
+                                                // 只落条件，不整条覆盖：整条覆盖会把本地那份
+                                                // **旧名字**写回库，把别人刚改的视图名顶回旧值。
+                                                match update_view_query(&id, &ast).await {
                                                     Ok(saved) => {
                                                         let new_expr_text = saved.query_expr.clone();
                                                         view_list.update(|l| {
@@ -2692,6 +2682,10 @@ pub fn WorkspaceMain() -> impl IntoView {
                                         v.query.clone()
                                     };
                                     let sorts = v.sorts.clone();
+                                    // 乐观并发令牌：弹窗打开时这份视图的 updatedAt。
+                                    // 期间若别人改过这个视图，服务端拒绝这次写入并提示刷新，
+                                    // 而不是把别人的改动静默顶掉。
+                                    let expected = v.updated_at.clone();
                                     let tl_start = config_tl_start.get_untracked();
                                     let tl_end = config_tl_end.get_untracked();
                                     let tl_person = config_tl_person.get_untracked();
@@ -2734,7 +2728,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                             out.push(serde_json::json!({ "query": ast, "color": color }));
                                         }
                                         let title_colors = Value::Array(out);
-                                        match update_view(&id, &name, &ast, &sorts, &cols, shared, &title_colors).await {
+                                        match update_view(&id, &name, &ast, &sorts, &cols, shared, &title_colors, Some(&expected)).await {
                                             Ok(saved) => {
                                                 // 时间轴配置另发一条 mutation（独立列族、独立并发语义）；
                                                 // 失败不回滚视图本身，但要说出来，否则用户以为存上了。
@@ -2767,7 +2761,15 @@ pub fn WorkspaceMain() -> impl IntoView {
                                                 }
                                                 show_config_dialog.set(false);
                                             }
-                                            Err(e) => dialog_error.set(Some(e)),
+                                            Err(e) => {
+                                                dialog_error.set(Some(e));
+                                                // 保存被拒（多半是并发冲突：期间别人改过这个视图）时，
+                                                // 侧栏那份名字可能已经过时——重新拉一次列表，
+                                                // 让用户看到真名再决定怎么改。
+                                                if let Some(ws) = ws_id.as_deref() {
+                                                    load_views(ws.to_string(), None);
+                                                }
+                                            }
                                         }
                                     });
                                 }>{i18n.t("common.save")}</button>

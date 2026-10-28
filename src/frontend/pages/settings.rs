@@ -32,7 +32,7 @@ use crate::frontend::components::{
 use crate::frontend::graphql_client::{
     audit_logs, create_label_schema, delete_label_schema, delete_workspace, invite_member, invites,
     label_attrs, label_schemas, members, my_role, remove_member, restore_workspace, revoke_invite,
-    transfer_owner, update_label_schema, update_member_role, update_view, update_workspace,
+    transfer_owner, update_label_schema, update_member_role, update_view_shared, update_workspace,
     update_workspace_ai_config, views, workspace_ai_config, workspace_by_slug, AuditLog, Invite,
     LabelSchema, Member, View, Workspace,
 };
@@ -406,17 +406,9 @@ pub fn WorkspaceSettings() -> impl IntoView {
             return;
         };
         spawn_local(async move {
-            match update_view(
-                &v.id,
-                &v.name,
-                &v.query,
-                &v.sorts,
-                &v.columns,
-                shared,
-                &v.title_colors,
-            )
-            .await
-            {
+            // 只落共享标记，不整条覆盖：整条覆盖会把本地那份**旧名字**写回库，
+            // 把别人刚改的视图名顶回旧值（设置页打开得越久越容易踩）。
+            match update_view_shared(&v.id, shared).await {
                 Ok(_) => {
                     error.set(None);
                     refresh.update(|x| *x += 1);
