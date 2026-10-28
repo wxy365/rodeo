@@ -120,17 +120,11 @@ package-linux-host: build-linux-host ## 打包 musl 静态二进制 + site/ 到 
 	rm -rf dist/rodeo-$(DIST_ARCH)
 	mkdir -p dist/rodeo-$(DIST_ARCH)
 	cp dist/rodeo dist/rodeo-$(DIST_ARCH)/rodeo
+	chmod +x dist/rodeo-$(DIST_ARCH)/rodeo
 	cp dist/hash.txt dist/rodeo-$(DIST_ARCH)/hash.txt
 	cp -r dist/site dist/rodeo-$(DIST_ARCH)/site
 	cp config.example.toml dist/rodeo-$(DIST_ARCH)/config.example.toml
-	printf '%s\n' \
-		'#!/bin/sh' \
-		'set -e' \
-		'cd "$$(dirname "$$0")"' \
-		'export LEPTOS_SITE_ROOT=site' \
-		'export LEPTOS_HASH_FILES=true' \
-		'exec ./rodeo config.toml' \
-		> dist/rodeo-$(DIST_ARCH)/start.sh
+	cp packaging/start.sh dist/rodeo-$(DIST_ARCH)/start.sh
 	chmod +x dist/rodeo-$(DIST_ARCH)/start.sh
 	tar -czf dist/rodeo-$(DIST_ARCH).tar.gz -C dist rodeo-$(DIST_ARCH)
 	@ls -lh dist/rodeo-$(DIST_ARCH).tar.gz
@@ -146,21 +140,19 @@ package-linux-host: build-linux-host ## 打包 musl 静态二进制 + site/ 到 
 # 而 Leptos 生成的 HTML 只有在同样打开 hash-files、且能在二进制同级目录找到 hash.txt 时
 # 才会拼上那串哈希；否则它按裸名 /pkg/rodeo.js 发请求，那些文件并不存在，前端资源一律 404。
 # 两者缺一不可，所以 hash.txt 必须跟 rodeo 一起进包。
+#
+# start.sh 的内容只在 packaging/start.sh 一处维护，两个 package-* 目标拷同一份进去，
+# 免得两条打包路径的脚本各自漂移。它做的三件事：给二进制补可执行位 → nohup 后台常驻
+# → 日志落 rodeo.log、pid 落 rodeo.pid。
 package-linux: build-linux ## 打包非容器部署产物到 dist/rodeo-<arch>.tar.gz
 	rm -rf dist/rodeo-$(DIST_ARCH)
 	mkdir -p dist/rodeo-$(DIST_ARCH)
 	cp dist/rodeo dist/rodeo-$(DIST_ARCH)/rodeo
+	chmod +x dist/rodeo-$(DIST_ARCH)/rodeo
 	cp dist/hash.txt dist/rodeo-$(DIST_ARCH)/hash.txt
 	cp -r dist/site dist/rodeo-$(DIST_ARCH)/site
 	cp config.example.toml dist/rodeo-$(DIST_ARCH)/config.example.toml
-	printf '%s\n' \
-		'#!/bin/sh' \
-		'set -e' \
-		'cd "$$(dirname "$$0")"' \
-		'export LEPTOS_SITE_ROOT=site' \
-		'export LEPTOS_HASH_FILES=true' \
-		'exec ./rodeo config.toml' \
-		> dist/rodeo-$(DIST_ARCH)/start.sh
+	cp packaging/start.sh dist/rodeo-$(DIST_ARCH)/start.sh
 	chmod +x dist/rodeo-$(DIST_ARCH)/start.sh
 	tar -czf dist/rodeo-$(DIST_ARCH).tar.gz -C dist rodeo-$(DIST_ARCH)
 	@ls -lh dist/rodeo-$(DIST_ARCH).tar.gz
