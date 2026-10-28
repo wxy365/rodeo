@@ -221,6 +221,33 @@ git commit -m "feat(editor): vendor highlight.js 并保证在 glue.js 之前加�
 - Consumes: Task 1 产出的 `public/tiny-editor/hljs.min.js`（页面加载后 `window.hljs` 已就位）
 - Produces: `window.__rodeo_tiny_editor__.create(el, deltaJson, opts)` 行为不变，但编辑器实例现在带 syntax 模块
 
+- [ ] **Step 0: 扩充语言下拉清单**
+
+fluent-editor 的 `Hi.DEFAULTS.languages` 只有 14 项（plain/bash/cpp/cs/css/diff/
+xml/java/javascript/markdown/php/python/ruby/sql），**没有 Rust/Go/TypeScript/
+JSON/YAML**，而这些 highlight.js 全都支持。模块的 `languages` 选项可配，换成
+开发者常用的完整清单：
+
+```js
+const SYNTAX_LANGUAGES = [
+  { key: 'plain', label: '纯文本' }, { key: 'bash', label: 'Bash' },
+  { key: 'shell', label: 'Shell' }, { key: 'c', label: 'C' },
+  { key: 'cpp', label: 'C++' }, { key: 'cs', label: 'C#' },
+  { key: 'css', label: 'CSS' }, { key: 'diff', label: '差异对比' },
+  { key: 'go', label: 'Go' }, { key: 'java', label: 'Java' },
+  { key: 'javascript', label: 'JavaScript' }, { key: 'json', label: 'JSON' },
+  { key: 'kotlin', label: 'Kotlin' }, { key: 'markdown', label: 'Markdown' },
+  { key: 'php', label: 'PHP' }, { key: 'python', label: 'Python' },
+  { key: 'ruby', label: 'Ruby' }, { key: 'rust', label: 'Rust' },
+  { key: 'sql', label: 'SQL' }, { key: 'swift', label: 'Swift' },
+  { key: 'typescript', label: 'TypeScript' }, { key: 'xml', label: 'HTML/XML' },
+  { key: 'yaml', label: 'YAML' },
+];
+```
+
+**key 必须是 highlight.js 认识的名字或别名**（`cs` 是 `csharp` 的别名），
+否则 `hljs.highlight(code, {language})` 抛 "Unknown language"。
+
 - [ ] **Step 1: 在 `modules` 里加 syntax，并做降级兜底**
 
 在 `glue.js` 的 `create()` 里，把
@@ -448,6 +475,12 @@ make check
 Expected: 均通过。
 
 - [ ] **Step 4: 浏览器验证 —— 插表与表格能力**
+
+> **实测发现**：better-table 的右键菜单文案是**硬编码英文**（`Merge Cells` /
+> `Split Cells` / `Delete Entire Row` / `Insert Rows Above` …），fluent-editor
+> 没给它做 i18n，而 rodeo 的界面是中文的。断言要按英文写。菜单文案本身不可配
+> （模块没暴露 label 选项），要中文化得改 vendor bundle —— 本次不做，记在
+> 闸口结论里。
 
 scenario `table-basic`：
 
