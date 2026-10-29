@@ -81,24 +81,34 @@ if (missing.length) process.exit(1);
 
 Expected: 打印 `version 11.12.0 missing []`，退出码 0。
 
-- [ ] **Step 3: 在 app.rs 里把 hljs 排在 glue.js 之前**
+- [ ] **Step 3: 在 shell 的 head 里放 hljs 的普通 script**
 
-在 `src/app.rs` 的 view 里，把这两行：
+**放 shell 的 `<head>`，用普通 `<script src=...>` 元素 —— 不要放 App 视图，
+更不要用 leptos_meta 的注册式 `<Script>` 组件。**
 
-```rust
-<Stylesheet id="tiny-editor" href="/tiny-editor/style.css"/>
-<Script type_="module" src="/tiny-editor/glue.js"/>
-```
-
-改成：
+`src/app.rs` 的 `ShellInner` 组件里，`<head>` 内加一行（放在 `<HashedStylesheet>` 之前）：
 
 ```rust
-<Stylesheet id="tiny-editor" href="/tiny-editor/style.css"/>
-<Script src="/tiny-editor/hljs.min.js"/>
-<Script type_="module" src="/tiny-editor/glue.js"/>
+<script src="/tiny-editor/hljs.min.js"></script>
 ```
 
-**不加 `type_="module"`**：Leptos 的 `<Script>` 的 `async_` / `defer` 两个 prop 默认都是 `None`（不渲染该属性），所以这是阻塞式经典脚本，解析到它时立即同步执行；而 module script 按规范延迟到文档解析完才执行 —— 顺序因此被保证。`fluent-editor.mjs` 在模块求值时快照 `window.hljs`，必须在它之前。
+**为什么不用 leptos_meta 的 `<Script>`**：注册式组件把自己收进 head 的 meta 缓冲，
+客户端 hydrate 时由 `MetaContext` 的**一个共享游标**按注册顺序逐个消费 head 里的节点。
+在 App 视图里多加一个注册式 `<Script>`，游标就跟 SSR 输出对不齐 → hydration 直接
+panic，**而 SSR 出来的页面看着完全正常，只是前端不接管任何交互**：
+
+```
+A hydration error occurred ... leptos_meta-0.8.6/src/stylesheet.rs:38:14
+The framework expected a marker node, but found this instead: <header class="appbar">
+```
+
+`page.on('pageerror')` 抓不到它（走的是 `console.error`）—— 只挂 pageerror 的验证脚本
+会「全过」而页面实际是死的。shell 不参与 hydrate，普通元素就没有这套对齐问题。
+
+**顺序仍然有保证**：普通 script 在解析期同步执行，module script 按规范延迟到文档解析完
+才执行 —— 所以它一定早于 `glue.js` 里 `import FluentEditor from './fluent-editor.mjs'`
+的求值（fluent-editor 在模块求值时就快照 `window.hljs`，晚于它就位的话 syntax 模块的
+构造函数会抛 `Syntax module requires highlight.js`）。
 
 - [ ] **Step 4: 类型检查**
 

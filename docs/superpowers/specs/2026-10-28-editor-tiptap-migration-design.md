@@ -109,6 +109,9 @@ const modules = {
 
 **已实测**：该文件在 node 里跑起来是 hljs `11.12.0`，`listLanguages()` 返回 36 种语言 —— `bash c cpp csharp css diff go graphql ini java javascript json kotlin less lua makefile markdown objectivec perl php php-template plaintext python python-repl r ruby rust scss shell sql swift typescript vbnet wasm xml yaml`。**Quill 默认语言表（plain/bash/cpp/cs/css/diff/xml/java/javascript/markdown/php/python/ruby/sql）全部覆盖**。
 
+**加载方式**：`<script src="/tiny-editor/hljs.min.js">` 放在 **shell 的 `<head>`** 里，
+用**普通 script 元素**，**不要用 leptos_meta 的注册式 `<Script>` 组件**（详见 §3.2.1）。
+
 **加载顺序**（这是本任务唯一的坑）：
 
 - `fluent-editor.mjs` 在**模块求值时**就执行 `Ji.DEFAULTS = { hljs: window.hljs, ... }` —— `window.hljs` 必须在那之前存在，否则 `DEFAULTS.hljs` 是 `undefined`，模块构造函数会抛 `Syntax module requires highlight.js`。
@@ -134,6 +137,32 @@ const modules = {
   显式传参的好处：即使将来调整 script 加载顺序导致 `DEFAULTS.hljs` 变 `undefined`，构造函数的 `options.hljs == null` 判定也会因为我们传了值而不抛。
 
 - **落地验证点**：`view-source` 确认 `<script src="/tiny-editor/hljs.min.js">` 在 `<script type="module" src="/tiny-editor/glue.js">` 之前，且浏览器控制台没有 `Syntax module requires highlight.js`。
+
+### 3.2.1 页面级脚本不要用 leptos_meta 的注册式 `<Script>`
+
+实测踩到：**在 App 视图里多加一个 leptos_meta 的注册式 `<Script>`，会让整个前端的
+hydration 崩掉。**
+
+leptos_meta 的注册式组件（`Stylesheet` / `Script` / `Title`）把自己收进
+`ServerMetaContext`，SSR 时统一渲染到 head 的 `<!--HEAD-->` 标记之后；客户端 hydrate
+时，`MetaContext` 的**一个共享游标**按注册顺序逐个消费 head 里的节点
+（`leptos_meta-0.8.6/src/lib.rs` 的 `RegisteredMetaTag::hydrate`）。在 App 视图里
+多加一个注册式 `<Script>`，游标就跟 SSR 输出对不齐。
+
+症状很隐蔽 —— **SSR 出来的页面看着完全正常，但前端不接管任何交互**：
+
+```
+A hydration error occurred while trying to hydrate an element defined at
+  leptos_meta-0.8.6/src/stylesheet.rs:38:14
+The framework expected a marker node, but found this instead: <header class="appbar">
+panicked at tachys-0.2.18/src/hydration.rs:216:9: Unrecoverable hydration error
+```
+
+**`page.on('pageerror')` 抓不到它** —— 走的是 `console.error`。只挂 pageerror 的
+验证脚本会「全过」而页面实际是死的。
+
+**修法**：页面级脚本依赖不放 App 视图，改放 **shell 的 `<head>`** 里用普通
+`<script src=...>` 元素。shell 不参与 hydrate，普通元素就没有这套对齐问题。
 
 ### 3.3 markdown 表格语法与粘贴转换
 
