@@ -19,8 +19,8 @@ pub struct AddCommentTool {
 pub struct AddCommentArgs {
     pub workspace_id: String,
     pub entry_code: String,
-    /// 评论正文（Quill Delta JSON 字符串）。空字符串 / 仅空白会被服务端拒绝；
-    /// 只含图片嵌入的也算合法内容。
+    /// 评论正文（纯文本，可含换行）。服务端转成 HTML 并消毒后落库。
+    /// 空字符串 / 仅空白会被服务端拒绝；只含图片链接的也算合法内容。
     pub body: String,
 }
 
@@ -62,7 +62,7 @@ impl Tool for AddCommentTool {
     type Output = AddCommentOutput;
 
     fn description(&self) -> String {
-        "在指定条目下发表评论。正文是 Quill Delta JSON 字符串，与 Entry.detail 同构；同时会推进该条目的 updated_at。空内容或仅空白会被服务端拒绝；只含图片嵌入的算合法内容。".to_string()
+        "在指定条目下发表评论。正文是纯文本（可含换行），服务端会转成 HTML；同时会推进该条目的 updated_at。空内容或仅空白会被服务端拒绝；只含图片链接的算合法内容。".to_string()
     }
 
     fn parameters(&self) -> serde_json::Value {
@@ -79,7 +79,7 @@ impl Tool for AddCommentTool {
                 },
                 "body": {
                     "type": "string",
-                    "description": "评论正文（Quill Delta JSON 字符串）"
+                    "description": "评论正文（纯文本，可含换行）"
                 }
             },
             "required": ["workspace_id", "entry_code", "body"]

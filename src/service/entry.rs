@@ -181,7 +181,7 @@ impl EntryService {
         detail: &str,
     ) -> Result<Entry, AppError> {
         let mut entry = Entry::new(workspace_id, title.to_string(), actor);
-        entry.detail = detail.to_string();
+        entry.detail = crate::service::richtext::normalize_for_storage(detail);
         while self
             .store
             .get::<Entry>(cf::ENTRIES, entry.code.as_bytes())?
@@ -258,7 +258,7 @@ impl EntryService {
         let before = serde_json::to_string(&entry).unwrap_or_default();
         let old_entry = entry.clone();
         entry.title = title.to_string();
-        entry.detail = detail.to_string();
+        entry.detail = crate::service::richtext::normalize_for_storage(detail);
         entry.updated_by = actor;
         entry.updated_at = Utc::now();
         let after = serde_json::to_string(&entry).unwrap_or_default();

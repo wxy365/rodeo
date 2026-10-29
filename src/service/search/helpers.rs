@@ -6,29 +6,10 @@
 use crate::error::AppError;
 use crate::storage::{cf, DocStore};
 
-/// 从 Delta JSON 提取纯文本；非 Delta（历史纯文本）原样返回。
+/// 从正文提取纯文本。正文现在是 HTML，存量还有 Quill Delta，统一走
+/// `richtext::content_to_text`。
 pub fn strip_rich_text(detail: &str) -> String {
-    let d = detail.trim();
-    if d.is_empty() {
-        return String::new();
-    }
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(d) {
-        let ops = v
-            .get("ops")
-            .and_then(|o| o.as_array())
-            .cloned()
-            .or_else(|| v.as_array().cloned());
-        if let Some(ops) = ops {
-            let mut out = String::new();
-            for op in ops {
-                if let Some(s) = op.get("insert").and_then(|i| i.as_str()) {
-                    out.push_str(s);
-                }
-            }
-            return out;
-        }
-    }
-    d.to_string()
+    crate::service::richtext::content_to_text(detail)
 }
 
 /// 把一条条目的全部评论正文抽成纯文本，供检索索引拼接。

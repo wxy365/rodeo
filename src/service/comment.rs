@@ -70,7 +70,7 @@ impl CommentService {
         let comment = Comment::new(
             entry_code.to_string(),
             entry.workspace_id,
-            body.trim().to_string(),
+            crate::service::richtext::normalize_for_storage(body),
             actor,
         );
         // 发言是条目上的活动：推进 updated_at，让条目回到「按更新时间倒序」的最前。
@@ -153,7 +153,7 @@ impl CommentService {
             return Err(AppError::Forbidden);
         }
         let before = serde_json::to_string(&comment).unwrap_or_default();
-        comment.body = body.trim().to_string();
+        comment.body = crate::service::richtext::normalize_for_storage(body);
         comment.updated_by = actor;
         comment.updated_at = Utc::now();
         let audit = AuditLog::new(
@@ -260,28 +260,13 @@ impl CommentService {
 /// 这样「Delta 里只有空白片段」和「纯文本全是空格」两种情况一并覆盖。
 /// 图片嵌入没有文本但显然不是「空内容」，单独认一下。
 fn is_blank_body(body: &str) -> bool {
-    if has_image_embed(body) {
+    if content_has_image(body) {
         return false;
     }
-    crate::service::search::strip_rich_text(body)
-        .trim()
-        .is_empty()
+    crate::service::richtext::content_to_text(body).trim().is_empty()
 }
 
-/// Delta 里是否存在 `{"insert": {"image": …}}` 形式的嵌入。
-/// 只认 `image` 这一个格式：其他嵌入（如将来的分隔线）不该绕过「必须有内容」的判定。
-fn has_image_embed(body: &str) -> bool {
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(body) else {
-        return false;
-    };
-    let ops = v
-        .get("ops")
-        .and_then(|o| o.as_array())
-        .cloned()
-        .or_else(|| v.as_array().cloned());
-    ops.map(|ops| {
-        ops.iter()
-            .any(|op| op.get("insert").and_then(|i| i.get("image")).is_some())
-    })
-    .unwrap_or(false)
+/// 正文里有没有图片。HTML 与 Quill Delta 都认（存量还是 Delta）。
+fn content_has_image(body: &str) -> bool {
+    crate::service::richtext::content_has_image(body)
 }

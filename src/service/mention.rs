@@ -2,67 +2,13 @@ use ulid::Ulid;
 
 use crate::domain::{Account, WorkspaceMember};
 
-/// 把 Delta JSON 摊平成单行纯文本，丢弃所有富文本属性 / 嵌入。
+/// 把正文摊平成纯文本，丢弃所有富文本属性 / 嵌入。
 /// 评论里的图片 / 换行 / 链接都不会进入消息预览，正文里的 `@姓名` 仍然出现。
 ///
-/// 输入允许三种形态：`{"ops":[...]}` / `[...]` / 任意字符串（视作纯文本）。
-pub fn flat_text(delta_json: &str) -> String {
-    let v: serde_json::Value = match serde_json::from_str(delta_json.trim()) {
-        Ok(v) => v,
-        Err(_) => return delta_json.to_string(),
-    };
-    let ops = match v {
-        serde_json::Value::Array(a) => a,
-        serde_json::Value::Object(ref m) if m.contains_key("ops") => {
-            match m.get("ops").and_then(|o| o.as_array()) {
-                Some(a) => a.clone(),
-                None => return delta_json.to_string(),
-            }
-        }
-        // 解析后是一段普通字符串——本身就当纯文本返回。
-        serde_json::Value::String(s) => return s,
-        _ => return delta_json.to_string(),
-    };
-    let mut out = String::new();
-    for op in ops {
-        let insert = match op.get("insert") {
-            Some(i) => i,
-            None => continue,
-        };
-        match insert {
-            serde_json::Value::String(s) => out.push_str(s),
-            // mention 嵌入：从 fluent-editor 的 mention 模块插入。`text` 是
-            // 用户在下拉里选中的显示名（默认 `renderMentionText` 取 item.name），
-            // `char` 是触发字符（默认 '@'）。把 `@姓名` 形式补回去，让下游的
-            // `extract_mention_names` 能按现有「`@` 后接非空白连续字符」的正则
-            // 抓出来——否则选下拉插入的 chip 在后端就是一段看不见的嵌入，
-            // 通知发不出去。手敲 `@姓名` 走 String 路径，原本就 OK。
-            serde_json::Value::Object(m) if m.get("mention").is_some() => {
-                let m = &m["mention"];
-                // fluent-editor 的 mention chip：`text` 是下拉里选中的显示名
-                // （默认 `renderMentionText` 取 item.name），`char` 是触发字符
-                // （默认 '@'）。这里固定补回 `@` 前缀，让下游的
-                // `extract_mention_names` 沿用「`@` 后接非空白连续字符」的正则。
-                // 万一未来 mention 模块把 char 暴露给配置，再回这里读 char。
-                let text = m
-                    .get("text")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| {
-                        m.get("mention")
-                            .and_then(|mm| mm.get("name"))
-                            .and_then(|v| v.as_str())
-                    })
-                    .unwrap_or("");
-                if !text.is_empty() {
-                    out.push('@');
-                    out.push_str(text);
-                }
-            }
-            // image / 其他嵌入：跳过（避免给消息预览塞奇怪的字符）。
-            _ => {}
-        }
-    }
-    out
+/// 输入允许三种形态：HTML（现在的正文）、Quill Delta（存量）、任意字符串（视作纯文本）。
+/// 统一走 `richtext::content_to_text`。
+pub fn flat_text(content: &str) -> String {
+    crate::service::richtext::content_to_text(content)
 }
 
 /// 预览文本：截前 N 个字符 + 「…」省略号。

@@ -89,7 +89,7 @@ impl Tool for UpdateEntryTool {
                 },
                 "detail": {
                     "type": "string",
-                    "description": "新正文（Quill Delta JSON 字符串）。省略/空串 = 正文留空。"
+                    "description": "新正文（纯文本，可含换行；服务端会转成 HTML）。省略/空串 = 正文留空。"
                 }
             },
             "required": ["workspace_id", "code", "expected_updated_at", "title"]
