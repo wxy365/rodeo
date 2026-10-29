@@ -1,7 +1,7 @@
 # 阶段 0 闸口评估结论：编辑器表格与语法高亮
 
-日期：2026-10-28
-结论：**继续用 fluent-editor，不做 Tiptap 迁移**（阶段 1 取消）
+日期：2026-10-28（结论 2026-10-29 修订）
+结论（修订后）：**推进 Tiptap v3 迁移**。阶段 0 的成果保留为迁移的基线与验收清单。
 
 对应设计稿：`2026-10-28-editor-tiptap-migration-design.md` §3.5 的判据。
 
@@ -84,17 +84,32 @@ Rust 侧的表格识别逻辑（`agent_panel.rs` 的 `split_md_row` / `parse_md_
 新增的 ~350 行是 markdown 表格识别与粘贴转换（这一块 Quill 没有，得自己写），
 不是「打补丁救火」。
 
-## 5. 结论
+## 5. 结论（2026-10-29 修订）
 
-**取消阶段 1（Tiptap 迁移）。** 继续用 `@opentiny/fluent-editor`。
+**原结论是「取消阶段 1」，现推翻，改为推进 Tiptap v3 迁移。**
 
-理由：用户点名的三个能力（图片、表格、语法高亮代码块）现在**全部到位**，
-而且没有一个需要换编辑器。Tiptap 迁移要两周量级、动存储格式、动存量数据，
-换来的增量能力（列宽拖拽、slash 命令、协同编辑）眼下没有需求支撑。
+推翻的理由不是阶段 0 有功能缺口 —— 表格、语法高亮代码块、markdown 表格粘贴、
+老评论只读渲染都到位了，10 个场景全过。**理由是界面层**：fluent-editor 给的是
+「Quill snow 主题 + 一排图标」，而「完善的编辑器」指的是现代工具栏、slash 菜单、
+拖拽块、浮动格式菜单、真表格、代码块语言选择、@提及浮层 —— 这些要么没有，
+要么改不动（`.ql-*` 那 98 处 CSS 覆写就是「改不动」的证据）。
 
-设计稿 §4（Tiptap 迁移的完整方案）与 `docs/superpowers/plans/2026-10-28-editor-tiptap-migration.md`
-**保留在仓库里不删** —— 什么时候需要（协同编辑、编辑器级可扩展性），
-照着那份计划做就行，前置调研都已经做完了。
+### 阶段 0 的成果不丢弃，它变成迁移的基线
+
+| 成果 | 在迁移里的角色 |
+|---|---|
+| markdown 表格识别规则（`glue.js` 的 `splitMdRow`/`parseMdTableAt` 与 `agent_panel.rs` 的同名函数，两边各一份） | **直接复用**，Tiptap 侧照抄 JS 那份即可 |
+| 存量 Delta 的真实形状摸清了（`table-col` / `table-cell-line` / `code-token` / `code-block: "<语言>"`） | 转换清单不会再漏 —— 漏一个就是静默丢内容 |
+| `scripts/editor-smoke.mjs` 的 10 个场景 | **直接当迁移的验收清单** |
+| better-table / syntax 模块的行为（右键菜单、代码块高亮、语言表扩展到 23 项） | 作为「功能对标清单」，Tiptap 侧逐条验收 |
+| `public/tiny-editor/hljs.min.js` 的 vendor 方式（CDN 抓 UMD 产物直接 commit） | Tiptap 侧改用 esbuild 打包（见阶段 1 Task 1） |
+
+### 阶段 1 的完整计划
+
+`docs/superpowers/plans/2026-10-28-editor-tiptap-migration.md`（14 个任务）。
+
+**执行顺序按计划自检里的结论调整**：存储格式（Task 3/4/5）必须排在编辑器替换
+（Task 2）之前，否则中间态没法验证。
 
 ### 留下的尾巴
 
