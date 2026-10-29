@@ -14,6 +14,7 @@ pub mod oauth;
 pub mod oauth_bindings;
 pub mod oauth_state;
 pub mod relation;
+pub mod richtext;
 pub mod rule;
 pub mod search;
 pub mod share;

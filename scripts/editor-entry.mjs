@@ -15,6 +15,5 @@ export { default as TaskList } from '@tiptap/extension-task-list';
 export { default as TaskItem } from '@tiptap/extension-task-item';
 export { default as CodeBlockLowlight } from '@tiptap/extension-code-block-lowlight';
 export { default as Underline } from '@tiptap/extension-underline';
-export { default as TextAlign } from '@tiptap/extension-text-align';
 export { default as Highlight } from '@tiptap/extension-highlight';
 export { common, createLowlight } from 'lowlight';
