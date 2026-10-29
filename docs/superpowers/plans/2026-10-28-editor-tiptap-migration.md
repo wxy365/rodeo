@@ -14,6 +14,65 @@
 
 ---
 
+## 进度
+
+- [x] Task 1（npm 工具链 + esbuild + vendor `public/tiptap/editor.mjs`，664KB）
+- [x] Task 3（`service::richtext`：HTML 消毒 / 纯文本抽取 / 形态判定）
+- [x] Task 4 主体（`richtext::delta_to_html` —— Quill Delta → HTML 渲染器）
+- [x] Task 4 接线（写入路径切 HTML、`flat_text`/`strip_rich_text` 退化成剥标签、
+      agent 工具改纯文本、startup repair 幂等迁移、markdown 表格识别统一到 Rust）
+- [x] Task 5（startup repair：`repair_rich_text_html`）
+- [ ] Task 15（前端边界：Quill 说 HTML）—— 已并入 Task 4 接线一起做了
+- [ ] Task 2（换成 Tiptap：`frontend/rich_editor.rs` + `public/tiptap/*`）
+- [ ] Task 6–11（UI）
+- [ ] Task 12（样式替换）
+- [ ] Task 13（只读路径与分享页）
+- [ ] Task 14（全量回归）
+
+**执行中调整的两处**：
+
+1. **Task 15 并进了 Task 4**。原计划让前端在边界上做 Delta ↔ HTML 转换；实际
+   更简单 —— **服务端转**（`normalize_for_storage` 收 Delta / HTML / 纯文本三种
+   输入，统一落成消毒后的 HTML），前端只在「读」的方向上认两种形态即可。
+   少了一层跨语言转换。
+2. **markdown 表格的识别统一到 Rust**。原来 JS（glue.js）与 Rust（agent_panel.rs）
+   各有一份；正文存 HTML 之后 Quill 侧那段不再跑，规则只剩 Rust 一份，
+   `agent_panel.rs` 改成直接复用 `richtext` 的实现。
+
+---
+
+## 执行顺序（重要）
+
+Task 编号是按设计稿章节排的，**实际执行顺序不是编号顺序**：
+
+```
+Task 1（工具链）
+  → Task 3（服务端消毒）
+  → Task 4（Rust 侧 Delta 依赖退休）
+  → Task 15（前端边界切 HTML，Quill 仍在驱动）
+  → Task 5（存量迁移）
+  → Task 2（换成 Tiptap）
+  → Task 6–11（UI：工具栏 / 表格 / 代码块 / 提及 / 图片 / 任务列表）
+  → Task 12（样式替换）
+  → Task 13（只读路径与分享页）
+  → Task 14（全量回归）
+```
+
+**为什么存储格式要先切**：Rust ↔ JS 的边界协议从 Delta 改成 HTML 是一次性切换。
+先换编辑器（仍说 Delta）再改存储（变 HTML），中间态是「编辑器说 Delta、服务端存
+HTML」，两边对不上，任何一步都没法验证。
+
+**Task 15 是过渡桥**：在 Quill 还在驱动编辑器的时候，先让前端在边界上做
+Delta ↔ HTML 转换（Quill 的 `editor.clipboard.convert({html})` 与
+`getSemanticHTML()` 现成就有）。于是：
+
+- 服务端可以先切到 HTML 存储，Quill 编辑器照常工作 —— **app 不破**；
+- 存量迁移（Task 5）跑完后，库里全是 HTML；
+- 再换 Tiptap（Task 2）时边界协议已经是 HTML —— Tiptap 原生吃 HTML，
+  **编辑器替换是一次纯替换，不牵扯存储**。
+
+---
+
 ## Global Constraints
 
 - **不新增 Rust 单元测试。** 门槛是 `make check`（native + wasm）+ `make build` + 浏览器真实交互验证。
@@ -619,6 +678,58 @@ make build
 ```bash
 git add src/service/richtext.rs src/service/mod.rs src/service/entry.rs src/service/comment.rs
 git commit -m "feat(richtext): 存量 Delta/纯文本 正文幂等迁移成 HTML"
+```
+
+---
+
+### Task 15: 前端边界切到 HTML（Quill 仍在驱动）
+
+**Files:**
+- Modify: `public/tiny-editor/glue.js`（`create()` 的 `setContents` 与 `text-change` 回调）
+- Modify: `src/frontend/tiny_editor.rs`（`normalize_delta` → `normalize_html`；`on_change` 收到的不再是 Delta JSON）
+
+**Interfaces:**
+- Consumes: Task 4 之后的存储格式（HTML）
+- Produces: 前端边界协议 = **HTML 字符串**
+
+- [ ] **Step 1: glue.js 里加两个转换函数**
+
+Quill 现成的两个 API 就够：
+
+```js
+// HTML → Delta（编辑器加载用）
+editor.setContents(editor.clipboard.convert({ html: htmlString }), 'silent');
+
+// Delta → HTML（存库用）
+editor.getSemanticHTML();
+```
+
+**注意** `getSemanticHTML()` 对 better-table 的表格是 `outerHTML` 直出（表格 DOM 原样进
+HTML）✅；对代码块会带上 `code-token` 的行内属性 ✅（阶段 1 的 `delta_to_html`
+转换清单要认这个）。
+
+- [ ] **Step 2: `normalize_delta` 改成 `normalize_html`**
+
+```rust
+/// 正文归一化：空 → 空串；像 HTML → 原样；像 Delta（存量未迁移的）→ 原样透传
+/// （过渡期两种都可能有，Task 5 的迁移跑完后只剩 HTML）。
+fn normalize_html(content: &str) -> String
+```
+
+- [ ] **Step 3: `on_change` 传 HTML**
+
+`text-change` 回调里把 `getContents()` 换成 `getSemanticHTML()`，落库的是 HTML。
+
+- [ ] **Step 4: 验证**
+
+跑 `scripts/editor-smoke.mjs` 的 10 个场景 —— 它们现在应该**全部照常通过**，
+但库里的正文已经是 HTML 了。用 GraphQL 查一条条目的 `detail` 确认是 HTML。
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add public/tiny-editor/glue.js src/frontend/tiny_editor.rs
+git commit -m "refactor(editor): 前端边界切到 HTML，Quill 仍在驱动"
 ```
 
 ---
