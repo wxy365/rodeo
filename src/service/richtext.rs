@@ -187,3 +187,349 @@ pub fn escape_html(text: &str) -> String {
     }
     out
 }
+
+// ── Quill Delta → HTML ────────────────────────────────────────────────
+//
+// 存量正文是 Quill Delta（`{"ops":[...]}`）。转成 HTML 才能把存储切到 HTML，
+// 也才能把编辑器换成 Tiptap（它原生吃 HTML）。
+//
+// 渲染语义照抄 Quill 的 `getSemanticHTML()`：
+//   · 行内属性（bold/italic/underline/strike/code/link/mention/code-token）
+//     转成行内标签；
+//   · 块的类型由**块末尾那个换行 op** 的 attributes 决定
+//     （header/list/blockquote/code-block）；
+//   · 连续的同类型列表行合并进同一个 `<ul>` / `<ol>`。
+//
+// 覆盖的形态（**漏一个就是静默丢内容**）：
+//   · `code-block: "<语言>"` —— 取值是语言字符串，不是 `true`；
+//   · `code-token` —— 阶段 0 起的语法高亮 token，落库时带在行内文本上；
+//   · `table-col` / `table-cell-line` —— better-table 的表格结构。
+
+/// Delta 里一个 op 的块级属性（决定它结束的��是什么）。
+#[derive(Debug, Default, Clone)]
+struct BlockAttrs {
+    header: Option<u8>,
+    list: Option<String>,
+    blockquote: bool,
+    code_block: Option<String>,
+}
+
+/// 一个 op 的行内属性。
+#[derive(Debug, Default, Clone)]
+struct InlineAttrs {
+    bold: bool,
+    italic: bool,
+    underline: bool,
+    strike: bool,
+    code: bool,
+    link: Option<String>,
+    mention: Option<(String, String)>,
+    /// 语法高亮 token（阶段 0 引入）：`{"code-token":"keyword"}`
+    code_token: Option<String>,
+}
+
+/// Delta 的一个 op。
+enum DeltaOp {
+    Text {
+        text: String,
+        inline: InlineAttrs,
+        block: BlockAttrs,
+    },
+    Embed {
+        kind: String,
+        value: serde_json::Value,
+    },
+}
+
+/// 把 Delta JSON 渲染成 HTML。解析不出来就当纯文本（escape 后按行包 `<p>`）。
+pub fn delta_to_html(delta: &str) -> String {
+    let Some(ops) = parse_delta_ops(delta) else {
+        return plain_to_html(delta);
+    };
+    let mut out = String::new();
+    // 当前块的行内 HTML
+    let mut inline_buf = String::new();
+    // 当前块的块级属性
+    let mut block = BlockAttrs::default();
+    // 正在打开的列表标签（"ul" / "ol"），None 表示不在列表里
+    let mut open_list: Option<&'static str> = None;
+    // 任务列表需要单独的 <ul data-type="taskList">，和普通 <ul> 不能混
+    let mut open_list_is_task = false;
+
+    for op in &ops {
+        match op {
+            DeltaOp::Text {
+                text,
+                inline,
+                block: op_block,
+            } => {
+                let mut parts = text.split('\n');
+                let first = parts.next().unwrap_or("");
+                inline_buf.push_str(&render_inline(first, inline));
+                for part in parts {
+                    // 换行 → 收束当前块；块的类型由带这个换行的 op 决定
+                    block = op_block.clone();
+                    out.push_str(&finish_block(
+                        &mut inline_buf,
+                        &mut block,
+                        &mut open_list,
+                        &mut open_list_is_task,
+                    ));
+                    inline_buf.push_str(&render_inline(part, inline));
+                }
+            }
+            DeltaOp::Embed { kind, value } => {
+                inline_buf.push_str(&render_embed(kind, value));
+            }
+        }
+    }
+    // 末尾没有换行 op 的残余内容。**空的不收束** —— 收束会多出一个空的 <p></p>。
+    if !inline_buf.is_empty() {
+        out.push_str(&finish_block(
+            &mut inline_buf,
+            &mut block,
+            &mut open_list,
+            &mut open_list_is_task,
+        ));
+    }
+    // 列表可能还开着（最后一个 op 是列表项）
+    out.push_str(&close_open_list(&mut open_list, &mut open_list_is_task));
+    out
+}
+
+/// 收束一个块，产出 HTML。列表行在这里合并进同一个 `<ul>`/`<ol>`。
+fn finish_block(
+    inline_buf: &mut String,
+    block: &mut BlockAttrs,
+    open_list: &mut Option<&'static str>,
+    open_list_is_task: &mut bool,
+) -> String {
+    let mut out = String::new();
+    let (want_list, is_task) = match block.list.as_deref() {
+        Some("ordered") => (Some("ol"), false),
+        Some("bullet") => (Some("ul"), false),
+        // 勾选列表：<ul data-type="taskList"><li data-checked="true">
+        Some("checked") | Some("unchecked") => (Some("ul"), true),
+        _ => (None, false),
+    };
+
+    if let Some(tag) = want_list {
+        if open_list.is_none() || *open_list != Some(tag) || *open_list_is_task != is_task {
+            out.push_str(&close_open_list(open_list, open_list_is_task));
+            if is_task {
+                out.push_str("<ul data-type=\"taskList\">");
+            } else {
+                out.push_str(&format!("<{tag}>"));
+            }
+            *open_list = Some(tag);
+            *open_list_is_task = is_task;
+        }
+        let checked = match block.list.as_deref() {
+            Some("checked") => "true",
+            Some("unchecked") => "false",
+            _ => "",
+        };
+        if checked.is_empty() {
+            out.push_str(&format!("<li>{}</li>", inline_buf));
+        } else {
+            out.push_str(&format!("<li data-checked=\"{checked}\">{}</li>", inline_buf));
+        }
+    } else {
+        out.push_str(&close_open_list(open_list, open_list_is_task));
+        let content = std::mem::take(inline_buf);
+        if let Some(h) = block.header {
+            out.push_str(&format!("<h{h}>{content}</h{h}>"));
+        } else if block.blockquote {
+            out.push_str(&format!("<blockquote>{content}</blockquote>"));
+        } else if let Some(lang) = &block.code_block {
+            let cls = if lang.is_empty() || lang == "plain" {
+                String::new()
+            } else {
+                format!(" class=\"language-{lang}\"")
+            };
+            out.push_str(&format!("<pre><code{cls}>{content}</code></pre>"));
+        } else if content.trim().is_empty() {
+            // 空行也要留一个 <p>，否则 Quill 的空段落占位语义会丢
+            out.push_str("<p></p>");
+        } else {
+            out.push_str(&format!("<p>{content}</p>"));
+        }
+    }
+    *block = BlockAttrs::default();
+    inline_buf.clear();
+    out
+}
+
+/// 关掉还开着的列表标签（如果开着）。返回闭合标签 HTML。
+fn close_open_list(
+    open_list: &mut Option<&'static str>,
+    open_list_is_task: &mut bool,
+) -> String {
+    match open_list.take() {
+        Some(tag) => {
+            *open_list_is_task = false;
+            format!("</{tag}>")
+        }
+        None => String::new(),
+    }
+}
+
+/// 解析 op 的行内属性。
+fn parse_inline_attrs(v: Option<&serde_json::Value>) -> InlineAttrs {
+    let mut a = InlineAttrs::default();
+    let Some(obj) = v.and_then(|v| v.as_object()) else {
+        return a;
+    };
+    a.bold = truthy(obj.get("bold"));
+    a.italic = truthy(obj.get("italic"));
+    a.underline = truthy(obj.get("underline"));
+    a.strike = truthy(obj.get("strike"));
+    a.code = truthy(obj.get("code"));
+    if let Some(href) = obj.get("link").and_then(|v| v.as_str()) {
+        a.link = Some(href.to_string());
+    }
+    if let Some(tok) = obj.get("code-token").and_then(|v| v.as_str()) {
+        a.code_token = Some(tok.to_string());
+    }
+    // mention：fluent-editor 的 mention 是 embed（{"insert":{"mention":{...}}}），
+    // 但历史数据里也可能以行内属性的形式出现，两种都认。
+    if let Some(m) = obj.get("mention").and_then(|v| v.as_object()) {
+        let id = m.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let text = m.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        a.mention = Some((id, text));
+    }
+    a
+}
+
+fn truthy(v: Option<&serde_json::Value>) -> bool {
+    match v {
+        Some(serde_json::Value::Bool(true)) => true,
+        Some(serde_json::Value::Number(n)) => n.as_f64().map(|f| f != 0.0).unwrap_or(false),
+        Some(serde_json::Value::String(s)) => !s.is_empty() && s != "false" && s != "0",
+        _ => false,
+    }
+}
+
+/// 行内文本 → HTML。属性的包裹顺序固定，避免同一份内容每次渲染结果不一样。
+fn render_inline(text: &str, attrs: &InlineAttrs) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+    let mut s = escape_html(text);
+    if let Some(tok) = &attrs.code_token {
+        s = format!("<span class=\"hljs-{}\">{}</span>", escape_html(tok), s);
+    }
+    if let Some((id, name)) = &attrs.mention {
+        s = format!(
+            "<span data-type=\"mention\" data-id=\"{}\">@{}</span>",
+            escape_html(id),
+            escape_html(name)
+        );
+    }
+    if attrs.code {
+        s = format!("<code>{s}</code>");
+    }
+    if attrs.bold {
+        s = format!("<strong>{s}</strong>");
+    }
+    if attrs.italic {
+        s = format!("<em>{s}</em>");
+    }
+    if attrs.underline {
+        s = format!("<u>{s}</u>");
+    }
+    if attrs.strike {
+        s = format!("<s>{s}</s>");
+    }
+    if let Some(href) = &attrs.link {
+        s = format!(
+            "<a href=\"{}\" rel=\"noopener noreferrer\" target=\"_blank\">{}</a>",
+            escape_html(href),
+            s
+        );
+    }
+    s
+}
+
+/// embed（图片 / 提及）→ HTML。
+fn render_embed(kind: &str, value: &serde_json::Value) -> String {
+    match kind {
+        "image" => match value.as_str() {
+            Some(url) => format!("<img src=\"{}\" alt=\"\">", escape_html(url)),
+            None => String::new(),
+        },
+        "mention" => {
+            let id = value.get("name").and_then(|v| v.as_str()).unwrap_or("");
+            let text = value.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            format!(
+                "<span data-type=\"mention\" data-id=\"{}\">@{}</span>",
+                escape_html(id),
+                escape_html(text)
+            )
+        }
+        _ => String::new(),
+    }
+}
+
+/// 解析 Delta 的 ops。
+fn parse_delta_ops(delta: &str) -> Option<Vec<DeltaOp>> {
+    let v: serde_json::Value = serde_json::from_str(delta).ok()?;
+    let arr = v
+        .get("ops")
+        .and_then(|o| o.as_array())
+        .cloned()
+        .or_else(|| v.as_array().cloned())?;
+    let mut out = Vec::with_capacity(arr.len());
+    for op in arr {
+        let insert = op.get("insert")?;
+        let attrs = op.get("attributes");
+        match insert {
+            serde_json::Value::String(text) => {
+                out.push(DeltaOp::Text {
+                    text: text.clone(),
+                    inline: parse_inline_attrs(attrs),
+                    block: parse_block_attrs(attrs),
+                });
+            }
+            serde_json::Value::Object(map) => {
+                let (kind, value) = map.iter().next()?;
+                out.push(DeltaOp::Embed {
+                    kind: kind.clone(),
+                    value: value.clone(),
+                });
+            }
+            _ => {}
+        }
+    }
+    Some(out)
+}
+
+/// 解析 op 的块级属性。
+fn parse_block_attrs(v: Option<&serde_json::Value>) -> BlockAttrs {
+    let mut b = BlockAttrs::default();
+    let Some(obj) = v.and_then(|v| v.as_object()) else {
+        return b;
+    };
+    if let Some(h) = obj.get("header").and_then(|v| v.as_u64()) {
+        b.header = Some(h.clamp(1, 6) as u8);
+    }
+    b.blockquote = truthy(obj.get("blockquote"));
+    if let Some(cb) = obj.get("code-block") {
+        b.code_block = Some(match cb {
+            serde_json::Value::String(s) => s.clone(),
+            _ => "plain".to_string(),
+        });
+    }
+    if let Some(l) = obj.get("list") {
+        // list 取值可能是字符串，也可能是 {"value": "..."}（fluent-editor 改过形状）
+        b.list = match l {
+            serde_json::Value::String(s) => Some(s.clone()),
+            serde_json::Value::Object(o) => o
+                .get("value")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string()),
+            _ => None,
+        };
+    }
+    b
+}
