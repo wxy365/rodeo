@@ -5,9 +5,8 @@ use crate::frontend::graphql_client::Member;
 
 /// 富文本编辑器组件（@opentiny/fluent-editor，基于 Quill 2.0）。
 ///
-/// `initial` 为初始内容：既可以是 Quill Delta JSON，也可以是旧版纯文本
-/// （纯文本会自动包装成 Delta）。用户每次编辑经 `text-change` 事件，
-/// 把当前 Delta JSON 写回 `on_change`。
+/// `initial` 为初始内容（HTML）。用户每次编辑经 `text-change` 事件，
+/// 把当前的语义化 HTML 写回 `on_change`。
 ///
 /// `readonly = true` 时只展示内容：工具栏不挂、粘贴图片拦截不绑、`on_change`
 /// 不会被调用。匿名分享页的 Entry 全屏详情走这条路径。
@@ -54,11 +53,11 @@ pub fn TinyEditor(
         );
     }
     let el: NodeRef<Div> = NodeRef::new();
-    let delta = normalize_delta(&initial);
+    let html = normalize_html(&initial);
 
     mount_when_ready(
         el,
-        delta,
+        html,
         entry_code,
         on_change,
         on_uploaded,
@@ -78,7 +77,7 @@ pub fn TinyEditor(
 /// 避免响应式 effect 在重渲染时重复 new 编辑器导致工具栏堆叠。
 fn mount_when_ready(
     el: NodeRef<Div>,
-    delta: String,
+    html: String,
     entry_code: Signal<String>,
     on_change: Callback<String>,
     on_uploaded: Callback<()>,
@@ -89,7 +88,7 @@ fn mount_when_ready(
     el.on_load(move |node| {
         mount_editor(
             node,
-            delta,
+            html,
             entry_code,
             on_change,
             on_uploaded,
@@ -102,7 +101,7 @@ fn mount_when_ready(
     {
         let _ = (
             el,
-            delta,
+            html,
             entry_code,
             on_change,
             on_uploaded,
@@ -112,31 +111,21 @@ fn mount_when_ready(
     }
 }
 
-/// 将历史纯文本或 Delta JSON 归一化为 Delta JSON 字符串。
-/// 空内容返回空串；`{"ops":[...]}` 或 `[...]` 原样返回；其余视为纯文本包装成 Delta。
-fn normalize_delta(detail: &str) -> String {
-    let d = detail.trim();
-    if d.is_empty() {
+/// 正文归一化。正文在库里存 **HTML**（服务端的 richtext 消毒后落库）。
+///
+/// 这里只把空内容归一成空串，其余原样透传 —— 库里可能还有没迁移的
+/// Quill Delta，JS 侧两种都认（见 glue.js 的 setStoredContent）。
+fn normalize_html(content: &str) -> String {
+    if content.trim().is_empty() {
         return String::new();
     }
-    match serde_json::from_str::<serde_json::Value>(d) {
-        Ok(serde_json::Value::Array(_)) => d.to_string(),
-        Ok(serde_json::Value::Object(ref m)) if m.contains_key("ops") => d.to_string(),
-        _ => {
-            let text = if d.ends_with('\n') {
-                d.to_string()
-            } else {
-                format!("{d}\n")
-            };
-            serde_json::json!({ "ops": [{ "insert": text }] }).to_string()
-        }
-    }
+    content.to_string()
 }
 
 #[cfg(target_arch = "wasm32")]
 fn mount_editor<N: wasm_bindgen::JsCast>(
     node: N,
-    delta_json: String,
+    html: String,
     entry_code: Signal<String>,
     on_change: Callback<String>,
     on_uploaded: Callback<()>,
@@ -236,7 +225,7 @@ fn mount_editor<N: wasm_bindgen::JsCast>(
 
     let args = Array::new();
     args.push(&node_js);
-    args.push(&JsValue::from_str(&delta_json));
+    args.push(&JsValue::from_str(&html));
     args.push(&opts);
 
     let Some(editor) = Reflect::apply(&create, &bridge, args.as_ref()).ok() else {
@@ -254,29 +243,15 @@ fn mount_editor<N: wasm_bindgen::JsCast>(
     let editor_for_cb = editor.clone();
     let closure = Closure::wrap(
         Box::new(move |_delta: JsValue, _old: JsValue, _source: JsValue| {
-            let contents = Reflect::get(&editor_for_cb, &JsValue::from_str("getContents"))
+            // 正文在库里存 **HTML**：Quill 的语义化导出（getSemanticHTML）。
+            // 不用 getContents —— 那是 Delta JSON，服务端已经不再收它了。
+            let html = Reflect::get(&editor_for_cb, &JsValue::from_str("getSemanticHTML"))
                 .ok()
                 .and_then(|f| f.dyn_into::<Function>().ok())
-                .and_then(|f| Reflect::apply(&f, &editor_for_cb, Array::new().as_ref()).ok());
-            let Some(contents) = contents else { return };
-            let json = js_sys::JSON::stringify(&contents)
-                .ok()
-                .and_then(|j| j.as_string())
-                .unwrap_or_default();
-            // fluent-editor 的列表 blot 会把属性写成 `{"list":{"value":"ordered"}}`，
-            // 落库前压回 Quill 标准的 `{"list":"ordered"}`。不清洗的话，评论列表
-            // 的 getSemanticHTML() 会把有序列表导成无序、每项各拆一个列表。
-            let json = Reflect::get(&bridge, &JsValue::from_str("normalizeDeltaJson"))
-                .ok()
-                .and_then(|f| f.dyn_into::<Function>().ok())
-                .and_then(|f| {
-                    let a = Array::new();
-                    a.push(&JsValue::from_str(&json));
-                    Reflect::apply(&f, &bridge, a.as_ref()).ok()
-                })
+                .and_then(|f| Reflect::apply(&f, &editor_for_cb, Array::new().as_ref()).ok())
                 .and_then(|v| v.as_string())
-                .unwrap_or(json);
-            on_change.run(json);
+                .unwrap_or_default();
+            on_change.run(html);
         }) as Box<dyn FnMut(JsValue, JsValue, JsValue)>,
     );
     let closure_js = closure.into_js_value();
@@ -300,9 +275,24 @@ fn mount_editor<N: wasm_bindgen::JsCast>(
     );
 }
 
+/// 把正文渲染成 HTML。
+///
+/// 正文在库里存的就是**消毒过的 HTML**（服务端写入时消毒），所以绝大多数情况
+/// 直接返回即可 —— **SSR 阶段就能渲染出评论正文**，不用等 hydrate。
+///
+/// 存量里可能还有没迁移的 Quill Delta（启动期的 repair 会转掉，转不掉的保留
+/// 原文）：那种走 JS 侧的转换，而它是 wasm-only 的，SSR 阶段会是空串。
+pub fn content_to_html(body: &str) -> String {
+    let t = body.trim_start();
+    if t.starts_with('{') || t.starts_with('[') {
+        return delta_to_html(body);
+    }
+    body.to_string()
+}
+
 /// 把 Delta JSON 渲染成 HTML。非 wasm 目标或桥接未加载时返回空串
-/// （与 `TinyEditor` 一样，渲染只发生在浏览器里）。
-pub fn delta_to_html(delta: &str) -> String {
+/// （与 `content_to_html` 一样，渲染只发生在浏览器里）。
+fn delta_to_html(delta: &str) -> String {
     #[cfg(target_arch = "wasm32")]
     {
         use js_sys::{Array, Function, Reflect};

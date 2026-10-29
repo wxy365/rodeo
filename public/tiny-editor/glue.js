@@ -257,6 +257,44 @@ function escapeHtml(s) {
     .replace(/'/g, '&#39;');
 }
 
+// 把库里存的正文灌进编辑器。
+//
+// 正文现在存 **HTML**（服务端的 richtext::normalize_for_storage 消毒后落库），
+// 但库里可能还有没迁移的 Quill Delta（存量数据，启动期的 repair 会转）——
+// 两种都认。
+function setStoredContent(editor, stored) {
+  if (!stored) return;
+  const t = stored.trim();
+  if (t.startsWith('{') || t.startsWith('[')) {
+    // 还没迁移的 Quill Delta
+    try {
+      editor.setContents(normalizeListAttributes(JSON.parse(t)), 'silent');
+    } catch (e) {
+      console.warn('Delta 正文解析失败，编辑器留空', e);
+    }
+    return;
+  }
+  try {
+    // Quill 的 clipboard 模块能把 HTML 解析成 Delta —— 走它等于用 Quill 自己的
+    // HTML 解析器，格式最全（表格 / 代码块 / 任务列表都认）。
+    editor.setContents(editor.clipboard.convert({ html: stored }), 'silent');
+  } catch (e) {
+    console.warn('HTML 正文解析失败，编辑器留空', e);
+  }
+}
+
+// 编辑器里的内容 → 库里存的正文（HTML）。
+//
+// 用 getSemanticHTML 而不是 root.innerHTML：前者是语义化导出（干净的
+// 标签结构），后者会把 Quill 的内部标记一起带出去。
+function storedContentFrom(editor) {
+  try {
+    return editor.getSemanticHTML();
+  } catch (e) {
+    return '';
+  }
+}
+
 // 把一行切成单元格。行内代码 span 与转义竖线先换成占位符，切完再还原。
 function splitMdRow(line) {
   const codes = [];
@@ -726,18 +764,7 @@ window.__rodeo_tiny_editor__ = {
       // 挂进内容里，只读视图不该有可交互控件。用 CSS 藏掉它
       // （见 style/main.css 的 .ql-readonly select）。
       el.classList.add('ql-readonly');
-      if (deltaJson) {
-        try {
-          readOnlyEditor.setContents(normalizeListAttributes(JSON.parse(deltaJson)), 'silent');
-        } catch (e) {
-          // 非法 Delta 走纯文本回退——只读场景里允许「展示成段落文本」。
-          try {
-            readOnlyEditor.setText(deltaJson, 'silent');
-          } catch (e2) {
-            // 最坏情况忽略，编辑器保持空内容。
-          }
-        }
-      }
+      setStoredContent(readOnlyEditor, deltaJson);
       el.__rodeo_editor = readOnlyEditor;
       return readOnlyEditor;
     }
@@ -828,13 +855,7 @@ window.__rodeo_tiny_editor__ = {
     attachMarkdownTablePaste(el, editor);
     repairCompositionText(el, editor);
 
-    if (deltaJson) {
-      try {
-        editor.setContents(normalizeListAttributes(JSON.parse(deltaJson)), 'silent');
-      } catch (e) {
-        // 非法 Delta 时忽略，编辑器保持空内容。
-      }
-    }
+    setStoredContent(editor, deltaJson);
 
     // 同一次响应式更新里可能还有别处的编辑器被卸载，卸载与新建的先后顺序
     // 由 Leptos 决定。等这次更新彻底落定后再扫一遍，漏网的孤儿也一并清掉。
@@ -856,8 +877,14 @@ window.__rodeo_tiny_editor__ = {
   // 把 Delta JSON 渲染成 HTML，供评论列表这类只读场景使用。
   // 复用同一个离屏实例：整页评论只占一个编辑器对象，按条新建既慢，
   // 又会和工具栏清理互相干扰。
-  toHtml(deltaJson) {
-    if (!deltaJson) return '';
+  toHtml(content) {
+    if (!content) return '';
+    // 现在库里就是 HTML，直接用；只有还没迁移的 Quill Delta 才走转换。
+    const trimmed = content.trim();
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
+      return content;
+    }
+    const deltaJson = content;
     if (!renderEditor) {
       renderHost = document.createElement('div');
       renderHost.style.display = 'none';

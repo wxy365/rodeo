@@ -59,7 +59,7 @@ fn comment_item(comment: SharedComment) -> impl IntoView {
                         <span class="mut">{move || i18n.t("comment.edited")}</span>
                     })}
                 </div>
-                <div class="c-body" inner_html=crate::frontend::tiny_editor::delta_to_html(&comment.body)></div>
+                <div class="c-body" inner_html=crate::frontend::tiny_editor::content_to_html(&comment.body)></div>
             </div>
         </div>
     }

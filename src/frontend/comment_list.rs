@@ -9,7 +9,7 @@ use crate::frontend::graphql_client::{
 };
 use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::icons::ic_comment;
-use crate::frontend::tiny_editor::{delta_to_html, TinyEditor};
+use crate::frontend::tiny_editor::{content_to_html, TinyEditor};
 
 /// 列表项：正文的 HTML 在取数时一次算好。
 /// 不在 `view!` 里现算是因为 SSR 阶段没有 JS 桥，渲染会得到空串。
@@ -140,7 +140,7 @@ pub fn CommentList(
                             items.set(Some(Ok(list
                                 .into_iter()
                                 .map(|comment| CommentView {
-                                    html: delta_to_html(&comment.body),
+                                    html: content_to_html(&comment.body),
                                     comment,
                                 })
                                 .collect())));
