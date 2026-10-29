@@ -23,11 +23,24 @@
       agent 工具改纯文本、startup repair 幂等迁移、markdown 表格识别统一到 Rust）
 - [x] Task 5（startup repair：`repair_rich_text_html`）
 - [ ] Task 15（前端边界：Quill 说 HTML）—— 已并入 Task 4 接线一起做了
-- [ ] Task 2（换成 Tiptap：`frontend/rich_editor.rs` + `public/tiptap/*`）
-- [ ] Task 6–11（UI）
-- [ ] Task 12（样式替换）
-- [ ] Task 13（只读路径与分享页）
-- [ ] Task 14（全量回归）
+- [x] Task 2（换成 Tiptap：`frontend/rich_editor.rs` + `public/tiptap/*`）
+- [x] Task 6–11（UI：工具栏 / 表格浮���条 / 代码块语言 / @提及 / 图片 / 任务列表）
+- [x] Task 12（样式替换：`.ql-*` 那 98 处删掉，换成 Tiptap 的类名）
+- [x] Task 13（只读路径与分享页：正文直接用存储的 HTML，SSR 就能渲染）
+- [x] Task 14（全量回归：10 个场景全过）
+
+**实际落地与计划的出入**：
+
+1. **存储切换提前到了编辑器替换之前**（原计划是 Task 2 → 3 → 4 → 5）。理由：
+   边界协议从 Delta 换成 HTML 是一次性切换，先换编辑器（仍说 Delta）再改存储
+   （变 HTML），中间态两边对不上，什么都验不了。
+2. **Delta → HTML 的转换放在服务端**（`normalize_for_storage`），不是前端边界。
+   前端只在「读」的方向上认两种形态（HTML / 还没迁移的 Delta），少一层跨语言
+   转换。
+3. **markdown 表格的识别统一到 Rust**（`src/richtext.rs`）：正文存 HTML 之后
+   Quill 侧那段不再跑，规则只剩一份。
+4. **UI 是自己写的**（Tiptap 是 headless 的）：工具栏 20 个命令 + 代码块语言
+   下拉 + 表格浮动条（fixed 定位，不依赖定位祖先）+ @提及浮层。
 
 **执行中调整的两处**：
 
