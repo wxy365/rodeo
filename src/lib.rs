@@ -12,6 +12,7 @@ pub mod config;
 pub mod domain;
 #[cfg(feature = "ssr")]
 pub mod error;
+pub mod richtext;
 #[cfg(feature = "ssr")]
 pub mod service;
 #[cfg(feature = "ssr")]

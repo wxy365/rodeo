@@ -13,6 +13,8 @@
 use ammonia::Builder;
 use html_escape::decode_html_entities;
 
+use crate::richtext::{escape_html, split_md_tables};
+
 /// 构造消毒器。
 ///
 /// ammonia 的默认白名单已经覆盖了我们要的绝大多数标签（table/thead/tbody/td/th/
@@ -158,35 +160,27 @@ pub fn detect_format(content: &str) -> RichFormat {
     RichFormat::Plain
 }
 
-/// 历史纯文本 → HTML：按行切分，每行包一个 `<p>`，空行跳过。文本要 escape。
+/// 纯文本 → HTML：按行切分，每行包一个 `<p>`，空行跳过；markdown 表格转成
+/// `<table>`。文本要 escape。
 pub fn plain_to_html(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
-    for line in text.lines() {
-        if line.trim().is_empty() {
+    for (chunk, is_table) in split_md_tables(text) {
+        if is_table {
+            out.push_str(&chunk);
             continue;
         }
-        out.push_str("<p>");
-        out.push_str(&escape_html(line));
-        out.push_str("</p>");
+        for line in chunk.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            out.push_str("<p>");
+            out.push_str(&escape_html(line));
+            out.push_str("</p>");
+        }
     }
     out
 }
 
-/// HTML 转义（用于把纯文本包进 HTML）。
-pub fn escape_html(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            _ => out.push(c),
-        }
-    }
-    out
-}
 
 // ── Quill Delta → HTML ────────────────────────────────────────────────
 //
@@ -263,19 +257,37 @@ pub fn delta_to_html(delta: &str) -> String {
                 inline,
                 block: op_block,
             } => {
-                let mut parts = text.split('\n');
-                let first = parts.next().unwrap_or("");
-                inline_buf.push_str(&render_inline(first, inline));
-                for part in parts {
-                    // 换行 → 收束当前块；块的类型由带这个换行的 op 决定
-                    block = op_block.clone();
-                    out.push_str(&finish_block(
-                        &mut inline_buf,
-                        &mut block,
-                        &mut open_list,
-                        &mut open_list_is_task,
-                    ));
-                    inline_buf.push_str(&render_inline(part, inline));
+                // 一段 op 文本里可能夹着 markdown 表格（存量纯文本内容）。
+                // 表格是块级的，要先收束当前块再输出。
+                for (chunk, is_table) in split_md_tables(text) {
+                    if is_table {
+                        block = op_block.clone();
+                        // 表格前面不留空段落
+                        if !(inline_buf.trim().is_empty() && is_plain_block(&block)) {
+                            out.push_str(&finish_block(
+                                &mut inline_buf,
+                                &mut block,
+                                &mut open_list,
+                                &mut open_list_is_task,
+                            ));
+                        }
+                        out.push_str(&chunk);
+                        continue;
+                    }
+                    let mut parts = chunk.split('\n');
+                    let first = parts.next().unwrap_or("");
+                    inline_buf.push_str(&render_inline(first, inline));
+                    for part in parts {
+                        // 换行 → 收束当前块；块的类型由带这个换行的 op 决定
+                        block = op_block.clone();
+                        out.push_str(&finish_block(
+                            &mut inline_buf,
+                            &mut block,
+                            &mut open_list,
+                            &mut open_list_is_task,
+                        ));
+                        inline_buf.push_str(&render_inline(part, inline));
+                    }
                 }
             }
             DeltaOp::Embed { kind, value } => {
@@ -358,6 +370,11 @@ fn finish_block(
     *block = BlockAttrs::default();
     inline_buf.clear();
     out
+}
+
+/// 这个块没有任何块级属性（就是一个普通段落）。
+fn is_plain_block(b: &BlockAttrs) -> bool {
+    b.header.is_none() && b.list.is_none() && !b.blockquote && b.code_block.is_none()
 }
 
 /// 关掉还开着的列表标签（如果开着）。返回闭合标签 HTML。
@@ -532,4 +549,72 @@ fn parse_block_attrs(v: Option<&serde_json::Value>) -> BlockAttrs {
         };
     }
     b
+}
+
+/// 写入前的正文归一化 —— **正文在库里的唯一形态是消毒后的 HTML**。
+///
+/// 三种输入都收：
+/// - HTML（编辑器送来的）→ 消毒；
+/// - Quill Delta（存量、旧编辑器）→ 转成 HTML 再消毒；
+/// - 历史纯文本 → 按行包 `<p>` 再消毒。
+pub fn normalize_for_storage(content: &str) -> String {
+    match detect_format(content) {
+        RichFormat::Html => sanitize_html(content),
+        RichFormat::Delta => sanitize_html(&delta_to_html(content)),
+        RichFormat::Plain => sanitize_html(&plain_to_html(content)),
+    }
+}
+
+/// 内容 → 纯文本。Delta 与 HTML 都吃（过渡期库里两种形态并存）。
+///
+/// @提及解析、全文检索、AI 摘要三处共用这一个入口。
+pub fn content_to_text(content: &str) -> String {
+    match detect_format(content) {
+        RichFormat::Delta => delta_to_text(content),
+        RichFormat::Html => html_to_text(content),
+        RichFormat::Plain => {
+            // 老正文可能是 JSON 字符串（"foo"）——按纯文本处理时把引号去掉。
+            match serde_json::from_str::<serde_json::Value>(content) {
+                Ok(serde_json::Value::String(s)) => s,
+                _ => content.to_string(),
+            }
+        }
+    }
+}
+
+/// 内容里有没有图片。Delta 与 HTML 都吃。
+///
+/// 图片是正文的一部分，没有文字但显然不是「空内容」——`is_blank_body` 要靠它放行。
+pub fn content_has_image(content: &str) -> bool {
+    match detect_format(content) {
+        RichFormat::Delta => {
+            let Some(ops) = parse_delta_ops(content) else {
+                return false;
+            };
+            ops.iter().any(|op| matches!(op, DeltaOp::Embed { kind, .. } if kind == "image"))
+        }
+        RichFormat::Html => content.to_ascii_lowercase().contains("<img"),
+        RichFormat::Plain => false,
+    }
+}
+
+/// Delta → 纯文本（剥掉所有属性，只留文字）。
+pub fn delta_to_text(delta: &str) -> String {
+    let Some(ops) = parse_delta_ops(delta) else {
+        return delta.to_string();
+    };
+    let mut out = String::new();
+    for op in &ops {
+        match op {
+            DeltaOp::Text { text, .. } => out.push_str(text),
+            DeltaOp::Embed { kind, value } => {
+                if kind == "mention" {
+                    let text = value.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                    out.push('@');
+                    out.push_str(text);
+                }
+            }
+        }
+    }
+    out
 }
