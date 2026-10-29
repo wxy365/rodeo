@@ -35,6 +35,11 @@ fn builder() -> Builder<'static> {
     // a 的 target（rel 由 link_rel 自动补）；img 的 title（alt/width/height/src 默认就有）。
     b.add_tag_attributes("a", ["target"]);
     b.add_tag_attributes("img", ["title"]);
+    // style 只放行宽高与对齐：Tiptap 的可调列宽靠 <col style="min-width:…"> 表达，
+    // 不放行的话列宽存不住。属性名走白名单，值不校验 —— 这几个属性没有可执行语义
+    //（不像 background-image 能加载外链），风险可接受。
+    b.add_generic_attributes(["style"]);
+    b.filter_style_properties(["width", "min-width", "max-width", "text-align"].into());
     // attribute_filter 的回调返回 Option<Cow<str>>：None = 丢掉这个属性，
     // Some = 保留（可以改写）。
     b.attribute_filter(|_element, name, value| {
@@ -600,21 +605,5 @@ pub fn content_has_image(content: &str) -> bool {
 
 /// Delta → 纯文本（剥掉所有属性，只留文字）。
 pub fn delta_to_text(delta: &str) -> String {
-    let Some(ops) = parse_delta_ops(delta) else {
-        return delta.to_string();
-    };
-    let mut out = String::new();
-    for op in &ops {
-        match op {
-            DeltaOp::Text { text, .. } => out.push_str(text),
-            DeltaOp::Embed { kind, value } => {
-                if kind == "mention" {
-                    let text = value.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                    out.push('@');
-                    out.push_str(text);
-                }
-            }
-        }
-    }
-    out
+    crate::richtext::delta_to_text(delta)
 }
