@@ -183,3 +183,37 @@ pub fn escape_html(text: &str) -> String {
     }
     out
 }
+
+/// Delta → 纯文本（剥掉所有属性，只留文字）。
+///
+/// 前端也要用：`service` 模块是 ssr 门控的，frontend 引用不到
+/// `service::richtext::delta_to_text`，而「库里万一还留着没迁移的 Delta」
+/// 这个兜底路径得有人兜。
+pub fn delta_to_text(delta: &str) -> String {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(delta.trim()) else {
+        return delta.to_string();
+    };
+    let Some(ops) = v
+        .get("ops")
+        .and_then(|o| o.as_array())
+        .cloned()
+        .or_else(|| v.as_array().cloned())
+    else {
+        return delta.to_string();
+    };
+    let mut out = String::new();
+    for op in ops {
+        match op.get("insert") {
+            Some(serde_json::Value::String(s)) => out.push_str(&s),
+            // mention 嵌入：把 `@姓名` 补回去，下游的提及解析才认得出
+            Some(serde_json::Value::Object(m)) if m.get("mention").is_some() => {
+                let mention = m.get("mention").cloned().unwrap_or_default();
+                let text = mention.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                out.push('@');
+                out.push_str(text);
+            }
+            _ => {}
+        }
+    }
+    out
+}
