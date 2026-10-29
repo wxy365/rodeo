@@ -1299,7 +1299,7 @@ fn render_text_segment(s: &str) -> String {
     let mut pos = 0usize;
     let mut i = 0usize;
     while i < lines.len() {
-        match parse_md_table_at(&lines, i) {
+        match crate::richtext::parse_md_table_at(&lines, i) {
             Some(t) => {
                 if i > pos {
                     let mut piece = render_plain_lines(&lines[pos..i]);
@@ -1332,140 +1332,13 @@ fn render_plain_lines(lines: &[&str]) -> String {
     with_inline.replace('\n', "<br>")
 }
 
-/// 一张 markdown 表格：表头 + 数据行。
-struct MdTable {
-    header: Vec<String>,
-    rows: Vec<Vec<String>>,
-    /// 数据行之后的行号（exclusive）。
-    end: usize,
-}
-
-/// 按 `|` 切一行成单元格。
-///
-/// 行内代码 span 里的 `|` 不是分隔符；`\|` 是字面竖线。
-/// 行首/行尾的竖线只是 markdown 装饰，切完去掉对应的空格。
-///
-/// 规则与 `public/tiny-editor/glue.js` 的 `splitMdRow` 逐条一致 —— 同一个模型
-/// 输出，在编辑器里是一张表、在对话面板里也得是一张表。
-fn split_md_row(line: &str) -> Vec<String> {
-    let t = line.trim();
-    let mut cells: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    let mut in_code = false;
-    let mut chars = t.chars();
-    while let Some(c) = chars.next() {
-        if c == '`' {
-            in_code = !in_code;
-            cur.push(c);
-            continue;
-        }
-        if c == '\\' {
-            // 转义竖线：把 `\|` 还原成字面 `|`。
-            if matches!(chars.clone().next(), Some('|')) {
-                cur.push('|');
-                chars.next();
-                continue;
-            }
-            cur.push(c);
-            continue;
-        }
-        if c == '|' && !in_code {
-            cells.push(std::mem::take(&mut cur));
-            continue;
-        }
-        cur.push(c);
-    }
-    cells.push(cur);
-    // 行首/行尾的竖线是装饰，对应的空 cell 去掉。
-    if t.starts_with('|') && !cells.is_empty() && cells[0].is_empty() {
-        cells.remove(0);
-    }
-    if t.ends_with('|') && !t.ends_with("\\|") && !cells.is_empty() {
-        let last_empty = cells.last().map(|c| c.is_empty()).unwrap_or(false);
-        if last_empty {
-            cells.pop();
-        }
-    }
-    cells.into_iter().map(|c| c.trim().to_string()).collect()
-}
-
-/// 分隔行的单元格：匹配 `/^:?-+:?$/`。
-fn is_md_separator_cell(c: &str) -> bool {
-    let core = c.strip_prefix(':').unwrap_or(c);
-    let core = core.strip_suffix(':').unwrap_or(core);
-    !core.is_empty() && core.chars().all(|ch| ch == '-')
-}
-
-/// 从第 `i` 行开始试解析一张 markdown 表格。
-///
-/// 规则：
-/// - 表头行含 `|`，切出 N 个单元格且 N >= 2（压掉「a | b」这种普通文本）；
-/// - 紧接着的分隔行每格匹配 `^:?-+:?$`，且格数与表头行相同；
-/// - 数据行是紧随其后的连续「含 `|` 的行」；
-/// - 各行格数不一致时按最大列数补空；分隔行的 `:` 对齐标记不实现。
-fn parse_md_table_at(lines: &[&str], i: usize) -> Option<MdTable> {
-    if i + 1 >= lines.len() {
-        return None;
-    }
-    let header_line = lines[i];
-    if !header_line.contains('|') {
-        return None;
-    }
-    let mut header = split_md_row(header_line);
-    if header.len() < 2 {
-        return None;
-    }
-    let sep = split_md_row(lines[i + 1]);
-    if sep.len() != header.len() {
-        return None;
-    }
-    if !sep.iter().all(|c| is_md_separator_cell(c)) {
-        return None;
-    }
-    let mut rows: Vec<Vec<String>> = Vec::new();
-    let mut j = i + 2;
-    while j < lines.len() && lines[j].contains('|') {
-        rows.push(split_md_row(lines[j]));
-        j += 1;
-    }
-    let cols = rows
-        .iter()
-        .fold(header.len(), |m, r| m.max(r.len()));
-    while header.len() < cols {
-        header.push(String::new());
-    }
-    for r in rows.iter_mut() {
-        while r.len() < cols {
-            r.push(String::new());
-        }
-    }
-    Some(MdTable { header, rows, end: j })
-}
-
 /// 表格 → `<table class="md-table">`。
 ///
 /// 表头进 `<thead>`，数据行进 `<tbody>`；首行没有数据行时也要出 `<tbody>`（空的）。
 /// 单元格内容做行内 markdown 渲染（`**粗体**` / `` `code` `` / `[链接](url)`）——
 /// 模型输出的表格里常有加粗的表头。
-fn render_md_table(t: &MdTable) -> String {
-    let mut out = String::from("<table class=\"md-table\"><thead><tr>");
-    for c in &t.header {
-        out.push_str("<th>");
-        out.push_str(&render_inline(&html_escape(c)));
-        out.push_str("</th>");
-    }
-    out.push_str("</tr></thead><tbody>");
-    for r in &t.rows {
-        out.push_str("<tr>");
-        for c in r {
-            out.push_str("<td>");
-            out.push_str(&render_inline(&html_escape(c)));
-            out.push_str("</td>");
-        }
-        out.push_str("</tr>");
-    }
-    out.push_str("</tbody></table>");
-    out
+fn render_md_table(t: &crate::richtext::MdTable) -> String {
+    crate::richtext::md_table_to_html(t)
 }
 
 /// 行内替换：`**bold**` → `<strong>...</strong>`，
