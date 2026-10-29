@@ -33,7 +33,7 @@ use crate::frontend::label_editor::LabelEditor;
 use crate::frontend::query_eval;
 use crate::frontend::relations_panel::RelationsPanel;
 use crate::frontend::timeline::TimelineView;
-use crate::frontend::tiny_editor::TinyEditor;
+use crate::frontend::rich_editor::RichEditor;
 use crate::frontend::use_auth;
 use crate::frontend::view_filter::with_text;
 use serde_json::Value;
@@ -4754,7 +4754,7 @@ fn EntryPanel(
                                             // 成员表后续变化把编辑器重挂。
                                             let ms = members.get_untracked();
                                             view! {
-                                                <TinyEditor initial entry_code=code_signal
+                                                <RichEditor initial entry_code=code_signal
                                                     on_change=on_editor_change on_uploaded=on_uploaded
                                                     members=ms />
                                             }.into_any()

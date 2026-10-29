@@ -19,7 +19,7 @@ use crate::frontend::graphql_client::{
 };
 use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::icons::{ic_back, ic_comment, ic_folder, ic_tag};
-use crate::frontend::tiny_editor::TinyEditor;
+use crate::frontend::rich_editor::RichEditor;
 
 // `LocalResource` 只在客户端触发 fetcher，SSR 永远 pending；share 页是
 // 匿名访问，SSR 没必要渲染——浏览器 hydrate 后立即发请求把数据拉回来。
@@ -59,7 +59,7 @@ fn comment_item(comment: SharedComment) -> impl IntoView {
                         <span class="mut">{move || i18n.t("comment.edited")}</span>
                     })}
                 </div>
-                <div class="c-body" inner_html=crate::frontend::tiny_editor::content_to_html(&comment.body)></div>
+                <div class="c-body" inner_html=crate::frontend::rich_editor::content_to_html(&comment.body)></div>
             </div>
         </div>
     }
@@ -166,7 +166,7 @@ pub fn SharedEntry() -> impl IntoView {
                             <div class="entry-layout">
                                 <div class="entry-main">
                                     <div class="panel entry-editor" style="padding:0;overflow:hidden">
-                                        <TinyEditor
+                                        <RichEditor
                                             initial=entry_detail.clone()
                                             entry_code=Signal::derive(move || code_str.clone())
                                             on_change=Callback::new(|_d: String| {})

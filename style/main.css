@@ -136,245 +136,6 @@
     }
 }
 
-/* 只读视图（分享页的条目正文）里，syntax 模块会把语言下拉（<select>）作为
-   code-block 的 uiNode 挂进内容里。代码块照样高亮，但下拉是可交互控件，
-   只读页面不该有——藏掉它。`.ql-readonly` 这个类由 glue.js 的 readonly 分支
-   给容器加上（别在 Rust 侧写 class：Leptos 重渲染会把 class 整体重写，
-   把这里加的类抹掉）。 */
-.ql-readonly select {
-    display: none;
-}
-
-/* fluent-editor 把工具栏整条写死成亮色：背景 `#fff`、SVG 描边/填充
-   `#444`、按钮 hover/active 背景 `#f0f0f0`、`.ql-toolbar` 边框 `#adb0b8`、
-   hover/active 文字 `#06c`。在深底上要么看不清（白底 + 近白描边），
-   要么跟周边混在一起（浅边框）。下面这套按「默认态 / 交互态 / 触屏」
-   三档把它们整体改成深色配色。
-
-   默认态（未 hover、未 active）图标与 picker 标签文字都走 `--toolbar-icon`
-   （`--ink` 与 `--blue` 的 RGB 中点 #9fcaf9），保证 H1/H2/H3 一档跟
-   粗体/斜体按钮不跳；背景走 `--surface`，边框走 `--line`——三者与
-   编辑器主体一致。
-   `.ql-snow .ql-stroke / .ql-fill / .ql-stroke-miter` 是 (0,4,0)，
-   工具栏 hover 的 `.ql-snow.ql-toolbar button:hover .ql-stroke` 是 (0,4,1)，
-   多一个 element，hover 胜出，所以默认态不会盖掉交互态。
-
-   hover/active 文字色在亮色下走 `#06c`，深底上只有 3:1 对比度
-   （差不多够图标但不够文字）。补一组特异性更高的同款选择器，把 `color`
-   换成 `var(--blue)`；SVG 不用 `currentColor`（搜过 0 处），这条只动
-   文字、不会污染图标本身的描边/填充。
-
-   触屏（`@media (pointer: coarse)`）的 `:hover:not(.ql-active)` 走另一组
-   `#444`，深底触屏上完全看不见；用 `:root[data-theme="dark"]` 抬一档
-   特异性把它压过去。 */
-@media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) .ql-snow .ql-stroke,
-    :root:not([data-theme="light"]) .ql-snow .ql-fill,
-    :root:not([data-theme="light"]) .ql-snow .ql-stroke-miter {
-        /* 默认态图标走 `--toolbar-icon`（#9fcaf9，介于白与蓝之间的中性蓝）；
-           SVG 走 stroke/fill，不接 currentColor，所以 hover 态颜色不变；
-           交互反馈交给 `button:hover` 的背景色块（见下）。 */
-        stroke: var(--toolbar-icon);
-        fill: var(--toolbar-icon);
-    }
-    /* toolbar 背景写死 #fff，图标刚被改成 --blue（亮蓝）压在白底就消失——
-       「按钮难以看清」的根因。改成 var(--surface) 与编辑器主体一致。*/
-    :root:not([data-theme="light"]) .ql-toolbar {
-        background-color: var(--surface);
-        border-color: var(--line);
-    }
-    /* 按钮 hover/active 背景在亮色下是 #f0f0f0，深底上看不出点击范围，
-       改成 var(--hover) 略亮一档的色块；按钮默认态背景仍是透明（与容器同色）。*/
-    :root:not([data-theme="light"]) .ql-snow.ql-toolbar button:hover,
-    :root:not([data-theme="light"]) .ql-snow.ql-toolbar button.ql-active {
-        background-color: var(--hover);
-    }
-    :root:not([data-theme="light"]) .ql-snow.ql-toolbar button:hover,
-    :root:not([data-theme="light"]) .ql-snow.ql-toolbar button:focus,
-    :root:not([data-theme="light"]) .ql-snow.ql-toolbar button.ql-active,
-    :root:not([data-theme="light"]) .ql-snow.ql-toolbar .ql-picker-label:hover,
-    :root:not([data-theme="light"]) .ql-snow.ql-toolbar .ql-picker-label.ql-active,
-    :root:not([data-theme="light"]) .ql-snow.ql-toolbar .ql-picker-item:hover,
-    :root:not([data-theme="light"]) .ql-snow.ql-toolbar .ql-picker-item.ql-selected {
-        color: var(--blue);
-    }
-}
-
-:root[data-theme="dark"] .ql-snow .ql-stroke,
-:root[data-theme="dark"] .ql-snow .ql-fill,
-:root[data-theme="dark"] .ql-snow .ql-stroke-miter {
-    stroke: var(--toolbar-icon);
-    fill: var(--toolbar-icon);
-}
-:root[data-theme="dark"] .ql-toolbar {
-    background-color: var(--surface);
-    border-color: var(--line);
-}
-:root[data-theme="dark"] .ql-snow.ql-toolbar button:hover,
-:root[data-theme="dark"] .ql-snow.ql-toolbar button.ql-active {
-    background-color: var(--hover);
-}
-:root[data-theme="dark"] .ql-snow.ql-toolbar button:hover,
-:root[data-theme="dark"] .ql-snow.ql-toolbar button:focus,
-:root[data-theme="dark"] .ql-snow.ql-toolbar button.ql-active,
-:root[data-theme="dark"] .ql-snow.ql-toolbar .ql-picker-label:hover,
-:root[data-theme="dark"] .ql-snow.ql-toolbar .ql-picker-label.ql-active,
-:root[data-theme="dark"] .ql-snow.ql-toolbar .ql-picker-item:hover,
-:root[data-theme="dark"] .ql-snow.ql-toolbar .ql-picker-item.ql-selected {
-    color: var(--blue);
-}
-
-/* 触屏 hover-not-active：fluent-editor 在 `@media (pointer: coarse)` 里把
-   color/fill/stroke 又写回 `#444`，深底触屏上完全看不见。上面那组「hover
-   文字色 var(--blue)」用的是 `.ql-snow.ql-toolbar button:hover`（不含
-   `:not(.ql-active)`），hover 态下 `.ql-active` 与非 `.ql-active` 都被压成
-   var(--blue)，color 这边没问题；但 fill/stroke 的非 hover 覆盖用的是
-   `.ql-snow .ql-fill / .ql-stroke`（(0,4,0)），触屏那条
-   `.ql-snow.ql-toolbar button:hover:not(.ql-active) .ql-fill` 是 (0,7,1)，
-   触屏规则胜出 → 暗色 + 触屏下图标又是 #444。这里把 hover:not(.ql-active)
-   的 color/fill/stroke 三件一起再覆一层，走 --blue（饱和蓝），给触屏
-   「手指悬停」提供反馈；默认态走 --toolbar-icon 中性蓝，靠背景色块
-   做差异化。 */
-@media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) .ql-snow.ql-toolbar button:hover:not(.ql-active) {
-        color: var(--blue);
-    }
-    :root:not([data-theme="light"]) .ql-snow.ql-toolbar button:hover:not(.ql-active) .ql-fill,
-    :root:not([data-theme="light"]) .ql-snow.ql-toolbar button:hover:not(.ql-active) .ql-stroke,
-    :root:not([data-theme="light"]) .ql-snow.ql-toolbar button:hover:not(.ql-active) .ql-stroke-miter {
-        fill: var(--blue);
-        stroke: var(--blue);
-    }
-}
-
-:root[data-theme="dark"] .ql-snow.ql-toolbar button:hover:not(.ql-active) {
-    color: var(--blue);
-}
-:root[data-theme="dark"] .ql-snow.ql-toolbar button:hover:not(.ql-active) .ql-fill,
-:root[data-theme="dark"] .ql-snow.ql-toolbar button:hover:not(.ql-active) .ql-stroke,
-:root[data-theme="dark"] .ql-snow.ql-toolbar button:hover:not(.ql-active) .ql-stroke-miter {
-    fill: var(--blue);
-    stroke: var(--blue);
-}
-
-/* picker 弹层：fluent-editor 把 `.ql-snow .ql-picker` 文字写死 `#444`、
-   `.ql-picker-options` 背景写死 `#fff`、`.ql-picker.ql-expanded .ql-picker-label`
-   写死 `#ccc`。亮色下没问题，深色下 picker 文字看不见 + 弹层是一张白卡。
-   把 picker 文字改成 `var(--toolbar-icon)` 与工具栏图标统一一档，
-   弹层背景改成 `var(--surface)` 与编辑器/工具栏一致，expanded 态
-   的标签/图标颜色用 `var(--blue)` 作为「已展开」指示。
-   picker-options 加 `border` 让它跟工具栏视觉分离——光看背景色
-   区分不开（同为 `--bg3`）。 */
-@media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) .ql-snow .ql-picker {
-        /* picker 标签文字走 --toolbar-icon，与工具栏图标同一档
-           （避免 H1/H2/H3 比粗体按钮跳出来）。*/
-        color: var(--toolbar-icon);
-    }
-    :root:not([data-theme="light"]) .ql-snow .ql-picker-options {
-        background-color: var(--surface);
-        border: 1px solid var(--border);
-    }
-    /* picker 展开时，文字与下拉箭头（旋转 180°）走 --blue，作为
-       「已展开」状态指示；其它默认态用 --toolbar-icon 中性色。*/
-    :root:not([data-theme="light"]) .ql-snow .ql-picker.ql-expanded .ql-picker-label {
-        color: var(--blue);
-    }
-    :root:not([data-theme="light"]) .ql-snow .ql-picker.ql-expanded .ql-picker-label .ql-fill,
-    :root:not([data-theme="light"]) .ql-snow .ql-picker.ql-expanded .ql-picker-label .ql-stroke {
-        fill: var(--blue);
-        stroke: var(--blue);
-    }
-}
-
-:root[data-theme="dark"] .ql-snow .ql-picker {
-    color: var(--toolbar-icon);
-}
-:root[data-theme="dark"] .ql-snow .ql-picker-options {
-    background-color: var(--surface);
-    border: 1px solid var(--border);
-}
-:root[data-theme="dark"] .ql-snow .ql-picker.ql-expanded .ql-picker-label {
-    color: var(--blue);
-}
-:root[data-theme="dark"] .ql-snow .ql-picker.ql-expanded .ql-picker-label .ql-fill,
-:root[data-theme="dark"] .ql-snow .ql-picker.ql-expanded .ql-picker-label .ql-stroke {
-    fill: var(--blue);
-    stroke: var(--blue);
-}
-
-/* 占位符：`.ql-editor.ql-blank::before` 在空编辑器里提示「输入…」，fluent
-   写死 `#8a8e99`（深底 3.5:1，过低）。换成 `var(--ink2)` = `#8b949e` 在
-   深底 4.2:1，作为提示色略低但能看清；想要再亮可以升 `var(--ink)`。 */
-@media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) .ql-editor.ql-blank::before {
-        color: var(--ink2);
-    }
-}
-
-:root[data-theme="dark"] .ql-editor.ql-blank::before {
-    color: var(--ink2);
-}
-
-/* fluent-editor（Quill 2.0 snow 主题）把 `.ql-tooltip` 挂到 `body`，但 `public/
-   tiny-editor/style.css:523` 的 `.ql-snow .ql-hidden { display:none }` 是个后代
-   选择器，要求隐藏元素必须是 `.ql-snow` 的后代——body 上的 tooltip 解链后
-   这条规则不再匹配，初始挂载就在可视区露出一个带 225px 链接输入框的
-   `<div class="ql-tooltip ql-hidden">`（即 `glue.js:39`「浮层可能被挂到
-   body 上」那段注释所描述的情况）。把隐藏规则提一个 selector + `!important`，
-   让 tooltip 不管挂在 body 还是 ql-snow 内，只要标了 `.ql-hidden` 就消失。 */
-.ql-tooltip.ql-hidden { display: none !important; }
-
-/* 列表缩进：fluent-editor 给 ol/ul `padding-left: 1.5em`，每多一层
-   `.ql-indent-X` 再加 1.5em（li 上 1.5em 的倍数），三层列表能往右
-   推 4.5em+。改成「基础列表无缩进、嵌套每层 2ch ≈ 2 个空格」——比
-   fluent-editor 默认小一档。`.ql-ui:before` 的 `margin-left: -1.5em`
-   也清零，否则项目符号会跟着跑到 li 左缘之外而被切掉。
-   9 层覆盖到 fluent-editor 支持的最大嵌套。 */
-.ql-editor ol,
-.ql-editor ul,
-.ql-editor li {
-    padding-left: 0;
-}
-.ql-editor li > .ql-ui:before {
-    margin-left: 0;
-}
-.ql-editor .ql-indent-1:not(.ql-direction-rtl),
-.ql-editor li.ql-indent-1:not(.ql-direction-rtl) {
-    padding-left: 2ch;
-}
-.ql-editor .ql-indent-2:not(.ql-direction-rtl),
-.ql-editor li.ql-indent-2:not(.ql-direction-rtl) {
-    padding-left: 4ch;
-}
-.ql-editor .ql-indent-3:not(.ql-direction-rtl),
-.ql-editor li.ql-indent-3:not(.ql-direction-rtl) {
-    padding-left: 6ch;
-}
-.ql-editor .ql-indent-4:not(.ql-direction-rtl),
-.ql-editor li.ql-indent-4:not(.ql-direction-rtl) {
-    padding-left: 8ch;
-}
-.ql-editor .ql-indent-5:not(.ql-direction-rtl),
-.ql-editor li.ql-indent-5:not(.ql-direction-rtl) {
-    padding-left: 10ch;
-}
-.ql-editor .ql-indent-6:not(.ql-direction-rtl),
-.ql-editor li.ql-indent-6:not(.ql-direction-rtl) {
-    padding-left: 12ch;
-}
-.ql-editor .ql-indent-7:not(.ql-direction-rtl),
-.ql-editor li.ql-indent-7:not(.ql-direction-rtl) {
-    padding-left: 14ch;
-}
-.ql-editor .ql-indent-8:not(.ql-direction-rtl),
-.ql-editor li.ql-indent-8:not(.ql-direction-rtl) {
-    padding-left: 16ch;
-}
-.ql-editor .ql-indent-9:not(.ql-direction-rtl),
-.ql-editor li.ql-indent-9:not(.ql-direction-rtl) {
-    padding-left: 18ch;
-}
 
 * {
     box-sizing: border-box;
@@ -1361,7 +1122,7 @@ select:focus {
 .filters .new-content {
     width: 100%;
 }
-.filters .new-content .tiny-editor {
+.filters .new-content .tiptap-editor {
     min-height: 120px;
     max-height: 240px;
     overflow: auto;
@@ -1519,14 +1280,7 @@ select:focus {
    保底高度够不着它；短正文时编辑器会只有一行高（实测 86px）。
    容器只有 min-height、高度仍是不确定的，`.ql-editor` 的 `height: 100%`
    解析不出来，所以要靠 flex 把它撑满，否则点空白处编辑不了。 */
-.entry-editor .tiny-editor {
-    min-height: 280px;
-    display: flex;
-    flex-direction: column;
-}
-.entry-editor .tiny-editor .ql-editor {
-    flex: 1 1 auto;
-}
+
 .entry-side {
     /* 左右页边距减半（16px → 8px），跟左侧评论面板一致。 */
     padding: 16px 8px;
@@ -2297,13 +2051,6 @@ input[type="color"].sw:disabled {
 .msg-actor { font-weight: 600; color: var(--fg, #222); }
 .msg-preview { margin-top: 4px; font-size: 13px; }
 
-/* ===== 富文本编辑器（tiny-editor / Quill snow） ===== */
-/* `.ql-container` 是加在 `.tiny-editor` 自身上的（同一个节点），不是它的子节点；
-   写成 `.tiny-editor .ql-container` 的后代选择器匹配不到任何东西。 */
-.tiny-editor {
-    font-size: 14px;
-    border-radius: 0 0 6px 6px;
-}
 
 /* ===== 新建视图弹窗 ===== */
 .dmodal {
@@ -2463,9 +2210,16 @@ input[type="color"].sw:disabled {
     display: flex;
     flex-direction: column;
 }
-.detail .editor .tiny-editor {
+.detail .editor .tiptap-editor {
     flex: 1 1 auto;
     min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+/* 详情页左栏直接就是编辑器，没有包裹层；短正文时编辑器会只有一行高，
+   靠 min-height 撑住，否则点空白处编辑不了。 */
+.entry-editor .tiptap-editor {
+    min-height: 280px;
     display: flex;
     flex-direction: column;
 }
@@ -2487,7 +2241,7 @@ input[type="color"].sw:disabled {
    容器再按 100% 撑到 182px，多出来的工具栏与「保存/取消」就被挤出父框；
    `.c-item` 是 static 定位，后一条评论直接把它们盖住，保存按钮点不到。
    把容器高度交回内容决定，父框随内容增长。 */
-.c-edit .tiny-editor{height:auto}
+
 .c-confirm{display:flex;align-items:center;gap:8px}
 /* `@` 提及下拉（fluent-editor 的 `.ql-mention-list`）是 `position: absolute`，
    它的 `left/top` 来自源码按 `quill.container.parentNode` 算出的偏移——
@@ -2498,7 +2252,7 @@ input[type="color"].sw:disabled {
      - `.editor`：工作空间内条目详情编辑器（workspace_main.rs:3652）
      - `.ql-mention-list-container`：fluent-editor 自身在 quill 容器
        之前插入的容器；也设上以兜底没匹配到上面任一外壳的边角情况。 */
-.c-edit,.c-composer,.editor,.ql-mention-list-container{position:relative}
+.c-edit,.c-composer,.editor{position:relative}
 .c-badge{display:inline-flex;align-items:center;gap:3px;margin-left:6px;font-size:12px;color:var(--kimi-color-text-tertiary,#8f959e)}
 
 /* 条目关联侧栏：每行一个关联，badge + 箭头 + 目标条目 + 删除按钮。 */

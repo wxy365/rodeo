@@ -9,7 +9,7 @@ use crate::frontend::graphql_client::{
 };
 use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::icons::ic_comment;
-use crate::frontend::tiny_editor::{content_to_html, TinyEditor};
+use crate::frontend::rich_editor::{content_to_html, RichEditor};
 
 /// 列表项：正文的 HTML 在取数时一次算好。
 /// 不在 `view!` 里现算是因为 SSR 阶段没有 JS 桥，渲染会得到空串。
@@ -319,7 +319,7 @@ pub fn CommentList(
                                                             let ms = ws_members.get_untracked();
                                                             view! {
                                                                 <div class="c-edit">
-                                                                    <TinyEditor initial=body_for_editor entry_code=code
+                                                                    <RichEditor initial=body_for_editor entry_code=code
                                                                         on_change=on_edit_change on_uploaded=on_uploaded
                                                                         members=ms />
                                                                     <div class="c-edit-acts">
@@ -383,7 +383,7 @@ pub fn CommentList(
                             } else {
                                 let ms = ws_members.get_untracked();
                                 view! {
-                                    <TinyEditor initial=String::new() entry_code=code
+                                    <RichEditor initial=String::new() entry_code=code
                                         on_change=on_composer_change on_uploaded=on_uploaded
                                         members=ms />
                                 }.into_any()

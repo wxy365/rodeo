@@ -16,7 +16,7 @@ use crate::frontend::icons::{ic_back, ic_check, ic_close, ic_share, ic_tag};
 use crate::frontend::label_editor::LabelEditor;
 use crate::frontend::relations_panel::RelationsPanel;
 use crate::frontend::share_clipboard::copy_share_url;
-use crate::frontend::tiny_editor::TinyEditor;
+use crate::frontend::rich_editor::RichEditor;
 use crate::frontend::use_auth;
 
 // 全屏页侧栏的页签。标签编辑不在这里——它常驻在页签上方。
@@ -388,7 +388,7 @@ pub fn EntryFullScreen() -> impl IntoView {
                                 // 一帧里 ws_members.set() 已经走过，名单已就位。
                                 let ms = ws_members.get_untracked();
                                 view! {
-                                    <TinyEditor initial entry_code=Signal::derive(code)
+                                    <RichEditor initial entry_code=Signal::derive(code)
                                         on_change=on_editor_change on_uploaded=on_changed
                                         members=ms />
                                 }.into_any()

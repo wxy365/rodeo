@@ -348,8 +348,8 @@ pub fn App() -> impl IntoView {
     });
 
     view! {
-        <Stylesheet id="tiny-editor" href="/tiny-editor/style.css"/>
-        <Script type_="module" src="/tiny-editor/glue.js"/>
+        <Stylesheet id="tiptap" href="/tiptap/style.css"/>
+        <Script type_="module" src="/tiptap/glue.js"/>
         <Title text="Rodeo"/>
         // 顶栏抽到独立组件里：父组件把 `<Show>` 当兄弟元素用时，需要它的内部闭包是
         // `Fn`-compatible。把 navigate 调用挪到 AppBar 自己的 setup 阶段能避开这个
