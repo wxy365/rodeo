@@ -1,0 +1,28 @@
+{
+  "name": "rodeo-editor",
+  "private": true,
+  "type": "module",
+  "description": "rodeo 的富文本编辑器前端构建（Tiptap v3 → public/tiptap/editor.mjs）。产物 vendor 进仓库，运行时零外网依赖。",
+  "scripts": {
+    "build:editor": "node scripts/build-editor.mjs"
+  },
+  "devDependencies": {
+    "@tiptap/core": "3.32.1",
+    "@tiptap/pm": "3.32.1",
+    "@tiptap/starter-kit": "3.32.1",
+    "@tiptap/extension-table": "3.32.1",
+    "@tiptap/extension-image": "3.32.1",
+    "@tiptap/extension-link": "3.32.1",
+    "@tiptap/extension-mention": "3.32.1",
+    "@tiptap/extension-placeholder": "3.32.1",
+    "@tiptap/extension-task-item": "3.32.1",
+    "@tiptap/extension-task-list": "3.32.1",
+    "@tiptap/extension-code-block-lowlight": "3.32.1",
+    "@tiptap/extension-underline": "3.32.1",
+    "@tiptap/extension-text-align": "3.32.1",
+    "@tiptap/extension-highlight": "3.32.1",
+    "@tiptap/suggestion": "3.32.1",
+    "esbuild": "0.28.2",
+    "lowlight": "3.3.0"
+  }
+}

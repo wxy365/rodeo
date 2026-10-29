@@ -61,7 +61,7 @@ LEPTOS_BIN_ENVS := \
 	LEPTOS_HASH_FILES=true \
 	LEPTOS_ENV=DEV
 
-.PHONY: help dev watch serve build build-release build-linux build-linux-host package-linux package-linux-host test check fmt clippy clean reset-data
+.PHONY: help dev watch serve build build-release build-linux build-linux-host package-linux package-linux-host test check fmt clippy clean reset-data editor
 
 help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
@@ -158,6 +158,13 @@ package-linux: build-linux ## 打包非容器部署产物到 dist/rodeo-<arch>.t
 	@ls -lh dist/rodeo-$(DIST_ARCH).tar.gz
 	@shasum -a 256 dist/rodeo-$(DIST_ARCH).tar.gz 2>/dev/null \
 		|| sha256sum dist/rodeo-$(DIST_ARCH).tar.gz
+
+# 重新生成 public/tiptap/editor.mjs（Tiptap 打包产物）。
+# 产物 vendor 进仓库，运行时零外网依赖 —— 所以这个目标**不是** build 的前置：
+# 没有 node 的构建机（CI、私有化打包机）照样能 make build。
+# 升级 Tiptap 时改 package.json 的版本号，再跑一次这个目标。
+editor: ## 重新打包 Tiptap 编辑器（需要 node + npm install）
+	npm run build:editor
 
 test: ## 运行测试（ssr 目标）
 	cargo test
