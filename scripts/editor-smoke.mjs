@@ -407,6 +407,51 @@ const scenarios = {
     await ctx.close();
   },
 
+  // 回归：粘贴图片 → 走 uploadAttachment 上传 → 插进编辑器。
+  // 新的 markdown 表格 paste 监听与图片上传的守卫同处一个元素（都是 capture 阶段），
+  // 必须确认两者不会互相 preventDefault 掉。
+  async 'image-paste'(browser) {
+    const token = await login();
+    const { slug, code } = await seedEntry(token, '');
+    const ctx = await newContext(browser, token);
+    const page = await ctx.newPage();
+    const errors = [];
+    const uploads = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    page.on('response', (r) => {
+      if (r.url().includes('/api/graphql')) uploads.push(r.status());
+    });
+    await openEntry(page, slug, code);
+
+    // 1x1 透明 PNG
+    const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+    await page.evaluate(async (b64) => {
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const file = new File([bytes], 'shot.png', { type: 'image/png' });
+      const dt = new DataTransfer();
+      dt.items.add(file);
+      document.querySelector('.ql-editor').dispatchEvent(
+        new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }),
+      );
+    }, png);
+
+    await page.waitForSelector('.ql-editor img', { timeout: 30000 });
+    const src = await page.$eval('.ql-editor img', (el) => el.getAttribute('src'));
+    check('图片插进编辑器', !!src && src.includes('/api/attachments/'), String(src));
+
+    // 上传会推进条目的 updated_at → 宿主必须重新取条目，紧接着保存不能报冲突。
+    const save = await page.waitForSelector('.entry-top button.btn.pri:not([disabled])', { timeout: 20000 });
+    await save.click();
+    await page.waitForTimeout(2000);
+    const errText = await page.$eval('.entry-top', (el) => el.innerText).catch(() => '');
+    check('上传后保存不报冲突', !errText.includes('冲突'), JSON.stringify(errText.slice(0, 200)));
+
+    check('页面无 JS 错误', errors.length === 0, errors.join(' | '));
+    await ctx.close();
+  },
+
   // 回归：勾选列表、@提及下拉、标题、链接。
   async 'editor-regression'(browser) {
     const token = await login();

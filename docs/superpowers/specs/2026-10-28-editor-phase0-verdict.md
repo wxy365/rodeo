@@ -28,7 +28,7 @@ bincode 结构一个字没动 —— 阶段 0 完全可回滚。
 ## 2. 验证结果
 
 浏览器验证脚本：`scripts/editor-smoke.mjs`（playwright-core 走 `target/site-smoke`
-的私有 site root，不碰用户的 `:3000`）。**9 个场景全过**：
+的私有 site root，不碰用户的 `:3000`）。**10 个场景全过**：
 
 | 场景 | 覆盖 | 结果 |
 |---|---|---|
@@ -41,6 +41,7 @@ bincode 结构一个字没动 —— 阶段 0 完全可回滚。
 | `table-paste-html` | HTML 剪贴板：正文保持粗体，表格那段变成真表格 | ✅ |
 | `md-table-readonly` | 老评论（纯文本 + markdown 表格）只读渲染出表格、正文不再空白、视图里没有语言下拉 | ✅ |
 | `editor-regression` | @提及下拉、标题、链接按钮、勾选列表 | ✅ |
+| `image-paste` | 粘贴图片 → 走 uploadAttachment 上传 → 插进编辑器；上传后立刻保存不报冲突 | ✅ |
 
 Rust 侧的表格识别逻辑（`agent_panel.rs` 的 `split_md_row` / `parse_md_table_at`）
 用 `rustc` 单独编译跑了 22 项断言（与 JS 侧用例一一对应），全过。
@@ -52,7 +53,7 @@ Rust 侧的表格识别逻辑（`agent_panel.rs` 的 `split_md_row` / `parse_md_
 | Safari 拼音在**代码块**内输入 | headless Chromium 不覆盖 IME，需人工在 Safari 26.2 + 系统拼音下验证。列表项的同类问题历史上已修（`glue.js` 的 `attachUI` 补丁），代码块是**新路径**（syntax 的 `<select>` 也是同类结构） |
 | better-table 右键菜单的「背景色」 | 断言只覆盖了合并/拆分/删行列；「背景色」在主题默认的 `operationMenu:{color:true}` 里，实测菜单里有对应项但未单独断言 |
 | AI 对话面板的 markdown 表格（端到端） | 需要模型真的输出一张表。本轮只验证了 Rust 侧解析与渲染逻辑 |
-| 图片粘贴上传回归 | 本轮未单独断言（`attachImageUpload` 的代码未改动，但新增的 paste capture 监听与它同处一个元素，需在完整回归里覆盖） |
+| —— | （原缺口「图片粘贴上传回归」已由 `image-paste` 场景补上） |
 
 ## 4. 闸口判据对照
 
@@ -70,7 +71,7 @@ Rust 侧的表格识别逻辑（`agent_panel.rs` 的 `split_md_row` / `parse_md_
 | 代码块：语言下拉可用 | ✅ |
 | 代码块：高亮生效 | ✅ |
 | 代码块：能存能取 | ✅ |
-| 图片上传无回归 | ⚠️ 未单独断言（代码未改，但需在完整回归里覆盖） |
+| 图片上传无回归 | ✅（`image-paste` 场景：粘贴 → 上传 → 插图 → 紧接着保存不报冲突） |
 | @提及无回归 | ✅ |
 | 勾选列表无回归 | ✅（注：fluent-editor 的 checked 列表**没有工具栏按钮**，本次也没加） |
 | 中文输入法在列表/表格/代码块都不丢字 | ⚠️ 需人工在 Safari 上验证 |
@@ -97,6 +98,10 @@ Rust 侧的表格识别逻辑（`agent_panel.rs` 的 `split_md_row` / `parse_md_
 
 ### 留下的尾巴
 
+0. **页面级脚本别放 App 视图**。给 hljs 加载加一行 leptos_meta 的注册式 `<Script>`，
+   hydration 直接崩 —— 而 SSR 出来的页面看着完全正常，只是前端不接管任何交互，
+   且 `page.on('pageerror')` 抓不到（走 console.error）。最终改放 shell 的 `<head>`
+   里用普通 `<script>`。详见设计稿 §3.2.1。
 1. **better-table 的右键菜单是英文**（`Merge Cells` / `Split Cells` /
    `Delete Entire Row` …），fluent-editor 没给它做 i18n，而 rodeo 界面是中文的。
    模块没暴露 label 选项，要中文化只能改 vendor bundle。**优先级低，但在那里。**
