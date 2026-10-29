@@ -247,6 +247,61 @@ impl Services {
         {
             tracing::warn!("孤儿索引行启动清理失败（不阻塞启动）: {e}");
         }
+        // 正文格式：Quill Delta / 历史纯文本 → HTML。库里从此只有 HTML。
+        // 幂等：已是 HTML 的跳过；转换失败保留原文（不写空串）。
+        if let Err(e) = repair_rich_text_html(&services.store) {
+            tracing::warn!("正文格式启动迁移失败（不阻塞启动）: {e}");
+        }
         Ok(services)
     }
+}
+
+/// 把存量正文从 Quill Delta / 历史纯文本转成 HTML。
+///
+/// 幂等：已经是 HTML 的记录跳过。转换不出来（不是 Delta 也不是纯文本）的记录
+/// **原样保留** —— 宁可留着旧格式，也不能写成空串（空串等于删掉用户的正文）。
+fn repair_rich_text_html(store: &DocStore) -> Result<usize, AppError> {
+    use crate::domain::{Comment, Entry};
+    use crate::storage::{cf, BatchOp};
+
+    let mut ops: Vec<BatchOp> = Vec::new();
+    let mut changed = 0usize;
+
+    for (k, v) in store.scan_prefix(cf::ENTRIES, b"")? {
+        let Ok(mut entry) = bincode::deserialize::<Entry>(&v) else {
+            continue;
+        };
+        if richtext::detect_format(&entry.detail) == richtext::RichFormat::Html {
+            continue;
+        }
+        let html = richtext::normalize_for_storage(&entry.detail);
+        if html.trim().is_empty() && !entry.detail.trim().is_empty() {
+            // 转换把内容吃光了 —— 保留原文，宁可留着旧格式
+            continue;
+        }
+        entry.detail = html;
+        ops.push(BatchOp::put(cf::ENTRIES, k, &entry)?);
+        changed += 1;
+    }
+
+    for (k, v) in store.scan_prefix(cf::COMMENTS, b"")? {
+        let Ok(mut comment) = bincode::deserialize::<Comment>(&v) else {
+            continue;
+        };
+        if richtext::detect_format(&comment.body) == richtext::RichFormat::Html {
+            continue;
+        }
+        let html = richtext::normalize_for_storage(&comment.body);
+        if html.trim().is_empty() && !comment.body.trim().is_empty() {
+            continue;
+        }
+        comment.body = html;
+        ops.push(BatchOp::put(cf::COMMENTS, k, &comment)?);
+        changed += 1;
+    }
+
+    if !ops.is_empty() {
+        store.write_batch(ops)?;
+    }
+    Ok(changed)
 }
