@@ -726,12 +726,13 @@ select:focus {
 }
 
 /* ===== 3 视图主页 ===== */
-/* 侧栏宽度 220px → 192px：侧栏内部左右内边距减掉 2/3（行内元素 12px → 4px，
-   容器自身 8px → 4px），省下的 28px 全部让给右侧表格。视图名的可用宽度
-   与改动前一致（131.6px），长名字不会被多截断。 */
+/* 侧栏宽度 220 → 192 → 140px：内边距收窄之后，栏宽按「内容刚好放得下」
+   重新定尺寸——图标 16 + 间隙 8 + 名字 84（6 个汉字）+ 间隙 8 + 计数 14.4，
+   加上左右内边距 14 和 2px 边框 ≈ 146px，减去贴边补偿的 16px 即 140px。
+   名字与计数之间的空档从 56px 压到 18px，省下的 52px 全部让给右侧表格。 */
 .ws-layout {
     display: grid;
-    grid-template-columns: 192px 1fr;
+    grid-template-columns: 140px 1fr;
     gap: 16px;
     align-items: start;
 }
@@ -763,6 +764,15 @@ select:focus {
     margin-left: auto;
     font-size: 12px;
     color: var(--ink3);
+}
+/* 视图名单行显示：栏宽收窄后，名字放不下就省略号截断，不要折成两行
+   （`flex:1` 的默认最小尺寸是 min-content，不加 min-width:0 的话
+   折行会被触发，行高就忽高忽低）。 */
+.wside .it .lbl {
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 /* 基础视图置顶且独立成项——不给它分组标题，靠这条分隔线与下方分组分开。
    收起时分组标题本就隐藏，这条线同时补上了原先缺失的分隔。 */
@@ -2144,12 +2154,12 @@ input[type="color"].sw:disabled {
     gap: var(--gap-panel);
 }
 /* 视图导航栏贴住窗口左边缘：卡片边框压到 x=0，不再跟着 `.page-app` 的
-   16px 左边距一起内缩。左侧 padding 里的 16px 就是这段补偿（16 - 16 = 0，
-   卡片自己不再留内边距），行内元素的 4px 再往外让出一点——图标因此从
-   x=37 挪到 x=21，右侧表格多出 28px。 */
+   16px 左边距一起内缩。左侧 padding 只剩 2px——原来 24px 里那 16px 是
+   贴边补偿，剩下 8px 是卡片自己的内边距，再减掉行内元素的 4px，图标
+   一路退到 x=7（左边那条空白带压到原来的 1/3）。 */
 .page-app .wside {
     margin-left: -16px;
-    padding-left: 16px;
+    padding-left: 2px;
 }
 /* 收起态原本是 6px 内边距，同样补 16px，折叠按钮 / 图标才不会被推出卡片。 */
 .page-app .wside.collapsed {
@@ -2179,6 +2189,7 @@ input[type="color"].sw:disabled {
 }
 .sb-head .lbl {
     flex: 1;
+    min-width: 0;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
