@@ -248,9 +248,20 @@ impl Services {
             tracing::warn!("孤儿索引行启动清理失败（不阻塞启动）: {e}");
         }
         // 正文格式：Quill Delta / 历史纯文本 → HTML。库里从此只有 HTML。
+        //
+        // **一次性**：跑完写上版本标记，之后的启动直接跳过全量扫描 —— 存量扫描
+        // 要把 entries / comments 两张表逐条 bincode 解码 + JSON 解析，每次启动
+        // 都跑一遍在数据量大时不可接受。格式再演进一版就把标记版本 +1，重跑。
+        //
         // 幂等：已是 HTML 的跳过；转换失败保留原文（不写空串）。
-        if let Err(e) = repair_rich_text_html(&services.store) {
-            tracing::warn!("正文格式启动迁移失败（不阻塞启动）: {e}");
+        match repair_rich_text_html(&services.store) {
+            Ok(n) if n > 0 => {
+                tracing::info!("正文格式迁移完成：{n} 条记录转成 HTML");
+            }
+            Ok(_) => {}
+            Err(e) => {
+                tracing::warn!("正文格式启动迁移失败（不阻塞启动）: {e}");
+            }
         }
         Ok(services)
     }
@@ -263,6 +274,12 @@ impl Services {
 fn repair_rich_text_html(store: &DocStore) -> Result<usize, AppError> {
     use crate::domain::{Comment, Entry};
     use crate::storage::{cf, BatchOp};
+
+    // 已经是当前格式 → 整个扫描跳过。存量扫描是全量的（entries / comments
+    // 两张表逐条解码 + 解析），每次启动都跑一遍在数据量大时不可接受。
+    if format_version(store)? == RICH_TEXT_FORMAT_VERSION {
+        return Ok(0);
+    }
 
     let mut ops: Vec<BatchOp> = Vec::new();
     let mut changed = 0usize;
@@ -277,6 +294,11 @@ fn repair_rich_text_html(store: &DocStore) -> Result<usize, AppError> {
         let html = richtext::normalize_for_storage(&entry.detail);
         if html.trim().is_empty() && !entry.detail.trim().is_empty() {
             // 转换把内容吃光了 —— 保留原文，宁可留着旧格式
+            continue;
+        }
+        if html == entry.detail {
+            // 转出来跟原文一样（空正文之类）—— 不必写回。
+            // 不判这一条的话，每条空正文的记录每次启动都会被重写一遍。
             continue;
         }
         entry.detail = html;
@@ -295,6 +317,9 @@ fn repair_rich_text_html(store: &DocStore) -> Result<usize, AppError> {
         if html.trim().is_empty() && !comment.body.trim().is_empty() {
             continue;
         }
+        if html == comment.body {
+            continue;
+        }
         comment.body = html;
         ops.push(BatchOp::put(cf::COMMENTS, k, &comment)?);
         changed += 1;
@@ -303,5 +328,21 @@ fn repair_rich_text_html(store: &DocStore) -> Result<usize, AppError> {
     if !ops.is_empty() {
         store.write_batch(ops)?;
     }
+    // 标记写成功才算「迁移完成」；写失败下次启动会重扫（幂等，安全）。
+    store.put_raw(cf::RICH_TEXT_FORMAT, FORMAT_MARKER_KEY, RICH_TEXT_FORMAT_VERSION.as_bytes())?;
     Ok(changed)
+}
+
+/// 当前正文格式的版本号。正文格式演进一版就 +1，迁移会重跑。
+const RICH_TEXT_FORMAT_VERSION: &str = "html-v1";
+
+/// 版本标记的 key（单例）。
+const FORMAT_MARKER_KEY: &[u8] = b"format";
+
+/// 读正文格式版本标记。
+fn format_version(store: &DocStore) -> Result<String, AppError> {
+    Ok(store
+        .get_raw(crate::storage::cf::RICH_TEXT_FORMAT, FORMAT_MARKER_KEY)?
+        .map(|v| String::from_utf8_lossy(&v).into_owned())
+        .unwrap_or_default())
 }

@@ -19,6 +19,13 @@ pub mod cf {
     /// 令牌版本：account id → u64 大端。登出时自增，使该账号所有已签发 JWT 立即失效。
     /// 与软删除同理，用独立 CF 而不是给 Account 加字段，避免 bincode 结构变更。
     pub const ACCOUNT_TOKEN_VERSION: &str = "account_token_version";
+    /// 正文格式的版本标记（单例，key 固定）。
+    ///
+    /// 正文从 Quill Delta 迁到 HTML 是一次性的，但存量扫描是全量的 —— 没有标记
+    /// 的话每次启动都要把 entries / comments 两张表逐条解码 + 解析一遍。
+    /// 迁移跑完写上版本号，之后的启动直接跳过扫描。
+    /// 值变了（格式又演进一版）就重跑。
+    pub const RICH_TEXT_FORMAT: &str = "rich_text_format";
     /// 账号状态：account id → 1 字节（1 = 冻结，2 = 注销）。**键缺席即正常**，
     /// 所以存量账号不需要回填。与 `WORKSPACES_DELETED` / `ACCOUNT_TOKEN_VERSION` 同理，
     /// 用独立 CF 而不是给 Account 加字段。用单值而不是「冻结」「注销」两个独立标记：
