@@ -9,16 +9,33 @@
     position: relative;
 }
 
+/*
+ * 编辑器整体只有**一个**边框框：外框由宿主提供（`.panel.entry-editor` /
+ * `.editor` / `.c-composer` / `.c-edit`），工具栏是贴在框顶的窄条，正文区
+ * 占满剩下的空间。
+ *
+ * 之前正文区（`.tiptap-content`）自己带边框，而它的父容器 `.tiptap-editor`
+ * 又有 min-height —— 结果是「小输入框套在大框里」，大框下半截全是空的。
+ * 现在正文区不再自带边框，改为 flex 撑满外框。
+ */
+.tiptap-editor {
+    display: flex;
+    flex-direction: column;
+    min-height: 90px;
+}
+
 .tiptap-content {
+    flex: 1 1 auto;
     min-height: 90px;
     padding: 10px 12px;
-    border: 1px solid var(--line);
-    border-radius: var(--r-s);
+    border: 0;
+    border-radius: 0;
     background: var(--surface);
     color: var(--ink);
     outline: none;
     line-height: 1.6;
     word-break: break-word;
+    overflow-y: auto;
 }
 
 .tiptap-content > *:first-child {
@@ -183,16 +200,20 @@
 }
 
 /* ── 工具栏 ───────────────────────────────────────────────────── */
+/*
+ * 工具栏是外框顶部的一条窄条（底边一条分隔线），不再自己画一圈边框 ——
+ * 外框已经在了，再画一圈就变成「框里套框」。
+ */
 .tiptap-toolbar {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 2px;
-    margin-bottom: 6px;
-    padding: 4px;
-    border: 1px solid var(--line);
-    border-radius: var(--r-s);
-    background: var(--surface);
+    padding: 4px 6px;
+    border: 0;
+    border-bottom: 1px solid var(--line);
+    border-radius: 0;
+    background: var(--bg2);
 }
 
 .tiptap-tb-group {

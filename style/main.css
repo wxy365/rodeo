@@ -2253,6 +2253,20 @@ input[type="color"].sw:disabled {
      - `.ql-mention-list-container`：fluent-editor 自身在 quill 容器
        之前插入的容器；也设上以兜底没匹配到上面任一外壳的边角情况。 */
 .c-edit,.c-composer,.editor{position:relative}
+/*
+ * 评论区编辑器外壳自带边框。
+ *
+ * 正文区（`.tiptap-content`）不再自己画边框 —— 外框统一由宿主提供
+ * （见 public/tiptap/style.css），否则就是「小输入框套在大框里」。评论区
+ * 这两个外壳原来没有边框（靠正文区那圈边框撑 appearance），得补上。
+ */
+.c-edit,.c-composer{
+    border:1px solid var(--line);
+    border-radius:var(--r-s);
+    overflow:hidden;
+}
+/* 按钮在框内，贴边的话会顶到边框上，留一点内边距。 */
+.c-edit-acts{padding:0 12px 10px}
 .c-badge{display:inline-flex;align-items:center;gap:3px;margin-left:6px;font-size:12px;color:var(--kimi-color-text-tertiary,#8f959e)}
 
 /* 条目关联侧栏：每行一个关联，badge + 箭头 + 目标条目 + 删除按钮。 */
