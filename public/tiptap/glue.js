@@ -276,6 +276,27 @@ function mentionSuggestion(members) {
 }
 
 /**
+ * Tab 键：在正文里插入制表符。
+ *
+ * Tiptap 的默认键位只给列表项（缩进）和表格单元（跳下一格）绑了 Tab，
+ * 段落 / 标题 / 引用 / 代码块里没人接 —— 浏览器默认行为把焦点移到下一个
+ * 可聚焦元素（工具栏的粗体按钮），正文里一个字符都插不进去。
+ *
+ * 列表和表格之外按 Tab 插入 '\t'（Quill 时代就是这个行为）。Shift-Tab 不
+ * 接管，留给浏览器往回移焦点（列表里的 Shift-Tab 是 Tiptap 自己的反缩进）。
+ */
+function handleTabKey(editor, event) {
+  if (!editor || event.key !== 'Tab' || event.shiftKey) return false;
+  // 列表项缩进、表格跳下一格：交回 Tiptap 自己的键位
+  if (editor.isActive('listItem') || editor.isActive('taskItem')) return false;
+  if (editor.isActive('tableCell') || editor.isActive('tableHeader')) return false;
+  event.preventDefault();
+  const { state, dispatch } = editor.view;
+  dispatch(state.tr.insertText('\t'));
+  return true;
+}
+
+/**
  * 粘贴的处理：图片走上传，markdown 表格转成原生表格。
  *
  * 图片优先：剪贴板里同时有图片和文字时，图片赢（Quill 时代就是这个优先级）。
@@ -402,11 +423,17 @@ window.__rodeo_editor__ = {
       ],
       content: html || '',
       editable: !readOnly,
+      // 空白全保留：默认策略会把段落里的制表符压成空格 —— 正文里按 Tab
+      // 插入的 '\t' 存进库再打开就没了。块之间的空白两种策略结果一致
+      // （实测存量正文解析结果逐字节相同），所以开这个开关没有副作用。
+      parseOptions: { preserveWhitespace: 'full' },
       editorProps: {
         attributes: { class: 'tiptap-content' },
         // 粘贴：图片走上传，markdown 表格转成原生表格。
         // 表格规则与服务端 src/richtext.rs 一致。
         handlePaste: (view, event) => handlePaste(view, event, editorRef),
+        // Tab：正文里插入制表符（列表缩进 / 表格跳格除外）。
+        handleKeyDown: (view, event) => handleTabKey(editorRef, event),
       },
     });
 
