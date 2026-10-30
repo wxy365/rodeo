@@ -416,7 +416,7 @@ window.__rodeo_editor__ = {
     el.__rodeo_editor = editor;
 
     if (!readOnly) {
-      const { bar, tableBar } = createToolbar(editor, { upload: opts.upload });
+      const { bar, tableBar, langSel } = createToolbar(editor, { upload: opts.upload });
       const host = el.parentNode;
       if (host) {
         // 工具栏是编辑器容器的兄弟节点（跟 Quill 时代一样）：宿主重渲染时
@@ -428,8 +428,12 @@ window.__rodeo_editor__ = {
         if (oldBar) oldBar.remove();
         const oldTable = host.querySelector(':scope > .tiptap-tablebar');
         if (oldTable) oldTable.remove();
+        const oldLang = host.querySelector(':scope > .tiptap-cb-lang');
+        if (oldLang) oldLang.remove();
         host.insertBefore(bar, el);
         host.appendChild(tableBar);
+        // 代码块语言下拉：浮在代码块右上角，默认藏起来。
+        host.appendChild(langSel);
       }
     }
 

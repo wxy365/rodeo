@@ -114,6 +114,109 @@ function runCommand(editor, cmd) {
 }
 
 /**
+ * 光标所在的代码块。
+ *
+ * 代码块在 ProseMirror 里是 textblock，`$from` 往上走就能找到它；节点位置用
+ * `$from.before(depth)`（**节点之前**的位置），`updateAttributes` 认这个位置。
+ *
+ * @returns {null | {pos: number, dom: HTMLElement|null, lang: string}}
+ *   不在代码块里返回 null。
+ */
+function currentCodeBlock(editor) {
+  const $from = editor.state.selection.$from;
+  for (let d = $from.depth; d > 0; d--) {
+    const node = $from.node(d);
+    if (node.type.name !== 'codeBlock') continue;
+    const pos = $from.before(d);
+    return { pos, dom: codeBlockDom(editor, pos), lang: node.attrs.language || '' };
+  }
+  return null;
+}
+
+/** 代码块节点对应的 DOM（`<pre>`）；找不到返回 null。 */
+function codeBlockDom(editor, pos) {
+  let dom = null;
+  try {
+    dom = editor.view.nodeDOM(pos);
+  } catch (e) {
+    dom = null;
+  }
+  if (dom && dom.nodeType === 1) {
+    const pre = dom.closest ? dom.closest('pre') : null;
+    if (pre) return pre;
+  }
+  // 退路：按位置取 DOM，再往上找最近的 <pre>。
+  const at = editor.view.domAtPos(pos + 1);
+  let n = at && at.node;
+  if (n && n.nodeType !== 1) n = n.parentElement;
+  return n && n.closest ? n.closest('pre') : null;
+}
+
+/**
+ * 代码块语言下拉。
+ *
+ * **不是工具栏上的固定控件**，而是浮在光标所在代码块的右上角 —— 工具栏上的那个
+ * 控件有两个毛病：一是跟代码块对不上号（有好几个代码块时不知道改哪个），二是
+ * 常年占着工具栏的位置。
+ *
+ * 原生 `<select>` 的下拉**靠 mousedown 的默认行为弹出**，所以这里绝对不能
+ * `preventDefault()` —— 拦掉它下拉就打不开（工具栏上那个旧控件就是这么坏的）。
+ * 点开下拉会让编辑器失焦，但 ProseMirror 的 `state.selection` 不受影响，
+ * 改语言时照样能定位到代码块。
+ */
+function createLangPicker(editor) {
+  const sel = document.createElement('select');
+  sel.className = 'tiptap-cb-lang';
+  sel.title = '代码块语言';
+  sel.hidden = true;
+  for (const [value, label] of CODE_LANGUAGES) {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = label;
+    sel.appendChild(opt);
+  }
+  sel.addEventListener('change', () => {
+    const lang = sel.value;
+    const cb = currentCodeBlock(editor);
+    if (!cb) return;
+    editor.chain().focus().updateAttributes('codeBlock', { language: lang || null }).run();
+  });
+  return sel;
+}
+
+/** 语言不在清单里（存量正文可能是 lowlight 的其它语言）时补一项，免得下拉显示成空白。 */
+function ensureLangOption(sel, lang) {
+  if (!lang) return;
+  for (const o of sel.options) {
+    if (o.value === lang) return;
+  }
+  const opt = document.createElement('option');
+  opt.value = lang;
+  opt.textContent = lang;
+  sel.appendChild(opt);
+}
+
+/**
+ * 把语言下拉贴到代码块右上角。
+ *
+ * 定位用视口坐标（`position: fixed`）：编辑器容器是 Leptos 渲染的，在它身上加类
+ * 会被重渲染抹掉，绝对定位的参照系不稳。
+ */
+function positionLangPicker(sel, cb, lang) {
+  if (!cb || !cb.dom) {
+    sel.hidden = true;
+    return;
+  }
+  sel.hidden = false;
+  ensureLangOption(sel, lang);
+  if (sel.value !== lang) sel.value = lang;
+  const rect = cb.dom.getBoundingClientRect();
+  const w = sel.offsetWidth;
+  sel.style.left = `${Math.max(8, Math.round(rect.right - w - 8))}px`;
+  sel.style.top = `${Math.round(rect.top + 6)}px`;
+}
+
+/**
  * 建工具栏。
  *
  * @param {object} editor Tiptap Editor 实例
@@ -153,22 +256,8 @@ export function createToolbar(editor, opts = {}) {
     bar.appendChild(g);
   }
 
-  // 代码块语言选择：作用于光标所在的代码块
-  const langSel = document.createElement('select');
-  langSel.className = 'tiptap-tb-lang';
-  langSel.title = '代码块语言';
-  for (const [value, label] of CODE_LANGUAGES) {
-    const opt = document.createElement('option');
-    opt.value = value;
-    opt.textContent = label;
-    langSel.appendChild(opt);
-  }
-  langSel.addEventListener('mousedown', (e) => e.preventDefault());
-  langSel.addEventListener('change', () => {
-    const lang = langSel.value;
-    editor.chain().focus().updateAttributes('codeBlock', { language: lang }).run();
-  });
-  bar.appendChild(langSel);
+  // 代码块语言选择：浮在光标所在代码块的右上角（不在工具栏上）
+  const langSel = createLangPicker(editor);
 
   // 表格浮动条：光标在表格内时浮在表格上方
   const tableBar = document.createElement('div');
@@ -201,15 +290,27 @@ export function createToolbar(editor, opts = {}) {
     if (inTable) {
       positionTableBar(editor, tableBar);
     }
-    // 代码块语言
-    const lang = editor.isActive('codeBlock') ? editor.getAttributes('codeBlock').language : null;
-    if (lang != null) langSel.value = lang;
+    // 代码块语言：跟着光标所在的代码块走
+    const cb = currentCodeBlock(editor);
+    if (cb) {
+      positionLangPicker(langSel, cb, cb.lang);
+    } else {
+      langSel.hidden = true;
+    }
   };
   editor.on('selectionUpdate', refresh);
   editor.on('transaction', refresh);
   refresh();
 
-  return { bar, tableBar, refresh };
+  // 滚动时把浮动控件拉回代码块（fixed 定位不跟着文档走）。
+  const reposition = () => {
+    const cb = currentCodeBlock(editor);
+    if (cb) positionLangPicker(langSel, cb, cb.lang);
+  };
+  window.addEventListener('scroll', reposition, true);
+  window.addEventListener('resize', reposition);
+
+  return { bar, tableBar, langSel, refresh };
 }
 
 /** 把表格浮动条放到当前表格的上方（相对编辑器容器定位）。 */
@@ -222,8 +323,13 @@ function positionTableBar(editor, tableBar) {
   // fixed 定位：用视口坐标，不依赖定位祖先（编辑器容器是 Leptos 渲染的，
   // 在它身上加类会被重渲染抹掉）。
   const tr = tableEl.getBoundingClientRect();
+  const content = editor.view.dom.getBoundingClientRect();
+  let top = tr.top - tableBar.offsetHeight - 4;
+  // 表格紧贴正文区顶部时，上方放不下 —— 宁可压住表格首行，也别盖住工具栏：
+  // 工具栏上的按钮点不到，比表格少看一行严重得多。
+  if (top < content.top) top = content.top + 2;
   tableBar.style.left = `${tr.left}px`;
-  tableBar.style.top = `${tr.top - tableBar.offsetHeight - 4}px`;
+  tableBar.style.top = `${top}px`;
 }
 
 /** cmd 的激活态判定。 */

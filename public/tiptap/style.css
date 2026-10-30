@@ -260,15 +260,29 @@
 .tiptap-tb-underline { text-decoration: underline; }
 .tiptap-tb-strike { text-decoration: line-through; }
 
-.tiptap-tb-lang {
-    height: 26px;
-    margin-left: 6px;
+/* 代码块语言下拉：浮在代码块右上角 */
+.tiptap-cb-lang {
+    position: fixed;
+    z-index: 32;
+    height: 22px;
+    max-width: 150px;
     padding: 0 4px;
     border: 1px solid var(--line);
     border-radius: var(--r-s);
     background: var(--surface);
     color: var(--ink2);
-    font-size: 12px;
+    font-size: 11.5px;
+    line-height: 1;
+    opacity: 0.85;
+}
+
+.tiptap-cb-lang:hover,
+.tiptap-cb-lang:focus {
+    opacity: 1;
+}
+
+.tiptap-cb-lang[hidden] {
+    display: none;
 }
 
 /* 表格浮动条 */
