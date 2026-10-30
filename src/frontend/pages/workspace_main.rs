@@ -2973,7 +2973,8 @@ fn WorkspaceSidebar(
                 };
                 let click_id = id.clone();
                 let ctx_id = id.clone();
-                let indent = format!("padding-left:{}px", 12 + depth * 14);
+                // 首层缩进跟着侧栏内边距一起收窄（12 → 4），层级步长 14px 不变。
+                let indent = format!("padding-left:{}px", 4 + depth * 14);
                 view! {
                     <div class=move || {
                              let mut c = String::from("it");
@@ -3000,7 +3001,7 @@ fn WorkspaceSidebar(
             }
             ViewNode::Group(label, depth) => {
                 // 中间路径节点：不挂 view 实体，渲染成不可点的分组标题。
-                let indent = format!("padding-left:{}px", 12 + depth * 14);
+                let indent = format!("padding-left:{}px", 4 + depth * 14);
                 view! {
                     <div class="sb-group" style=indent>{label}</div>
                 }
