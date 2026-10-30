@@ -312,6 +312,47 @@ Rodeo 有私有化部署（离线环境），**运行时不得依赖 CDN**。
 
 ### 4.6 存量迁移：Delta → HTML
 
+#### 转换什么时候触发
+
+| 路径 | 时机 | 范围 |
+|---|---|---|
+| **启动期 repair（主）** | `Services::new` 末尾，所有其它 repair 之后、`Ok(services)` 之前 —— **服务开始对外服务之前** | `cf::ENTRIES` + `cf::COMMENTS` 全表扫描 |
+| **写入路径** | 任何一次新建/更新条目或评论（`entry.rs` / `comment.rs` 的 `normalize_for_storage`） | 单条 |
+| **前端兜底（读时）** | 只读渲染时 | 单条 |
+
+repair 的判据：`detect_format(...) == Html` → 跳过；Delta 走 `delta_to_html`、
+历史纯文本走 `plain_to_html`，再 `sanitize_html` 消毒。**转换结果为空而原文非空
+→ 保留原文不写**（空串等于删掉用户的正文）。批量写一次 `write_batch` 提交；
+失败只 warn，不阻塞启动。
+
+#### 只跑一次：版本标记
+
+存量扫描是**全量**的（两张表逐条 bincode 解码 + JSON 解析），每次启动都跑一遍
+在数据量大时不可接受。所以：
+
+- 新增列族 `cf::RICH_TEXT_FORMAT`（单例，key 固定为 `format`），值是格式版本号
+  （当前 `html-v1`）；
+- 启动先读标记，版本对得上 → **整个扫描跳过**；
+- 迁移跑完写标记（写失败下次启动重扫，幂等，安全）；
+- 格式再演进一版就把版本号 +1 → 重跑。
+
+RocksDB 侧 `create_missing_column_families(true)`，存量库打开时自动建新列族，
+不需要额外迁移；Postgres 侧是单表 + `cf` 列，同样不用改 schema。
+
+**另修一处写放大**：转换结果与原文相同（空正文这类）时跳过写回 —— 不判这一条的
+话，每条空正文的记录每次启动都会被重写一遍。
+
+#### 回滚风险（重要）
+
+**转换不可逆。** HTML → Delta 没有反向实现，所以升级到这版之后**回滚到旧二进制
+时正文会显示不出来**（数据还在库里，但旧版本认不了 HTML）。
+
+- 升级前先备份：`cp -a data /tmp/rodeo-data-backup-$(date +%s)`；
+- 第一次用新二进制启动时，日志里会有一行 `正文格式迁移完成：N 条记录转成 HTML`
+  —— N 就是被转换的条数，事后能核对。
+
+
+
 - 新模块 `src/service/richtext.rs`：
   - `pub fn delta_to_html(delta: &str) -> String` —— 把 Delta 渲染成 HTML，覆盖当前实际用到的格式：
 
