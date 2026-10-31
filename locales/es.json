@@ -12,8 +12,6 @@
     "timeline_to_normal": "Cambiar a vista normal",
     "timeline_normal_to_tl": "Cambiar a vista de línea de tiempo",
     "agent_panel": "Asistente Buckaroo",
-    "switch_workspace": "Cambiar espacio de trabajo",
-    "workspace_menu": "Elegir espacio de trabajo",
     "language": "Idioma",
     "language_menu": "Elegir idioma",
     "unread_count": "{n} mensajes no leídos",
@@ -44,6 +42,8 @@
     "oauth_failed": "Error de inicio de sesión: {code}"
   },
   "workspaces": {
+    "switch_workspace": "Cambiar espacio de trabajo",
+    "workspace_menu": "Elegir espacio de trabajo",
     "title": "Mis workspaces",
     "search": "Buscar por nombre / descripción",
     "name": "Nombre",

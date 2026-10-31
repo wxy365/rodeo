@@ -15,7 +15,6 @@ use crate::frontend::icons::{
 use crate::frontend::language_button::LanguageButton;
 use crate::frontend::theme::ThemeButton;
 use crate::frontend::use_auth;
-use crate::frontend::workspace_switcher::WorkspaceSwitcherButton;
 
 /// 账号的展示名：优先姓名，缺失时退回邮箱。
 pub fn member_label(m: &Member) -> String {
@@ -706,9 +705,6 @@ pub fn AppBar() -> impl IntoView {
                     {ic_logo()}
                     <span class="appbar-brand-name">{move || i18n.t("appbar.brand")}</span>
                 </a>
-                // 工作空间切换器：只有需要它的页面（Entry 全屏页）往槽里写值，
-                // 槽为空时这里什么都不渲染。
-                <WorkspaceSwitcherButton/>
             </div>
             <div class="appbar-right">
                 {move || new_menu_slot.current.get().map(|m| view! {

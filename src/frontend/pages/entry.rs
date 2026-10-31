@@ -19,7 +19,7 @@ use crate::frontend::relations_panel::RelationsPanel;
 use crate::frontend::rich_editor::RichEditor;
 use crate::frontend::share_clipboard::copy_share_url;
 use crate::frontend::use_auth;
-use crate::frontend::WorkspaceOption;
+use crate::frontend::workspace_switcher::{WorkspaceOption, WorkspaceSwitcher};
 
 // 全屏页侧栏的页签。标签编辑不在这里——它常驻在页签上方。
 fn side_tab_labels(i18n: &I18nController) -> [(String, String); 3] {
@@ -146,8 +146,8 @@ pub fn EntryFullScreen() -> impl IntoView {
         load(true);
     });
 
-    // AppBar 左侧「切换工作空间」的候选列表：进页面拉一次即可——本页期间
-    // 工作空间的成员关系不会变（新建 / 加入工作空间都会离开本页再进来）。
+    // 「切换工作空间」按钮的候选列表：进页面拉一次即可——本页期间工作空间的
+    // 成员关系不会变（新建 / 加入工作空间都会离开本页再进来）。
     let ws_options: RwSignal<Vec<WorkspaceOption>> = RwSignal::new(Vec::new());
     Effect::new_sync(move |_| {
         if !cfg!(target_arch = "wasm32") {
@@ -165,6 +165,20 @@ pub fn EntryFullScreen() -> impl IntoView {
                     })
                     .collect(),
             );
+        });
+    });
+    // 当前工作空间要等 `data` 加载完才知道（slug → ws 的映射在服务端）。
+    let ws_current: RwSignal<WorkspaceOption> = RwSignal::new(WorkspaceOption {
+        slug: String::new(),
+        name: String::new(),
+    });
+    Effect::new_sync(move |_| {
+        let Some(ws) = data.get().and_then(|r| r.ok()).map(|(w, _, _, _, _)| w) else {
+            return;
+        };
+        ws_current.set(WorkspaceOption {
+            slug: ws.slug.clone(),
+            name: ws.name.clone(),
         });
     });
 
@@ -237,42 +251,24 @@ pub fn EntryFullScreen() -> impl IntoView {
         });
     };
 
-    // AppBar 左侧的「切换工作空间」：全屏页没有侧栏，用户没别的入口换工作
-    // 空间，所以把当前工作空间 + 候选列表交给 AppBar 渲染。
+    // 本页顶栏的「切换工作空间」：全屏页没有侧栏，用户没别的入口换工作空间，
+    // 所以切换器就放在本页自己的顶栏里（全局顶栏不该替页面承载工作空间这种
+    // 页面级状态）。
     //
-    // 「切换」意味着什么由本页决定——离开本页就是离开当前条目，因此有未保存
-    // 改动时先拦住（与 Esc 返回同款处理），否则改动会跟着导航一起丢掉。
-    if let Some(slot) = crate::frontend::use_context::<crate::frontend::WorkspaceSwitcherSlot>() {
-        let nav_switch = navigate.clone();
-        let on_switch = Callback::new(move |target: String| {
-            if dirty.get_untracked() {
-                error.set(Some(i18n.t("entry.unsaved_changes")));
-                return;
-            }
-            // 切回当前工作空间 = 什么都不做。
-            if target == slug() {
-                return;
-            }
-            nav_switch(&format!("/{target}"), Default::default());
-        });
-        // 当前工作空间要等 `data` 加载完才知道（slug → ws 的映射在服务端），
-        // 所以写成 Effect：`data` 一落地就把槽填上。
-        Effect::new_sync(move |_| {
-            let Some(ws) = data.get().and_then(|r| r.ok()).map(|(w, _, _, _, _)| w) else {
-                return;
-            };
-            slot.current.set(Some(crate::frontend::WorkspaceSwitcher {
-                current: RwSignal::new(WorkspaceOption {
-                    slug: ws.slug.clone(),
-                    name: ws.name.clone(),
-                }),
-                options: ws_options,
-                on_switch,
-            }));
-        });
-        // 离开本页时清掉槽，否则切走之后 AppBar 还挂着上一个工作空间的名字。
-        on_cleanup(move || slot.current.set(None));
-    }
+    // 「切换」意味着离开当前条目——有未保存改动时先拦住（与 Esc 返回同款处理），
+    // 否则改动会跟着导航一起丢掉。
+    let nav_switch = navigate.clone();
+    let on_switch = Callback::new(move |target: String| {
+        if dirty.get_untracked() {
+            error.set(Some(i18n.t("entry.unsaved_changes")));
+            return;
+        }
+        // 切回当前工作空间 = 什么都不做。
+        if target == slug() {
+            return;
+        }
+        nav_switch(&format!("/{target}"), Default::default());
+    });
 
     // 按钮与 Esc 监听两处都要用它；`Callback` 是 `Copy`，可以同时进两个 handler。
     // 详情页 URL 上的 `?view=<id>` 透传给返回地址，让用户回到工作空间时仍是
@@ -333,6 +329,8 @@ pub fn EntryFullScreen() -> impl IntoView {
     view! {
         <div class="page page-wide">
             <div class="panel entry-top">
+                // 工作空间上下文：全屏页没有侧栏，换工作空间的入口住这里。
+                <WorkspaceSwitcher current=ws_current options=ws_options on_switch=on_switch />
                 <button class="btn" on:click=move |_| go_back.run(())>{ic_back()}{move || i18n.t("entry.back_to_view")}</button>
                 // 「下一个」按钮：仅当 URL 携带 `?view=<id>`（来自非默认视图）时渲染。
                 // 数据未就绪或视图已无下一条 → 禁用并切换 tooltip。点击后携带同样的

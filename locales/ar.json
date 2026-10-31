@@ -12,8 +12,6 @@
     "timeline_to_normal": "التبديل إلى العرض العادي",
     "timeline_normal_to_tl": "التبديل إلى عرض الجدول الزمني",
     "agent_panel": "مساعد Buckaroo",
-    "switch_workspace": "تبديل مساحة العمل",
-    "workspace_menu": "اختر مساحة العمل",
     "language": "اللغة",
     "language_menu": "اختر اللغة",
     "unread_count": "{n} رسائل غير مقروءة",
@@ -44,6 +42,8 @@
     "oauth_failed": "فشل تسجيل الدخول: {code}"
   },
   "workspaces": {
+    "switch_workspace": "تبديل مساحة العمل",
+    "workspace_menu": "اختر مساحة العمل",
     "title": "مساحات العمل الخاصة بي",
     "search": "البحث بالاسم / الوصف",
     "name": "الاسم",

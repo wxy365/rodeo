@@ -115,40 +115,5 @@ pub fn provide_workspace_timeline_slot() -> WorkspaceTimelineSlot {
     slot
 }
 
-/// 切换器里的一个工作空间条目。
-#[derive(Clone, PartialEq, Eq)]
-pub struct WorkspaceOption {
-    pub slug: String,
-    pub name: String,
-}
-
-/// AppBar 左侧「切换工作空间」按钮的数据与回调。
-///
-/// 与「新建」「时间轴」两个槽同源：AppBar 挂在 `<Router>` 里、页面挂在
-/// `<Routes>` 里，兄弟节点之间没有上下文可传，所以走 App 层的一次性槽。
-/// 只有需要它的页面才往槽里写值，AppBar 看到 `None` 就什么都不渲染。
-#[derive(Clone, Copy)]
-pub struct WorkspaceSwitcher {
-    /// 当前所在的工作空间——按钮上显示的就是它。
-    pub current: RwSignal<WorkspaceOption>,
-    /// 候选工作空间（已剔除软删除的）。
-    pub options: RwSignal<Vec<WorkspaceOption>>,
-    /// 点某个候选项时回调，参数是目标 slug。
-    ///
-    /// 「切换」具体意味着什么由页面自己决定（Entry 全屏页里是跨工作空间
-    /// 导航，还得先拦住未保存的改动），AppBar 只负责把 slug 递出去。
-    pub on_switch: Callback<String>,
-}
-
-#[derive(Clone, Copy)]
-pub struct WorkspaceSwitcherSlot {
-    pub current: RwSignal<Option<WorkspaceSwitcher>>,
-}
-
-pub fn provide_workspace_switcher_slot() -> WorkspaceSwitcherSlot {
-    let slot = WorkspaceSwitcherSlot {
-        current: RwSignal::new(None),
-    };
-    provide_context(slot);
-    slot
-}
+// 工作空间切换器（工作空间页 / 条目全屏页各自渲染，不再走 App 层共享槽）。
+pub use workspace_switcher::WorkspaceOption;

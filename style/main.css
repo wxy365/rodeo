@@ -3529,10 +3529,11 @@ input[type="color"].sw:disabled {
     gap: 6px;
 }
 
-/* ===== 工作空间切换器（AppBar 左侧）===== */
+/* ===== 工作空间切换器 ===== */
 /* 与 .lang-menu 同款：hover / focus-within 弹下拉，无需 JS 切显隐。
-   菜单靠左对齐（它在 AppBar 左半边），RTL 下镜像到右边。 */
-.ws-switch { position: relative; display: inline-flex; }
+   挂在工作空间页头部与条目全屏页顶栏——全局顶栏不承载「当前工作空间」这种
+   页面级状态。菜单靠左对齐，RTL 下镜像到右边。 */
+.ws-switch { position: relative; display: inline-flex; min-width: 0; }
 .ws-switch-btn {
     display: inline-flex;
     align-items: center;
@@ -3550,9 +3551,22 @@ input[type="color"].sw:disabled {
 .ws-switch-btn:hover { background: var(--bg2); }
 .ws-switch-name {
     max-width: 190px;
+    /* min-width: 0 —— 窄窗口下名字要能缩到 0 再出省略号，否则会把整行撑开。 */
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+/* 工作空间页头部：与旁边的 .btn.sm 同重量（矮一截、字号小一号）。 */
+.crumb .ws-switch-btn {
+    height: 26px;
+    padding: 0 8px;
+    font-size: 12px;
+}
+/* 条目全屏页顶栏：与同排的 .btn 按钮同款外观（有边框、有底色）。 */
+.entry-top .ws-switch-btn {
+    border-color: var(--line);
+    background: var(--bg);
 }
 .ws-switch-drop {
     position: absolute;

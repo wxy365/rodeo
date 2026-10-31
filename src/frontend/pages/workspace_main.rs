@@ -21,8 +21,8 @@ use crate::frontend::graphql_client::{
     set_labelings, set_sidebar_collapsed, set_view_description, set_view_timeline,
     summarize_entries, translate_query_expression, unarchive_entry, update_entry, update_view,
     update_view_query, update_view_sort, views, workspace_ai_config, workspace_by_slug,
-    AccountBrief, AuditLog, Entry, LabelSchema, Labeling, Member, NamedPrompt, View, ViewSort,
-    ViewTimeline, Workspace,
+    workspaces, AccountBrief, AuditLog, Entry, LabelSchema, Labeling, Member, NamedPrompt, View,
+    ViewSort, ViewTimeline, Workspace,
 };
 use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::icons::{
@@ -36,6 +36,7 @@ use crate::frontend::timeline::TimelineView;
 use crate::frontend::rich_editor::RichEditor;
 use crate::frontend::use_auth;
 use crate::frontend::view_filter::with_text;
+use crate::frontend::workspace_switcher::{WorkspaceOption, WorkspaceSwitcher};
 use serde_json::Value;
 
 use crate::frontend::agent_panel::provide_agent_context;
@@ -345,7 +346,14 @@ enum VMenuTarget {
 #[component]
 pub fn WorkspaceMain() -> impl IntoView {
     let params = use_params_map();
-    let slug = move || params.get_untracked().get("slug").unwrap_or_default();
+    // `params.get()`（非 get_untracked）：Leptos 路由在「同一条路由、参数变了」时
+    // 只换 params 信号、不重挂组件（见 leptos_router 的 `rebuild_nested_route`
+    // —— 路由 id 相同就只更新 params）。用 get_untracked 的话下面那条加载 Effect
+    // 不会订阅到参数变化，切换工作空间后页面还停在上一个工作空间的数据上。
+    let slug = move || params.get().get("slug").unwrap_or_default();
+    // 给子组件用的响应式 slug：侧栏的「设置」链接、详情面板的「全屏」按钮都要
+    // 按当前工作空间拼 URL，一次性快照会在切换工作空间后指向旧工作空间。
+    let slug_signal: Signal<String> = Signal::derive(slug);
     let navigate = use_navigate();
     let auth = use_auth();
     let i18n: I18nController = use_i18n();
@@ -363,6 +371,34 @@ pub fn WorkspaceMain() -> impl IntoView {
             .unwrap_or_default()
     });
     let ws_name = RwSignal::new(String::new());
+    // 工作空间切换器（页面头部）：当前工作空间 + 候选工作空间。
+    // 候选列表进页面拉一次即可——本页期间成员关系不会变（新建 / 加入工作空间
+    // 都会离开本页再进来）。
+    let ws_current: RwSignal<WorkspaceOption> = RwSignal::new(WorkspaceOption {
+        // slug 先从路由参数拿：数据没加载完时名字还空着，但下拉里已经能标出
+        // 当前项（免得整张列表看着像"没有选中任何工作空间"）。
+        slug: slug(),
+        name: String::new(),
+    });
+    let ws_options: RwSignal<Vec<WorkspaceOption>> = RwSignal::new(Vec::new());
+    Effect::new_sync(move |_| {
+        if !cfg!(target_arch = "wasm32") {
+            return;
+        }
+        spawn_local(async move {
+            // 软删除的工作空间只出现在工作空间列表页的回收站里，不进候选。
+            let list = workspaces().await.unwrap_or_default();
+            ws_options.set(
+                list.into_iter()
+                    .filter(|w| w.workspace.deleted_at.is_none())
+                    .map(|w| WorkspaceOption {
+                        slug: w.workspace.slug,
+                        name: w.workspace.name,
+                    })
+                    .collect(),
+            );
+        });
+    });
     // 行高亮信号：点击标题或其他列都会设它，仅控制表格行的 `.sel` 背景。
     let selected = RwSignal::new(String::new());
     // 右侧详情面板信号：只有点击标题（或键盘上下移动 / 新建条目成功）才设它，
@@ -1258,6 +1294,12 @@ pub fn WorkspaceMain() -> impl IntoView {
                 Ok(None) => nav_missing("/workspaces", Default::default()),
                 Ok(Some((w, items, list, total, _names, member_list))) => {
                     ws_name.set(w.name.clone());
+                    // 切换器上的「当前工作空间」：名字 + slug（slug 用来在下拉里标出
+                    // 当前项）。切换工作空间后这条也会跟着更新。
+                    ws_current.set(WorkspaceOption {
+                        slug: w.slug.clone(),
+                        name: w.name.clone(),
+                    });
                     schemas.set(list.clone());
                     ws_members.set(member_list);
                     total_signal.set(total);
@@ -1700,6 +1742,25 @@ pub fn WorkspaceMain() -> impl IntoView {
         // 留着它指向死数据也没意义。
         on_cleanup(move || slot.current.set(None));
     }
+    // 「切换工作空间」：离开本页就是离开当前工作空间。右侧详情面板开着且有未保存
+    // 改动时先拦住（与「新建」同款处理），否则改动会跟着导航一起丢掉。
+    let nav_switch = use_navigate();
+    let on_switch_workspace = Callback::new(move |target: String| {
+        // 切回当前工作空间 = 什么都不做。
+        if target == ws_current.get_untracked().slug {
+            return;
+        }
+        if !panel_code.get_untracked().is_empty() && panel_dirty.get_untracked() {
+            panel_create_prompt.set(Some(i18n.t("entry.errors.unsaved_block_switch")));
+            return;
+        }
+        // 详情面板里那条是上一个工作空间的条目：切走前先关掉，免得面板留着旧
+        // 条目、而它的保存接口已经指向新工作空间。
+        panel_code.set(String::new());
+        panel_is_draft.set(false);
+        panel_save_labels.set(Vec::new());
+        nav_switch(&format!("/{target}"), Default::default());
+    });
     // 「时间轴切换」按钮：仅当前激活视图配了时间轴时才往 AppBar 推——普通视图
     // 强行塞个切换按钮毫无意义。`timeline_mode` 已经是本页的状态源，直接
     // 把信号搬过去当视觉态驱动即可。
@@ -1729,9 +1790,14 @@ pub fn WorkspaceMain() -> impl IntoView {
                 <A href="/workspaces">
                     <button class="btn sm">{ic_back()}{i18n.t("entry.back_workspaces_btn")}</button>
                 </A>
+                // 换工作空间的入口住页面头部——顶栏是全局的，不该替工作空间页
+                // 承载「当前工作空间」这种页面级状态。
+                <WorkspaceSwitcher current=ws_current options=ws_options on_switch=on_switch_workspace/>
+                // 工作空间的名字由左边的切换器显示（slug 也就在 URL 里），这里只说
+                // 当前是哪个视图——两处都写一遍 slug 是重复。
                 <span>{move || match active_view.get() {
-                    Some(v) => format!("/{} · {}", slug(), i18n.tf("entry.view_label", &[("name", &v.name)])),
-                    None => format!("/{} · {}", slug(), i18n.t("sidebar.base_view_all_entries")),
+                    Some(v) => i18n.tf("entry.view_label", &[("name", &v.name)]),
+                    None => i18n.t("sidebar.base_view_all_entries"),
                 }}</span>
             </div>
             // 视图描述：配了就在标题下方显示一行。侧栏的 tooltip 只是入口提示，
@@ -1744,7 +1810,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                 })}
             <div class=move || if sidebar_collapsed.get() { "ws-layout collapsed" } else { "ws-layout" }>
                 <WorkspaceSidebar
-                    slug=slug().to_string()
+                    slug=slug_signal
                     name=ws_name
                     views=view_list
                     active=active_id
@@ -2247,7 +2313,7 @@ pub fn WorkspaceMain() -> impl IntoView {
                                 </div>
                             })}
                         </div>
-                        <EntryPanel code=panel_code slug=slug().to_string() workspace_id=ws_id schemas members=ws_members refresh
+                        <EntryPanel code=panel_code slug=slug_signal workspace_id=ws_id schemas members=ws_members refresh
                             is_draft=Signal::derive(move || panel_is_draft.get())
                             draft_labels=panel_save_labels
                             on_dirty_change=on_dirty_callback
@@ -2875,7 +2941,9 @@ pub fn WorkspaceMain() -> impl IntoView {
 
 #[component]
 fn WorkspaceSidebar(
-    slug: String,
+    /// 当前工作空间的 slug——「设置」链接要按它拼 URL。响应式：切换工作空间
+    /// 后链接得跟着换，不能停在旧工作空间上。
+    slug: Signal<String>,
     name: RwSignal<String>,
     views: RwSignal<Vec<View>>,
     active: RwSignal<Option<String>>,
@@ -3062,7 +3130,7 @@ fn WorkspaceSidebar(
                 // 设置链接带上当前视图 id：从设置页返回时能精准落到原视图，
                 // 而不是默认视图。基础视图不必写，纯 URL 已能表达。
                 <A href=move || {
-                    let url = format!("/{slug}/settings");
+                    let url = format!("/{}/settings", slug.get());
                     let aid = active.get();
                     if aid.as_deref().map_or(false, |id| {
                         !id.is_empty()
@@ -4290,7 +4358,9 @@ fn detail_tab_labels(i18n: &I18nController) -> [(String, String); 4] {
 #[component]
 fn EntryPanel(
     code: RwSignal<String>,
-    slug: String,
+    /// 当前工作空间的 slug——「全屏」按钮按它拼 URL。响应式：切换工作空间后
+    /// 链接得跟着换，不能停在旧工作空间上。
+    slug: Signal<String>,
     workspace_id: Signal<String>,
     schemas: RwSignal<Vec<LabelSchema>>,
     members: RwSignal<Vec<Member>>,
@@ -4575,9 +4645,8 @@ fn EntryPanel(
     // 草稿态保存会一并提交标签（draft_labels），保证全屏页拿到最新数据，
     // 标题/正文/标签三样都不丢。
     // 闭包带 `move`：`code`/`data`/`title`/`detail`/`navigate`/`slug` 都是本地变量，
-    // `view!` 把闭包当 'static 用，必须 move 进来。原实现里 `slug: String` 被整个
-    // 移进 async 块，导致闭包只能 FnOnce；改为每次调用都 `slug.clone()` 拿一份给
-    // async 块，闭包本身保持可重复调用。
+    // `view!` 把闭包当 'static 用，必须 move 进来。`slug` 现在是信号：进 async 块前
+    // 先 `get_untracked()` 取一份字符串，闭包本身保持可重复调用。
     let open_full = move |_| {
         let c = code.get();
         if c.is_empty() {
@@ -4612,7 +4681,7 @@ fn EntryPanel(
             };
             let nav = navigate.clone();
             let code_for_later = c.clone();
-            let slug_for_async = slug.clone();
+            let slug_for_async = slug.get_untracked();
             spawn_local(async move {
                 let labelings_slice = labelings_owned.as_deref();
                 if !expected.is_empty() {
@@ -4624,7 +4693,10 @@ fn EntryPanel(
                 );
             });
         } else {
-            navigate(&format!("/{}/entry/{}", &slug, c), Default::default());
+            navigate(
+                &format!("/{}/entry/{}", slug.get_untracked(), c),
+                Default::default(),
+            );
         }
     };
 
