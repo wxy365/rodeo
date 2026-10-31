@@ -94,11 +94,15 @@
     color: var(--ink2);
 }
 
+/* 代码块底色用 --code-bg（主样式表里定义的半透明叠色），不用 --bg3：
+   暗色下 --surface 就是 --bg3，写死 --bg3 会让代码块跟编辑器正文底色
+   完全同色（实测对比度 1.00），代码块等于隐形。 */
 .tiptap-content pre {
     margin: 8px 0;
     padding: 10px 12px;
     border-radius: var(--r-s);
-    background: var(--bg3);
+    background: var(--code-bg);
+    border: 1px solid var(--code-line);
     overflow-x: auto;
     font-size: 12.5px;
     line-height: 1.5;
@@ -111,7 +115,7 @@
 }
 
 .tiptap-content code {
-    background: var(--bg3);
+    background: var(--code-bg);
     padding: 1px 4px;
     border-radius: 3px;
     font-size: 0.92em;
@@ -345,6 +349,25 @@
     --hl-variable: #e45649;
     --hl-mark: #fff3a3;
     --hl-select: rgb(64 120 242 / 14%);
+}
+
+/* 暗色 token 必须同时挂在「系统暗色」上。主样式表那边的整套配色是
+   「@media (prefers-color-scheme: dark) < [data-theme=light] < [data-theme=dark]」
+   三处都给一份；这里原来只有 [data-theme=dark] 一处，于是默认档（System，
+   属性不挂）下暗色系统仍然用亮色那套 token——深黄的 --hl-number(#986801)、
+   --hl-type(#c18401) 落在深色底上几乎读不出来。 */
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+        --hl-keyword: #c678dd;
+        --hl-string: #98c379;
+        --hl-number: #d19a66;
+        --hl-comment: #7f848e;
+        --hl-function: #61afef;
+        --hl-type: #e5c07b;
+        --hl-variable: #e06c75;
+        --hl-mark: #4a3f12;
+        --hl-select: rgb(97 175 239 / 16%);
+    }
 }
 
 :root[data-theme="dark"] {

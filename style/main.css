@@ -15,6 +15,15 @@
        白底明显一档，又不至于盖过文字；hover 再深一档。 */
     --sel-row: color-mix(in srgb, var(--pos) 18%, var(--bg));
     --sel-row-hover: color-mix(in srgb, var(--pos) 26%, var(--bg));
+    /* 代码块的底色与描边。代码块会落在好几种底色上——编辑器的 --surface、
+       消息气泡的 --bg / --bg2 / --bg3、评论正文——写死一个颜色只会在其中
+       某一种底色上恰好同色，代码块就整个融进背景里。暗色下 --bg3 同时是
+       --surface，编辑器里的代码块跟正文底色一模一样（对比度 1.00），就是
+       这么来的。所以这里不写死颜色，改成「按当前文字色叠一层半透明」：
+       亮色下 --ink 近黑 → 叠出浅灰；暗色下 --ink 近白 → 叠出深灰，
+       任何底色上都会自然拉开一档。暗色档的比例见下面两个 dark 块。 */
+    --code-bg: color-mix(in srgb, var(--ink) 8%, transparent);
+    --code-line: color-mix(in srgb, var(--ink) 14%, transparent);
     --r-s: 6px;
     --r-m: 10px;
     --r-l: 12px;
@@ -70,6 +79,11 @@
            比例（28% / hover 36%）。 */
         --sel-row: color-mix(in srgb, var(--pos) 28%, var(--bg));
         --sel-row-hover: color-mix(in srgb, var(--pos) 36%, var(--bg));
+        /* 暗色下代码块底色要比亮色叠得更实：深底上同样的百分比看不出色差，
+           8% 叠出来跟原底色几乎一样（对比度 1.1 上下）。14% 叠在
+           --surface(#21262d) 上约 #3d4249，跟正文底色差出 1.5 档。 */
+        --code-bg: color-mix(in srgb, var(--ink) 14%, transparent);
+        --code-line: color-mix(in srgb, var(--ink) 26%, transparent);
     }
 }
 
@@ -101,6 +115,9 @@
     /* 与上面 @media 块里的同名变量保持一致（见那里的说明）。 */
     --sel-row: color-mix(in srgb, var(--pos) 28%, var(--bg));
     --sel-row-hover: color-mix(in srgb, var(--pos) 36%, var(--bg));
+    /* 与上面 @media 块里的同名变量保持一致（见那里的说明）。 */
+    --code-bg: color-mix(in srgb, var(--ink) 14%, transparent);
+    --code-line: color-mix(in srgb, var(--ink) 26%, transparent);
 }
 
 /* ===== 滚动条 ===== */
@@ -2251,6 +2268,30 @@ input[type="color"].sw:disabled {
 .c-body{font-size:13px;line-height:1.6;word-break:break-word}
 .c-body p{margin:0 0 4px}
 .c-body img{max-width:100%}
+/* 评论正文里的代码块 / 行内代码。此前完全没有样式：行内代码退回浏览器默认
+   （无底色），块级代码也是一片等宽字，暗色下跟正文分不开。 */
+.c-body pre{
+    background:var(--code-bg);
+    border:1px solid var(--code-line);
+    padding:8px 10px;
+    border-radius:var(--r-s);
+    overflow-x:auto;
+    font-size:12.5px;
+    line-height:1.5;
+    margin:6px 0;
+}
+.c-body code{
+    background:var(--code-bg);
+    padding:1px 4px;
+    border-radius:3px;
+    font-size:0.92em;
+    font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+.c-body pre code{
+    background:none;
+    padding:0;
+    font-size:inherit;
+}
 .c-edit-acts{display:flex;gap:6px;margin-top:6px}
 /* Quill 自带 `.ql-container{height:100%}`，而 `.c-edit` 的高度是 auto，
    两者构成自引用：父框先按容器的固有高度（单行 86px）定下自身高度 182px，
@@ -3074,8 +3115,12 @@ input[type="color"].sw:disabled {
     color: var(--ink2);
     margin: 4px 0;
 }
+/* 代码块用 --code-bg（半透明叠色），不用 --bg3：气泡本身有三种底色
+   （--bg / --bg2 / --bg3），写死 --bg3 恰好会跟工具调用气泡的底色同色，
+   那类气泡里的代码块同样看不见。 */
 .agent-msg pre {
-    background: var(--bg3);
+    background: var(--code-bg);
+    border: 1px solid var(--code-line);
     padding: 8px 10px;
     border-radius: var(--r-s);
     overflow-x: auto;
@@ -3084,10 +3129,17 @@ input[type="color"].sw:disabled {
     margin: 4px 0;
 }
 .agent-msg code {
-    background: var(--bg3);
+    background: var(--code-bg);
     padding: 1px 4px;
     border-radius: 3px;
     font-size: 0.92em;
+}
+/* 块级代码里的行内代码不再叠一层底色：--code-bg 是半透明的，叠在 pre
+   自己的底色上会深一档，深色主题下看起来像代码块中间压了条深带。 */
+.agent-msg pre code {
+    background: none;
+    padding: 0;
+    font-size: inherit;
 }
 .agent-msg a {
     color: var(--blue);
@@ -3362,6 +3414,30 @@ input[type="color"].sw:disabled {
     margin-top: 4px;
     white-space: pre-wrap;
     word-break: break-word;
+}
+/* 思考过程也是 render_markdown 的产物，里面可能有代码块；不给底色的话
+   暗色下就是一段没有边框的等宽字，跟普通文本混在一起。 */
+.agent-think-body pre {
+    background: var(--code-bg);
+    border: 1px solid var(--code-line);
+    padding: 8px 10px;
+    border-radius: var(--r-s);
+    overflow-x: auto;
+    font-size: 12px;
+    line-height: 1.4;
+    margin: 4px 0;
+    white-space: pre;
+}
+.agent-think-body code {
+    background: var(--code-bg);
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 0.92em;
+}
+.agent-think-body pre code {
+    background: none;
+    padding: 0;
+    font-size: inherit;
 }
 
 /* 视图导航栏行上的右键菜单：「配置视图」「删除视图」。 */
