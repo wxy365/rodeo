@@ -1,4 +1,5 @@
 use leptos::prelude::*;
+use leptos::reactive::graph::Observer;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -186,14 +187,35 @@ pub struct I18nController {
 }
 
 impl I18nController {
+    /// 当前语言。
+    ///
+    /// 分两种读法，取决于调用点是否落在 reactive scope 里：
+    /// - **在 scope 里**（`view!` 的 `move ||` 闭包、Memo / Effect 体）：
+    ///   走 tracked `get()`，订阅 `locale` 信号，语言切换后这些地方自动重渲染。
+    /// - **不在 scope 里**（事件回调、组件体、普通 helper 函数）：走
+    ///   `get_untracked()`。事件回调本来就该「触发时读一次」，不该随 locale
+    ///   变化重跑；而且 tracked `get()` 在没有 observer 时会触发 reactive_graph
+    ///   的 "outside a reactive tracking context" 调试告警
+    ///   （见 `reactive_graph::traits::Track`）。
+    ///
+    /// 两条路拿到的值完全一样，区别只在「要不要订阅」。
+    fn current_locale(&self) -> Locale {
+        if Observer::get().is_some() {
+            self.locale.get()
+        } else {
+            self.locale.get_untracked()
+        }
+    }
+
     /// Look up an id in the current locale, fall back to en, fall back to the id itself.
     ///
-    /// Reads `locale` via `get()` (not `get_untracked()`) so every `move || i18n.t(...)`
-    /// site subscribes to the locale signal and re-renders when the user picks a new
-    /// language. Locale changes are rare (only on language-button click), so the
-    /// extra tracking cost is negligible compared to the bug of stale strings.
+    /// Locale is read through `current_locale()`: tracked when we're inside a
+    /// reactive scope, so every `move || i18n.t(...)` site subscribes to the
+    /// locale signal and re-renders when the user picks a new language; untracked
+    /// elsewhere, so event handlers and plain helpers don't trip the
+    /// "outside a reactive tracking context" warning.
     pub fn t(&self, id: &str) -> String {
-        let loc = self.locale.get();
+        let loc = self.current_locale();
         if let Some(v) = map_for(loc).get(id) {
             return v.clone();
         }
