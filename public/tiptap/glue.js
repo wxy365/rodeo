@@ -22,6 +22,7 @@ import {
   common,
 } from './editor.mjs';
 import { createToolbar } from './toolbar.js';
+import { codeBlockTextInput, codeBlockEnter, codeBlockTab } from './codeblock.js';
 
 const lowlight = createLowlight(common);
 
@@ -276,6 +277,29 @@ function mentionSuggestion(members) {
 }
 
 /**
+ * 键盘事件的统一入口。
+ *
+ * 代码块里走 codeblock.js 的增强：Tab = 4 空格、Enter = 自动缩进。
+ * 代码块之外维持原样：正文里 Tab 插制表符，列表 / 表格交回 Tiptap 自己。
+ *
+ * 这里返回 true 就等于"这个键我处理了"，后面的键位（keymap）不会再看到它。
+ */
+function handleKeyDown(view, event, editor) {
+  if (!editor) return false;
+  if (editor.isActive('codeBlock')) {
+    if (event.key === 'Tab' && !event.shiftKey) {
+      return codeBlockTab(editor, view);
+    }
+    // Shift-Enter / Cmd-Enter 留给 Tiptap 自己（退出代码块）。
+    if (event.key === 'Enter' && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey) {
+      return codeBlockEnter(editor, view);
+    }
+    return false;
+  }
+  return handleTabKey(editor, event);
+}
+
+/**
  * Tab 键：在正文里插入制表符。
  *
  * Tiptap 的默认键位只给列表项（缩进）和表格单元（跳下一格）绑了 Tab，
@@ -432,8 +456,12 @@ window.__rodeo_editor__ = {
         // 粘贴：图片走上传，markdown 表格转成原生表格。
         // 表格规则与服务端 src/richtext.rs 一致。
         handlePaste: (view, event) => handlePaste(view, event, editorRef),
-        // Tab：正文里插入制表符（列表缩进 / 表格跳格除外）。
-        handleKeyDown: (view, event) => handleTabKey(editorRef, event),
+        // 键盘：代码块里的 Tab / Enter 走 codeblock.js 的增强，
+        // 其余地方维持原样（正文 Tab 插制表符）。
+        handleKeyDown: (view, event) => handleKeyDown(view, event, editorRef),
+        // 代码块里的括号自动补充。
+        handleTextInput: (view, from, to, text) =>
+          codeBlockTextInput(editorRef, view, from, to, text),
       },
     });
 
