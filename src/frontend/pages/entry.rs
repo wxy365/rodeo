@@ -273,8 +273,12 @@ pub fn EntryFullScreen() -> impl IntoView {
     // 按钮与 Esc 监听两处都要用它；`Callback` 是 `Copy`，可以同时进两个 handler。
     // 详情页 URL 上的 `?view=<id>` 透传给返回地址，让用户回到工作空间时仍是
     // 之前选中的视图，而不是默认视图。
+    // get_untracked：组件体里没有 observer，tracked 读订阅不到任何东西，只会触发
+    // reactive_graph 的「outside a reactive tracking context」告警——而这个值在组件
+    // 生命周期内本就不变（下面的注释也是这么说的）。
     let nav_back = navigate.clone();
-    let view_on_back: Option<String> = use_query_map().get().get("view").filter(|s| !s.is_empty());
+    let view_on_back: Option<String> =
+        use_query_map().get_untracked().get("view").filter(|s| !s.is_empty());
     // 「下一个」按钮也要用同一份 view id：clone 一次给 `go_back`（move 进自己的
     // 闭包后没法再借出来），原值留给我这里的 on_next / show_next 后续使用。
     let view_id_for_go_back = view_on_back.clone();
