@@ -149,18 +149,120 @@ const scenarios = {
     await openEntry(page, slug, code);
     await clickCmd(page, 'codeBlock');
     await page.waitForSelector('.tiptap-content pre', { timeout: 15000 });
-    const langs = await page.$$eval('.tiptap-tb-lang option', (els) => els.map((e) => e.value));
-    check('语言下拉在工具栏上', langs.length > 0, String(langs.length));
+    // 光标进代码块，语言下拉才浮出来（它不是工具栏上的固定控件）
+    await page.click('.tiptap-content pre');
+    await page.waitForSelector('.tiptap-cb-lang:not([hidden])', { timeout: 10000 }).catch(() => null);
+    const shown = await page.$eval('.tiptap-cb-lang', (el) => !el.hidden).catch(() => false);
+    check('代码块上浮出语言下拉', shown);
+    const langs = await page.$$eval('.tiptap-cb-lang option', (els) => els.map((e) => e.value));
+    check('下拉有语言项', langs.length > 0, String(langs.length));
     check('下拉含 rust', langs.includes('rust'), langs.join(','));
     check('下拉含 javascript', langs.includes('javascript'), langs.join(','));
-    await page.click('.tiptap-content pre');
     await page.keyboard.type('fn main() {}');
-    await page.selectOption('.tiptap-tb-lang', 'rust');
+    await page.selectOption('.tiptap-cb-lang', 'rust');
     await page.waitForTimeout(800);
     const cls = await page.$eval('.tiptap-content pre code', (el) => el.className).catch(() => '');
     check('代码块带上语言', String(cls).includes('rust'), String(cls));
     const tokens = await page.$$eval('.tiptap-content pre code span', (els) => els.length);
     check('高亮 token 出现', tokens >= 1, `count=${tokens}`);
+    check('页面无 JS 错误', errors.length === 0, errors.join(' | '));
+    await ctx.close();
+  },
+
+  async 'codeblock-enhance'(browser) {
+    const token = await login();
+    const { slug, code } = await seedEntry(token, '');
+    const ctx = await newContext(browser, token);
+    const page = await ctx.newPage();
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    await openEntry(page, slug, code);
+
+    // 代码块里的文本（第一个编辑器 = 条目正文）
+    const blockText = async () =>
+      page.$eval('.tiptap-content pre code', (el) => el.textContent);
+    // 重置正文内容并把光标放到指定位置
+    // （setContent 之后 Tiptap 的 TrailingNode 会补一个尾段落，
+    //   focus('end') 会落到那个空段落里而不是代码块，所以这里显式给位置）
+    const reset = async (html, pos) => {
+      await page.evaluate(([h, p]) => {
+        const ed = document.querySelector('.tiptap-content').closest('.tiptap-editor').__rodeo_editor;
+        ed.commands.setContent(h);
+        if (p != null) ed.commands.setTextSelection(p);
+        ed.view.focus();
+      }, [html, pos]);
+      await page.waitForTimeout(250);
+    };
+
+    await clickCmd(page, 'codeBlock');
+    await page.waitForSelector('.tiptap-content pre', { timeout: 15000 });
+
+    // ① 括号自动补充：打 ( 补成 ()
+    await page.keyboard.type('(');
+    await page.waitForTimeout(300);
+    eq('打 ( 自动补成 ()', await blockText(), '()');
+    // 再打 ) ：光标右边已经有了，跳过不重复补
+    await page.keyboard.type(')');
+    await page.waitForTimeout(300);
+    eq('再打 ) 不重复补', await blockText(), '()');
+
+    // ② 选区被括号包起来：选中 abc 的 a 再打 [
+    await reset('<pre><code>abc</code></pre>', 1);
+    await page.keyboard.press('Shift+ArrowRight');
+    await page.waitForTimeout(300); // 等 ProseMirror 把 DOM 选区同步进 state
+    await page.keyboard.type('[');
+    await page.waitForTimeout(300);
+    eq('选区被括号包起来', await blockText(), '[a]bc');
+
+    // ③ Enter 自动缩进：保持上一行的缩进
+    await reset('<pre><code></code></pre>', 1);
+    await page.keyboard.type('    let x = 1;');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('let y = 2;');
+    await page.waitForTimeout(300);
+    eq('Enter 保持缩进', await blockText(), '    let x = 1;\n    let y = 2;');
+
+    // ④ 行尾是开括号时多缩进一级，闭括号挪到下一行
+    await reset('<pre><code></code></pre>', 1);
+    await page.keyboard.type('(');
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(300);
+    eq('开括号回车展开成三行', await blockText(), '(\n    \n)');
+
+    // ⑤ Tab = 4 个空格（不是制表符）
+    await reset('<pre><code></code></pre>', 1);
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(300);
+    eq('Tab 插 4 个空格', await blockText(), '    ');
+    check('Tab 不是制表符', !(await blockText()).includes('\t'));
+
+    // ⑥ 有选区时 Tab 给选区覆盖的每一行加缩进
+    await reset('<pre><code>aaa\nbbb</code></pre>', 1);
+    await page.evaluate(() => {
+      const ed = document.querySelector('.tiptap-content').closest('.tiptap-editor').__rodeo_editor;
+      ed.chain().setTextSelection({ from: 1, to: 5 }).focus().run();
+    });
+    await page.waitForTimeout(200);
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(300);
+    eq('选区 Tab 两行都加缩进', await blockText(), '    aaa\n    bbb');
+
+    // ⑦ 回归：正文（不在代码块）里 Tab 仍然插制表符
+    await reset('<p>正文</p>', 1);
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(300);
+    const bodyText = await page.$eval('.tiptap-content p', (el) => el.textContent);
+    check('正文 Tab 仍插制表符', bodyText.includes('\t'), JSON.stringify(bodyText));
+
+    // ⑧ 存进去再刷新，代码块内容（含缩进）还在
+    await reset('<pre><code>    let x = 1;\n    let y = 2;</code></pre>', 1);
+    const save = await page.waitForSelector('.entry-top button.btn.pri:not([disabled])', { timeout: 15000 });
+    await save.click();
+    await page.waitForTimeout(1500);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('.tiptap-content pre code', { timeout: 60000 });
+    eq('刷新后代码块内容还在', await blockText(), '    let x = 1;\n    let y = 2;');
+
     check('页面无 JS 错误', errors.length === 0, errors.join(' | '));
     await ctx.close();
   },
