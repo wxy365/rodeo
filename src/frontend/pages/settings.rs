@@ -65,7 +65,10 @@ pub fn WorkspaceSettings() -> impl IntoView {
     // 存成 StoredValue（Copy），事件闭包才能保持 Copy 而被视图重复使用。
     let nav_store = StoredValue::new(navigate.clone());
     // URL 上的 `?view=<id>`：返回视图页时回到原视图，而不是默认视图。
-    let back_view_id: Option<String> = use_query_map().get().get("view").filter(|s| !s.is_empty());
+    // 一次性读，get_untracked——组件体里没有 observer，tracked 读订阅不到任何
+    // 东西，只会触发 reactive_graph 的「outside a reactive tracking context」告警。
+    let back_view_id: Option<String> =
+        use_query_map().get_untracked().get("view").filter(|s| !s.is_empty());
 
     let data: RwSignal<
         Option<

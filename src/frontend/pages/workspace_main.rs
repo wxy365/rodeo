@@ -351,6 +351,10 @@ pub fn WorkspaceMain() -> impl IntoView {
     // —— 路由 id 相同就只更新 params）。用 get_untracked 的话下面那条加载 Effect
     // 不会订阅到参数变化，切换工作空间后页面还停在上一个工作空间的数据上。
     let slug = move || params.get().get("slug").unwrap_or_default();
+    // 一次性快照用的 slug（组件体内读，此时没有 observer）：tracked 读在这里既
+    // 订阅不到任何东西，又会被 reactive_graph 判为「outside a reactive tracking
+    // context」而报警。需要订阅的那条路是上面的 `slug`（slug_signal 走它）。
+    let slug_snapshot = move || params.get_untracked().get("slug").unwrap_or_default();
     // 给子组件用的响应式 slug：侧栏的「设置」链接、详情面板的「全屏」按钮都要
     // 按当前工作空间拼 URL，一次性快照会在切换工作空间后指向旧工作空间。
     let slug_signal: Signal<String> = Signal::derive(slug);
@@ -377,7 +381,7 @@ pub fn WorkspaceMain() -> impl IntoView {
     let ws_current: RwSignal<WorkspaceOption> = RwSignal::new(WorkspaceOption {
         // slug 先从路由参数拿：数据没加载完时名字还空着，但下拉里已经能标出
         // 当前项（免得整张列表看着像"没有选中任何工作空间"）。
-        slug: slug(),
+        slug: slug_snapshot(),
         name: String::new(),
     });
     let ws_options: RwSignal<Vec<WorkspaceOption>> = RwSignal::new(Vec::new());
@@ -671,9 +675,11 @@ pub fn WorkspaceMain() -> impl IntoView {
     // URL 上的 `?view=<id>`：作为 active_id 的初始种子，让「从全屏页返回」
     // 和「浏览器刷新」都能恢复到上次选中的视图，而不是落到基础视图。
     // 一次性读，不订阅 location.search 变化——URL 同步由 open_entry / go_back
-    // 主动写入，避免路由切换与 set_active 互相触发。
+    // 主动写入，避免路由切换与 set_active 互相触发。get_untracked 是因为组件体
+    // 里没有 observer，tracked 读订阅不到任何东西，只会触发 reactive_graph 的
+    // 「outside a reactive tracking context」告警。
     let initial_view_id: Option<String> =
-        use_query_map().get().get("view").filter(|s| !s.is_empty());
+        use_query_map().get_untracked().get("view").filter(|s| !s.is_empty());
     // 提供 AgentPanel 取用的上下文：当前视图 id + 表格勾选 codes。
     // 复用 batch_selected（与批量按钮同读同一份信号，行为一致）。
     let _ = provide_agent_context(active_id, batch_selected);
