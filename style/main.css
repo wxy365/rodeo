@@ -3453,6 +3453,83 @@ input[type="color"].sw:disabled {
     gap: 6px;
 }
 
+/* ===== 工作空间切换器（AppBar 左侧）===== */
+/* 与 .lang-menu 同款：hover / focus-within 弹下拉，无需 JS 切显隐。
+   菜单靠左对齐（它在 AppBar 左半边），RTL 下镜像到右边。 */
+.ws-switch { position: relative; display: inline-flex; }
+.ws-switch-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 240px;
+    height: 32px;
+    padding: 0 10px;
+    border: 1px solid transparent;
+    border-radius: var(--r-s);
+    background: transparent;
+    color: var(--ink);
+    cursor: pointer;
+    font: 500 14px var(--font, system-ui);
+}
+.ws-switch-btn:hover { background: var(--bg2); }
+.ws-switch-name {
+    max-width: 190px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ws-switch-drop {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    display: none;
+    min-width: 200px;
+    max-height: 60vh;
+    overflow-y: auto;
+    padding: 4px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-m);
+    background: var(--bg);
+    box-shadow: 0 6px 20px rgb(0 0 0 / 14%);
+    z-index: 100;
+}
+.ws-switch:hover .ws-switch-drop,
+.ws-switch:focus-within .ws-switch-drop { display: block; }
+/* 按钮与菜单之间那 6px 的 top 偏移是一片「死区」：光标往下走的瞬间就离开了
+   悬停范围，菜单当场收起。透明伪元素填缝——同 .lang-drop::before。 */
+.ws-switch-drop::before {
+    content: "";
+    position: absolute;
+    top: -6px;
+    left: 0;
+    right: 0;
+    height: 6px;
+}
+.ws-switch-mi {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    text-align: start;
+    padding: 6px 10px;
+    border: 0;
+    background: transparent;
+    color: var(--ink);
+    cursor: pointer;
+    border-radius: var(--r-s);
+    font: inherit;
+}
+.ws-switch-mi:hover { background: var(--bg2); }
+.ws-switch-mi-active { font-weight: 600; background: var(--bg2); }
+.ws-switch-mi-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+[data-theme="dark"] .ws-switch-drop { border-color: var(--line, #444); }
+[dir="rtl"] .ws-switch-drop { left: auto; right: 0; }
+
 /* 语言按钮：与 .theme-btn 同视觉重量（32px 几何 + 圆角 + 透明底），下拉
    用 :hover + :focus-within 双触发——与 AvatarMenu 同套路，无需 JS 切显隐。
    Task 16 会再细调一版（暗色对比、RTL 镜像、激活态 hover）。 */

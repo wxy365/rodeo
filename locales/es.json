@@ -12,6 +12,8 @@
     "timeline_to_normal": "Cambiar a vista normal",
     "timeline_normal_to_tl": "Cambiar a vista de línea de tiempo",
     "agent_panel": "Asistente Buckaroo",
+    "switch_workspace": "Cambiar espacio de trabajo",
+    "workspace_menu": "Elegir espacio de trabajo",
     "language": "Idioma",
     "language_menu": "Elegir idioma",
     "unread_count": "{n} mensajes no leídos",

@@ -12,6 +12,8 @@
     "timeline_to_normal": "切换到普通视图",
     "timeline_normal_to_tl": "切换到时间轴视图",
     "agent_panel": "Buckaroo 助手",
+    "switch_workspace": "切换工作空间",
+    "workspace_menu": "选择工作空间",
     "language": "语言",
     "language_menu": "选择语言",
     "unread_count": "{n} 条未读消息",

@@ -12,6 +12,8 @@
     "timeline_to_normal": "通常表示に切替",
     "timeline_normal_to_tl": "タイムライン表示に切替",
     "agent_panel": "Buckaroo アシスタント",
+    "switch_workspace": "ワークスペースを切り替える",
+    "workspace_menu": "ワークスペースを選択",
     "language": "言語",
     "language_menu": "言語を選択",
     "unread_count": "未読メッセージ {n} 件",

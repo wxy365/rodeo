@@ -9,15 +9,17 @@ use crate::frontend::components::{fmt_datetime, logged_out, AuditTimeline, CodeC
 use crate::frontend::graphql_client::{
     audit_logs, build_share_url, create_entry_share, delete_entry, entry, entry_next_in_view,
     entry_shares, label_schemas, members, revoke_entry_share, update_entry, workspace_by_slug,
-    AccountBrief, AuditLog, Entry, EntryShare, LabelSchema, Labeling, Member, Workspace,
+    workspaces, AccountBrief, AuditLog, Entry, EntryShare, LabelSchema, Labeling, Member,
+    Workspace,
 };
 use crate::frontend::i18n::{use_i18n, I18nController};
 use crate::frontend::icons::{ic_back, ic_check, ic_close, ic_share, ic_tag};
 use crate::frontend::label_editor::LabelEditor;
 use crate::frontend::relations_panel::RelationsPanel;
-use crate::frontend::share_clipboard::copy_share_url;
 use crate::frontend::rich_editor::RichEditor;
+use crate::frontend::share_clipboard::copy_share_url;
 use crate::frontend::use_auth;
+use crate::frontend::WorkspaceOption;
 
 // 全屏页侧栏的页签。标签编辑不在这里——它常驻在页签上方。
 fn side_tab_labels(i18n: &I18nController) -> [(String, String); 3] {
@@ -144,6 +146,28 @@ pub fn EntryFullScreen() -> impl IntoView {
         load(true);
     });
 
+    // AppBar 左侧「切换工作空间」的候选列表：进页面拉一次即可——本页期间
+    // 工作空间的成员关系不会变（新建 / 加入工作空间都会离开本页再进来）。
+    let ws_options: RwSignal<Vec<WorkspaceOption>> = RwSignal::new(Vec::new());
+    Effect::new_sync(move |_| {
+        if !cfg!(target_arch = "wasm32") {
+            return;
+        }
+        spawn_local(async move {
+            // 软删除的工作空间只出现在工作空间列表页的回收站里，不进候选。
+            let list = workspaces().await.unwrap_or_default();
+            ws_options.set(
+                list.into_iter()
+                    .filter(|w| w.workspace.deleted_at.is_none())
+                    .map(|w| WorkspaceOption {
+                        slug: w.workspace.slug,
+                        name: w.workspace.name,
+                    })
+                    .collect(),
+            );
+        });
+    });
+
     let on_changed = Callback::new(move |_| load(false));
     let on_editor_change = Callback::new(move |d: String| {
         detail.set(d);
@@ -212,6 +236,43 @@ pub fn EntryFullScreen() -> impl IntoView {
             }
         });
     };
+
+    // AppBar 左侧的「切换工作空间」：全屏页没有侧栏，用户没别的入口换工作
+    // 空间，所以把当前工作空间 + 候选列表交给 AppBar 渲染。
+    //
+    // 「切换」意味着什么由本页决定——离开本页就是离开当前条目，因此有未保存
+    // 改动时先拦住（与 Esc 返回同款处理），否则改动会跟着导航一起丢掉。
+    if let Some(slot) = crate::frontend::use_context::<crate::frontend::WorkspaceSwitcherSlot>() {
+        let nav_switch = navigate.clone();
+        let on_switch = Callback::new(move |target: String| {
+            if dirty.get_untracked() {
+                error.set(Some(i18n.t("entry.unsaved_changes")));
+                return;
+            }
+            // 切回当前工作空间 = 什么都不做。
+            if target == slug() {
+                return;
+            }
+            nav_switch(&format!("/{target}"), Default::default());
+        });
+        // 当前工作空间要等 `data` 加载完才知道（slug → ws 的映射在服务端），
+        // 所以写成 Effect：`data` 一落地就把槽填上。
+        Effect::new_sync(move |_| {
+            let Some(ws) = data.get().and_then(|r| r.ok()).map(|(w, _, _, _, _)| w) else {
+                return;
+            };
+            slot.current.set(Some(crate::frontend::WorkspaceSwitcher {
+                current: RwSignal::new(WorkspaceOption {
+                    slug: ws.slug.clone(),
+                    name: ws.name.clone(),
+                }),
+                options: ws_options,
+                on_switch,
+            }));
+        });
+        // 离开本页时清掉槽，否则切走之后 AppBar 还挂着上一个工作空间的名字。
+        on_cleanup(move || slot.current.set(None));
+    }
 
     // 按钮与 Esc 监听两处都要用它；`Callback` 是 `Copy`，可以同时进两个 handler。
     // 详情页 URL 上的 `?view=<id>` 透传给返回地址，让用户回到工作空间时仍是

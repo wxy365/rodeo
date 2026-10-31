@@ -12,6 +12,8 @@
     "timeline_to_normal": "Switch to normal view",
     "timeline_normal_to_tl": "Switch to timeline view",
     "agent_panel": "Buckaroo assistant",
+    "switch_workspace": "Switch workspace",
+    "workspace_menu": "Choose workspace",
     "language": "Language",
     "language_menu": "Choose language",
     "unread_count": "{n} unread messages",
