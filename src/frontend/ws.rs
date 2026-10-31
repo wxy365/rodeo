@@ -7,6 +7,12 @@
 //! 浏览器拿不到 auth 头（`new WebSocket(url)` 不能加自定义 header），
 //! 所以 token 走 `?token=<jwt>` query param——与服务端 `/api/ws` handler
 //! 约定一致。
+//!
+//! **token 必须走 `graphql_client::get_token()` 取，不能直接读
+//! `localStorage.rodeo_jwt` 原始值**：`gloo_storage` 存的是 JSON 序列化
+//! 结果（字符串带引号），直接读拿到的是 `"eyJ..."`，服务端
+//! `verify_token` 判非法 → 握手 401。`get_token()` 会把 JSON 反序列化
+//! 回裸 JWT。
 
 use leptos::prelude::*;
 use serde::Deserialize;
@@ -52,7 +58,8 @@ pub enum WsClientMessage {
     Pong,
 }
 
-/// 在 App 根启动 ws 连接循环。`localStorage.rodeo_jwt` 取 token；断线指数退避。
+/// 在 App 根启动 ws 连接循环。当前登录令牌由 `graphql_client::get_token()`
+/// 取（见文件头注释：不能直接读 localStorage 原始值）；断线指数退避。
 /// 仅 wasm 实际建连；SSR / native 端函数体为空（被 `#[cfg]` 屏蔽）。
 pub fn spawn_ws_connected_root() {
     #[cfg(target_arch = "wasm32")]
@@ -69,7 +76,7 @@ pub fn spawn_ws_connected_root() {
             let mut idx = 0usize;
             loop {
                 status.set(WsStatus::Connecting);
-                let token = match get_local_token() {
+                let token = match crate::frontend::graphql_client::get_token() {
                     Some(t) => t,
                     None => {
                         // 没 token 时（例如未登录）：等 2s 后重试，让登录后有机会生效
@@ -91,17 +98,6 @@ pub fn spawn_ws_connected_root() {
             }
         });
     }
-}
-
-#[cfg(target_arch = "wasm32")]
-fn get_local_token() -> Option<String> {
-    web_sys::window()?
-        .local_storage()
-        .ok()
-        .flatten()?
-        .get_item("rodeo_jwt")
-        .ok()
-        .flatten()
 }
 
 #[cfg(target_arch = "wasm32")]
