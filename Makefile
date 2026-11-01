@@ -67,7 +67,13 @@ help: ## 显示帮助
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
 dev: ## 启动开发服务器（文件变更自动热重载）
-	$(CARGO_LEPTOS) watch
+	# LEPTOS_HASH_FILES=false：cargo-leptos 只在 `build` 命令里做内容哈希（重命名 +
+	# 写 hash.txt），watch 的增量重建不写——于是带哈希的产物停在上一轮完整构建，
+	# 页面永远加载旧 bundle（dev 下改前端/CSS 看不见变化就是这个原因）。
+	# 关掉它，页面就按未哈希名（/pkg/rodeo.wasm）加载 watch 刚写的产物。
+	# 环境变量会覆盖 Cargo.toml 的 metadata（cargo-leptos 的 overlay_env），
+	# 生产构建（make build / package-linux）仍是 hash-files = true。
+	LEPTOS_HASH_FILES=false $(CARGO_LEPTOS) watch
 
 watch: dev ## 同 dev
 
