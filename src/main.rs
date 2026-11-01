@@ -15,8 +15,8 @@ async fn main() {
 
     use rodeo::api::{
         agent_stream_handler, build_schema, download_attachment, github_callback, github_start,
-        google_callback, google_start, graphql_handler, wechat_callback, wechat_start, ws_handler,
-        AppState,
+        google_callback, google_start, graphql_handler, live_reload, wechat_callback, wechat_start,
+        ws_handler, AppState,
     };
     use rodeo::app::*;
     use rodeo::config::Config;
@@ -69,7 +69,7 @@ async fn main() {
     });
 
     let conf = get_configuration(None).unwrap();
-    let leptos_options = conf.leptos_options;
+    let mut leptos_options = conf.leptos_options;
 
     // 绑定地址：LEPTOS_SITE_ADDR 优先——cargo leptos watch 靠它注入 dev 地址，也留给运维
     // 临时覆盖；没设时（手工跑生产二进制）才轮到 config.toml 的 [server]。这是配置第一次
@@ -86,6 +86,20 @@ async fn main() {
         ),
     };
 
+    // 开发期热重载：Leptos 注入的 AutoReload 脚本用 reload_external_port 拼浏览器侧的
+    // ws 地址，缺省是 cargo-leptos 的 reload 端口（:3001，明文）。HTTPS 页面连不上明文
+    // ws（Chrome 禁混合内容），所以把浏览器侧指向应用自己的端口：wss://<本站>/live_reload，
+    // 由应用中继回明文的 :3001——详见 src/api/reload.rs。
+    // 只在 watch 模式改：生产既没有 cargo-leptos，也没有热重载需求。
+    let dev_watch = std::env::var("LEPTOS_WATCH").is_ok();
+    if dev_watch && leptos_options.reload_external_port.is_none() {
+        let site_port = u32::from(addr.port());
+        // 端口撞上 cargo-leptos 的 reload 端口就别指——那会连回自己。
+        if site_port != leptos_options.reload_port {
+            leptos_options.reload_external_port = Some(site_port);
+        }
+    }
+
     let routes = generate_route_list(App);
 
     // 附件上限 50MB，服务层会返回「附件超过 50MB」的友好错误；这里放到 64MB，
@@ -93,7 +107,7 @@ async fn main() {
     // 仍然只是一条路由上的硬上限，未鉴权客户端刷不出无限大的临时文件。
     const GRAPHQL_BODY_LIMIT: usize = 64 * 1024 * 1024;
 
-    let app = Router::new()
+    let mut app = Router::new()
         .route(
             "/api/graphql",
             post(graphql_handler).layer(RequestBodyLimitLayer::new(GRAPHQL_BODY_LIMIT)),
@@ -119,7 +133,15 @@ async fn main() {
         .route_service(
             "/favicon.svg",
             ServeFile::new(format!("{}/favicon.svg", leptos_options.site_root)),
-        )
+        );
+
+    // 开发期热重载中继（只在 watch 模式注册）。同样必须排在 leptos_routes 之前：
+    // `/live_reload` 是单段路径，会被 ParamSegment("slug") 抢走。
+    if dev_watch {
+        app = app.route("/live_reload", get(live_reload));
+    }
+
+    let app = app
         .leptos_routes(&leptos_options, routes, {
             let leptos_options = leptos_options.clone();
             move || shell(leptos_options.clone())

@@ -2,6 +2,7 @@ pub mod agent_sse;
 pub mod attachments;
 pub mod graphql;
 pub mod oauth;
+pub mod reload;
 pub mod ws;
 
 pub use agent_sse::agent_stream_handler;
@@ -10,4 +11,5 @@ pub use graphql::{build_schema, graphql_handler, AppSchema, AppState};
 pub use oauth::{
     github_callback, github_start, google_callback, google_start, wechat_callback, wechat_start,
 };
+pub use reload::live_reload;
 pub use ws::ws_handler;

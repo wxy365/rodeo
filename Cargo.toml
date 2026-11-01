@@ -90,6 +90,13 @@ async-stream = { version = "0.3", optional = true }
 futures-util = { version = "0.3", optional = true, default-features = false, features = ["std"] }
 # Agent turn 注册表使用的同步互斥（避免 async 锁在同步临界区的可取消性问题）。
 parking_lot = { version = "0.12", optional = true }
+# 开发期热重载中继的 WebSocket 客户端（src/api/reload.rs）。只连明文 ws://，
+# 不开任何 TLS 特性——tokio-tungstenite 的 rustls 依赖是 default-features = false，
+# 因此不会给 rustls 引入第二个 crypto provider（见上面 rustls 的注释）。
+tokio-tungstenite = { version = "0.29", default-features = false, features = [
+    "connect",
+    "handshake",
+], optional = true }
 # Agent runner 用 `CancellationToken` 让 SSE 断连时干净地中止 turn。
 tokio-util = { version = "0.7", features = ["rt"], optional = true }
 # LLM agent 重写（rig-agent-rewrite plan）。先锁版本、仅 ssr、可选；
@@ -159,6 +166,7 @@ ssr = [
     "dep:async-stream",
     "dep:futures-util",
     "dep:parking_lot",
+    "dep:tokio-tungstenite",
     "dep:tokio-util",
     "dep:rig-core",
     "dep:rig",
@@ -176,7 +184,10 @@ panic = "abort"
 
 [package.metadata.leptos]
 output-name = "rodeo"
-# 内容哈希：避免 watch 重建后浏览器拿旧 glue 配新 wasm，wasm 实例化失败、页面卡死在 SSR 占位。
+# 内容哈希：产物文件名带内容哈希，避免浏览器拿到旧 glue 配新 wasm。
+# 只在 `cargo leptos build` 里生效——cargo-leptos 只在 build 命令里做哈希（重命名 +
+# 写 hash.txt），watch 的增量重建不写，带哈希的产物会停在上一轮完整构建。
+# dev 因此覆盖成 false（见 Makefile 的 dev 目标），页面按未哈希名加载 watch 的产物。
 hash-files = true
 site-root = "target/site"
 site-pkg-dir = "pkg"
