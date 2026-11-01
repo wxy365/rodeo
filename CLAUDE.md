@@ -83,7 +83,7 @@ src/
 │   ├── pages/              # account, admin, login, workspaces, workspace_main, settings, entry
 │   ├── query_eval.rs       # 服务端 query 表达式的客户端复现（前端过滤也要走同一套 AST）
 │   ├── label_editor.rs, view_filter.rs, timeline.rs, automation_tab.rs, comment_list.rs, attachment_list.rs
-│   ├── ai_prompt_editor.rs, tiny_editor.rs (包装 @opentiny/tiny-editor web component)
+│   ├── ai_prompt_editor.rs
 │   └── icons.rs            # 内联 SVG
 ├── config.rs     # TOML 反序列化（所有字段都有 #[serde(default)]）
 ├── error.rs      # AppError 统一错误类型，传染到 GraphQL
@@ -119,7 +119,7 @@ src/
 - **bincode 位置编码**：`LabelValueType` 这种枚举只能追加新变体在末尾，否则旧记录反序列化失败。`service/mod.rs` 启动时的 `repair_*` 方法就是为应对历史上这类破坏；新增带数据的变体请同时加 idempotent 修复。
 - **标签自动激活**：登录态存于 `localStorage.rodeo_jwt`（仅 WASM）。`app.rs` 里 `me()` 拿到 `Ok(None)` 时必须把死 token 清掉 + 置 `session_lost`，不然 `/admin`、`/account` 永远停在加载态。
 - **`Style` 走 `style/main.css`**，通过 `HashedStylesheet` 拼接 hash；不要手动 `<link rel=stylesheet href=...>` 主样式。
-- **`tiny-editor` 静态资源**经 `/tiny-editor/style.css` 与 `/tiny-editor/glue.js` 提供，从 `public/` 出。这些被引用在 `app.rs` 的 `<Stylesheet>` / `<Script>` 里。
+- **编辑器静态资源是 Tiptap**：在 `/tiptap/style.css`、`/tiptap/glue.js`、`/tiptap/editor.mjs`（含 highlight.js，662 KB，vendor 进仓库）里，从 `public/tiptap/` 出，走 `app.rs` 的 `<Stylesheet>` / `<Script>`。旧的 TinyEditor（`/tiny-editor/*`、`src/frontend/tiny_editor.rs`）已在编辑器换 Tiptap 时删干净，别再引用。
 - **Leptos 上下文只向下传播**：AppBar 渲染在 `<Router>` 之外，与 WorkspaceMain 是兄弟节点。`provide_workspace_new_menu_slot()` / `provide_workspace_timeline_slot()` 这两个 slot 是为了解决「App 级别提供、兄弟共享读写」用的，新加跨 Router 的全局能力先沿用同一模式。
 - **`/api/graphql` body limit 64MiB**，给 multipart 边界留余量；附件本身在服务层 50MiB 拒绝。
 - **开发期热重载有两个断点，改 dev 流程前先看这条**。① 页面是 https 时浏览器侧的 reload ws 必须走 `wss://<本站>/live_reload`——cargo-leptos 的 reload server（`:3001`）是明文，HTTPS 页面连不上它，由应用侧中继（`src/api/reload.rs`）转发。② dev 必须带 `LEPTOS_HASH_FILES=false`（Makefile 的 `dev` 目标已带）：cargo-leptos 只在 `cargo leptos build` 里做内容哈希，watch 的增量重建不写 `hash.txt`，带哈希的产物停在上一轮完整构建，页面加载的一直是旧 bundle。
