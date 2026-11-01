@@ -25,6 +25,24 @@ pub struct WsParams {
     pub token: Option<String>,
 }
 
+/// 剥掉 token 外层的 JSON 引号。
+///
+/// 浏览器把 JWT 存进 `localStorage` 时存的是 JSON 序列化结果，也就是带双引号的
+/// `"eyJ…"`。旧版前端直接读 localStorage 原始值拼进 `?token=`，服务端收到的
+/// 就带着这对引号——`verify_token` 必然判非法，握手 401，浏览器控制台恒定报
+/// `WebSocket connection … failed: HTTP Authentication failed`。
+///
+/// 新版前端改走 `graphql_client::get_token()`（拿到裸 JWT）已经不需要这层兼容，
+/// 但浏览器里可能还缓存着旧 bundle，服务端多剥一层引号就能让它们照常握手，
+/// 不必等用户强制刷新。剥引号不放松任何校验：签名验签照走。
+fn normalize_query_token(raw: &str) -> &str {
+    let trimmed = raw.trim();
+    trimmed
+        .strip_prefix('"')
+        .and_then(|s| s.strip_suffix('"'))
+        .unwrap_or(trimmed)
+}
+
 /// `GET /api/ws?token=<jwt>` —— 鉴权通过后开 WS。
 pub async fn ws_handler(
     Extension(state): Extension<Arc<AppState>>,
@@ -32,7 +50,7 @@ pub async fn ws_handler(
     ws: WebSocketUpgrade,
 ) -> impl IntoResponse {
     let token = match params.token.as_deref() {
-        Some(t) if !t.is_empty() => t.to_string(),
+        Some(t) if !t.trim().is_empty() => normalize_query_token(t).to_string(),
         _ => {
             return (axum::http::StatusCode::UNAUTHORIZED, "missing token").into_response();
         }
