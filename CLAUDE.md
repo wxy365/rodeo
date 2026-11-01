@@ -122,6 +122,7 @@ src/
 - **`tiny-editor` 静态资源**经 `/tiny-editor/style.css` 与 `/tiny-editor/glue.js` 提供，从 `public/` 出。这些被引用在 `app.rs` 的 `<Stylesheet>` / `<Script>` 里。
 - **Leptos 上下文只向下传播**：AppBar 渲染在 `<Router>` 之外，与 WorkspaceMain 是兄弟节点。`provide_workspace_new_menu_slot()` / `provide_workspace_timeline_slot()` 这两个 slot 是为了解决「App 级别提供、兄弟共享读写」用的，新加跨 Router 的全局能力先沿用同一模式。
 - **`/api/graphql` body limit 64MiB**，给 multipart 边界留余量；附件本身在服务层 50MiB 拒绝。
+- **开发期热重载有两个断点，改 dev 流程前先看这条**。① 页面是 https 时浏览器侧的 reload ws 必须走 `wss://<本站>/live_reload`——cargo-leptos 的 reload server（`:3001`）是明文，HTTPS 页面连不上它，由应用侧中继（`src/api/reload.rs`）转发。② dev 必须带 `LEPTOS_HASH_FILES=false`（Makefile 的 `dev` 目标已带）：cargo-leptos 只在 `cargo leptos build` 里做内容哈希，watch 的增量重建不写 `hash.txt`，带哈希的产物停在上一轮完整构建，页面加载的一直是旧 bundle。
 
 ## 工作流规则
 
