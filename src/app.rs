@@ -149,23 +149,6 @@ fn ShellInner(options: LeptosOptions) -> impl IntoView {
                 <script>
                     "(function(){try{var l=localStorage.getItem('rodeo_lang');if(l==='zh'||l==='en'||l==='ja'||l==='pt'||l==='es'||l==='ar'){var h=document.documentElement;h.setAttribute('lang',l);h.setAttribute('dir',l==='ar'?'rtl':'ltr');}else{var h2=document.documentElement.getAttribute('lang');if(h2){try{localStorage.setItem('rodeo_lang',h2);document.cookie='rodeo_lang='+h2+'; path=/; max-age=31536000; samesite=lax';}catch(e){}}}}catch(e){}})();"
                 </script>
-                // highlight.js：fluent-editor 的 syntax 模块（代码块语法高亮）要用。
-                //
-                // **放在 shell 的 head 里、且用普通 <script> 而不是 leptos_meta 的
-                // <Script> 组件**：leptos_meta 的注册式组件会把自己收集进 head 的
-                // meta 缓冲，客户端 hydrate 时按注册顺序逐个消费 head 里的节点。
-                // 在 App 视图里多加一个注册式 <Script>，会让这条游标与 SSR 输出
-                // 对不齐，hydration 直接报 "expected a marker node" 并 panic
-                // （页面看着正常，但整个前端不接管任何交互）。
-                //
-                // shell 不参与 hydrate，head 里放普通元素就没有这套对齐问题。
-                //
-                // 顺序：普通 script 在解析期同步执行，module script 按规范延迟到
-                // 文档解析完才执行 —— 所以它一定早于 glue.js 里的
-                // `import FluentEditor from './fluent-editor.mjs'` 求值
-                // （fluent-editor 在模块求值时就快照 window.hljs，晚于它就位的话
-                //  syntax 模块构造函数会抛 "Syntax module requires highlight.js"）。
-                <script src="/tiny-editor/hljs.min.js"></script>
                 // 主样式表走 cargo-leptos 的内容哈希；`Stylesheet` 不解析哈希，必须用这个。
                 <HashedStylesheet id="leptos" options=options.clone() />
                 <AutoReload options=options.clone() />
