@@ -434,11 +434,77 @@ const scenarios = {
     await page.click('.tiptap-content');
     await page.keyboard.type('@');
     await page.waitForTimeout(1200);
-    check('@提及有下拉', await page.$$eval('.tiptap-mention', (els) => els.length) >= 1);
+    // 光看「有没有 .tiptap-mention 元素」不够：候选表为空时浮层照样建出来，
+    // 只是 hidden —— 2026-11-02 的 @提及失效就是这么漏过去的。必须查候选项。
+    const mention = await page.evaluate(() => {
+      const dd = document.querySelector('.tiptap-mention');
+      return {
+        exists: !!dd,
+        hidden: dd ? dd.hidden : null,
+        items: dd ? [...dd.querySelectorAll('.tiptap-mention-item')].map((e) => e.textContent) : [],
+      };
+    });
+    check('@提及浮层在', mention.exists);
+    check('@提及浮层可见', mention.hidden === false, JSON.stringify(mention));
+    check('@提及有候选', mention.items.length >= 1, JSON.stringify(mention.items));
     await clickCmd(page, 'h2');
     await page.waitForTimeout(400);
     check('标题能插入', await page.$$eval('.tiptap-content h2', (els) => els.length) >= 1);
     check('链接按钮存在', !!(await page.$('.tiptap-toolbar .tiptap-tb-btn[data-cmd="link"]')));
+    check('页面无 JS 错误', errors.length === 0, errors.join(' | '));
+    await ctx.close();
+  },
+
+  // @提及的完整链路：打 @ → 出候选 → 选中 → 正文里落成 mention chip →
+  // 存盘 → 刷新后 chip 还在（服务端消毒放行 data-*，见 service/richtext.rs）。
+  async 'mention-dropdown'(browser) {
+    const token = await login();
+    const { slug, code, workspaceId } = await seedEntry(token, '');
+    const members = await gql('query($id: ID!) { members(workspaceId: $id) { accountId name } }',
+      { id: workspaceId }, token);
+    check('工作空间有成员可提', members.members.length >= 1, JSON.stringify(members.members));
+    const ctx = await newContext(browser, token);
+    const page = await ctx.newPage();
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(String(e)));
+    await openEntry(page, slug, code);
+
+    await page.click('.tiptap-content');
+    await page.keyboard.type('找 ');
+    await page.keyboard.type('@');
+    await page.waitForTimeout(1200);
+    const dd = await page.evaluate(() => {
+      const el = document.querySelector('.tiptap-mention');
+      return {
+        hidden: el ? el.hidden : null,
+        items: el ? [...el.querySelectorAll('.tiptap-mention-item')].map((e) => e.textContent) : [],
+      };
+    });
+    check('@ 浮层可见', dd.hidden === false, JSON.stringify(dd));
+    check('@ 浮层列出成员', dd.items.length >= 1, JSON.stringify(dd.items));
+    const expect = members.members[0].name;
+    check('@ 浮层里是工作空间成员', dd.items.includes(expect), JSON.stringify(dd.items));
+
+    // Enter 选中第一项 → 正文里落成 mention chip
+    await page.keyboard.press('Enter');
+    await page.waitForTimeout(600);
+    const chip = await page.evaluate(() => {
+      const el = document.querySelector('.tiptap-content .tiptap-mention-chip');
+      return el ? { text: el.textContent, id: el.getAttribute('data-id'), label: el.getAttribute('data-label') } : null;
+    });
+    check('正文里落成 mention chip', !!chip, JSON.stringify(chip));
+    check('chip 显示 @姓名', chip && chip.text === `@${expect}`, JSON.stringify(chip));
+    check('chip 带 data-id', chip && chip.id === members.members[0].accountId, JSON.stringify(chip));
+
+    // 存盘 → 刷新：chip 还在（服务端消毒放行 data-*）
+    const save = await page.waitForSelector('.entry-top button.btn.pri:not([disabled])', { timeout: 20000 });
+    await save.click();
+    await page.waitForTimeout(2000);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('.tiptap-content', { timeout: 60000 });
+    await page.waitForSelector('.tiptap-content [data-type="mention"]', { timeout: 30000 });
+    const after = await page.$eval('.tiptap-content [data-type="mention"]', (el) => el.textContent);
+    eq('刷新后 mention 还在', after, `@${expect}`);
     check('页面无 JS 错误', errors.length === 0, errors.join(' | '));
     await ctx.close();
   },
