@@ -181,6 +181,39 @@ function htmlWithMdTables(html) {
 }
 
 /**
+ * 归一化 @提及候选名单。
+ *
+ * Rust 侧（`src/frontend/rich_editor.rs`）把名单 JSON 化成**字符串**再塞进
+ * `opts.members` —— wasm → JS 的边界只能过基本类型，所以这里是
+ * `"[{\"id\":…,\"name\":…}]"` 而不是数组。
+ *
+ * 所以判断必须先分清「字符串」与「数组」：直接 `Array.isArray(opts.members)`
+ * 对 JSON 字符串恒为 false → 候选表永远空 → @ 下拉点开是空的（浮层建出来了，
+ * 但一个候选都没有）。Quill 时代的老 glue.js 写的是
+ * `typeof raw === 'string' ? JSON.parse(raw) : raw`，换 Tiptap 时漏了这一支。
+ *
+ * 两种形态都收：字符串解析，数组直接用。名字取 `name`、id 取 `id`（老代码
+ * 还兼容 `account_id` / `accountId`，这里一并留着）。
+ */
+function normalizeMembers(raw) {
+  let list = raw;
+  if (typeof list === 'string') {
+    try {
+      list = JSON.parse(list);
+    } catch (e) {
+      return [];
+    }
+  }
+  if (!Array.isArray(list)) return [];
+  return list
+    .map((m) => ({
+      id: m.id || m.account_id || m.accountId || '',
+      name: m.name || '',
+    }))
+    .filter((m) => m.id && m.name);
+}
+
+/**
  * @提及的下拉。
  *
  * `opts.members` 是 Rust 侧传的成员名单（[{ id, name }]）。Tiptap 的 mention
@@ -412,7 +445,7 @@ window.__rodeo_editor__ = {
    */
   create(el, html, opts = {}) {
     const readOnly = !!opts.readOnly;
-    const members = Array.isArray(opts.members) ? opts.members : [];
+    const members = normalizeMembers(opts.members);
 
     // 编辑器实例在构造之后才有；粘贴处理要用它（insertContentAt 吃 HTML 字符串），
     // 所以用可变引用在调用时取。

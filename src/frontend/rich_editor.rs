@@ -189,6 +189,9 @@ fn mount_editor<N: wasm_bindgen::JsCast>(
         let _ = Reflect::set(&opts, &JsValue::from_str("upload"), &upload_fn);
 
         // @提及候选：只要 id 与显示名。
+        //
+        // 传的是 **JSON 字符串**（wasm → JS 的边界只能过基本类型），glue.js 那边
+        // 用 `normalizeMembers` 解析它 —— 见 public/tiptap/glue.js 的注释。
         let members_json: Vec<serde_json::Value> = members
             .iter()
             .map(|m| serde_json::json!({ "id": m.account_id, "name": m.name }))
