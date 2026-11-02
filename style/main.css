@@ -2292,6 +2292,15 @@ input[type="color"].sw:disabled {
     padding:0;
     font-size:inherit;
 }
+/* @提及 chip。服务端消毒只给 code/pre 放行 class（见 service/richtext.rs 的
+   attribute_filter），span 的 class 存盘后会被剥掉 —— 所以按 data-type 认，
+   跟编辑器里的 chip 长得一样。 */
+.c-body [data-type="mention"]{
+    color:var(--blue);
+    background:var(--bg3);
+    border-radius:3px;
+    padding:0 3px;
+}
 .c-edit-acts{display:flex;gap:6px;margin-top:6px}
 /* Quill 自带 `.ql-container{height:100%}`，而 `.c-edit` 的高度是 auto，
    两者构成自引用：父框先按容器的固有高度（单行 86px）定下自身高度 182px，

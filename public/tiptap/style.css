@@ -145,7 +145,10 @@
     border-radius: 2px;
 }
 
-.tiptap-content .tiptap-mention-chip {
+/* @提及 chip。同时按 `data-type` 认：服务端消毒只给 code/pre 放行 class，
+   span 的 class 存盘后会被剥掉 —— 存盘前后 chip 必须长得一样。 */
+.tiptap-content .tiptap-mention-chip,
+.tiptap-content [data-type="mention"] {
     color: var(--blue);
     background: var(--bg3);
     border-radius: 3px;
