@@ -691,8 +691,6 @@ pub fn AppBar() -> impl IntoView {
     // `use_context` 必须放在组件 setup，不能放进事件闭包里——那是 Leptos
     // 上下文解析规则的硬约束。
     let panel_open = crate::frontend::agent_panel::use_agent_panel_open();
-    // hover split 状态：只在 AppBar 这一个用到，留在组件内即可。
-    let newentry_hover = RwSignal::new(false);
     // i18n：品牌 / 新建 / 时间轴 / agent 面板标题在这里翻。`I18nController`
     // 由 `ShellInner` 在解析 Parts 后 provide。
     let i18n: I18nController = use_i18n();
@@ -707,34 +705,33 @@ pub fn AppBar() -> impl IntoView {
                 </a>
             </div>
             <div class="appbar-right">
-                {move || new_menu_slot.current.get().map(|m| view! {
-                    <div class="newentry-wrap"
-                        on:mouseleave=move |_| newentry_hover.set(false)>
-                        <button class="newentry-btn" title={move || i18n.t("appbar.new_split_title")}
-                            on:click=move |_| m.on_new_entry.run(())
-                            on:mouseenter=move |_| newentry_hover.set(true)>
-                            {ic_add()}<span>{move || i18n.t("appbar.new_entry")}</span>
-                        </button>
-                        {move || if newentry_hover.get() {
-                            let on_entry = m.on_new_entry;
-                            let on_view = m.on_new_view;
-                            view! {
-                                <div class="newentry-split"
-                                    on:mouseenter=move |_| newentry_hover.set(true)>
-                                    <button on:click=move |_| {
-                                        newentry_hover.set(false);
-                                        on_entry.run(());
-                                    }>{ic_add()}<span style="margin-left:6px">{move || i18n.t("appbar.new_entry")}</span></button>
-                                    <button on:click=move |_| {
-                                        newentry_hover.set(false);
-                                        on_view.run(());
-                                    }>{ic_folder()}<span style="margin-left:6px">{move || i18n.t("appbar.new_view")}</span></button>
-                                </div>
-                            }.into_any()
-                        } else {
-                            view! { <div></div> }.into_any()
-                        }}
-                    </div>
+                // 「新建」是 hover 展开的分裂按钮。显隐完全交给 CSS
+                // （`.newentry-wrap:hover` / `:focus-within`），Rust 侧不持 hover
+                // 信号：信号驱动的条件渲染会在 mouseleave 的同一帧把菜单从 DOM
+                // 摘掉，鼠标还在从按钮滑向菜单的半路上，列表就没了。
+                //
+                // 菜单常驻 DOM 还有个副产品：按钮与菜单之间 6px 的间隙由
+                // `.newentry-wrap` 的 `padding-bottom` 填成悬停区（负 margin 抵消
+                // 布局高度，见 style/main.css），悬停链不会被缝隙切断。
+                {move || new_menu_slot.current.get().map(|m| {
+                    let on_entry = m.on_new_entry;
+                    let on_view = m.on_new_view;
+                    view! {
+                        <div class="newentry-wrap">
+                            <button class="newentry-btn" title={move || i18n.t("appbar.new_split_title")}
+                                on:click=move |_| on_entry.run(())>
+                                {ic_add()}<span>{move || i18n.t("appbar.new_entry")}</span>
+                            </button>
+                            <div class="newentry-split">
+                                <button on:click=move |_| on_entry.run(())>
+                                    {ic_add()}<span style="margin-left:6px">{move || i18n.t("appbar.new_entry")}</span>
+                                </button>
+                                <button on:click=move |_| on_view.run(())>
+                                    {ic_folder()}<span style="margin-left:6px">{move || i18n.t("appbar.new_view")}</span>
+                                </button>
+                            </div>
+                        </div>
+                    }
                 })}
                 {move || timeline_slot.current.get().map(|t| {
                     let on_toggle = t.on_toggle;

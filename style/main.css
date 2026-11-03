@@ -2880,8 +2880,15 @@ input[type="color"].sw:disabled {
 }
 
 /* 顶栏「新建 Entry」按钮：放在 .appbar-right 里，hover 弹 split 面板。 */
+/* 「新建」分裂按钮的悬停容器。
+   按钮与下拉之间隔着 6px（视觉上不能贴死），鼠标从按钮移到菜单必然经过它。
+   把这 6px 做进 wrap 的 padding-bottom：它本身就是 wrap 的盒内区域，悬停链
+   不断；再用等量负 margin 把多出来的高度抵消掉，顶栏布局不变。
+   （以前菜单由 mouseleave 信号摘除，穿过缝隙时列表当场消失。） */
 .newentry-wrap {
     position: relative;
+    padding-bottom: 6px;
+    margin-bottom: -6px;
 }
 .newentry-btn {
     display: inline-flex;
@@ -2909,16 +2916,23 @@ input[type="color"].sw:disabled {
 .newentry-split {
     position: absolute;
     z-index: 40;
-    top: calc(100% + 4px);
+    /* wrap 的 padding-box 底边：多出的 6px padding 刚好是按钮与菜单的视觉间隙，
+       菜单从那里开始，两个悬停区严丝合缝。 */
+    top: 100%;
     right: 0;
     min-width: 160px;
+    /* 常驻 DOM，由 :hover / :focus-within 控制显隐。 */
+    display: none;
     background: var(--bg);
     border: 1px solid var(--line);
     border-radius: var(--r-m);
     box-shadow: var(--sh-2, 0 6px 20px rgb(0 0 0 / 12%));
     padding: 4px;
-    display: flex;
     flex-direction: column;
+}
+.newentry-wrap:hover .newentry-split,
+.newentry-wrap:focus-within .newentry-split {
+    display: flex;
 }
 .newentry-split button {
     text-align: left;
