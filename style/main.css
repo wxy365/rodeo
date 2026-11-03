@@ -27,6 +27,29 @@
     --r-s: 6px;
     --r-m: 10px;
     --r-l: 12px;
+    /* ===== 形状 / 层次 / 控件尺寸 token =====
+       这批 token 的默认值刻意等于经典 UI 现状：经典路径取值与改动前完全一致，
+       所以「token 化」这一步对经典外观零影响。Material 皮肤在令牌层覆写同一批
+       token，一次性改掉全站同类元素的形状与层次。
+
+       阴影：经典 UI 的阴影全是写死的散值，这里统一收进 --sh-1/2/3 三档。
+       --sh-1 一级浮层（卡片/下拉），--sh-2 二级（菜单/弹窗），--sh-3 三级（对话框/侧边面板）。 */
+    /* --sh-1/2/3 故意【不在这里定义】：经典路径各处 box-shadow 写成
+       var(--sh-N, <经典原值>)，回退位保住原值；Material 令牌层再定义
+       --sh-N 覆盖回去。若在这里定义成 none，回退位就被吃掉，经典阴影
+       会全部消失。 */
+    /* 按钮与图标按钮的高度。经典靠 padding 撑出尺寸，这里给出显式高度供 Material 覆写。 */
+    --h-btn: auto;
+    --h-ibtn: 28px;
+    /* 胶囊圆角。经典 .ibtn 用的是 8px，这里给 Material 的胶囊按钮用。 */
+    --r-pill: 8px;
+    /* 小圆角：邀请角标等极小的元素。 */
+    --r-xs: 4px;
+    /* 控件级圆角：标签行 / 消息面板这类 8px 的控件。 */
+    --r-ctl: 8px;
+    /* M3 state layer：hover / 按下时叠加的半透明层。经典态完全透明 = 无效果。 */
+    --state-hover: transparent;
+    --state-press: transparent;
     /* Entry 全屏页右栏（标签 / 附件 / 历史 / 元信息）宽度：最小 420px，
        随窗口变宽，最多 600px。宽度压在这里而不是更大，是为了让 `.dmeta`
        的四行元信息（创建人 / 创建时间 / 更新人 / 更新时间）稳定排成两行两列
@@ -118,6 +141,207 @@
     /* 与上面 @media 块里的同名变量保持一致（见那里的说明）。 */
     --code-bg: color-mix(in srgb, var(--ink) 14%, transparent);
     --code-line: color-mix(in srgb, var(--ink) 26%, transparent);
+}
+
+/* ============================================================================
+   Material 皮肤 —— 令牌层
+   ============================================================================
+   这一段只定义「值」，不含任何选择器规则；真正的形状/层次差异在后面的
+   「Material 结构覆盖」段。
+
+   两个正交属性：`data-theme`（亮暗）× `data-skin`（设计语言）。
+   下面三块与经典段一一对应，顺序同样是「跟随系统 < 显式」：
+     1. :root[data-skin="material"]                                          亮
+     2. @media dark :root[data-skin="material"]:not([data-theme="light"])    暗
+     3. :root[data-skin="material"][data-theme="dark"]                       暗（显式）
+
+   特异度：块 3 是 (0,3,0)，压得住块 1 的 (0,2,0)；块 2 因为多了
+   :not([data-theme="light"]) 也是 (0,3,0)，能压住块 1。块 2 与块 3 同为
+   (0,3,0)，靠源码顺序（3 在 2 之后）取胜。 */
+
+:root[data-skin="material"] {
+    /* ---- Material 3 原始令牌（亮色） ---- */
+    --md-primary: #4F46E5;
+    --md-on-primary: #FFFFFF;
+    --md-primary-container: #E0E7FF;
+    --md-on-primary-container: #1E1B4B;
+    --md-secondary: #6D5CE7;
+    --md-on-secondary: #FFFFFF;
+    --md-secondary-container: #EAE7FF;
+    --md-on-secondary-container: #231A4D;
+    --md-tertiary: #FF4D8D;
+    --md-on-tertiary: #FFFFFF;
+    --md-tertiary-container: #FFDCE7;
+    --md-on-tertiary-container: #3F0021;
+    --md-error: #E5484D;
+    --md-on-error: #FFFFFF;
+    --md-error-container: #FFE1E1;
+    --md-on-error-container: #410002;
+    --md-surface: #FCFBFF;
+    --md-surface-container-lowest: #FFFFFF;
+    --md-surface-container-low: #F4F2FF;
+    --md-surface-container: #EDEAFF;
+    --md-surface-container-high: #E4E0FF;
+    --md-surface-container-highest: #DCD7FF;
+    --md-on-surface: #181830;
+    --md-on-surface-variant: #4C4A66;
+    --md-outline: #7B7A9C;
+    --md-outline-variant: #C6C4E0;
+    --md-inverse-surface: #2F2F45;
+    --md-inverse-on-surface: #F1F0FF;
+    /* 阴影染色用的 rgb 三元组（不带括号，配合 rgb(var(--md-shadow) / .14) 用） */
+    --md-shadow: 79 70 229;
+
+    /* ---- 语义状态色（绿/黄/红） ----
+       经典版把「已完成」绿 chip 直接搬到暗色下会刺眼，所以三档语义色各配
+       一套容器色 + 容器上文字色。 */
+    --md-pos: #1B8E3C;
+    --md-pos-container: #D7F5DC;
+    --md-on-pos-container: #0B5227;
+    --md-warn: #B35900;
+    --md-warn-container: #FFE8C2;
+    --md-on-warn-container: #5C3600;
+    --md-dgr: #CF222E;
+    --md-dgr-container: #FFE1E1;
+    --md-on-dgr-container: #410002;
+
+    /* ---- 把经典 token 重新指向 M3 语义 ----
+       这是「约 70% 界面自动变 Material」的关键：main.css 里绝大部分颜色
+       都是通过 --ink / --bg / --line / --blue 这些 token 取的，这里重新赋值
+       就等于一次性换掉全站配色。 */
+    --ink: var(--md-on-surface);
+    --ink2: var(--md-on-surface-variant);
+    --ink3: color-mix(in srgb, var(--md-on-surface-variant) 78%, var(--md-surface));
+    --ink4: var(--md-outline);
+    --line: var(--md-outline-variant);
+    --bg: var(--md-surface);
+    --bg2: var(--md-surface-container-low);
+    --bg3: var(--md-surface-container);
+    --blue: var(--md-primary);
+    --pos: var(--md-pos);
+    --warn: var(--md-warn);
+    --dgr: var(--md-dgr);
+    --surface: var(--md-surface-container);
+    --border: var(--md-outline-variant);
+    --border-soft: var(--md-surface-container);
+    --hover: var(--md-surface-container-high);
+    --mut: var(--md-on-surface-variant);
+    --fg: var(--md-on-surface);
+    --toolbar-icon: var(--md-primary);
+    --sel-row: color-mix(in srgb, var(--md-primary) 14%, var(--md-surface));
+    --sel-row-hover: color-mix(in srgb, var(--md-primary) 22%, var(--md-surface));
+    --code-bg: color-mix(in srgb, var(--md-on-surface) 8%, transparent);
+    --code-line: color-mix(in srgb, var(--md-on-surface) 14%, transparent);
+
+    /* ---- 形状与层次 ----
+       --sh-1/2/3 在经典段故意【不定义】，各处 box-shadow 靠 var() 的回退位
+       保住经典原值；这里定义它们即覆盖回去。 */
+    --r-s: 12px;
+    --r-m: 16px;
+    --r-l: 20px;
+    --r-xs: 8px;
+    --r-ctl: 8px;
+    --r-pill: 999px;
+    --gap-panel: 12px;
+    --sh-1: 0 2px 5px rgb(var(--md-shadow) / .14), 0 1px 2px rgb(0 0 0 / .08);
+    --sh-2: 0 6px 18px rgb(var(--md-shadow) / .20), 0 2px 6px rgb(0 0 0 / .08);
+    --sh-3: 0 12px 32px rgb(var(--md-shadow) / .28), 0 4px 10px rgb(0 0 0 / .10);
+    --h-btn: 40px;
+    --h-ibtn: 40px;
+    --state-hover: rgb(var(--md-on-surface) / .08);
+    --state-press: rgb(var(--md-on-surface) / .12);
+}
+
+@media (prefers-color-scheme: dark) {
+    :root[data-skin="material"]:not([data-theme="light"]) {
+        --md-primary: #C3C0FF;
+        --md-on-primary: #1E1B8F;
+        --md-primary-container: #3331B0;
+        --md-on-primary-container: #E3E1FF;
+        --md-secondary: #C5C0F0;
+        --md-on-secondary: #312B82;
+        --md-secondary-container: #3D3893;
+        --md-on-secondary-container: #E5E1FF;
+        --md-tertiary: #FFB0C8;
+        --md-on-tertiary: #640033;
+        --md-tertiary-container: #8E0038;
+        --md-on-tertiary-container: #FFDCE7;
+        --md-error: #FFB4AB;
+        --md-on-error: #690005;
+        --md-error-container: #93000A;
+        --md-on-error-container: #FFDAD6;
+        --md-surface: #131320;
+        --md-surface-container-lowest: #0E0E1A;
+        --md-surface-container-low: #1A1A2B;
+        --md-surface-container: #1E1E30;
+        --md-surface-container-high: #282839;
+        --md-surface-container-highest: #333347;
+        --md-on-surface: #E5E1E9;
+        --md-on-surface-variant: #C7C4DD;
+        --md-outline: #918F9F;
+        --md-outline-variant: #47464F;
+        --md-inverse-surface: #E5E1E9;
+        --md-inverse-on-surface: #2F2F45;
+        --md-shadow: 0 0 0;
+
+        --md-pos: #6FDD8B;
+        --md-pos-container: #0C3D1E;
+        --md-on-pos-container: #C8F5D5;
+        --md-warn: #FFB95C;
+        --md-warn-container: #4A2C00;
+        --md-on-warn-container: #FFE0B8;
+        --md-dgr: #FFB4AB;
+        --md-dgr-container: #5C0F14;
+        --md-on-dgr-container: #FFDAD6;
+
+        --code-bg: color-mix(in srgb, var(--md-on-surface) 14%, transparent);
+        --code-line: color-mix(in srgb, var(--md-on-surface) 26%, transparent);
+    }
+}
+
+:root[data-skin="material"][data-theme="dark"] {
+    --md-primary: #C3C0FF;
+    --md-on-primary: #1E1B8F;
+    --md-primary-container: #3331B0;
+    --md-on-primary-container: #E3E1FF;
+    --md-secondary: #C5C0F0;
+    --md-on-secondary: #312B82;
+    --md-secondary-container: #3D3893;
+    --md-on-secondary-container: #E5E1FF;
+    --md-tertiary: #FFB0C8;
+    --md-on-tertiary: #640033;
+    --md-tertiary-container: #8E0038;
+    --md-on-tertiary-container: #FFDCE7;
+    --md-error: #FFB4AB;
+    --md-on-error: #690005;
+    --md-error-container: #93000A;
+    --md-on-error-container: #FFDAD6;
+    --md-surface: #131320;
+    --md-surface-container-lowest: #0E0E1A;
+    --md-surface-container-low: #1A1A2B;
+    --md-surface-container: #1E1E30;
+    --md-surface-container-high: #282839;
+    --md-surface-container-highest: #333347;
+    --md-on-surface: #E5E1E9;
+    --md-on-surface-variant: #C7C4DD;
+    --md-outline: #918F9F;
+    --md-outline-variant: #47464F;
+    --md-inverse-surface: #E5E1E9;
+    --md-inverse-on-surface: #2F2F45;
+    --md-shadow: 0 0 0;
+
+    --md-pos: #6FDD8B;
+    --md-pos-container: #0C3D1E;
+    --md-on-pos-container: #C8F5D5;
+    --md-warn: #FFB95C;
+    --md-warn-container: #4A2C00;
+    --md-on-warn-container: #FFE0B8;
+    --md-dgr: #FFB4AB;
+    --md-dgr-container: #5C0F14;
+    --md-on-dgr-container: #FFDAD6;
+
+    --code-bg: color-mix(in srgb, var(--md-on-surface) 14%, transparent);
+    --code-line: color-mix(in srgb, var(--md-on-surface) 26%, transparent);
 }
 
 /* ===== 滚动条 ===== */
@@ -227,9 +451,9 @@ a {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 28px;
-    height: 28px;
-    border-radius: 8px;
+    width: var(--h-ibtn);
+    height: var(--h-ibtn);
+    border-radius: var(--r-pill);
     border: 0;
     background: none;
     color: var(--ink2);
@@ -719,7 +943,7 @@ select:focus {
     display: inline-block;
     margin-left: 6px;
     padding: 1px 6px;
-    border-radius: 4px;
+    border-radius: var(--r-xs);
     font-size: 11px;
     font-weight: 500;
     color: var(--blue);
@@ -967,7 +1191,7 @@ select:focus {
     background: var(--bg);
     border: 1px solid var(--line);
     border-radius: var(--r-m);
-    box-shadow: 0 6px 20px rgb(0 0 0 / 8%);
+    box-shadow: var(--sh-2, 0 6px 20px rgb(0 0 0 / 8%));
     padding: 4px;
 }
 .lblhint-it {
@@ -989,9 +1213,9 @@ select:focus {
     margin-top: 4px;
     background: var(--bg);
     border: 1px solid var(--line);
-    border-radius: 6px;
+    border-radius: var(--r-s);
     padding: 6px;
-    box-shadow: 0 6px 18px rgb(0 0 0 / 18%);
+    box-shadow: var(--sh-2, 0 6px 18px rgb(0 0 0 / 18%));
 }
 .view-body {
     flex: 1;
@@ -1170,7 +1394,7 @@ select:focus {
     gap: 6px;
     max-width: 100%;
     border: 1px solid var(--line);
-    border-radius: 8px;
+    border-radius: var(--r-ctl);
     padding: 4px 8px;
 }
 .lblrow .k {
@@ -1232,7 +1456,7 @@ select:focus {
     height: 28px;
     border: 0;
     background: none;
-    border-radius: 8px;
+    border-radius: var(--r-pill);
     cursor: pointer;
     color: var(--ink2);
 }
@@ -1542,7 +1766,7 @@ input[type="color"].sw:disabled {
     background: var(--bg);
     border: 1px solid var(--line);
     border-radius: var(--r-s);
-    box-shadow: 0 6px 18px rgba(15, 23, 42, 0.14);
+    box-shadow: var(--sh-2, 0 6px 18px rgba(15, 23, 42, 0.14));
 }
 /* 备选：视口右侧放不下时翻到左侧。 */
 .cpick-pop.left {
@@ -1990,7 +2214,7 @@ input[type="color"].sw:disabled {
     background: var(--bg);
     border: 1px solid var(--line);
     border-radius: var(--r-s);
-    box-shadow: 0 6px 20px rgb(0 0 0 / 0.12);
+    box-shadow: var(--sh-2, 0 6px 20px rgb(0 0 0 / 0.12));
 }
 /* 头像与菜单之间那 4px 的 `margin-top` 是一片「死区」：光标从头像往下走，跨过它的
    一瞬间就已经离开了 `.avatar-menu` 的悬停范围，菜单当场收起，手还没来得及点。用一块
@@ -2054,8 +2278,8 @@ input[type="color"].sw:disabled {
     max-height: 480px;
     background: var(--surface, #fff);
     border: 1px solid var(--border, #ddd);
-    border-radius: 8px;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+    border-radius: var(--r-ctl);
+    box-shadow: var(--sh-2, 0 4px 16px rgba(0, 0, 0, 0.12));
     display: flex;
     flex-direction: column;
     z-index: 100;
@@ -2129,7 +2353,7 @@ input[type="color"].sw:disabled {
     gap: 4px;
     max-width: 100%;
     border: 1px solid var(--line);
-    border-radius: 8px;
+    border-radius: var(--r-pill);
     padding: 4px 8px;
     font-size: 13px;
     cursor: pointer;
@@ -2430,7 +2654,7 @@ input[type="color"].sw:disabled {
     background:var(--panel);
     border:1px solid var(--line);
     border-radius:var(--r-s);
-    box-shadow:0 4px 12px rgba(0,0,0,.08);
+    box-shadow: var(--sh-1, 0 4px 12px rgba(0,0,0,.08));
     list-style:none;margin:0;padding:4px 0;
 }
 .entry-picker-results > .mut{padding:6px 10px;}
@@ -2581,7 +2805,7 @@ input[type="color"].sw:disabled {
     color: #fff;
     font-size: 13px;
     font-weight: 500;
-    box-shadow: 0 1px 2px rgb(0 0 0 / 12%);
+    box-shadow: var(--sh-1, 0 1px 2px rgb(0 0 0 / 12%));
 }
 .newentry-btn:hover {
     filter: brightness(1.06);
@@ -2599,7 +2823,7 @@ input[type="color"].sw:disabled {
     background: var(--bg);
     border: 1px solid var(--line);
     border-radius: var(--r-m);
-    box-shadow: 0 6px 20px rgb(0 0 0 / 12%);
+    box-shadow: var(--sh-2, 0 6px 20px rgb(0 0 0 / 12%));
     padding: 4px;
     display: flex;
     flex-direction: column;
@@ -2713,7 +2937,7 @@ input[type="color"].sw:disabled {
     background: var(--bg);
     border: 1px solid var(--line);
     border-radius: var(--r-m);
-    box-shadow: -6px 0 20px rgb(0 0 0 / 8%), 0 6px 24px rgb(0 0 0 / 10%);
+    box-shadow: var(--sh-3, -6px 0 20px rgb(0 0 0 / 8%), 0 6px 24px rgb(0 0 0 / 10%));
     z-index: 35; /* 高于 .appbar 内的下拉，但低于 .dmodal（弹窗） */
     display: flex;
     flex-direction: column;
@@ -3457,7 +3681,7 @@ input[type="color"].sw:disabled {
     background: var(--bg);
     border: 1px solid var(--line);
     border-radius: var(--r-m);
-    box-shadow: 0 6px 20px rgb(0 0 0 / 14%);
+    box-shadow: var(--sh-2, 0 6px 20px rgb(0 0 0 / 14%));
     padding: 4px;
 }
 .vmenu button {
@@ -3493,7 +3717,7 @@ input[type="color"].sw:disabled {
     background: var(--bg);
     border: 1px solid var(--line);
     border-radius: var(--r-m);
-    box-shadow: 0 6px 20px rgb(0 0 0 / 14%);
+    box-shadow: var(--sh-2, 0 6px 20px rgb(0 0 0 / 14%));
     padding: 4px;
 }
 .emenu button {
@@ -3589,7 +3813,7 @@ input[type="color"].sw:disabled {
     border: 1px solid var(--line);
     border-radius: var(--r-m);
     background: var(--bg);
-    box-shadow: 0 6px 20px rgb(0 0 0 / 14%);
+    box-shadow: var(--sh-2, 0 6px 20px rgb(0 0 0 / 14%));
     z-index: 100;
 }
 .ws-switch:hover .ws-switch-drop,
@@ -3659,7 +3883,7 @@ input[type="color"].sw:disabled {
     border: 1px solid var(--line);
     border-radius: var(--r-m);
     background: var(--bg);
-    box-shadow: 0 6px 20px rgb(0 0 0 / 14%);
+    box-shadow: var(--sh-2, 0 6px 20px rgb(0 0 0 / 14%));
     z-index: 100;
 }
 .lang-menu:hover .lang-drop,
