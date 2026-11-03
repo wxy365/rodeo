@@ -1240,9 +1240,12 @@ select:focus {
 .detail {
     border-left: 1px solid var(--line);
     border-radius: 0 var(--r-l) var(--r-l) 0;
+    /* 上下内边距单列成变量：吸顶工具栏要按它把自己往面板顶边推（见下面
+       `.detail .tiptap-toolbar`）。 */
+    --detail-pad-y: 16px;
     /* 左右留空减半（16px → 8px）：面板本身已经跟着窗口变宽了，内边距再松一点，
        里面的编辑器 / 标签行能多拿到 16px。上下保持 16px，标题与按钮不挤。 */
-    padding: 16px 8px;
+    padding: var(--detail-pad-y) 8px;
     display: flex;
     flex-direction: column;
     gap: 12px;
@@ -1339,7 +1342,11 @@ select:focus {
 .editor {
     border: 1px solid var(--line);
     border-radius: var(--r-m);
+    /* hidden 兜底（Safari < 16 不认 clip），支持的浏览器用 clip：
+       只裁剪圆角溢出、**不建立滚动容器**，工具栏的 position: sticky 才能
+       以 `.detail` 为参照系吸顶（见 public/tiptap/style.css）。 */
     overflow: hidden;
+    overflow: clip;
 }
 .etoolbar {
     display: flex;
@@ -2480,6 +2487,21 @@ input[type="color"].sw:disabled {
     display: flex;
     flex-direction: column;
 }
+/* 吸顶工具栏（见 public/tiptap/style.css）：`.detail` 自己就是滚动容器。
+   sticky 的吸附位置按滚动容器的**内容盒**算（Chrome 实测：面板 padding-top
+   16px 时，top: 0 会停在离面板顶边 16px 处），正文会从那 16px 里露出来。
+   抵消掉 padding-top 才是真正贴住面板顶边；条目全屏页是视口滚动，那边保持
+   默认的 50px（让开全局顶栏）。 */
+.detail .tiptap-toolbar {
+    top: calc(-1 * var(--detail-pad-y));
+}
+/* entry.rs / share.rs 在面板上写了内联 `overflow:hidden`（Leptos 模板属性，
+   普通选择器压不过内联样式）。这一层会变成「不滚动的滚动容器」，把工具栏的
+   sticky 困死在里面；只能 !important 覆盖成 clip —— 只裁圆角、不建滚动容器，
+   外观不变。 */
+.entry-editor {
+    overflow: clip !important;
+}
 
 /* ===== 评论 ===== */
 .comments{display:flex;flex-direction:column;gap:10px}
@@ -2553,7 +2575,9 @@ input[type="color"].sw:disabled {
 .c-edit,.c-composer{
     border:1px solid var(--line);
     border-radius:var(--r-s);
+    /* 同 `.editor`：hidden 兜底，clip 让工具栏的 sticky 不被困在这一层。 */
     overflow:hidden;
+    overflow:clip;
 }
 /* 按钮在框内，贴边的话会顶到边框上，留一点内边距。 */
 .c-edit-acts{padding:0 12px 10px}

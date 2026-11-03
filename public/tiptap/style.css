@@ -210,8 +210,24 @@
 /*
  * 工具栏是外框顶部的一条窄条（底边一条分隔线），不再自己画一圈边框 ——
  * 外框已经在了，再画一圈就变成「框里套框」。
+ *
+ * **吸顶**：正文一长（条目全屏页整页滚动、详情右栏 `.detail` 自己滚动），
+ * 工具栏会跟着滚出视野，用户改格式得先滚回顶部。这里用 `position: sticky`
+ * 把它钉在滚动容器顶部——只用 CSS，不额外接管滚动事件。
+ *
+ * 前提：工具栏到滚动容器之间**不能有 `overflow: hidden` 的祖先**（它会被
+ * 当成滚动容器，sticky 直接失效）。编辑器外壳因此都改成了 `overflow: clip`
+ * （见 style/main.css 的 `.editor` / `.entry-editor` / `.c-edit` / `.c-composer`），
+ * clip 只裁剪、不建立滚动容器，圆角裁切的效果不变。
+ *
+ * 默认 `top` 是全局顶栏高度：条目全屏页里滚动容器是视口，顶栏 sticky 在
+ * 0~50px，工具栏得让开它。详情右栏 `.detail` 自己是滚动容器，滚动口从面板
+ * 顶边算起，那边由 main.css 覆写成 `top: 0`。
  */
 .tiptap-toolbar {
+    position: sticky;
+    top: 50px; /* = .appbar 的高度 */
+    z-index: 10;
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -307,6 +323,25 @@
 
 .tiptap-tablebar[hidden] {
     display: none;
+}
+
+/* 表格浮动条里的按钮：删除行 / 删除列 / 删除表格的图标是内联 SVG，
+   让按钮做 flex 居中，SVG 不参与基线对齐（否则会偏下 1~2px）。 */
+.tiptap-tablebar .tiptap-tb-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.tiptap-tb-btn > svg {
+    display: block;
+}
+
+/* 三个「删除」按钮 hover 标红：图标本身已经区分了删行 / 删列 / 删表，
+   颜色是第二层提示——这一排纯图标按钮挨得很近，别让人误点。 */
+.tiptap-tablebar .tiptap-tb-danger:hover {
+    color: var(--danger, #d33);
+    background: color-mix(in srgb, var(--danger, #d33) 12%, transparent);
 }
 
 /* @提及下拉 */

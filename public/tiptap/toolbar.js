@@ -72,23 +72,49 @@ const GROUPS = [
 ];
 
 /**
- * 表格浮动条的操作。[cmd, 标题, 图标字符]
+ * 表格浮动条的操作。[cmd, 标题, 图标字符或内联 SVG]
  *
  * 图标语义：
  *   · 「插入」用带方向的箭头（往下加行、往右加列），一眼能看出加在哪边；
- *   · 「删除」一律用 ✕。原先删除行/列用的是朝上/朝左的箭头（⤒ / ⇤），
- *     读起来像「上移 / 左移」而不是「删掉」，跟删除语义对不上。
- *   · 合并 / 拆分用 ⿴ / ⿲，删除整张表也用 ✕ —— 三处删除同形，靠 title
- *     区分是删行、删列还是删表（这一排全是纯图标，没有文字）。
+ *   · 三个「删除」必须**一眼可分**，不能都画成 ✕（纯图标的一排里，
+ *     同形图标只能靠悬停 tooltip 区分，等于没有区分）：
+ *       - 删除行：表格外框 + 横向分格，中间那行整条高亮，行内一个小 ✕；
+ *       - 删除列：同一外框 + 纵向分格，中间那列整条高亮，列内一个小 ✕；
+ *       - 删除表格：整张表格被一个大 ✕ 划掉。
+ *     行 / 列的差别落在「高亮带的方向」上（横带 = 行，竖带 = 列）。
+ *   · 合并 / 拆分用 ⿴ / ⿲（纯文字符号，语义靠 tooltip 补足）。
+ *
+ * 图标是 15px 的内联 SVG，`stroke="currentColor"` 跟随按钮文字颜色，
+ * 悬停时的 danger 色由 CSS 给（见 public/tiptap/style.css）。
  */
+const ICON_DELETE_ROW = `<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true">
+<rect x="1.9" y="1.9" width="12.2" height="12.2" rx="2.2" stroke-width="1.2"/>
+<path d="M1.9 5.4h12.2M1.9 10.6h12.2" stroke-width=".9" opacity=".45"/>
+<rect x="2.9" y="6" width="10.2" height="4" rx=".8" fill="currentColor" stroke="none" opacity=".2"/>
+<path d="M6.8 6.9l2.4 2.2M9.2 6.9l-2.4 2.2" stroke-width="1.4"/>
+</svg>`;
+
+const ICON_DELETE_COLUMN = `<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true">
+<rect x="1.9" y="1.9" width="12.2" height="12.2" rx="2.2" stroke-width="1.2"/>
+<path d="M5.4 1.9v12.2M10.6 1.9v12.2" stroke-width=".9" opacity=".45"/>
+<rect x="6" y="2.9" width="4" height="10.2" rx=".8" fill="currentColor" stroke="none" opacity=".2"/>
+<path d="M6.9 6.8l2.2 2.4M9.1 6.8l-2.2 2.4" stroke-width="1.4"/>
+</svg>`;
+
+const ICON_DELETE_TABLE = `<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true">
+<rect x="1.9" y="1.9" width="12.2" height="12.2" rx="2.2" stroke-width="1.2"/>
+<path d="M1.9 5.4h12.2M1.9 10.6h12.2M5.4 1.9v12.2M10.6 1.9v12.2" stroke-width=".9" opacity=".35"/>
+<path d="M3.4 3.4l9.2 9.2M12.6 3.4l-9.2 9.2" stroke-width="1.6"/>
+</svg>`;
+
 const TABLE_ACTIONS = [
   ['addRowAfter', '下方插入行', '⤓'],
-  ['deleteRow', '删除本行', '✕'],
+  ['deleteRow', '删除本行', ICON_DELETE_ROW],
   ['addColumnAfter', '右侧插入列', '⇥'],
-  ['deleteColumn', '删除本列', '✕'],
+  ['deleteColumn', '删除本列', ICON_DELETE_COLUMN],
   ['mergeCells', '合并单元格', '⿴'],
   ['splitCell', '拆分单元格', '⿲'],
-  ['deleteTable', '删除表格', '✕'],
+  ['deleteTable', '删除表格', ICON_DELETE_TABLE],
 ];
 
 /** 命令 → Tiptap chain 调用。返回 true 表示执行了。 */
@@ -276,9 +302,12 @@ export function createToolbar(editor, opts = {}) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'tiptap-tb-btn';
+    if (cmd.startsWith('delete')) btn.classList.add('tiptap-tb-danger');
     btn.title = title;
     btn.setAttribute('aria-label', title);
-    btn.textContent = icon;
+    // 内联 SVG 直接当 HTML 塞进去；其余仍是纯文字符号。
+    if (icon.trimStart().startsWith('<')) btn.innerHTML = icon;
+    else btn.textContent = icon;
     btn.addEventListener('mousedown', (e) => e.preventDefault());
     btn.addEventListener('click', (e) => {
       e.preventDefault();
