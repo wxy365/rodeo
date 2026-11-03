@@ -4246,3 +4246,87 @@ input[type="color"].sw:disabled {
     background: rgb(var(--md-on-primary-container) / .08);
     color: var(--md-on-primary-container);
 }
+/* ============================================================================
+   Material 皮肤 —— 结构覆盖（二）：导航与数据
+   ============================================================================ */
+
+/* ---- 左侧视图栏 ----
+   M3 navigation drawer item：胶囊圆角、选中态 secondary-container。 */
+:root[data-skin="material"] .wside .it {
+    min-height: 44px;
+    padding: 8px 12px;
+    border-radius: var(--r-pill);
+    color: var(--md-on-surface-variant);
+}
+:root[data-skin="material"] .wside .it.on {
+    background: var(--md-secondary-container);
+    color: var(--md-on-secondary-container);
+    font-weight: 500;
+}
+:root[data-skin="material"] .wside .grp,
+:root[data-skin="material"] .wside .sb-group {
+    color: var(--md-on-surface-variant);
+    font-weight: 500;
+}
+:root[data-skin="material"] .wside .it.base {
+    border-bottom-color: var(--md-outline-variant);
+}
+
+/* ---- 表格 ----
+   M3 data table：表头容器色底、48px 行高、只有横向分隔线、hover 叠 state layer。 */
+:root[data-skin="material"] .tbl th {
+    background: var(--md-surface-container);
+    color: var(--md-on-surface-variant);
+    font-weight: 500;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--md-outline-variant);
+}
+:root[data-skin="material"] .tbl td {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--md-outline-variant);
+    height: 48px;
+}
+:root[data-skin="material"] .tbl tbody tr {
+    background: var(--md-surface);
+}
+:root[data-skin="material"] .tbl tbody tr:hover {
+    background: var(--md-surface-container-low);
+}
+
+/* ---- 筛选栏 ---- */
+:root[data-skin="material"] .filters {
+    background: var(--md-surface-container);
+    border-top: 1px solid var(--md-outline-variant);
+    padding: 10px 20px;
+    gap: 12px;
+}
+
+/* ---- 分页器：M3 segmented button ---- */
+:root[data-skin="material"] .pager button {
+    border-radius: var(--r-pill);
+    border: 1px solid var(--md-outline-variant);
+    background: transparent;
+    color: var(--md-on-surface-variant);
+    min-width: 40px;
+    height: 40px;
+}
+:root[data-skin="material"] .pager button.on,
+:root[data-skin="material"] .pager button[aria-current="page"] {
+    background: var(--md-secondary-container);
+    color: var(--md-on-secondary-container);
+    border-color: transparent;
+}
+
+/* ---- 滚动条 ---- */
+:root[data-skin="material"] ::-webkit-scrollbar-thumb {
+    background: var(--md-surface-container-highest);
+    border-radius: 3px;
+}
+:root[data-skin="material"] ::-webkit-scrollbar-thumb:hover {
+    background: var(--md-outline);
+}
+
+/* ---- 文本选中 ---- */
+:root[data-skin="material"] ::selection {
+    background: color-mix(in srgb, var(--md-primary) 30%, transparent);
+}
