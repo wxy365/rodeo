@@ -3843,15 +3843,22 @@ input[type="color"].sw:disabled {
 .ws-switch:hover .ws-switch-drop,
 .ws-switch:focus-within .ws-switch-drop { display: block; }
 /* 按钮与菜单之间那 6px 的 top 偏移是一片「死区」：光标往下走的瞬间就离开了
-   悬停范围，菜单当场收起。透明伪元素填缝——同 .lang-drop::before。 */
-.ws-switch-drop::before {
+   悬停范围，菜单当场收起。填缝的透明伪元素**必须挂在 `.ws-switch` 上**，
+   不能挂在 `.ws-switch-drop` 上——drop 带 `overflow-y: auto`，是滚动容器，
+   伪元素定位到自身盒顶之上（top: -6px）的那 6px 会被直接裁掉，填缝失效，
+   于是「鼠标还没移到目标工作空间，列表就消失了」。
+   （`.lang-drop` 没有 overflow，所以它那套 ::before 写法本身是有效的。） */
+.ws-switch::after {
     content: "";
     position: absolute;
-    top: -6px;
+    top: 100%;
     left: 0;
     right: 0;
     height: 6px;
+    display: none;
 }
+.ws-switch:hover::after,
+.ws-switch:focus-within::after { display: block; }
 .ws-switch-mi {
     display: flex;
     align-items: center;
