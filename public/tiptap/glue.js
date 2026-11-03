@@ -310,6 +310,277 @@ function mentionSuggestion(members) {
 }
 
 /**
+ * 斜杠命令菜单（参考语雀 / Notion）。
+ *
+ * 在正文里（块首或空白之后）输入 `/` 弹出一张命令表，继续输入即过滤：
+ * 标题 1-3、正文、无序 / 有序 / 任务列表、引用、代码块、表格、图片、链接、分割线。
+ *
+ * **为什么不用 Tiptap 的 `Suggestion` 插件**：这个编辑器用的是仓库里 vendor 的
+ * `editor.mjs` 打包产物，导出清单里只有 Mention / Placeholder 等扩展，没有
+ * `Suggestion` 与 `Extension`。加一个导出就得重打整包（662 KB），所以这里在
+ * `editorProps` 已有的 `handleTextInput` / `handleKeyDown` 钩子上自己实现——
+ * 触发、过滤、键盘导航、执行都只依赖公开的 editor API。
+ *
+ * 生命周期：`/` 插入后由 `open()` 建浮层；后续的 `transaction` 刷新查询词与
+ * 位置，光标离开 `/` 起始的区间、或输入空白、或编辑器失焦时关闭。
+ */
+/** 过滤打分：名称前缀 > 名称包含 > 关键词包含。让「表」把「表格」排到第一。 */
+function slashScore(item, q) {
+  if (!q) return 1;
+  const label = item.label.toLowerCase();
+  if (label.startsWith(q)) return 3;
+  if (label.includes(q)) return 2;
+  if (item.kw.toLowerCase().includes(q)) return 1;
+  return 0;
+}
+
+const SLASH_ITEMS = [
+  { label: '标题 1', icon: 'H1', kw: 'h1 heading title 标题 一级', run: (c) => c.setHeading({ level: 1 }) },
+  { label: '标题 2', icon: 'H2', kw: 'h2 heading title 标题 二级', run: (c) => c.setHeading({ level: 2 }) },
+  { label: '标题 3', icon: 'H3', kw: 'h3 heading title 标题 三级', run: (c) => c.setHeading({ level: 3 }) },
+  { label: '正文', icon: '¶', kw: 'text paragraph body p 正文 段落', run: (c) => c.setParagraph() },
+  { label: '无序列表', icon: '•', kw: 'bullet list ul 无序 列表', run: (c) => c.toggleBulletList() },
+  { label: '有序列表', icon: '1.', kw: 'ordered list ol 有序 列表 数字', run: (c) => c.toggleOrderedList() },
+  { label: '任务列表', icon: '☑', kw: 'task todo checkbox 任务 待办', run: (c) => c.toggleTaskList() },
+  { label: '引用', icon: '❝', kw: 'quote blockquote 引用', run: (c) => c.toggleBlockquote() },
+  { label: '代码块', icon: '</>', kw: 'code block 代码', run: (c) => c.setCodeBlock() },
+  { label: '表格', icon: '⊞', kw: 'table 表格', run: (c) => c.insertTable({ rows: 3, cols: 3, withHeaderRow: true }) },
+  { label: '图片', icon: '🖼', kw: 'image picture 图片', special: 'image' },
+  { label: '链接', icon: '🔗', kw: 'link url 链接', special: 'link' },
+  { label: '分割线', icon: '—', kw: 'hr divider horizontal rule 分割线', run: (c) => c.setHorizontalRule() },
+];
+
+function createSlashMenu(editor, opts) {
+  let el = null;
+  let open = false;
+  let from = 0;        // `/` 所在位置
+  let selected = 0;
+  let filtered = SLASH_ITEMS;
+
+  const close = () => {
+    open = false;
+    selected = 0;
+    filtered = SLASH_ITEMS;
+    if (el) {
+      el.remove();
+      el = null;
+    }
+  };
+
+  const position = () => {
+    if (!el || !open) return;
+    const pos = editor.state.selection.from;
+    let c;
+    try {
+      c = editor.view.coordsAtPos(pos);
+    } catch (e) {
+      return;
+    }
+    const pad = 8;
+    const w = el.offsetWidth || 200;
+    const h = el.offsetHeight || 0;
+    let left = c.left;
+    if (left + w + pad > window.innerWidth) left = Math.max(pad, window.innerWidth - w - pad);
+    let top = c.bottom + 6;
+    // 光标贴着视口底部时往上翻，别让菜单掉出屏幕。
+    if (h && top + h + pad > window.innerHeight) top = Math.max(pad, c.top - h - 6);
+    el.style.left = `${Math.round(left)}px`;
+    el.style.top = `${Math.round(top)}px`;
+  };
+
+  const updateActive = () => {
+    if (!el) return;
+    const rows = el.querySelectorAll('.tiptap-slash-item');
+    rows.forEach((row, i) => row.classList.toggle('is-active', i === selected));
+    const active = rows[selected];
+    if (active && active.scrollIntoView) active.scrollIntoView({ block: 'nearest' });
+  };
+
+  const ensureEl = () => {
+    if (el) return el;
+    el = document.createElement('div');
+    el.className = 'tiptap-slash';
+    el.setAttribute('role', 'listbox');
+    document.body.appendChild(el);
+    return el;
+  };
+
+  const render = () => {
+    const host = ensureEl();
+    host.textContent = '';
+    if (!filtered.length) {
+      const empty = document.createElement('div');
+      empty.className = 'tiptap-slash-empty';
+      empty.textContent = '无匹配命令';
+      host.appendChild(empty);
+      position();
+      return;
+    }
+    filtered.forEach((item, i) => {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'tiptap-slash-item' + (i === selected ? ' is-active' : '');
+      row.setAttribute('role', 'option');
+      const ic = document.createElement('span');
+      ic.className = 'tiptap-slash-ic';
+      ic.textContent = item.icon;
+      const label = document.createElement('span');
+      label.className = 'tiptap-slash-label';
+      label.textContent = item.label;
+      row.append(ic, label);
+      // mousedown + preventDefault：不吃掉选区，也不让编辑器先失焦。
+      row.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        execute(item);
+      });
+      row.addEventListener('mouseenter', () => {
+        selected = i;
+        updateActive();
+      });
+      host.appendChild(row);
+    });
+    position();
+  };
+
+  /** 重新对账：查询词、过滤结果、位置。任何 transaction 都跑一遍。 */
+  const sync = () => {
+    if (!open) return;
+    const sel = editor.state.selection;
+    if (!sel.empty) return close();
+    const pos = sel.from;
+    // 光标跑到 `/` 之前或整段被删掉：菜单没有意义了。
+    if (pos < from + 1) return close();
+    // 文档被外部重置 / 缩短时，越界位置会抛 RangeError —— 直接收摊。
+    if (from + 1 > editor.state.doc.content.size) return close();
+    if (editor.state.doc.textBetween(from, from + 1, '', '') !== '/') return close();
+    const query = editor.state.doc.textBetween(from + 1, pos, '', '');
+    // 输入空白 = 用户只是在正文里打 `/`，不是在找命令。
+    if (/\s/.test(query)) return close();
+    const q = query.toLowerCase();
+    // 按相关度排序，而不是只按包含关系过滤：输入「表」时「无序列表 / 有序列表 /
+    // 任务列表」的关键词里也都含有「列表」，纯包含会把「表格」挤到第四位，
+    // 回车默认就执行了「无序列表」。前缀命中优先，名称命中次之，关键词最后。
+    filtered = SLASH_ITEMS
+      .map((item) => ({ item, score: slashScore(item, q) }))
+      .filter((x) => x.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .map((x) => x.item);
+    if (selected >= filtered.length) selected = Math.max(0, filtered.length - 1);
+    render();
+  };
+
+  const openMenu = (at) => {
+    open = true;
+    from = at;
+    selected = 0;
+    filtered = SLASH_ITEMS;
+    render();
+  };
+
+  const execute = (item) => {
+    const range = { from, to: editor.state.selection.from };
+    close();
+    if (item.special === 'image') {
+      editor.chain().focus().deleteRange(range).run();
+      pickAndUploadImage(editor, opts, range.from);
+      return;
+    }
+    if (item.special === 'link') {
+      const url = window.prompt('链接地址', 'https://');
+      if (!url || !url.trim()) {
+        editor.chain().focus().deleteRange(range).run();
+        return;
+      }
+      editor
+        .chain()
+        .focus()
+        .deleteRange(range)
+        .insertContent({ type: 'text', text: url.trim(), marks: [{ type: 'link', attrs: { href: url.trim() } }] })
+        .run();
+      return;
+    }
+    const chain = editor.chain().focus().deleteRange(range);
+    item.run(chain);
+    chain.run();
+  };
+
+  /** `/` 输入后延迟一拍打开：此刻字符还没落进文档，直接读文档会读不到。 */
+  const onTextInput = (view, textFrom, text) => {
+    if (open || text !== '/') return;
+    // 代码块里 `/` 是代码，不是命令；行内代码同理。
+    if (editor.isActive('codeBlock') || editor.isActive('code')) return;
+    const $from = view.state.doc.resolve(textFrom);
+    // 只在文本块里触发（列表项 / 标题 / 引用 / 段落都算文本块）。
+    if (!$from.parent.isTextblock) return;
+    // 块首或空白之后才触发：`http://` 这种正文里的斜杠不该弹菜单。
+    const before = $from.parent.textBetween(0, $from.parentOffset, '\n', '\0');
+    if (before.length && !/\s$/.test(before)) return;
+    setTimeout(() => {
+      if (editor.isDestroyed || open) return;
+      if (editor.state.doc.textBetween(textFrom, textFrom + 1, '', '') !== '/') return;
+      openMenu(textFrom);
+    }, 0);
+  };
+
+  /** 键盘导航。返回 true = 这个键菜单吃掉了。 */
+  const onKeyDown = (event) => {
+    if (!open) return false;
+    if (event.key === 'Escape') {
+      close();
+      return true;
+    }
+    if (event.key === 'ArrowDown') {
+      if (filtered.length) {
+        selected = (selected + 1) % filtered.length;
+        updateActive();
+      }
+      return true;
+    }
+    if (event.key === 'ArrowUp') {
+      if (filtered.length) {
+        selected = (selected + filtered.length - 1) % filtered.length;
+        updateActive();
+      }
+      return true;
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      if (filtered[selected]) execute(filtered[selected]);
+      else close();
+      return true;
+    }
+    return false;
+  };
+
+  editor.on('transaction', sync);
+  editor.on('blur', () => close());
+
+  return { onTextInput, onKeyDown, close };
+}
+
+/**
+ * 斜杠菜单里的「图片」：删掉命令文本 → 选文件 → 上传 → 插回原位。
+ * 与工具栏的图片按钮共用同一条上传通道（`editor.__rodeo_upload`）。
+ */
+function pickAndUploadImage(editor, opts, at) {
+  if (typeof opts.upload !== 'function') return;
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = 'image/*';
+  input.addEventListener('change', async () => {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    try {
+      const url = await opts.upload(file);
+      editor.chain().focus().insertContentAt(at, { type: 'image', attrs: { src: url } }).run();
+    } catch (err) {
+      window.console.warn('图片上传失败', err);
+    }
+  });
+  input.click();
+}
+
+/**
  * 键盘事件的统一入口。
  *
  * 代码块里走 codeblock.js 的增强：Tab = 4 空格、Enter = 自动缩进。
@@ -450,6 +721,8 @@ window.__rodeo_editor__ = {
     // 编辑器实例在构造之后才有；粘贴处理要用它（insertContentAt 吃 HTML 字符串），
     // 所以用可变引用在调用时取。
     let editorRef = null;
+    // 斜杠命令菜单：同样得等编辑器实例出来才能建，钩子里先留引用。
+    let slash = null;
 
     const editor = new Editor({
       element: el,
@@ -489,12 +762,15 @@ window.__rodeo_editor__ = {
         // 粘贴：图片走上传，markdown 表格转成原生表格。
         // 表格规则与服务端 src/richtext.rs 一致。
         handlePaste: (view, event) => handlePaste(view, event, editorRef),
-        // 键盘：代码块里的 Tab / Enter 走 codeblock.js 的增强，
-        // 其余地方维持原样（正文 Tab 插制表符）。
-        handleKeyDown: (view, event) => handleKeyDown(view, event, editorRef),
-        // 代码块里的括号自动补充。
-        handleTextInput: (view, from, to, text) =>
-          codeBlockTextInput(editorRef, view, from, to, text),
+        // 键盘：斜杠菜单打开时先让它吃掉上下键 / Enter / Esc；
+        // 其余交给原有逻辑（代码块 Tab / Enter，正文 Tab 插制表符）。
+        handleKeyDown: (view, event) =>
+          (slash && slash.onKeyDown(event)) || handleKeyDown(view, event, editorRef),
+        // 代码块里的括号自动补充；顺带观察 `/` 触发斜杠菜单。
+        handleTextInput: (view, from, to, text) => {
+          if (slash) slash.onTextInput(view, from, text);
+          return codeBlockTextInput(editorRef, view, from, to, text);
+        },
       },
     });
 
@@ -502,6 +778,9 @@ window.__rodeo_editor__ = {
     // 上传回调挂在 editor 上：粘贴处理要拿到它。
     editor.__rodeo_upload = opts.upload;
     el.__rodeo_editor = editor;
+
+    // 只读模式没有工具栏，也不需要斜杠菜单。
+    if (!readOnly) slash = createSlashMenu(editor, opts);
 
     if (!readOnly) {
       const { bar, tableBar, langSel } = createToolbar(editor, { upload: opts.upload });

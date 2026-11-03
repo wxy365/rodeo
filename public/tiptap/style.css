@@ -376,6 +376,70 @@
     background: var(--bg3);
 }
 
+/* ── 斜杠命令菜单 ─────────────────────────────────────────────────
+ * 与 @ 提及浮层同一套视觉，定位用视口坐标（position: fixed），
+ * 由 glue.js 的 createSlashMenu 负责摆放。 */
+.tiptap-slash {
+    position: fixed;
+    z-index: 60;
+    display: flex;
+    flex-direction: column;
+    min-width: 200px;
+    max-height: 300px;
+    overflow-y: auto;
+    padding: 4px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-s);
+    /* 经典亮色主题没有定义 --surface（只有暗色 / Material 定义），必须带
+       回退值，否则浮层底色是透明的，正文与评论面板的文字会从菜单里透出来。 */
+    background: var(--surface, #fff);
+    box-shadow: 0 6px 20px rgb(0 0 0 / 22%);
+}
+
+.tiptap-slash-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border: none;
+    border-radius: var(--r-s);
+    background: transparent;
+    color: var(--ink);
+    text-align: left;
+    font-size: 13px;
+    line-height: 1.4;
+    cursor: pointer;
+}
+
+.tiptap-slash-item.is-active,
+.tiptap-slash-item:hover {
+    background: var(--bg3);
+}
+
+/* 图标列固定宽度，中文 / 符号图标与 H1 之类的字形能对齐。 */
+.tiptap-slash-ic {
+    flex: 0 0 18px;
+    width: 18px;
+    text-align: center;
+    color: var(--ink2);
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.tiptap-slash-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tiptap-slash-empty {
+    padding: 8px 10px;
+    color: var(--ink2);
+    font-size: 13px;
+}
+
 /* ── 代码高亮 token ───────────────────────────────────────────── */
 :root {
     --hl-keyword: #a626a4;
