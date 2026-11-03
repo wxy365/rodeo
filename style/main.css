@@ -4026,3 +4026,223 @@ input[type="color"].sw:disabled {
 .shared-entry-labels { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
 .shared-entry-detail { font-size: 14px; line-height: 1.6; }
 .shared-entry-detail img { max-width: 100%; height: auto; }
+/* ============================================================================
+   Material 皮肤 —— 结构覆盖（一）：基础控件与顶栏
+   ============================================================================
+   统一前缀 :root[data-skin="material"]。这一段处理形状、层次、状态层；
+   颜色一律引用令牌层定义的 --md-*，不写死色值。 */
+
+/* ---- M3 state layer ----
+   hover / 按下时在元素上叠一层半透明。纯 CSS，无 JS，无 hydration 风险。
+   Material 的 ripple 需要点击坐标 + Web Animations，本轮明确不做。 */
+:root[data-skin="material"] .btn,
+:root[data-skin="material"] .ibtn,
+:root[data-skin="material"] .chip,
+:root[data-skin="material"] .colchip,
+:root[data-skin="material"] .tbl tbody tr {
+    position: relative;
+    overflow: hidden;
+}
+:root[data-skin="material"] .btn::before,
+:root[data-skin="material"] .ibtn::before,
+:root[data-skin="material"] .chip::before,
+:root[data-skin="material"] .colchip::before,
+:root[data-skin="material"] .tbl tbody tr::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: currentColor;
+    opacity: 0;
+    transition: opacity 120ms ease;
+    pointer-events: none;
+}
+:root[data-skin="material"] .btn:hover::before,
+:root[data-skin="material"] .ibtn:hover::before,
+:root[data-skin="material"] .chip:hover::before,
+:root[data-skin="material"] .colchip:hover::before,
+:root[data-skin="material"] .tbl tbody tr:hover::before {
+    opacity: .08;
+}
+:root[data-skin="material"] .btn:active::before,
+:root[data-skin="material"] .ibtn:active::before,
+:root[data-skin="material"] .chip:active::before,
+:root[data-skin="material"] .colchip:active::before {
+    opacity: .12;
+}
+
+/* ---- 按钮 ----
+   .btn  → M3 outlined（透明底 + 描边 + 胶囊）
+   .btn.pri → M3 filled（primary 底 + on-primary 字 + 一级阴影） */
+:root[data-skin="material"] .btn {
+    height: var(--h-btn);
+    padding: 0 20px;
+    border-radius: var(--r-pill);
+    background: transparent;
+    border: 1px solid var(--md-outline);
+    color: var(--md-primary);
+    font-weight: 500;
+}
+:root[data-skin="material"] .btn.pri {
+    background: var(--md-primary);
+    border-color: var(--md-primary);
+    color: var(--md-on-primary);
+    box-shadow: var(--sh-1);
+}
+:root[data-skin="material"] .btn.ghost {
+    border-style: dashed;
+    border-color: var(--md-outline-variant);
+    color: var(--md-on-surface-variant);
+}
+:root[data-skin="material"] .btn.danger,
+:root[data-skin="material"] .btn.dgr {
+    color: var(--md-error);
+    border-color: var(--md-error);
+}
+:root[data-skin="material"] .btn:disabled {
+    opacity: .38;
+}
+
+/* ---- 图标按钮 ----
+   40px 圆形 + state layer。.theme-btn / .timeline-btn / .agent-btn 与
+   .ibtn 同族，一并处理。 */
+:root[data-skin="material"] .ibtn,
+:root[data-skin="material"] .theme-btn,
+:root[data-skin="material"] .timeline-btn,
+:root[data-skin="material"] .agent-btn {
+    width: var(--h-ibtn);
+    height: var(--h-ibtn);
+    border-radius: 50%;
+    color: var(--md-on-surface-variant);
+}
+:root[data-skin="material"] .ibtn:hover {
+    background: transparent;
+}
+
+/* ---- 主题按钮：颜色通道 ----
+   经典态保持中性灰，Material 态染靛蓝 —— 用户靠颜色一眼分辨当前设计语言。
+   对比度：Material 亮色 #4F46E5 on #E0E7FF ≈ 6.5:1；
+             Material 暗色 #C3C0FF on #3331B0 ≈ 5.5:1。均过 WCAG AA。 */
+:root[data-skin="material"] .theme-btn {
+    color: var(--md-primary);
+}
+
+/* ---- 开关 ----
+   经典 .switch 是 11px 圆角（Task 1 刻意没动它，回退位对不上），
+   Material 下改成胶囊。 */
+:root[data-skin="material"] .switch {
+    border-radius: var(--r-pill);
+}
+
+/* ---- 输入框 ----
+   M3 filled text field：容器底色、无边框、16px 圆角、focus 时 2px primary 边。 */
+:root[data-skin="material"] .inp {
+    border: 1px solid transparent;
+    border-radius: var(--r-m);
+    background: var(--md-surface-container-highest);
+    padding: 10px 16px;
+    color: var(--md-on-surface);
+}
+:root[data-skin="material"] .inp:focus {
+    outline: none;
+    border: 2px solid var(--md-primary);
+    padding: 9px 15px;
+    background: var(--md-surface);
+}
+:root[data-skin="material"] .ws-search {
+    border: 1px solid transparent;
+    border-radius: var(--r-m);
+    background: var(--md-surface-container-highest);
+    padding: 0 16px;
+    min-height: 44px;
+}
+:root[data-skin="material"] .ws-search:focus-within {
+    outline: none;
+    border: 2px solid var(--md-primary);
+    padding: 0 15px;
+    background: var(--md-surface);
+}
+:root[data-skin="material"] .ws-search input {
+    padding: 10px 0;
+}
+
+/* ---- 芯片 ----
+   M3 assist chip：12px 圆角、容器色 + 容器上文字色。 */
+:root[data-skin="material"] .chip {
+    height: 26px;
+    padding: 0 12px;
+    border-radius: var(--r-m);
+    font-weight: 500;
+}
+:root[data-skin="material"] .chip.sel {
+    background: var(--md-secondary-container);
+    color: var(--md-on-secondary-container);
+}
+:root[data-skin="material"] .chip.dim {
+    background: var(--md-surface-container-high);
+    color: var(--md-on-surface-variant);
+}
+:root[data-skin="material"] .chip.inh {
+    border: 1px dashed var(--md-outline-variant);
+}
+:root[data-skin="material"] .c-doing {
+    background: var(--md-tertiary-container);
+    color: var(--md-on-tertiary-container);
+}
+:root[data-skin="material"] .c-done {
+    background: var(--md-pos-container);
+    color: var(--md-on-pos-container);
+}
+:root[data-skin="material"] .c-open,
+:root[data-skin="material"] .c-p3,
+:root[data-skin="material"] .c-wont {
+    background: var(--md-surface-container-high);
+    color: var(--md-on-surface-variant);
+}
+:root[data-skin="material"] .c-p0,
+:root[data-skin="material"] .c-p1 {
+    background: var(--md-error-container);
+    color: var(--md-on-error-container);
+}
+:root[data-skin="material"] .c-p2 {
+    background: var(--md-warn-container);
+    color: var(--md-on-warn-container);
+}
+
+/* ---- 卡片 / 面板 ----
+   M3 card：20px 圆角、无边框（暗色补描边）、一级阴影。 */
+:root[data-skin="material"] .panel {
+    border: 1px solid transparent;
+    border-radius: var(--r-l);
+    background: var(--md-surface);
+    box-shadow: var(--sh-1);
+}
+:root[data-skin="material"][data-theme="dark"] .panel {
+    border-color: var(--md-outline-variant);
+}
+
+/* ---- 顶栏 ----
+   M3 top app bar：64px、primary-container 底、无下边框、一级阴影。 */
+:root[data-skin="material"] .appbar {
+    height: 64px;
+    padding: 0 20px;
+    background: var(--md-primary-container);
+    color: var(--md-on-primary-container);
+    border-bottom: 0;
+    box-shadow: var(--sh-1);
+    gap: 20px;
+}
+:root[data-skin="material"] .appbar-brand {
+    font-size: 22px;
+    font-weight: 500;
+    color: var(--md-on-primary-container);
+}
+:root[data-skin="material"] .appbar-nav {
+    height: 40px;
+    padding: 0 16px;
+    border-radius: var(--r-pill);
+    color: var(--md-on-primary-container);
+}
+:root[data-skin="material"] .appbar-nav:hover {
+    background: rgb(var(--md-on-primary-container) / .08);
+    color: var(--md-on-primary-container);
+}
