@@ -360,6 +360,7 @@
     "side_relations": "العلاقات",
     "side_attachments": "المرفقات",
     "side_history": "السجل",
+    "toc": "المحتوى",
     "errors.concurrent_edit": "تم تعديل المحتوى من قبل شخص آخر. يرجى التحديث وإعادة المحاولة.",
     "col_archived_at": "أُرشف في",
     "optimistic_lock_hint": "تزامن متفائل — يتم اكتشاف التعارضات عند الحفظ",

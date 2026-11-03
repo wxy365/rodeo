@@ -363,6 +363,7 @@
     "side_relations": "Relations",
     "side_attachments": "Attachments",
     "side_history": "History",
+    "toc": "Outline",
     "errors.concurrent_edit": "Content was modified by someone else. Please refresh and retry.",
     "col_archived_at": "Archived at",
     "optimistic_lock_hint": "Optimistic concurrency — conflicts are detected on save",

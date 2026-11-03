@@ -360,6 +360,7 @@
     "side_relations": "Relações",
     "side_attachments": "Anexos",
     "side_history": "Histórico",
+    "toc": "Sumário",
     "errors.concurrent_edit": "O conteúdo foi modificado por outra pessoa. Atualize e tente novamente.",
     "col_archived_at": "Arquivado em",
     "optimistic_lock_hint": "Concorrência otimista — conflitos detectados ao salvar",

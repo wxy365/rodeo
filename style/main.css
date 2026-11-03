@@ -1527,6 +1527,74 @@ select:focus {
     gap: var(--gap-panel);
     align-items: start;
 }
+/* 正文有标题时多出左侧章节目录一列。 */
+.entry-layout.with-toc {
+    grid-template-columns: 180px minmax(0, 1fr) var(--detail-w);
+}
+/* 有目录时给左边缘留出 16px，否则目录会贴着窗口边。无目录时保持顶边设计。 */
+.page-wide:has(.entry-layout.with-toc) {
+    padding-left: 16px;
+}
+/* 章节目录：跟随视口吸附，自身滚动（章节多时不会把右栏挤下去）。 */
+.entry-toc {
+    position: sticky;
+    top: 66px;
+    align-self: start;
+    max-height: calc(100vh - 90px);
+    overflow-y: auto;
+    padding: 12px 8px;
+}
+.entry-toc .grp-h {
+    margin-bottom: 6px;
+    padding: 0 6px;
+}
+.entry-toc-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+.entry-toc-item {
+    border: 0;
+    background: none;
+    text-align: left;
+    padding: 5px 8px;
+    border-radius: var(--r-s);
+    color: var(--ink2);
+    font-size: 13px;
+    line-height: 1.45;
+    cursor: pointer;
+}
+.entry-toc-item[data-level="2"] {
+    padding-left: 20px;
+}
+.entry-toc-item[data-level="3"] {
+    padding-left: 32px;
+    font-size: 12.5px;
+}
+.entry-toc-item:hover {
+    background: var(--bg2);
+    color: var(--ink);
+}
+.entry-toc-item.on {
+    background: var(--bg2);
+    color: var(--blue);
+    font-weight: 500;
+}
+.entry-toc-text {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+/* 窗口不够宽时让目录整列退场：正文与右栏优先。 */
+@media (max-width: 1180px) {
+    .entry-layout.with-toc {
+        grid-template-columns: minmax(0, 1fr) var(--detail-w);
+    }
+    .entry-toc {
+        display: none;
+    }
+}
 /* 左栏：正文编辑器在上，评论在下。 */
 .entry-main {
     display: flex;
@@ -4422,6 +4490,7 @@ input[type="color"].sw:disabled {
 :root[data-skin="material"] .entry-editor,
 :root[data-skin="material"] .entry-side,
 :root[data-skin="material"] .entry-comments,
+:root[data-skin="material"] .entry-toc,
 :root[data-skin="material"] .entry-top {
     border-radius: var(--r-l);
     border: 1px solid transparent;
@@ -4431,6 +4500,7 @@ input[type="color"].sw:disabled {
 :root[data-skin="material"][data-theme="dark"] .entry-editor,
 :root[data-skin="material"][data-theme="dark"] .entry-side,
 :root[data-skin="material"][data-theme="dark"] .entry-comments,
+:root[data-skin="material"][data-theme="dark"] .entry-toc,
 :root[data-skin="material"][data-theme="dark"] .entry-top {
     border-color: var(--md-outline-variant);
 }

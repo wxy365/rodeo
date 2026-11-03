@@ -363,6 +363,7 @@
     "side_relations": "关联",
     "side_attachments": "附件",
     "side_history": "历史",
+    "toc": "目录",
     "errors.concurrent_edit": "内容已被他人修改，请刷新后重试",
     "col_archived_at": "归档时间",
     "optimistic_lock_hint": "乐观并发 · 保存时检测冲突",

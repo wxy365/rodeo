@@ -107,6 +107,119 @@ pub fn content_to_html(body: &str) -> String {
     body.to_string()
 }
 
+/// 章节目录里的一项：标题层级（1-3）与纯文本。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutlineItem {
+    pub level: u8,
+    pub text: String,
+}
+
+/// 从正文 HTML 里抽取 h1 / h2 / h3，供全屏页左侧的章节目录使用。
+///
+/// 正文在库里是消毒后的 HTML，标题只可能是 `<h1>` - `<h3>`（编辑器只开了
+/// 这三级）。这里做的是一个**够用的**扫描器：按出现顺序找开始标签，取到
+/// 对应结束标签之间的内容、剥掉行内标签与实体。不引 HTML 解析库——为目录
+/// 拉一整棵 DOM 树不值得，而且这个函数在每次编辑器 update 时都会跑。
+///
+/// 空标题返回空串（渲染侧兜底成省略号），不会从目录里被吞掉：标题在正文里
+/// 占一行，目录里也该留一行。
+pub fn outline(html: &str) -> Vec<OutlineItem> {
+    let lower = html.to_ascii_lowercase();
+    let mut out = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(rel) = lower[cursor..].find("<h") {
+        let start = cursor + rel;
+        let after_level = start + 2; // 越过 "<h"，指向层级数字
+        // 层级：<h1> - <h3>，且后面必须紧跟 `>` 或空白（排除 <hr>、<html>）。
+        let Some(level) = lower[after_level..].chars().next().and_then(|c| c.to_digit(10)) else {
+            cursor = after_level;
+            continue;
+        };
+        if !(1..=3).contains(&level) {
+            cursor = after_level;
+            continue;
+        }
+        let next = lower[after_level + 1..].chars().next();
+        let tag_ok = next.is_some_and(|c| c == '>' || c.is_ascii_whitespace());
+        if !tag_ok {
+            cursor = after_level + 1;
+            continue;
+        }
+        let Some(gt_rel) = lower[start..].find('>') else {
+            break;
+        };
+        let text_start = start + gt_rel + 1;
+        let close = format!("</h{level}>");
+        let Some(text_end_rel) = lower[text_start..].find(&close) else {
+            break;
+        };
+        let text_end = text_start + text_end_rel;
+        out.push(OutlineItem {
+            level: level as u8,
+            text: heading_text(&html[text_start..text_end]),
+        });
+        cursor = text_end + close.len();
+    }
+    out
+}
+
+/// 标题内联内容 → 纯文本：剥标签、解常见实体、折叠空白。
+fn heading_text(inner: &str) -> String {
+    let mut out = String::with_capacity(inner.len());
+    let mut chars = inner.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '<' => {
+                // 跳到标签结束；未闭合的半截标签按标签处理（内容不泄漏进目录）。
+                for n in chars.by_ref() {
+                    if n == '>' {
+                        break;
+                    }
+                }
+            }
+            '&' => {
+                let mut entity = String::new();
+                while let Some(&n) = chars.peek() {
+                    if n == ';' || entity.len() >= 10 {
+                        break;
+                    }
+                    entity.push(n);
+                    chars.next();
+                }
+                if chars.peek() == Some(&';') {
+                    chars.next();
+                }
+                out.push_str(&decode_entity(&entity));
+            }
+            _ => out.push(c),
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// 常见 HTML 实体。解不出来的保留原文，目录里显示成 `&xxx;` 总比吞掉好。
+fn decode_entity(entity: &str) -> String {
+    match entity {
+        "amp" => "&".into(),
+        "lt" => "<".into(),
+        "gt" => ">".into(),
+        "quot" => "\"".into(),
+        "apos" | "#39" => "'".into(),
+        "nbsp" => " ".into(),
+        _ => {
+            let code = if let Some(hex) = entity.strip_prefix("#x").or_else(|| entity.strip_prefix("#X")) {
+                u32::from_str_radix(hex, 16).ok()
+            } else {
+                entity.strip_prefix('#').and_then(|d| d.parse::<u32>().ok())
+            };
+            match code.and_then(char::from_u32) {
+                Some(c) => c.to_string(),
+                None => format!("&{entity};"),
+            }
+        }
+    }
+}
+
 /// 正文归一化：空的归一成空串，其余原样透传。
 fn normalize_html(content: &str) -> String {
     if content.trim().is_empty() {

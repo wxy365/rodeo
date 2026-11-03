@@ -30,6 +30,20 @@ fn side_tab_labels(i18n: &I18nController) -> [(String, String); 3] {
     ]
 }
 
+/// 全屏页正文里的标题节点。与 `rich_editor::outline` 抽的是同一批 h1-h3，
+/// 顺序也一致——目录项按索引跳转就靠这个前提。
+#[cfg(target_arch = "wasm32")]
+const HEADING_SELECTOR: &str =
+    ".entry-editor .tiptap-content h1, .entry-editor .tiptap-content h2, .entry-editor .tiptap-content h3";
+
+#[cfg(target_arch = "wasm32")]
+fn heading_nodes() -> Option<web_sys::NodeList> {
+    web_sys::window()?
+        .document()?
+        .query_selector_all(HEADING_SELECTOR)
+        .ok()
+}
+
 #[component]
 pub fn EntryFullScreen() -> impl IntoView {
     let params = use_params_map();
@@ -61,6 +75,11 @@ pub fn EntryFullScreen() -> impl IntoView {
     let ws_members = RwSignal::new(Vec::<Member>::new());
     let title = RwSignal::new(String::new());
     let detail = RwSignal::new(String::new());
+    // 左侧章节目录：直接从正文 HTML 抽 h1-h3。`detail` 在编辑器每次 update
+    // 时刷新（on_editor_change），目录因此跟着正文实时重算。
+    let outline_items = Signal::derive(move || crate::frontend::rich_editor::outline(&detail.get()));
+    // 目录里当前高亮的那一项——由滚动监听更新（见下面的 scroll spy）。
+    let active_heading = RwSignal::new(0usize);
     // 分享面板：默认收起，「Share」按钮第一次点开后落地。`share_loading` 用来
     // 在拉取 share 列表时灰掉触发按钮，避免重复请求。
     let show_share_panel = RwSignal::new(false);
@@ -312,6 +331,64 @@ pub fn EntryFullScreen() -> impl IntoView {
         nav_back(&href, Default::default());
     });
 
+    // ── 左侧章节目录 ────────────────────────────────────────────────
+    // 正文标题在 DOM 里没有 id（Tiptap 不给标题生成锚点），所以目录项按
+    // **出现顺序**记索引：点击第 n 项 = 滚到正文里第 n 个 h1/h2/h3。
+    // 目录从正文 HTML 里抽，DOM 也是同一份内容，两边顺序一致。
+    let jump_to_heading = move |idx: usize| {
+        #[cfg(target_arch = "wasm32")]
+        {
+            use wasm_bindgen::JsCast;
+            let Some(window) = web_sys::window() else {
+                return;
+            };
+            let Some(list) = heading_nodes() else {
+                return;
+            };
+            let Some(node) = list.item(idx as u32) else {
+                return;
+            };
+            let Ok(el) = node.dyn_into::<web_sys::Element>() else {
+                return;
+            };
+            // 视口坐标 → 文档坐标，再让开全局顶栏 + 吸顶工具栏（约 104px），
+            // 否则滚过去标题正好被工具栏压住。
+            let y = window.scroll_y().unwrap_or(0.0) + el.get_bounding_client_rect().top() - 104.0;
+            let _ = window.scroll_to_with_x_and_y(0.0, y.max(0.0));
+            active_heading.set(idx);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = idx;
+    };
+
+    // 滚动时高亮当前章节：取「最后一个已经越过顶部阈值」的标题。
+    // 全屏页是视口滚动（目录自身 sticky），所以监听 window 的 scroll。
+    #[cfg(target_arch = "wasm32")]
+    {
+        use wasm_bindgen::JsCast;
+        let handle = window_event_listener(leptos::ev::scroll, move |_| {
+            let Some(list) = heading_nodes() else {
+                return;
+            };
+            let mut idx = 0usize;
+            for i in 0..list.length() {
+                let Some(node) = list.item(i) else {
+                    continue;
+                };
+                let Ok(el) = node.dyn_into::<web_sys::Element>() else {
+                    continue;
+                };
+                if el.get_bounding_client_rect().top() <= 140.0 {
+                    idx = i as usize;
+                } else {
+                    break;
+                }
+            }
+            active_heading.set(idx);
+        });
+        on_cleanup(move || handle.remove());
+    }
+
     // Esc 返回视图页；有未保存改动时拦住，并把原因写进现成的提示位。
     // 显式按钮不受影响：Esc 容易误触，按钮是明确动作。
     if cfg!(target_arch = "wasm32") {
@@ -431,7 +508,40 @@ pub fn EntryFullScreen() -> impl IntoView {
             } else {
                 view! { <div class="entry-share-panel hidden"></div> }.into_any()
             }}
-            <div class="entry-layout">
+            <div class="entry-layout" class:with-toc=move || !outline_items.get().is_empty()>
+                // 左侧章节目录。没有标题时整列不渲染（`.with-toc` 同时摘掉），
+                // 正文仍保持「顶到左边缘」的全宽布局。
+                {move || {
+                    let items = outline_items.get();
+                    if items.is_empty() {
+                        return ().into_any();
+                    }
+                    let active = active_heading;
+                    view! {
+                        <nav class="panel entry-toc">
+                            <div class="grp-h">{move || i18n.t("entry.toc")}</div>
+                            <div class="entry-toc-list">
+                                {items.into_iter().enumerate().map(|(i, item)| {
+                                    let label = if item.text.is_empty() {
+                                        "…".to_string()
+                                    } else {
+                                        item.text.clone()
+                                    };
+                                    let title = label.clone();
+                                    view! {
+                                        <button class="entry-toc-item"
+                                            class:on=move || active.get() == i
+                                            data-level=item.level.to_string()
+                                            title=title
+                                            on:click=move |_| jump_to_heading(i)>
+                                            <span class="entry-toc-text">{label}</span>
+                                        </button>
+                                    }
+                                }).collect::<Vec<_>>()}
+                            </div>
+                        </nav>
+                    }.into_any()
+                }}
                 <div class="entry-main">
                     <div class="panel entry-editor" style="padding:0;overflow:hidden"
                         on:keydown=move |ev: leptos::ev::KeyboardEvent| {

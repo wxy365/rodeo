@@ -360,6 +360,7 @@
     "side_relations": "関連",
     "side_attachments": "添付",
     "side_history": "履歴",
+    "toc": "目次",
     "errors.concurrent_edit": "他のユーザーが内容を変更しました。更新してから再試行してください。",
     "col_archived_at": "アーカイブ日時",
     "optimistic_lock_hint": "楽観的並行制御 — 保存時に競合を検出",
