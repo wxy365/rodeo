@@ -137,11 +137,18 @@ fn ShellInner(options: LeptosOptions) -> impl IntoView {
                 // 浏览器页签图标：SVG 现代浏览器都吃，静态资源走 `assets-dir = "public"`。
                 <link rel="icon" type="image/svg+xml" href="/favicon.svg"/>
                 // 主题早应用脚本：必须在 HashedStylesheet 之前 inline，否则
-                // CSS 第一次解析时还没有 `data-theme` 属性，系统 @media
-                // 会先生效几毫秒——肉眼可见的色闪。这段脚本读 localStorage，
-                // 把 data-theme 提前挂到 <html> 上；同步执行，跑在 DOM 构建前。
+                // CSS 第一次解析时还没有 data-theme / data-skin 属性，会看到
+                // 几毫秒的色闪。这段脚本做三件事：
+                //   1. 读 localStorage.rodeo_theme（四个具体值之一）；
+                //   2. 旧值 "system" 或没有值 → 按 prefers-color-scheme 解析成
+                //      具体的经典亮/暗，并固化回写 localStorage（存量用户首屏
+                //      颜色与改动前完全一致，只是从此不再跟随 OS 昼夜切换）；
+                //   3. 把解析结果写到 <html> 的 data-theme / data-skin 上。
+                // 同步执行，跑在 DOM 构建前。注意：这里用的是普通 <script>
+                // 元素，不是 leptos_meta 的注册式 <Script>——后者会让 head 的
+                // meta 游标与 SSR 输出错位，进而 hydration panic。
                 <script>
-                    "(function(){try{var s=localStorage.getItem('rodeo_theme');if(s==='light'||s==='dark'){document.documentElement.setAttribute('data-theme',s);}}catch(e){}})();"
+                    "(function(){try{var s=localStorage.getItem('rodeo_theme');var v;if(s==='light'||s==='dark'||s==='material-light'||s==='material-dark'){v=s;}else{v=(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';try{localStorage.setItem('rodeo_theme',v);}catch(e2){}}var h=document.documentElement;h.setAttribute('data-theme',(v==='dark'||v==='material-dark')?'dark':'light');h.setAttribute('data-skin',(v==='material-light'||v==='material-dark')?'material':'classic');}catch(e){}})();"
                 </script>
                 // 语言防闪屏：localStorage 优先于 SSR 选择——前者是用户最近一次
                 // 在 AppBar 显式选过的（带 cookie 写回），后者只是 Accept-Language

@@ -551,9 +551,10 @@
     "cmd_theme_sub": "在浅色 / 暗色 / 跟随系统之间循环"
   },
   "theme": {
-    "title_system": "主题：跟随系统（点击切换）",
-    "title_light": "主题：浅色（点击切换）",
-    "title_dark": "主题：暗色（点击切换）",
+    "title_classic_light": "主题：经典亮色（点击切换）",
+    "title_classic_dark": "主题：经典暗色（点击切换）",
+    "title_material_light": "主题：Material 亮色（点击切换）",
+    "title_material_dark": "主题：Material 暗色（点击切换）",
     "aria": "切换主题"
   },
   "sidebar": {

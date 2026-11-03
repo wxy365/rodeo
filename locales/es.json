@@ -548,9 +548,10 @@
     "cmd_theme_sub": "Alternar entre claro / oscuro / sistema"
   },
   "theme": {
-    "title_system": "Tema: seguir sistema (clique para cambiar)",
-    "title_light": "Tema: claro (clique para cambiar)",
-    "title_dark": "Tema: oscuro (clique para cambiar)",
+    "title_classic_light": "Tema: clásico claro (clique para cambiar)",
+    "title_classic_dark": "Tema: clásico oscuro (clique para cambiar)",
+    "title_material_light": "Tema: Material claro (clique para cambiar)",
+    "title_material_dark": "Tema: Material oscuro (clique para cambiar)",
     "aria": "Cambiar tema"
   },
   "sidebar": {

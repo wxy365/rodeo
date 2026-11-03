@@ -548,9 +548,10 @@
     "cmd_theme_sub": "ライト / ダーク / システム を循環"
   },
   "theme": {
-    "title_system": "テーマ：システムに追従（クリックで変更）",
-    "title_light": "テーマ：ライト（クリックで変更）",
-    "title_dark": "テーマ：ダーク（クリックで変更）",
+    "title_classic_light": "テーマ：クラシックライト（クリックで変更）",
+    "title_classic_dark": "テーマ：クラシックダーク（クリックで変更）",
+    "title_material_light": "テーマ：マテリアルライト（クリックで変更）",
+    "title_material_dark": "テーマ：マテリアルダーク（クリックで変更）",
     "aria": "テーマを切り替え"
   },
   "sidebar": {

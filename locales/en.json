@@ -551,9 +551,10 @@
     "cmd_theme_sub": "Cycle through light / dark / system"
   },
   "theme": {
-    "title_system": "Theme: follow system (click to change)",
-    "title_light": "Theme: light (click to change)",
-    "title_dark": "Theme: dark (click to change)",
+    "title_classic_light": "Theme: classic light (click to change)",
+    "title_classic_dark": "Theme: classic dark (click to change)",
+    "title_material_light": "Theme: Material light (click to change)",
+    "title_material_dark": "Theme: Material dark (click to change)",
     "aria": "Toggle theme"
   },
   "sidebar": {

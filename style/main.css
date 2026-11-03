@@ -2907,6 +2907,23 @@ input[type="color"].sw:disabled {
 .theme-btn:hover {
     background: var(--bg2);
 }
+
+/* 主题按钮的两枚图标都渲染在 DOM 里，由 CSS 按 <html data-theme> 决定显示
+   哪一枚 —— 这样 SSR 与 hydrate 的 DOM 结构完全一致，不会出现子树失配。
+   （原先的 {match mode.get(){…}.into_any()} 写法在 SSR 与 hydrate 之间会
+   渲染出两棵不同的 SVG 子树。） */
+.theme-btn .ti {
+    display: none;
+}
+.theme-btn .ti > svg {
+    display: block;
+}
+:root[data-theme="light"] .theme-btn .ti-sun {
+    display: inline-flex;
+}
+:root[data-theme="dark"] .theme-btn .ti-moon {
+    display: inline-flex;
+}
 .timeline-btn.on {
     background: var(--pos);
     color: #fff;
