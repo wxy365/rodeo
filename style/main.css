@@ -2989,19 +2989,23 @@ input[type="color"].sw:disabled {
 .theme-btn:hover {
     background: var(--bg2);
 }
-
 /* 主题按钮的两枚图标都渲染在 DOM 里，由 CSS 按 <html data-theme> 决定显示
    哪一枚 —— 这样 SSR 与 hydrate 的 DOM 结构完全一致，不会出现子树失配。
    （原先的 {match mode.get(){…}.into_any()} 写法在 SSR 与 hydrate 之间会
-   渲染出两棵不同的 SVG 子树。） */
+   渲染出两棵不同的 SVG 子树。）
+   没有 data-theme 时（SSR 首帧、或 JS 不可用）默认显示太阳 —— 那也是经典
+   亮色的默认态，不至于让按钮变成一个没有图标的空方块。 */
 .theme-btn .ti {
     display: none;
 }
 .theme-btn .ti > svg {
     display: block;
 }
-:root[data-theme="light"] .theme-btn .ti-sun {
+.theme-btn .ti-sun {
     display: inline-flex;
+}
+:root[data-theme="dark"] .theme-btn .ti-sun {
+    display: none;
 }
 :root[data-theme="dark"] .theme-btn .ti-moon {
     display: inline-flex;
