@@ -4120,20 +4120,24 @@ input[type="color"].sw:disabled {
 
 /* ---- M3 state layer ----
    hover / 按下时在元素上叠一层半透明。纯 CSS，无 JS，无 hydration 风险。
-   Material 的 ripple 需要点击坐标 + Web Animations，本轮明确不做。 */
+   Material 的 ripple 需要点击坐标 + Web Animations，本轮明确不做。
+
+   【表格行不能走 ::before 这条路】表格行上的 ::before 按 CSS 表格模型会生成
+   一个「匿名表格单元格」，占掉该行的第一个列槽位 —— 整行的真单元格于是被整体
+   挤到第二列起，表头与表体的列宽就对不上了（表头底色只盖住前面几列，后面露白，
+   「标题」表头也会压到行号那一列）。所以表格行的 state layer 改成直接在行背景上
+   叠色，见下面「表格」段的 :hover 规则。 */
 :root[data-skin="material"] .btn,
 :root[data-skin="material"] .ibtn,
 :root[data-skin="material"] .chip,
-:root[data-skin="material"] .colchip,
-:root[data-skin="material"] .tbl tbody tr {
+:root[data-skin="material"] .colchip {
     position: relative;
     overflow: hidden;
 }
 :root[data-skin="material"] .btn::before,
 :root[data-skin="material"] .ibtn::before,
 :root[data-skin="material"] .chip::before,
-:root[data-skin="material"] .colchip::before,
-:root[data-skin="material"] .tbl tbody tr::before {
+:root[data-skin="material"] .colchip::before {
     content: "";
     position: absolute;
     inset: 0;
@@ -4145,8 +4149,7 @@ input[type="color"].sw:disabled {
 :root[data-skin="material"] .btn:hover::before,
 :root[data-skin="material"] .ibtn:hover::before,
 :root[data-skin="material"] .chip:hover::before,
-:root[data-skin="material"] .colchip:hover::before,
-:root[data-skin="material"] .tbl tbody tr:hover::before {
+:root[data-skin="material"] .colchip:hover::before {
     opacity: .08;
 }
 :root[data-skin="material"] .btn:active::before,
@@ -4375,8 +4378,11 @@ input[type="color"].sw:disabled {
 :root[data-skin="material"] .tbl tbody tr {
     background: var(--md-surface);
 }
+/* 行 hover 的 state layer：直接在行背景上叠 8% on-surface。
+   （不能用 tr::before —— 表格行上的伪元素会占掉第一列的槽位，详见上面
+   「M3 state layer」段的说明。） */
 :root[data-skin="material"] .tbl tbody tr:hover {
-    background: var(--md-surface-container-low);
+    background: color-mix(in srgb, var(--md-on-surface) 8%, var(--md-surface));
 }
 
 /* ---- 筛选栏 ---- */

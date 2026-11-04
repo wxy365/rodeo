@@ -46,12 +46,17 @@ function eq(name, actual, expected) {
 }
 
 function publishedWasm() {
+  const pkgDir = path.join(REPO, SITE_ROOT, 'pkg');
+  // 无哈希构建（LEPTOS_HASH_FILES=false）：产物就叫 pkg/rodeo.wasm。
+  // 带哈希的构建才需要拿 hash.txt 去匹配文件名。
+  const plain = path.join(pkgDir, 'rodeo.wasm');
+  if (fs.existsSync(plain)) return plain;
   const hashFile = path.join(REPO, 'target/debug/hash.txt');
   if (!fs.existsSync(hashFile)) throw new Error('找不到 target/debug/hash.txt —— 先跑 cargo leptos build');
   const hash = fs.readFileSync(hashFile, 'utf8').split('\n')
     .find((l) => l.startsWith('wasm:'))?.split(/[:\s]+/)[1];
   if (!hash) throw new Error('target/debug/hash.txt 里没有 wasm 哈希');
-  const p = path.join(REPO, SITE_ROOT, 'pkg', `rodeo.${hash}.wasm`);
+  const p = path.join(pkgDir, `rodeo.${hash}.wasm`);
   if (!fs.existsSync(p)) throw new Error(`找不到 ${p} —— hash.txt 与 ${SITE_ROOT}/pkg 不同步，重跑 cargo leptos build`);
   return p;
 }
@@ -170,6 +175,29 @@ async function measureHover(page, cdp, cls) {
   await page.evaluate(() =>
     document.querySelectorAll('.probe-hover').forEach((e) => e.remove()));
   return out;
+}
+
+// 表头的列必须与表体逐列对齐，且表头底色要占满整行。
+// 这条是被一个真实的 bug 逼出来的：Material 的表格行上用了 ::before 做 state
+// layer，而表格行的 ::before 按 CSS 表格模型会生成一个「匿名表格单元格」，
+// 占掉该行第一列的槽位 —— 真单元格于是被整体挤到第二列起，表头与表体的列宽
+// 对不上（表头底色只盖住前面几列，后面露白，「标题」表头压到行号那一列）。
+async function measureTableHeader(page) {
+  return page.evaluate(() => {
+    const table = document.querySelector('.tbl-scroll .tbl');
+    const headRow = table?.querySelector('thead tr');
+    const bodyRow = table?.querySelector('tbody tr');
+    if (!table || !headRow) return null;
+    const hx = [...headRow.cells].map((c) => Math.round(c.getBoundingClientRect().x));
+    const bx = bodyRow ? [...bodyRow.cells].map((c) => Math.round(c.getBoundingClientRect().x)) : [];
+    const tr = headRow.getBoundingClientRect();
+    const last = headRow.cells[headRow.cells.length - 1]?.getBoundingClientRect();
+    return {
+      headX: hx, bodyX: bx,
+      aligned: hx.length > 0 && hx.length === bx.length && hx.every((x, i) => x === bx[i]),
+      coverage: last && tr.width ? (last.right - tr.left) / tr.width : 0,
+    };
+  });
 }
 
 async function run() {
@@ -327,7 +355,20 @@ async function run() {
       `${hov?.color} on ${hov?.bg} = ${hovRatio?.toFixed(2)}`);
   }
 
-  // ---- 7. 各界面截图（Material 亮 / Material 暗 / 经典亮 / 经典暗） ----
+  // ---- 7. 表格表头列对齐 + 表头底色占满整行 ----
+  for (const theme of ['light', 'dark', 'material-light', 'material-dark']) {
+    await page.evaluate((m) => localStorage.setItem('rodeo_theme', m), theme);
+    await page.goto(`${BASE}/${slug}`, { waitUntil: 'domcontentloaded', timeout: 120000 });
+    await page.waitForSelector('.tbl-scroll .tbl', { timeout: 60000 });
+    await page.waitForTimeout(600);
+    const t = await measureTableHeader(page);
+    check(`${theme}：表头与表体逐列对齐`, t?.aligned === true,
+      `表头 x=${JSON.stringify(t?.headX)} 表体 x=${JSON.stringify(t?.bodyX)}`);
+    check(`${theme}：表头底色占满整行`, (t?.coverage ?? 0) > 0.99,
+      `覆盖率 ${((t?.coverage ?? 0) * 100).toFixed(1)}%`);
+  }
+
+  // ---- 8. 各界面截图（Material 亮 / Material 暗 / 经典亮 / 经典暗） ----
   const pages = [
     ['workspaces', `${BASE}/workspaces`],
     ['workspace', `${BASE}/${slug}`],
@@ -345,7 +386,7 @@ async function run() {
     }
   }
 
-  // ---- 8. 全程无 console.error（hydration 报错检测） ----
+  // ---- 9. 全程无 console.error（hydration 报错检测） ----
   check('主流程无 console.error', consoleErrors.length === 0,
     consoleErrors.slice(0, 5).join(' | '));
 
