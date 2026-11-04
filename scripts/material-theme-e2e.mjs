@@ -113,6 +113,65 @@ async function visibleIcon(page) {
   });
 }
 
+// ---- 对比度（WCAG 2.x 相对亮度）----
+function srgb(v) {
+  const s = v / 255;
+  return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+}
+function parseRgb(css) {
+  const m = (css || '').match(/rgba?\(([^)]+)\)/);
+  if (!m) return null;
+  const p = m[1].split(/[\s,/]+/).filter(Boolean).map(Number);
+  return p.length >= 3 ? [p[0], p[1], p[2]] : null;
+}
+function contrastRatio(fgCss, bgCss) {
+  const fg = parseRgb(fgCss);
+  const bg = parseRgb(bgCss);
+  if (!fg || !bg) return null;
+  const lum = (c) => 0.2126 * srgb(c[0]) + 0.7152 * srgb(c[1]) + 0.0722 * srgb(c[2]);
+  const [hi, lo] = [lum(fg), lum(bg)].sort((a, b) => b - a);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+// 元素的实际计算样式（前景色 + 背景色）
+async function measurePair(page, selector) {
+  return page.evaluate((sel) => {
+    const el = document.querySelector(sel);
+    if (!el) return null;
+    const cs = getComputedStyle(el);
+    return { color: cs.color, bg: cs.backgroundColor };
+  }, selector);
+}
+
+// hover 态没法用真实鼠标稳定命中，改用 CDP 强制伪类：
+// 造一个带目标 class 的探针元素挂到 DOM 上，强制 :hover，再读它的计算样式。
+// 读出来的是真实层叠结果（Material 的覆盖规则与经典规则谁赢，一并验证到）。
+async function measureHover(page, cdp, cls) {
+  await page.evaluate((c) => {
+    document.querySelectorAll('.probe-hover').forEach((e) => e.remove());
+    const el = document.createElement('span');
+    el.className = `${c} probe-hover`;
+    el.style.cssText = 'position:fixed;left:-9999px;top:0;width:10px;height:10px;';
+    document.body.appendChild(el);
+  }, cls);
+  await cdp.send('DOM.enable');
+  await cdp.send('CSS.enable');
+  const { root } = await cdp.send('DOM.getDocument');
+  const { nodeId } = await cdp.send('DOM.querySelector', {
+    nodeId: root.nodeId, selector: '.probe-hover',
+  });
+  if (!nodeId) return null;
+  await cdp.send('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: ['hover'] });
+  const out = await page.evaluate(() => {
+    const cs = getComputedStyle(document.querySelector('.probe-hover'));
+    return { color: cs.color, bg: cs.backgroundColor };
+  });
+  await cdp.send('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: [] });
+  await page.evaluate(() =>
+    document.querySelectorAll('.probe-hover').forEach((e) => e.remove()));
+  return out;
+}
+
 async function run() {
   if (!fs.existsSync(EXECUTABLE)) throw new Error(`找不到 Chromium：${EXECUTABLE}`);
   fs.mkdirSync(SHOTS, { recursive: true });
@@ -131,6 +190,8 @@ async function run() {
   const page = await ctx.newPage();
   page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
   page.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`));
+  // 用于强制 :hover 伪类，测出 hover 态的真实层叠结果
+  const cdp = await ctx.newCDPSession(page);
 
   // ---- 1. 首屏：没有存过主题时按系统偏好解析成经典亮/暗 ----
   await page.goto(`${BASE}/${slug}`, { waitUntil: 'domcontentloaded', timeout: 120000 });
@@ -221,7 +282,52 @@ async function run() {
   await ctx2.close();
   await ctx3.close();
 
-  // ---- 6. 各界面截图（Material 亮 / Material 暗 / 经典亮 / 经典暗） ----
+  // ---- 6. 语义色按钮的对比度（浏览器实测计算样式） ----
+  // 经典版这几处是「语义色背景 + 写死的 #fff 文字」。Material 暗色下 --pos
+  // 变成浅绿 #6FDD8B、--dgr 变成浅红 #FFB4AB，白字压上去只有 1.9:1，几乎
+  // 看不见。Material 的覆盖把它们换成了主色/错误色配对。
+  //
+  // 经典两项断言的是【绝对色值】：Material 的改动一行都不许漏进经典皮肤。
+  // （顺带记录：经典暗色下白字压浅绿只有 2.5:1，是既有行为，本任务不改。）
+  const CONTRAST = [
+    { theme: 'light', btn: ['rgb(255, 255, 255)', 'rgb(26, 127, 55)'], hover: ['rgb(255, 255, 255)', 'rgb(207, 34, 46)'] },
+    { theme: 'dark', btn: ['rgb(255, 255, 255)', 'rgb(63, 185, 80)'], hover: ['rgb(255, 255, 255)', 'rgb(248, 81, 73)'] },
+    { theme: 'material-light', min: 4.5 },
+    { theme: 'material-dark', min: 4.5 },
+  ];
+  for (const c of CONTRAST) {
+    await page.evaluate((m) => localStorage.setItem('rodeo_theme', m), c.theme);
+    await page.reload({ waitUntil: 'domcontentloaded', timeout: 120000 });
+    await page.waitForSelector('.appbar .theme-btn', { timeout: 60000 });
+    await page.waitForTimeout(400);
+
+    const btn = await measurePair(page, '.newentry-btn');
+    check(`${c.theme}：新建按钮存在`, btn !== null, JSON.stringify(btn));
+    const btnRatio = btn ? contrastRatio(btn.color, btn.bg) : null;
+    const hov = await measureHover(page, cdp, 'agent-attach-chip-x');
+    check(`${c.theme}：删除按钮 hover 态可测`, hov !== null, JSON.stringify(hov));
+    const hovRatio = hov ? contrastRatio(hov.color, hov.bg) : null;
+
+    if (c.btn) {
+      // 经典：色值必须逐字节不变
+      eq(`${c.theme}：新建按钮前景色未变`, btn.color, c.btn[0]);
+      eq(`${c.theme}：新建按钮底色未变`, btn.bg, c.btn[1]);
+      eq(`${c.theme}：删除按钮 hover 前景色未变`, hov.color, c.hover[0]);
+      eq(`${c.theme}：删除按钮 hover 底色未变`, hov.bg, c.hover[1]);
+      console.log(`  ${c.theme}  新建按钮 ${btnRatio.toFixed(2)}:1（经典既有值，保持不变）`);
+    } else {
+      check(`${c.theme}：新建按钮文字对比度 ≥ ${c.min}`,
+        btnRatio !== null && btnRatio >= c.min,
+        `${btn?.color} on ${btn?.bg} = ${btnRatio?.toFixed(2)}`);
+      console.log(`  ${c.theme}  新建按钮 ${btnRatio.toFixed(2)}:1`);
+    }
+    // hover 态是 ✕ 图标（图形对象），按 WCAG 1.4.11 要求 ≥ 3:1
+    check(`${c.theme}：删除按钮 hover 对比度 ≥ 3`,
+      hovRatio !== null && hovRatio >= 3,
+      `${hov?.color} on ${hov?.bg} = ${hovRatio?.toFixed(2)}`);
+  }
+
+  // ---- 7. 各界面截图（Material 亮 / Material 暗 / 经典亮 / 经典暗） ----
   const pages = [
     ['workspaces', `${BASE}/workspaces`],
     ['workspace', `${BASE}/${slug}`],
@@ -239,7 +345,7 @@ async function run() {
     }
   }
 
-  // ---- 7. 全程无 console.error（hydration 报错检测） ----
+  // ---- 8. 全程无 console.error（hydration 报错检测） ----
   check('主流程无 console.error', consoleErrors.length === 0,
     consoleErrors.slice(0, 5).join(' | '));
 
