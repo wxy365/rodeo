@@ -4556,3 +4556,33 @@ input[type="color"].sw:disabled {
 :root[data-skin="material"] .panel .tbl th {
     height: 52px;
 }
+
+/* ---- 语义色按钮在暗色下的对比度 ----
+   经典版这几处都是「语义色背景 + 写死的 #fff 文字」。Material 暗色下
+   --pos 变成浅绿 #6FDD8B、--dgr 变成浅红 #FFB4AB，配白字对比度只有 ~1.9:1
+   （基本看不清）。这里改成 Material 自己的色板配对：主色 + on-主色、
+   error 色 + on-error —— 这两组在亮/暗两套里都是设计过可读的。
+
+   .newentry-btn 是全局主 CTA，本身不是「成功」语义，Material 下按 filled
+   button 处理 —— 走主色，和顶栏 primary-container 底色同族。 */
+:root[data-skin="material"] .newentry-btn {
+    height: 40px;
+    padding: 0 20px;
+    border-radius: var(--r-pill);
+    background: var(--md-primary);
+    color: var(--md-on-primary);
+    box-shadow: var(--sh-1);
+    font-size: 14px;
+}
+/* 顶栏里的「已激活」开关按钮：Material 的 selected 态用主色实心。 */
+:root[data-skin="material"] .timeline-btn.on,
+:root[data-skin="material"] .agent-btn.on {
+    background: var(--md-primary);
+    color: var(--md-on-primary);
+}
+/* 破坏性操作的 hover 态：error 色 + on-error 文字。 */
+:root[data-skin="material"] .agent-attach-chip-x:hover,
+:root[data-skin="material"] .agent-session-del:hover {
+    background: var(--md-error);
+    color: var(--md-on-error);
+}
